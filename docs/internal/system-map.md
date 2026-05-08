@@ -122,102 +122,133 @@ Crossing-cutting: every stage transition is auditable, has an SLA, and has a res
 
 ## c) Data model entities
 
-Entities below come primarily from `architecture.md` §5.1 (data model — extending Lovable's schema). The Partners group is from `architecture.md` §7 (partner architecture), which is a dependency for Wave 1 and therefore included even though §5.1 itself does not list those tables. Tables referenced only in `partner-wireflows.md` but not formally defined in `architecture.md` are flagged in `open-questions.md` §b as gaps.
+Entities below come primarily from `architecture.md` §5.1 (data model — extending Lovable's schema), with the Tenancy core group (added per ADR-002) at the top, the Partners group from `architecture.md` §7 + `/docs/partner-data-model.md`, and reference tables explicitly marked.
 
-For each entity: one-line description and the foreign keys called out in the source. Where the source does not specify foreign keys explicitly, the FK column reads "(not specified in §5.1)" — that absence does not imply none should exist; it reflects the doc's level of detail.
+For each entity: one-line description, the foreign keys called out in the source, and a tenancy marker. **Per ADR-002, every domain entity carries `tenant_id UUID NOT NULL REFERENCES tenants(id)` and is tenant-scoped via RLS as the outermost predicate; reference tables (rows that are platform-shared facts, not tenant data) are explicitly marked `reference (tenant-agnostic)`.** Where the source does not specify foreign keys explicitly, the FK column reads "(not specified in §5.1)" — that absence does not imply none should exist; it reflects the doc's level of detail.
+
+### Tenancy core (per ADR-002)
+
+- **tenants** — One row per enterprise customer. Slug drives subdomain routing; `tier` discriminates 'standard' / 'sandbox' / 'dedicated' (future); `settings` JSONB holds cosmetic config. Most users see only `WHERE id = current_tenant_id()`; platform-level admins (HireOps internal staff) see all rows via service-role escalation (`architecture.md` §5.1 Tenancy core; `multi-tenancy-adr.md` §5.1, §5.4). FKs: none upstream (root tenancy table). Tenancy: this *is* the tenancy spine; not itself tenant-scoped.
+- **tenant_encryption_keys** — Per-tenant Data Encryption Key (DEK) wrapped by master KMS Key Encryption Key (KEK). Read only by service-role workers when decrypting `integration_credentials`. RLS off; access control via service-role discipline + IAM (`architecture.md` §5.1 Tenancy core; `multi-tenancy-adr.md` §5.5). FKs: `tenant_id` → `tenants(id)` ON DELETE CASCADE.
+- **integration_credentials** — Per-tenant integration secrets (Workday ISU, BGV API keys, IdP secrets, e-sign client secrets, OAuth client credentials, etc.) encrypted with the tenant's DEK using AES-GCM envelope encryption. Replaces Lovable's mock `integrations` table; partners with `integration_endpoints`, `integration_runs`, `integration_failures` for endpoint config + sync log + retry state (`architecture.md` §5.1, §6.3; `multi-tenancy-adr.md` §5.5). FKs: `tenant_id` → `tenants(id)` ON DELETE CASCADE. Tenant-scoped (outermost) on read; service-role write from worker tier only.
 
 ### Identity & lifecycle
 
-- **persons** — Canonical person ID across candidate → employee → alumni, providing stable identity across lifecycle records. FKs: none upstream (root identity table). Referenced by `candidates`, `employees`, `candidate_ownership_claims`, `candidate_dedup_attempts.resolved_to_person_id` (`architecture.md` §5.1, §5.2, §7.4).
-- **candidates** — Recruitment-side identity. Split out from Lovable's combined table so that consent and retention semantics differ from employee semantics. FKs: `person_id` → `persons` (`architecture.md` §5.1 "Tables to restructure", §5.2).
-- **employees** — Post-hire record; links to Workday Worker ID. FKs: `person_id` → `persons`; linked through `workday_worker_links.worker_wid` to Workday (`architecture.md` §5.1, §5.2). Also referenced by `partner_fees.hire_id` (`architecture.md` §7.8).
-- **employee_history** — Promotion, transfer, manager-change events for an employee. FKs: `employee_id` → `employees` (inferred — not explicit in §5.1).
-- **alumni** — Post-employment retention record. FKs: `person_id` → `persons` (`architecture.md` §5.2 narrative; not in the §5.1 table list — schema TBD when offboarding analytics ships in Wave 2).
-- **profiles** (kept from Lovable) — User profile data for internal users (`architecture.md` §5.1 keep-as-is list).
-- **user_roles** (kept from Lovable) — RBAC role assignments; extended for new personas (`architecture.md` §5.1, §9.2).
+All tenant-scoped per ADR-002.
+
+- **persons** — Canonical person ID across candidate → employee → alumni, providing stable identity across lifecycle records. FKs: none upstream beyond `tenant_id`. Referenced by `candidates`, `employees`, `candidate_ownership_claims`, `candidate_dedup_attempts.resolved_to_person_id` (`architecture.md` §5.1, §5.2, §7.4). Tenant-scoped.
+- **candidates** — Recruitment-side identity. Split out from Lovable's combined table so that consent and retention semantics differ from employee semantics. FKs: `tenant_id` → `tenants`; `person_id` → `persons` (`architecture.md` §5.1 "Tables to restructure", §5.2). Tenant-scoped.
+- **employees** — Post-hire record; links to Workday Worker ID. FKs: `tenant_id` → `tenants`; `person_id` → `persons`; linked through `workday_worker_links.worker_wid` to Workday (`architecture.md` §5.1, §5.2). Also referenced by `partner_fees.hire_id` (`architecture.md` §7.8). Tenant-scoped.
+- **employee_history** — Promotion, transfer, manager-change events for an employee. FKs: `tenant_id` → `tenants`; `employee_id` → `employees` (inferred — not explicit in §5.1). Tenant-scoped.
+- **alumni** — Post-employment retention record. FKs: `tenant_id` → `tenants`; `person_id` → `persons` (`architecture.md` §5.2 narrative; full schema TBD when offboarding analytics ships in Wave 2). Tenant-scoped.
+- **profiles** (kept from Lovable) — User profile data for internal users (`architecture.md` §5.1 keep-as-is list). Tenant-scoped (a user belongs to exactly one tenant per the ADR-002 model).
+- **user_roles** (kept from Lovable) — RBAC role assignments; extended for new personas (`architecture.md` §5.1, §9.2). Tenant-scoped (role grants are scoped to the user's `tenant_id`).
 
 ### Position & headcount
 
-- **positions** — Workday-mirrored position records ("a slot in the org chart" per `requirements.md` §5.1). FKs: links to `workday_position_links.position_wid` for Workday WID (`architecture.md` §5.1, §6.1; cross-ref `workday-adr.md` §5.1).
-- **headcount_envelopes** — Approved hiring budget by org/period. Requisition creation deducts from envelope (`requirements.md` §5.1, `architecture.md` §5.1). FKs: org/period references (not specified in §5.1).
-- **position_assignments** — Which person occupies which position when. FKs: `person_id` → `persons`, `position_id` → `positions` (`architecture.md` §5.1; FKs inferred from semantics).
+All tenant-scoped per ADR-002.
+
+- **positions** — Workday-mirrored position records ("a slot in the org chart" per `requirements.md` §5.1). FKs: `tenant_id` → `tenants`; links to `workday_position_links.position_wid` for Workday WID (`architecture.md` §5.1, §6.1; cross-ref `workday-adr.md` §5.1). Tenant-scoped.
+- **headcount_envelopes** — Approved hiring budget by org/period. Requisition creation deducts from envelope (`requirements.md` §5.1, `architecture.md` §5.1). FKs: `tenant_id` → `tenants`; org/period references (not specified in §5.1). Tenant-scoped.
+- **position_assignments** — Which person occupies which position when. FKs: `tenant_id` → `tenants`; `person_id` → `persons`, `position_id` → `positions` (`architecture.md` §5.1; FKs inferred from semantics). Tenant-scoped.
 
 ### Recruitment core (kept from Lovable, listed because the schema depends on them)
 
-- **requisitions** — Open hiring against a position. (`architecture.md` §5.1 keep-as-is.)
-- **jobs / jd_versions / jd_skills** — JD content + per-version skills with weights (`architecture.md` §5.1).
-- **applications** — Candidate's application against a requisition (`architecture.md` §5.1).
-- **interviews / interview_feedback / interview_summaries / interview_plans** — Interview scheduling, panel feedback, AI summaries, plans (`architecture.md` §5.1).
-- **offers / offer_recommendations** — Drafted offers and AI/market comp recommendations (`architecture.md` §5.1).
-- **bias_rules** — Fairness/bias rule config (`architecture.md` §5.1).
+All tenant-scoped per ADR-002.
+
+- **requisitions** — Open hiring against a position. (`architecture.md` §5.1 keep-as-is.) Tenant-scoped.
+- **jobs / jd_versions / jd_skills** — JD content + per-version skills with weights (`architecture.md` §5.1). Tenant-scoped.
+- **applications** — Candidate's application against a requisition (`architecture.md` §5.1). Tenant-scoped. Carries `source_partner_id` and `submitted_by_partner_user_id` to model partner submissions without a separate `submissions` table.
+- **interviews / interview_feedback / interview_summaries / interview_plans** — Interview scheduling, panel feedback, AI summaries, plans (`architecture.md` §5.1). Tenant-scoped.
+- **offers / offer_recommendations** — Drafted offers and AI/market comp recommendations (`architecture.md` §5.1). Tenant-scoped.
+- **bias_rules** — Fairness/bias rule config; each tenant configures their own (`architecture.md` §5.1). Tenant-scoped.
+- **requisition_knockouts** — Knockout questions per req (`architecture.md` §5.1 recruitment-core extension). Tenant-scoped.
 
 ### Onboarding
 
-- **onboarding_cases** — One per new hire (`architecture.md` §5.1). FKs: `person_id`/`employee_id` → identity tables (inferred).
-- **onboarding_tasks** — Atomic tasks (collect doc, IT provision, training, etc.). FKs: `case_id` → `onboarding_cases` (inferred).
-- **onboarding_documents** — KMS-encrypted document blob metadata (`architecture.md` §5.1). FKs: `case_id` → `onboarding_cases` (inferred); blob URL points to S3 + KMS (`architecture.md` §3, §9.3).
-- **bgv_runs** — One per initiated BGV vendor coordination (`architecture.md` §5.1). FKs: `case_id` → `onboarding_cases` (inferred); links out to vendor record.
-- **bgv_results** — Vendor outcomes / verification report (`architecture.md` §5.1). FKs: `bgv_run_id` → `bgv_runs` (inferred).
-- **it_provisioning_requests** — Handoff to IT persona for laptop/AD/SCIM (`architecture.md` §5.1).
-- **asset_assignments** — Laptop, peripherals, badge tracking on issue (`architecture.md` §5.1).
+All tenant-scoped per ADR-002 except `document_types`, which is a reference table.
+
+- **onboarding_cases** — One per new hire (`architecture.md` §5.1). FKs: `tenant_id` → `tenants`; `person_id`/`employee_id` → identity tables (inferred). Tenant-scoped.
+- **onboarding_tasks** — Atomic tasks (collect doc, IT provision, training, etc.). FKs: `tenant_id` → `tenants`; `case_id` → `onboarding_cases` (inferred). Tenant-scoped.
+- **document_types** — Lookup table of document type definitions (PAN, Aadhaar, BIR 2316, etc.) discriminated by `geography_code`. The rows are platform-shared facts; tenants pick from the shared set, they do not author their own document types (`architecture.md` §5.1; `requirements.md` §7.1). **Reference (tenant-agnostic) — no `tenant_id`.** Per-tenant document policies, if any in future, would live in a separate `tenant_document_policies` table — not in Wave 1 scope.
+- **onboarding_documents** — KMS-encrypted document blob metadata (`architecture.md` §5.1). FKs: `tenant_id` → `tenants`; `case_id` → `onboarding_cases` (inferred); `document_type_id` → `document_types`; blob URL points to S3 + KMS (`architecture.md` §3, §9.3). Tenant-scoped.
+- **bgv_runs** — One per initiated BGV vendor coordination (`architecture.md` §5.1). FKs: `tenant_id` → `tenants`; `case_id` → `onboarding_cases` (inferred); links out to vendor record. Tenant-scoped.
+- **bgv_results** — Vendor outcomes / verification report (`architecture.md` §5.1). FKs: `tenant_id` → `tenants`; `bgv_run_id` → `bgv_runs` (inferred). Tenant-scoped.
+- **it_provisioning_requests** — Handoff to IT persona for laptop/AD/SCIM (`architecture.md` §5.1). Tenant-scoped.
+- **asset_assignments** — Laptop, peripherals, badge tracking on issue (`architecture.md` §5.1). Tenant-scoped.
 
 ### Offboarding
 
-- **offboarding_cases** — One per resignation or termination (`architecture.md` §5.1).
-- **offboarding_tasks** — Atomic tasks (KT, asset return, F&F, etc.) (`architecture.md` §5.1).
-- **exit_interviews** — Structured + free-text responses (`architecture.md` §5.1).
-- **asset_returns** — Hardware return per offboarding case (`architecture.md` §5.1).
-- **final_settlements** — F&F calculation rows (`architecture.md` §5.1).
+All tenant-scoped per ADR-002.
+
+- **offboarding_cases** — One per resignation or termination (`architecture.md` §5.1). Tenant-scoped.
+- **offboarding_tasks** — Atomic tasks (KT, asset return, F&F, etc.) (`architecture.md` §5.1). Tenant-scoped.
+- **exit_interviews** — Structured + free-text responses (`architecture.md` §5.1). Tenant-scoped.
+- **asset_returns** — Hardware return per offboarding case (`architecture.md` §5.1). Tenant-scoped.
+- **final_settlements** — F&F calculation rows (`architecture.md` §5.1). Tenant-scoped.
 
 ### Compliance
 
-- **consents** — DPDPA consent records, 7-year retention (`architecture.md` §5.1, §10.1; `requirements.md` §6.9).
-- **data_principal_requests** — Access/correction/erasure/portability requests (`architecture.md` §5.1, §10.2).
-- **data_retention_schedules** — Per-data-category retention rules; nightly retention job applies them (`architecture.md` §5.1, §10.3).
-- **pii_access_log** — Every PII read with actor/target/reason; 7-year retention (`architecture.md` §5.1, §9.4).
-- **audit_logs** (kept from Lovable) — Every state transition (`architecture.md` §5.1, §9.4; `requirements.md` §4).
+All tenant-scoped per ADR-002.
+
+- **consents** — DPDPA consent records, 7-year retention (`architecture.md` §5.1, §10.1; `requirements.md` §6.9). Tenant-scoped.
+- **data_principal_requests** — Access/correction/erasure/portability requests (`architecture.md` §5.1, §10.2). Tenant-scoped.
+- **data_retention_schedules** — Per-data-category retention rules; each tenant configures retention; nightly retention job applies them (`architecture.md` §5.1, §10.3). Tenant-scoped.
+- **pii_access_log** — Every PII read with actor/target/reason; 7-year retention (`architecture.md` §5.1, §9.4). Tenant-scoped.
+- **audit_logs** (kept from Lovable) — Every state transition (`architecture.md` §5.1, §9.4; `requirements.md` §4). Tenant-scoped.
 
 ### Workday sync state
 
-- **workday_sync_jobs** — One row per sync attempt; carries deterministic `business_key`, used for idempotency (`architecture.md` §5.1; `workday-adr.md` §5.6).
-- **workday_worker_links** — HireOps `person_id` ↔ Workday `worker_wid` (`architecture.md` §5.1).
-- **workday_position_links** — HireOps `position_id` ↔ Workday `position_wid` (`architecture.md` §5.1).
-- **workday_reconciliation_runs** — Daily reconciliation outcomes; surfaces drift to admin dashboard (`architecture.md` §5.1; `workday-adr.md` §5.8).
-- **integration_credentials / integration_endpoints / integration_runs / integration_failures** — Replace Lovable's mock `integrations` table with encrypted creds, endpoint config, sync log, retry state (`architecture.md` §5.1 "Tables to restructure").
+All tenant-scoped per ADR-002.
+
+- **workday_sync_jobs** — One row per sync attempt; carries deterministic `business_key`, used for idempotency (`architecture.md` §5.1; `workday-adr.md` §5.6). Tenant-scoped.
+- **workday_worker_links** — HireOps `person_id` ↔ Workday `worker_wid` (`architecture.md` §5.1). Tenant-scoped.
+- **workday_position_links** — HireOps `position_id` ↔ Workday `position_wid` (`architecture.md` §5.1). Tenant-scoped.
+- **workday_reconciliation_runs** — Daily reconciliation outcomes; surfaces drift to admin dashboard (`architecture.md` §5.1; `workday-adr.md` §5.8). Tenant-scoped.
+- **integration_endpoints / integration_runs / integration_failures** — Endpoint config, sync log, retry state for any integration (Workday, BGV, calendar, etc.) (`architecture.md` §5.1 "Tables to restructure"). Tenant-scoped. (`integration_credentials` itself lives in Tenancy core above.)
 
 ### Approvals
 
-- **approval_chains** — Definition of approval hierarchy per type (e.g., requisition vs offer vs grade-based) (`architecture.md` §5.1).
-- **approval_requests** — Lovable already has this; extend with new persona scopes (`architecture.md` §5.1).
-- **approval_decisions** — Per-step approve/reject with comment (`architecture.md` §5.1).
+All tenant-scoped per ADR-002.
+
+- **approval_chains** — Definition of approval hierarchy per type (e.g., requisition vs offer vs grade-based) (`architecture.md` §5.1). Tenant-scoped.
+- **approval_requests** — Lovable already has this; extend with new persona scopes (`architecture.md` §5.1). Tenant-scoped.
+- **approval_decisions** — Per-step approve/reject with comment (`architecture.md` §5.1). Tenant-scoped.
+- **approval_matrices** — Configurable approval-matrix engine per ADR-002 Decision 4: rules JSONB per `matrix_type` ('requisition' | 'offer' | 'headcount' | 'partner_invite') (`architecture.md` §5.1; `multi-tenancy-adr.md` §5.4). Tenant-scoped.
 
 ### Notifications
 
-- **notification_templates** — Lovable has `whatsapp_templates`; extend for email/SMS/push/in-app/Slack (`architecture.md` §5.1, §3 diagram, `requirements.md` §9.5).
-- **notification_dispatches** — Log of every send (`architecture.md` §5.1).
-- **notification_preferences** — Per-user channel preferences (`architecture.md` §5.1, `requirements.md` §9.5).
-- **whatsapp_*** / **messaging_providers** (kept from Lovable) — WhatsApp Business scaffolding (`architecture.md` §5.1).
+All tenant-scoped per ADR-002.
+
+- **notification_templates** — Lovable has `whatsapp_templates`; extend for email/SMS/push/in-app/Slack (`architecture.md` §5.1, §3 diagram, `requirements.md` §9.5). Tenant-scoped.
+- **notification_dispatches** — Log of every send (`architecture.md` §5.1). Tenant-scoped.
+- **notification_preferences** — Per-user channel preferences (`architecture.md` §5.1, `requirements.md` §9.5). Tenant-scoped.
+- **whatsapp_*** / **messaging_providers** (kept from Lovable) — WhatsApp Business scaffolding (`architecture.md` §5.1). Tenant-scoped.
 
 ### Search
 
-- **search_documents** — Denormalised tsvector index for Postgres FTS (sufficient until ~500k rows, then move to Typesense/OpenSearch) (`architecture.md` §5.1, §5.3).
+- **search_documents** — Denormalised tsvector index for Postgres FTS (sufficient until ~500k rows, then move to Typesense/OpenSearch) (`architecture.md` §5.1, §5.3). Tenant-scoped.
 
-### Partners (sourced from `architecture.md` §7, not §5.1)
+### Partners (sourced from `architecture.md` §7 + `/docs/partner-data-model.md`)
 
-- **partner_orgs** — Empanelled or ad-hoc organisation. Referenced by `partner_users.partner_org_id` and `candidate_ownership_claims.partner_org_id` (`architecture.md` §7.3, §7.4).
-- **partner_users** — Users belonging to a partner org with status (active/suspended). FKs: `partner_org_id` → `partner_orgs`, `user_id` → identity layer (`architecture.md` §7.3).
-- **partner_msa** — One row per `partner_org_id`; carries fee structure, exclusivity window, holdback, MSA validity dates, signed MSA URL. FKs: `partner_org_id` → `partner_orgs` (PK) (`architecture.md` §7.8).
-- **partner_fees** — One row per fee accrual at hire date. FKs: `partner_org_id` → `partner_orgs`, `hire_id` → `employees`, `ownership_claim_id` → `candidate_ownership_claims`. Carries `msa_snapshot` JSONB so historical disputes are resolved against the MSA in force at hire date, never against the live `partner_msa` (`architecture.md` §7.8).
-- **candidate_ownership_claims** — The state machine for partner ownership. FKs: `person_id` → `persons`, `partner_org_id` → `partner_orgs`, `requisition_id` → `requisitions` (nullable for speculative). Carries unique partial index on `(person_id, requisition_id) WHERE status = 'active'` — the database-level guarantee against simultaneous ownership (`architecture.md` §7.4).
-- **candidate_dedup_attempts** — Audit of every submission attempt that did not become a candidate. FKs: `attempted_by_partner_org_id` → `partner_orgs` (nullable), `resolved_to_person_id` → `persons` (nullable) (`architecture.md` §7.4).
+All tenant-scoped per ADR-002. The full schema with column definitions, indexes, and RLS summaries is in `/docs/partner-data-model.md`; entries below are pointers.
 
-The full partner schema — including the additional tables referenced in `partner-wireflows.md` (`partner_invitations`, `partner_assignments`, `requisition_knockouts`, `partner_candidate_messages`, `intake_attempts`, `partner_activity_log`, `ad_hoc_partner_domains`) — is now consolidated in `/docs/partner-data-model.md` with full column definitions. Names that turned out to be aliases or deferred: `submissions` → use `applications` with `source_partner_id`; `partner_contracts` → alias for `partner_msa`; `placement_fees` → alias for `partner_fees`; `partner_invoices`, `payments` → Wave 3, separate doc.
+- **partner_orgs** — Empanelled or ad-hoc organisation. FKs: `tenant_id` → `tenants`; referenced by `partner_users.partner_org_id` and `candidate_ownership_claims.partner_org_id` (`architecture.md` §7.3, §7.4). Tenant-scoped.
+- **partner_users** — Users belonging to a partner org with status (active/suspended). FKs: `tenant_id` → `tenants`; `partner_org_id` → `partner_orgs`, `user_id` → identity layer (`architecture.md` §7.3). Tenant-scoped.
+- **partner_msa** — One row per `partner_org_id`; carries fee structure, exclusivity window, holdback, MSA validity dates, signed MSA URL. FKs: `partner_org_id` → `partner_orgs` (PK); `tenant_id` → `tenants` (denormalised from `partner_orgs.tenant_id` for index leadership) (`architecture.md` §7.8). Tenant-scoped.
+- **partner_fees** — One row per fee accrual at hire date. FKs: `tenant_id` → `tenants`; `partner_org_id` → `partner_orgs`, `hire_id` → `employees`, `ownership_claim_id` → `candidate_ownership_claims`. Carries `msa_snapshot` JSONB so historical disputes are resolved against the MSA in force at hire date, never against the live `partner_msa` (`architecture.md` §7.8). Tenant-scoped.
+- **candidate_ownership_claims** — The state machine for partner ownership. FKs: `tenant_id` → `tenants`; `person_id` → `persons`, `partner_org_id` → `partner_orgs`, `requisition_id` → `requisitions` (nullable for speculative). Carries unique partial index on **`(tenant_id, person_id, requisition_id) WHERE status = 'active'`** — the database-level guarantee against simultaneous ownership, now tenant-scoped per ADR-002 (`architecture.md` §7.4; `/docs/partner-data-model.md`). Tenant-scoped.
+- **candidate_dedup_attempts** — Audit of every submission attempt that did not become a candidate. FKs: `tenant_id` → `tenants`; `attempted_by_partner_org_id` → `partner_orgs` (nullable), `resolved_to_person_id` → `persons` (nullable) (`architecture.md` §7.4). Tenant-scoped.
+
+The remaining partner schema — `partner_invitations`, `partner_assignments`, `requisition_knockouts`, `partner_candidate_messages`, `intake_attempts`, `partner_activity_log`, `ad_hoc_partner_domains` — is consolidated in `/docs/partner-data-model.md` with full column definitions and is all tenant-scoped per ADR-002. Names that turned out to be aliases or deferred: `submissions` → use `applications` with `source_partner_id`; `partner_contracts` → alias for `partner_msa`; `placement_fees` → alias for `partner_fees`; `partner_invoices`, `payments` → Wave 3, separate doc.
 
 ### Other kept-from-Lovable
 
-- **ai_usage_logs** — Token usage per feature; budget alerts (`architecture.md` §5.1, §13.2; `requirements.md` §10.7).
-- **kb_articles** — Knowledge base articles (`architecture.md` §5.1).
-- **workflows / workflow_runs** — Workflow engine config and execution (`architecture.md` §5.1; `requirements.md` §10.7).
+All tenant-scoped per ADR-002.
+
+- **ai_usage_logs** — Token usage per feature; budget alerts (`architecture.md` §5.1, §13.2; `requirements.md` §10.7). Tenant-scoped.
+- **kb_articles** — Knowledge base articles; each tenant has their own KB (`architecture.md` §5.1). Tenant-scoped.
+- **workflows / workflow_runs** — Workflow engine config and execution (`architecture.md` §5.1; `requirements.md` §10.7). Tenant-scoped.
 
 ---
 

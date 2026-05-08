@@ -186,82 +186,154 @@ The right pattern is: **Supabase for the data and RLS, custom Node service for t
 
 ### 5.1 Data model — extending Lovable's schema
 
-Lovable's 45-table schema is a decent foundation for the **recruitment** half. It needs significant additions for onboarding and offboarding, plus restructuring of a few tables.
+Lovable's 45-table schema is a decent foundation for the **recruitment** half. It needs significant additions for onboarding and offboarding, plus restructuring of a few tables. **Per ADR-002 (Multi-Tenancy), every domain table below carries `tenant_id UUID NOT NULL REFERENCES tenants(id)` and is tenant-scoped via RLS as the outermost predicate.** Reference tables (rows that are platform-shared facts, not tenant data) are explicitly called out and do not carry `tenant_id`.
 
-**Tables to keep largely as-is:** `profiles`, `user_roles`, `requisitions`, `jobs`, `applications`, `interviews`, `interview_feedback`, `interview_summaries`, `interview_plans`, `offers`, `offer_recommendations`, `jd_versions`, `jd_skills`, `bias_rules`, `audit_logs`, `notifications`, `ai_usage_logs`, `kb_articles`, `whatsapp_*`, `messaging_providers`, `workflows`, `workflow_runs`.
+#### Tenancy core (ADR-002)
+
+These three tables are the foundation; everything else depends on them. Defined in full per ADR-002 §5.1, §5.4, §5.5.
+
+```sql
+-- Tenants — one row per enterprise customer. Kyndryl is Tenant #1.
+CREATE TABLE tenants (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  slug TEXT UNIQUE NOT NULL,                  -- subdomain identifier; e.g., 'kyndryl', 'acme'
+  display_name TEXT NOT NULL,
+  primary_region TEXT NOT NULL,               -- 'ap-south-1' for POC; future: per-tenant
+  status TEXT NOT NULL,                       -- 'provisioning' | 'active' | 'suspended' | 'churned' | 'deleting'
+  tier TEXT NOT NULL DEFAULT 'standard',      -- 'standard' | 'sandbox' | 'dedicated' (future)
+  onboarding_status TEXT NOT NULL DEFAULT 'in_progress',  -- 'in_progress' | 'completed'
+  onboarding_step_completed TEXT NULL,        -- 'identity' | 'integrations' | 'org_structure' | 'commercials' | etc.
+  settings JSONB NOT NULL DEFAULT '{}'::jsonb, -- cosmetic config: logo URL, brand colour, locale defaults
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  activated_at TIMESTAMPTZ NULL,
+  suspended_at TIMESTAMPTZ NULL,
+  scheduled_deletion_at TIMESTAMPTZ NULL      -- DPDPA-aware soft-delete: 30-day grace per ADR-002 §5.6
+);
+
+CREATE INDEX idx_tenants_status ON tenants (status);
+```
+
+RLS: most users see only `WHERE id = current_tenant_id()`. Platform-level admins (HireOps internal staff, not customer admins) see all rows via service-role escalation.
+
+```sql
+-- Per-tenant Data Encryption Keys (DEKs) wrapped by master KMS Key Encryption Key (KEK).
+CREATE TABLE tenant_encryption_keys (
+  tenant_id UUID PRIMARY KEY REFERENCES tenants(id) ON DELETE CASCADE,
+  encrypted_dek BYTEA NOT NULL,               -- DEK wrapped by KMS master KEK
+  kms_key_id TEXT NOT NULL,                   -- which master key wrapped this DEK
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  rotated_at TIMESTAMPTZ NULL,
+  rotation_status TEXT NULL                   -- NULL | 'rotating' | 'failed'
+);
+```
+
+Per ADR-002 §5.5. Never accessed via tRPC client paths. Service-role only. RLS off (table contents are encrypted; access control is via service-role discipline + IAM).
+
+```sql
+-- Per-tenant integration credentials (Workday ISU, BGV API keys, IdP secrets, e-sign client secrets, etc.)
+-- encrypted with the tenant's DEK using AES-GCM envelope encryption.
+CREATE TABLE integration_credentials (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+  integration_type TEXT NOT NULL,             -- 'workday' | 'bgv' | 'idp_oidc' | 'idp_saml' | 'esign_docusign' | 'esign_adobe' | 'calendar_google' | 'calendar_outlook' | 'video_zoom' | 'video_teams' | 'jobboard_linkedin' | 'jobboard_naukri' | 'jobboard_indeed'
+  credential_envelope BYTEA NOT NULL,         -- secret encrypted with tenant DEK; AES-GCM
+  metadata JSONB NOT NULL,                    -- non-secret config: URLs, client IDs, scopes, OAuth metadata
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  rotated_at TIMESTAMPTZ NULL,
+  UNIQUE (tenant_id, integration_type)
+);
+
+CREATE INDEX idx_int_creds_tenant_type ON integration_credentials (tenant_id, integration_type);
+```
+
+Per ADR-002 §5.5. RLS: tenant-scoped read for tenant admins (`tenant_id = current_tenant_id() AND has_role('admin')`); service-role read for workers. The plaintext secret is never persisted; the DEK is unwrapped at read time via KMS, cached for 5 minutes per worker process, then discarded.
+
+#### Tables to keep largely as-is
+
+`profiles`, `user_roles`, `requisitions`, `jobs`, `applications`, `interviews`, `interview_feedback`, `interview_summaries`, `interview_plans`, `offers`, `offer_recommendations`, `jd_versions`, `jd_skills`, `bias_rules`, `audit_logs`, `notifications`, `ai_usage_logs`, `kb_articles`, `whatsapp_*`, `messaging_providers`, `workflows`, `workflow_runs`. Each of these is a domain table and gains `tenant_id UUID NOT NULL REFERENCES tenants(id)` plus a leading `tenant_id` column on every existing index per the ADR-002 migration. Tenant-scoped RLS replaces or wraps Lovable's existing role-only RLS.
 
 **Note: partner submissions are NOT a separate table.** They use the existing `applications` table with three new columns: `source_partner_id` (FK to `partner_orgs`, nullable for direct applications), `submitted_by_partner_user_id` (FK to `partner_users`, nullable), and `partner_submission_metadata` (JSONB carrying partner-side context such as the consent attestation timestamp and the partner-supplied recruiter note). The "submission" verb is informal language used in `partner-wireflows.md`; the canonical table is `applications`.
 
-**Tables to restructure:**
+#### Tables to restructure
 
 - `candidates` — split into `candidates` (recruitment-side identity) and `employees` (post-hire). They share a `person_id` foreign key. This is critical for DPDPA: a candidate has different consent than an employee, and an alumni has different retention than either.
-- `integrations` — currently a stubbed display-only table. Replace with `integration_credentials` (encrypted), `integration_endpoints`, `integration_runs` (a log of every sync), `integration_failures` (with retry state).
+- `integrations` — currently a stubbed display-only table. Replaced by the `integration_credentials` table defined in **Tenancy core** above (per ADR-002 §5.5), plus `integration_endpoints`, `integration_runs` (a log of every sync), `integration_failures` (with retry state). All four are domain tables with `tenant_id`.
 - `hr_cases` — extend to a polymorphic `cases` table with `case_type` enum: `recruitment`, `onboarding`, `offboarding`, `disciplinary`, etc. Or split per-type. I lean toward separate tables — they have very different fields.
 
-**New tables required:**
+#### New tables required
+
+Every entry below is a domain table with `tenant_id UUID NOT NULL REFERENCES tenants(id)` unless explicitly marked `// reference table — tenant-agnostic, no tenant_id`.
 
 ```
--- Identity & lifecycle
+-- Identity & lifecycle  (all + tenant_id)
 persons                         -- canonical person ID across candidate→employee→alumni
 employees                       -- post-hire record, links to Workday Worker ID
 employee_history                -- promotion, transfer, manager-change events
+alumni                          -- post-employment retention record
 
--- Position & headcount
+-- Position & headcount  (all + tenant_id)
 positions                       -- Workday-mirrored position records
 headcount_envelopes             -- approved hiring budget by org/period
 position_assignments            -- which person occupies which position when
 
--- Recruitment core (extension)
-requisition_knockouts           -- (id, req_id FK→requisitions, question_text TEXT,
+-- Recruitment core (extension)  (+ tenant_id)
+requisition_knockouts           -- (id, tenant_id, req_id FK→requisitions, question_text TEXT,
                                 --  type ENUM('boolean','numeric_min','numeric_max','enum'),
                                 --  threshold_value JSONB,
                                 --  source ENUM('parsed_cv','candidate_asserted','partner_asserted'),
                                 --  order_index INT)
                                 -- Gates submission validity per requirements.md §5.4
 
--- Onboarding
+-- Onboarding  (all + tenant_id, except document_types)
 onboarding_cases                -- one per new hire
 onboarding_tasks                -- atomic tasks (collect doc, IT provision, training, etc.)
-document_types                  -- (id, code TEXT UNIQUE, name TEXT, geography_code CHAR(2),
+document_types                  -- // reference table — tenant-agnostic, no tenant_id.
+                                -- (id, code TEXT UNIQUE, name TEXT, geography_code CHAR(2),
                                 --  required_for_lifecycle_stage TEXT, retention_years INT)
-                                -- Drives onboarding_documents.document_type_id FK and
-                                -- per-geography filtering. Cross-references requirements.md §7.1.
+                                -- Rows are document type definitions (PAN, Aadhaar, BIR 2316),
+                                -- shared across tenants. Tenant-specific document policies, if
+                                -- any in future, would live in a separate tenant_document_policies
+                                -- table — not in Wave 1 scope.
 onboarding_documents            -- KMS-encrypted document blob metadata; FK document_type_id → document_types
 bgv_runs                        -- BGV vendor coordination
 bgv_results                     -- vendor outcomes
 it_provisioning_requests        -- handoff to IT persona
 asset_assignments               -- laptop, peripherals, badge
 
--- Offboarding
+-- Offboarding  (all + tenant_id)
 offboarding_cases               -- one per resignation/termination
 offboarding_tasks               -- atomic tasks (KT, asset return, F&F, etc.)
 exit_interviews                 -- structured + free text
 asset_returns
 final_settlements               -- F&F calculation rows
 
--- Compliance
+-- Compliance  (all + tenant_id)
 consents                        -- DPDPA consent records, 7-year retention
 data_principal_requests         -- access/correction/erasure requests
-data_retention_schedules        -- per-data-category retention rules
+data_retention_schedules        -- per-data-category retention rules; each tenant configures retention
 pii_access_log                  -- every PII read, who/when/why
 
--- Workday sync state
+-- Workday sync state  (all + tenant_id)
 workday_sync_jobs               -- one row per sync attempt
 workday_worker_links            -- HireOps person_id ↔ Workday worker_wid
 workday_position_links          -- HireOps position_id ↔ Workday position_wid
 workday_reconciliation_runs
 
--- Approval framework (generalised)
+-- Approval framework (generalised)  (all + tenant_id)
 approval_chains                 -- definition of approval hierarchy per type
 approval_requests               -- (Lovable has this — extend)
 approval_decisions
+approval_matrices               -- per ADR-002 Decision 4: configurable approval-matrix engine.
+                                -- (id, tenant_id, matrix_type TEXT,  -- 'requisition' | 'offer' | 'headcount' | 'partner_invite'
+                                --  rules JSONB,                       -- structured rules per type
+                                --  effective_from DATE, effective_to DATE NULL)
 
--- Notification framework (generalised)
+-- Notification framework (generalised)  (all + tenant_id)
 notification_templates          -- (Lovable has whatsapp_templates — extend)
 notification_dispatches         -- log of every send
 notification_preferences        -- per-user channel preferences
 
--- Search / indexing
+-- Search / indexing  (+ tenant_id)
 search_documents                -- denormalised tsvector index
 ```
 
@@ -359,10 +431,11 @@ Reconciliation: a daily job compares HireOps state to Workday state. Surfaces dr
 
 ### 6.3 Auth & credential management
 
-- Workday ISU (Integration System User) for SOAP — stored in AWS Secrets Manager / Vault. Never in `.env`.
-- OAuth 2.0 client for REST + WQL — refresh tokens stored in Vault, rotated 90 days.
-- Separate creds for sandbox, staging, production tenants.
-- Lovable has none of this. Currently the schema has an `integrations` table that is a UI mock. We replace it.
+- Workday integration credentials (ISU password, OAuth client secret for REST+WQL) are stored in `integration_credentials` with `integration_type='workday'` per tenant, encrypted via per-tenant DEK envelope encryption per ADR-002 §5.5. The plaintext secret is never persisted; the DEK is unwrapped at read time via KMS, cached for 5 minutes per worker process, then discarded.
+- OAuth 2.0 access tokens are short-lived (~3600s, no refresh tokens with Client Credentials grant per `workday-adr.md` §1, §5.3). The worker requests a fresh access token whenever the cached token is within 60s of expiry; tokens are held in-process only.
+- Separate `integration_credentials` rows per tenant per environment via `metadata->>'environment' IN ('sandbox', 'staging', 'production')` per `workday-adr.md` §5.3.
+- Rotation, audit, and operational runbook details live in ADR-002 §5.5 (DEK rotation, KEK rotation) and §6 (incident response) — not duplicated here.
+- Lovable has none of this. The original `integrations` table was a UI mock; it is replaced by `integration_credentials` (Tenancy core, §5.1) plus the supporting `integration_endpoints`, `integration_runs`, `integration_failures` tables.
 
 ### 6.4 Failure modes & responses
 
@@ -430,37 +503,49 @@ Each of these is its own subsystem. The architecture below addresses them as sep
 
 ### 7.3 Data scoping & RLS
 
-Every partner-touching table has RLS policies that combine **organisation-membership** and **ownership-of-record**:
+Every partner-touching table has RLS policies that compose **tenant scoping (outermost, per ADR-002 §5.3)** with **organisation-membership** and **ownership-of-record**:
 
 ```sql
--- Example: partners can only see their own candidate submissions
+-- Example: partners can only see their own candidate submissions, scoped to tenant
 
 CREATE POLICY "partners view own submissions"
   ON public.candidates FOR SELECT
   TO authenticated
   USING (
-    -- Internal users: existing roles
-    has_role(auth.uid(), 'recruiter')
-    OR has_role(auth.uid(), 'admin')
-    OR has_role(auth.uid(), 'hr_team')
+    -- Outermost: tenant boundary (ADR-002 §5.3)
+    tenant_id = current_tenant_id()
+    AND (
+      -- Internal users: existing roles
+      has_role(auth.uid(), 'recruiter')
+      OR has_role(auth.uid(), 'admin')
+      OR has_role(auth.uid(), 'hr_team')
 
-    -- Partner users: only candidates they submitted, only if their org is active
-    OR (
-      has_role(auth.uid(), 'partner')
-      AND source_partner_id = (
-        SELECT partner_org_id FROM partner_users
-        WHERE user_id = auth.uid() AND status = 'active'
+      -- Partner users: only candidates they submitted, only if their org is active
+      OR (
+        has_role(auth.uid(), 'partner')
+        AND source_partner_id IN (
+          SELECT id FROM partner_orgs
+          WHERE tenant_id = current_tenant_id()
+            AND id IN (
+              SELECT partner_org_id FROM partner_users
+              WHERE tenant_id = current_tenant_id()
+                AND user_id = auth.uid()
+                AND status = 'active'
+            )
+        )
       )
-    )
 
-    -- Candidates: only their own record
-    OR (auth.uid() = user_id)
+      -- Candidates: only their own record
+      OR (auth.uid() = user_id)
+    )
   );
 ```
 
-Equivalent policies on every partner-readable table: `applications`, `interviews` (heavily redacted view), `offers` (status only, no comp details), `notifications`. Lovable's RLS pattern translates here, but the policies themselves are net-new.
+Two non-obvious rules from ADR-002 §5.3 that this policy demonstrates: (a) the tenant predicate is the outermost AND, before any role logic; (b) the `tenant_id = current_tenant_id()` predicate is repeated inside subqueries — RLS evaluates each subquery in its own context and does not inherit the outer predicate.
 
-Crucially, partners **never** see internal feedback, scoring rationale, or other partners' submissions. The default RLS on these tables denies; specific allow-policies are added only for explicit partner-readable views.
+Equivalent policies — composing tenant scoping with role/persona scoping — apply on every partner-readable table: `applications`, `interviews` (heavily redacted view), `offers` (status only, no comp details), `notifications`. Lovable's RLS pattern translates here, but the policies themselves are net-new and now sit downstream of the tenant predicate.
+
+Crucially, partners **never** see internal feedback, scoring rationale, other partners' submissions, or any data from another tenant. The default RLS on these tables denies; specific allow-policies are added only for explicit partner-readable views, and every allow-policy starts with `tenant_id = current_tenant_id()`.
 
 ### 7.4 The candidate ownership state machine
 
@@ -681,6 +766,15 @@ Some architectures here look heavy for a POC. They are not. Specifically:
 
 These are foundational. They cannot be retrofitted in Wave 2. They have to ship in Wave 1, alongside the basic portal.
 
+### 7.13 Multi-tenancy interactions for the partner subsystem
+
+The partner subsystem composes with ADR-002 multi-tenancy at two named points beyond the universal `tenant_id` scoping that every domain table inherits:
+
+- **Per-tenant partner-portal cosmetics.** Tenant-specific branding for the partner-facing surface (banner text, custom welcome messages, partner-portal logo placement) lives in `tenants.settings` JSONB per ADR-002 §5.4. Partners signing into `kyndryl.hireops.app/partner/...` see Kyndryl-branded chrome; partners signing into `acme.hireops.app/partner/...` see Acme-branded chrome. No code path differs.
+- **Tenant-configurable partner-invite approvals.** Some tenants will require finance / VMO approval before a new empanelled partner is invited. This is modelled via `approval_matrices` rows with `matrix_type='partner_invite'` (per ADR-002 Decision 4). Tenants that don't need this leave the matrix empty; tenants that do configure it via admin → workflows → approvals.
+
+All other partner schema (`partner_orgs`, `partner_users`, `partner_msa`, `candidate_ownership_claims`, etc.) carries `tenant_id` and is tenant-scoped by RLS. See `/docs/partner-data-model.md` for the full per-table schema after ADR-002 implications are applied.
+
 ---
 
 ## 8. Other integrations
@@ -757,14 +851,19 @@ The Lovable demo bypass is removed entirely from the production build via build 
 
 ### 9.2 Authorisation
 
-- RBAC: role enum on user (Lovable already has `app_role` enum — extend with new personas)
-- ABAC: row-level policies on candidates, requisitions, etc. Lovable's RLS is a good start; we audit and harden.
-- Specific rules:
-  - Recruiter sees candidates only for reqs they are assigned to
-  - HM sees candidates only for reqs they own
-  - Panel sees only candidates they have an upcoming/past interview with
-  - People Ops sees onboarding cases for their region/function
-  - Admin sees everything but every PII access is logged
+**Per ADR-002 §5.3, every domain table has tenant scoping as the outermost RLS predicate.** This composes with role scoping via two SECURITY DEFINER helper functions: `current_tenant_id()` (reads `tid` from the JWT custom claim) and `has_role()` (Lovable's existing pattern). Both functions read from request context, neither hits the database, and they nest cleanly inside a single policy `USING` clause: tenant first, role second, persona-specific filters innermost.
+
+Defense in depth: the application layer (Hono + tRPC in `apps/api`) reads `tenant_id` from AsyncLocalStorage and includes it in every query's WHERE clause, alongside the tenant-aware RLS policy. RLS is the safety net, not the front line. Two predicates, one in the application and one in the database, must independently fail for cross-tenant data to leak.
+
+- RBAC: role enum on user (Lovable already has `app_role` enum — extend with new personas), with role grants scoped to the user's `tenant_id`.
+- ABAC: row-level policies on candidates, requisitions, etc. Lovable's RLS is a good start; we audit, harden, and prepend the tenant predicate per ADR-002.
+- Specific rules (each composed with `tenant_id = current_tenant_id()` outermost):
+  - Recruiter sees candidates only for reqs they are assigned to (and only within their tenant)
+  - HM sees candidates only for reqs they own (and only within their tenant)
+  - Panel sees only candidates they have an upcoming/past interview with (and only within their tenant)
+  - People Ops sees onboarding cases for their region/function (and only within their tenant)
+  - Tenant admin sees everything within their tenant; every PII access is logged
+  - Platform admin (HireOps internal staff) bypasses tenant scoping via service role only, with mandatory audit logging
 
 ### 9.3 Data protection
 

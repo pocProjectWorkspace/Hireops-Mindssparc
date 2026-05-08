@@ -1,8 +1,8 @@
 # HireOps — Partner Data Model
 
-**Status:** v1, derived from `architecture.md` §7 + `partner-wireflows.md` resolutions, May 2026.
-**Companion to:** `architecture.md` §7 (partner architecture), `partner-wireflows.md` (UX), `requirements.md` §6 (rules).
-**Purpose:** Consolidation point for the partner-related schema. The table set in `architecture.md` §7.4 and §7.8 is authoritative; the additional tables referenced only in `partner-wireflows.md` are defined here so the schema is complete in one place.
+**Status:** v1, derived from `architecture.md` §7 + `partner-wireflows.md` resolutions, May 2026. **Multi-tenancy implications applied per ADR-002 (Multi-Tenancy).**
+**Companion to:** `architecture.md` §7 (partner architecture), `partner-wireflows.md` (UX), `requirements.md` §6 (rules), `multi-tenancy-adr.md` (ADR-002, tenant isolation).
+**Purpose:** Consolidation point for the partner-related schema. The table set in `architecture.md` §7.4 and §7.8 is authoritative; the additional tables referenced only in `partner-wireflows.md` are defined here so the schema is complete in one place. Every table below carries `tenant_id UUID NOT NULL REFERENCES tenants(id)` per ADR-002 §5.1; every index leads with `tenant_id`; every RLS policy starts with `tenant_id = current_tenant_id()` as the outermost predicate composing with the partner-org / role scoping inside.
 
 This document specifies columns, FKs, indexes, and a one-line RLS-policy summary per table. It does not narrate flows — those live in `architecture.md` §7 and `partner-wireflows.md`.
 
@@ -22,6 +22,7 @@ The empanelled or ad-hoc organisation that submits candidates. Tier governs all 
 ```sql
 CREATE TABLE partner_orgs (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  tenant_id UUID NOT NULL REFERENCES tenants(id),
   name TEXT NOT NULL,
   tier TEXT NOT NULL,                      -- 'empanelled' | 'ad_hoc'
   status TEXT NOT NULL DEFAULT 'invited',  -- 'invited' | 'active' | 'suspended' | 'terminated'
@@ -33,11 +34,11 @@ CREATE TABLE partner_orgs (
   terminated_at TIMESTAMPTZ NULL
 );
 
-CREATE INDEX idx_partner_orgs_tier_status ON partner_orgs (tier, status);
+CREATE INDEX idx_partner_orgs_tenant_tier_status ON partner_orgs (tenant_id, tier, status);
 ```
 
-- **FKs:** `invited_by_user_id` → `profiles(id)`.
-- **RLS:** Internal admins read/write all rows. Partner users read only their own row via `partner_users.partner_org_id = id` join.
+- **FKs:** `tenant_id` → `tenants(id)`; `invited_by_user_id` → `profiles(id)`.
+- **RLS:** tenant-scoped (outermost: `tenant_id = current_tenant_id()`), then internal admins read/write all rows in their tenant; partner users read only their own row via `partner_users.partner_org_id = id` join (also tenant-scoped).
 - **Wave 1 scope:** all columns ship.
 
 ## partner_users
@@ -47,8 +48,9 @@ Users belonging to a partner org. Two roles per `partner-wireflows.md` §3.12: `
 ```sql
 CREATE TABLE partner_users (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  tenant_id UUID NOT NULL REFERENCES tenants(id),
   partner_org_id UUID NOT NULL REFERENCES partner_orgs(id) ON DELETE CASCADE,
-  user_id UUID NOT NULL,                   -- references the auth tenant identity
+  user_id UUID NOT NULL,                   -- references the partner auth tenant identity
   email TEXT NOT NULL,
   full_name TEXT NOT NULL,
   phone TEXT NULL,
@@ -58,12 +60,14 @@ CREATE TABLE partner_users (
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-CREATE UNIQUE INDEX idx_partner_users_email_per_org ON partner_users (partner_org_id, email);
-CREATE INDEX idx_partner_users_org_status ON partner_users (partner_org_id, status);
+CREATE UNIQUE INDEX idx_partner_users_tenant_email_per_org
+  ON partner_users (tenant_id, partner_org_id, email);
+CREATE INDEX idx_partner_users_tenant_org_status
+  ON partner_users (tenant_id, partner_org_id, status);
 ```
 
-- **FKs:** `partner_org_id` → `partner_orgs(id)`. `user_id` references the partner auth tenant (not Kyndryl SSO).
-- **RLS:** Partner users read only rows in their own `partner_org_id`. Only `org_admin` writes.
+- **FKs:** `tenant_id` → `tenants(id)`; `partner_org_id` → `partner_orgs(id)`. `user_id` references the partner auth tenant (not the customer's SSO IdP).
+- **RLS:** tenant-scoped (outermost), then partner users read only rows in their own `partner_org_id`. Only `org_admin` writes.
 - **Wave 1 scope:** all columns ship.
 
 ## partner_invitations
@@ -73,12 +77,13 @@ Per-invitation row carrying the signed token. Created when a Kyndryl admin invit
 ```sql
 CREATE TABLE partner_invitations (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  tenant_id UUID NOT NULL REFERENCES tenants(id),
   partner_org_id UUID NOT NULL REFERENCES partner_orgs(id) ON DELETE CASCADE,
   invited_email TEXT NOT NULL,
   invited_role TEXT NOT NULL,              -- 'org_admin' | 'recruiter'
-  invited_by_user_id UUID NULL,            -- NULL when Kyndryl admin invites first org-admin;
+  invited_by_user_id UUID NULL,            -- NULL when tenant admin invites first org-admin;
                                            -- otherwise FK to partner_users(id)
-  invited_by_kyndryl_user_id UUID NULL,    -- FK to profiles(id), set on Kyndryl-side invites
+  invited_by_internal_user_id UUID NULL,   -- FK to profiles(id), set on tenant-internal-admin invites
   token_hash TEXT NOT NULL,                -- HMAC of the signed token
   expires_at TIMESTAMPTZ NOT NULL,         -- 24h from issue
   accepted_at TIMESTAMPTZ NULL,
@@ -87,11 +92,12 @@ CREATE TABLE partner_invitations (
 );
 
 CREATE UNIQUE INDEX idx_partner_invitations_token ON partner_invitations (token_hash);
-CREATE INDEX idx_partner_invitations_org ON partner_invitations (partner_org_id, accepted_at);
+CREATE INDEX idx_partner_invitations_tenant_org
+  ON partner_invitations (tenant_id, partner_org_id, accepted_at);
 ```
 
-- **FKs:** `partner_org_id` → `partner_orgs(id)`; `invited_by_user_id` → `partner_users(id)`; `invited_by_kyndryl_user_id` → `profiles(id)`.
-- **RLS:** Anonymous lookup only by `token_hash` for the accept-invite flow. Internal admins and `org_admin` partner users read invitations for their own org.
+- **FKs:** `tenant_id` → `tenants(id)`; `partner_org_id` → `partner_orgs(id)`; `invited_by_user_id` → `partner_users(id)`; `invited_by_internal_user_id` → `profiles(id)`.
+- **RLS:** Anonymous lookup only by `token_hash` for the accept-invite flow (the token itself encodes the tenant; the lookup query selects only by token and validates the tenant against the JWT after auth completes). Tenant-scoped read for internal admins and `org_admin` partner users on invitations for their own org.
 - **Wave 1 scope:** all columns ship.
 
 ## partner_assignments
@@ -101,6 +107,7 @@ Which empanelled partners are assigned to which reqs. Drives the partner's "open
 ```sql
 CREATE TABLE partner_assignments (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  tenant_id UUID NOT NULL REFERENCES tenants(id),
   partner_org_id UUID NOT NULL REFERENCES partner_orgs(id) ON DELETE CASCADE,
   requisition_id UUID NOT NULL REFERENCES requisitions(id) ON DELETE CASCADE,
   assigned_at TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -111,13 +118,14 @@ CREATE TABLE partner_assignments (
 );
 
 CREATE UNIQUE INDEX idx_partner_assignments_active
-  ON partner_assignments (partner_org_id, requisition_id)
+  ON partner_assignments (tenant_id, partner_org_id, requisition_id)
   WHERE status = 'active';
-CREATE INDEX idx_partner_assignments_req ON partner_assignments (requisition_id, status);
+CREATE INDEX idx_partner_assignments_tenant_req
+  ON partner_assignments (tenant_id, requisition_id, status);
 ```
 
-- **FKs:** `partner_org_id` → `partner_orgs(id)`, `requisition_id` → `requisitions(id)`, `assigned_by_user_id` and `unassigned_by_user_id` → `profiles(id)`.
-- **RLS:** Internal users read/write all. Partner users read only rows where `partner_org_id` matches their own.
+- **FKs:** `tenant_id` → `tenants(id)`; `partner_org_id` → `partner_orgs(id)`, `requisition_id` → `requisitions(id)`, `assigned_by_user_id` and `unassigned_by_user_id` → `profiles(id)`.
+- **RLS:** tenant-scoped (outermost), then internal users read/write all rows in their tenant; partner users read only rows where `partner_org_id` matches their own.
 - **Wave 1 scope:** all columns ship; ad-hoc partners do not get rows here (they're attributed by sender domain, not by req assignment).
 
 ## partner_msa
@@ -127,6 +135,8 @@ Per-org commercial terms. Now unified across empanelled and ad-hoc per the resol
 ```sql
 CREATE TABLE partner_msa (
   partner_org_id UUID PRIMARY KEY REFERENCES partner_orgs(id) ON DELETE CASCADE,
+  tenant_id UUID NOT NULL REFERENCES tenants(id),  -- denormalised from partner_orgs for index leadership;
+                                                   -- enforced consistent via app layer + RLS
   tier TEXT NOT NULL,                              -- 'empanelled' | 'ad_hoc'
   fee_structure TEXT NOT NULL,                     -- 'percentage_ctc' | 'flat_per_grade' | 'flat_per_hire'
   fee_rate JSONB NOT NULL,                         -- structured per fee_structure
@@ -141,11 +151,11 @@ CREATE TABLE partner_msa (
   signed_msa_url TEXT NULL                         -- KMS-encrypted contract pointer; NULL for ad-hoc
 );
 
-CREATE INDEX idx_partner_msa_tier ON partner_msa (tier);
+CREATE INDEX idx_partner_msa_tenant_tier ON partner_msa (tenant_id, tier);
 ```
 
-- **FKs:** `partner_org_id` → `partner_orgs(id)`.
-- **RLS:** Internal admins + Kyndryl finance read/write. Partner-org-admins read only their own row.
+- **FKs:** `partner_org_id` → `partner_orgs(id)`; `tenant_id` → `tenants(id)`. `tenant_id` is denormalised from `partner_orgs.tenant_id` to allow tenant-leading indexes and tenant-only RLS predicates without a join. The application layer + an integrity check enforce that `partner_msa.tenant_id = partner_orgs.tenant_id` at write time.
+- **RLS:** tenant-scoped (outermost), then tenant admins + tenant finance read/write; partner-org-admins read only their own row.
 - **Wave 1 scope:** all columns ship; the columns drive `partner_fees.msa_snapshot` so they cannot be retrofitted.
 
 ## partner_fees
@@ -155,6 +165,7 @@ Per-hire fee accrual with frozen MSA terms at hire date. Already defined in `arc
 ```sql
 CREATE TABLE partner_fees (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  tenant_id UUID NOT NULL REFERENCES tenants(id),
   partner_org_id UUID NOT NULL REFERENCES partner_orgs(id),
   hire_id UUID NOT NULL REFERENCES employees(id),
   ownership_claim_id UUID NOT NULL REFERENCES candidate_ownership_claims(id),
@@ -167,12 +178,14 @@ CREATE TABLE partner_fees (
   resolved_at TIMESTAMPTZ NULL
 );
 
-CREATE INDEX idx_partner_fees_org_status ON partner_fees (partner_org_id, status);
-CREATE INDEX idx_partner_fees_hire ON partner_fees (hire_id);
+CREATE INDEX idx_partner_fees_tenant_org_status
+  ON partner_fees (tenant_id, partner_org_id, status);
+CREATE INDEX idx_partner_fees_tenant_hire
+  ON partner_fees (tenant_id, hire_id);
 ```
 
-- **FKs:** `partner_org_id` → `partner_orgs(id)`; `hire_id` → `employees(id)`; `ownership_claim_id` → `candidate_ownership_claims(id)`.
-- **RLS:** Internal admins + Kyndryl finance read/write. Partner-org-admins read only their own org's rows.
+- **FKs:** `tenant_id` → `tenants(id)`; `partner_org_id` → `partner_orgs(id)`; `hire_id` → `employees(id)`; `ownership_claim_id` → `candidate_ownership_claims(id)`.
+- **RLS:** tenant-scoped (outermost), then tenant admins + tenant finance read/write; partner-org-admins read only their own org's rows.
 - **Wave 1 scope:** all columns ship; invoice generation UI is partial in Wave 1 (read-only commercials), full Wave 3.
 
 ## candidate_ownership_claims
@@ -182,6 +195,7 @@ The state machine. Already defined in `architecture.md` §7.4; reproduced here s
 ```sql
 CREATE TABLE candidate_ownership_claims (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  tenant_id UUID NOT NULL REFERENCES tenants(id),
   person_id UUID NOT NULL REFERENCES persons(id),
   partner_org_id UUID NOT NULL REFERENCES partner_orgs(id),
   requisition_id UUID NULL REFERENCES requisitions(id),  -- NULL for speculative
@@ -192,17 +206,24 @@ CREATE TABLE candidate_ownership_claims (
   evidence JSONB NOT NULL                           -- submission record snapshot
 );
 
+-- The partial unique index is the database-level guarantee against simultaneous claims.
+-- Per ADR-002 §5.1, the uniqueness scope must include tenant_id — without it, two tenants
+-- with the same person_id (UUID collision is impossible, but referential semantics still
+-- require this) and the same requisition_id (the requisition_id namespace is per-tenant)
+-- would share a uniqueness constraint they shouldn't share. Tenant-scope the partial index.
 CREATE UNIQUE INDEX one_active_claim_per_person_per_req
-  ON candidate_ownership_claims (person_id, requisition_id)
+  ON candidate_ownership_claims (tenant_id, person_id, requisition_id)
   WHERE status = 'active';
-CREATE INDEX idx_claims_partner_status ON candidate_ownership_claims (partner_org_id, status);
-CREATE INDEX idx_claims_expires_active ON candidate_ownership_claims (expires_at)
+CREATE INDEX idx_claims_tenant_partner_status
+  ON candidate_ownership_claims (tenant_id, partner_org_id, status);
+CREATE INDEX idx_claims_tenant_expires_active
+  ON candidate_ownership_claims (tenant_id, expires_at)
   WHERE status = 'active';
 ```
 
-- **FKs:** `person_id` → `persons(id)`, `partner_org_id` → `partner_orgs(id)`, `requisition_id` → `requisitions(id)` (nullable).
-- **RLS:** Internal admins read all. Partner users read only claims where `partner_org_id` matches their own. Other partners are told only "candidate already in pipeline" without identifying the owner (`requirements.md` §6.4 non-disclosure rule).
-- **Wave 1 scope:** all columns + indexes ship — non-negotiable per `architecture.md` §7.12.
+- **FKs:** `tenant_id` → `tenants(id)`; `person_id` → `persons(id)`, `partner_org_id` → `partner_orgs(id)`, `requisition_id` → `requisitions(id)` (nullable).
+- **RLS:** tenant-scoped (outermost), then tenant admins read all; partner users read only claims where `partner_org_id` matches their own. Other partners are told only "candidate already in pipeline" without identifying the owner (`requirements.md` §6.4 non-disclosure rule).
+- **Wave 1 scope:** all columns + indexes ship — non-negotiable per `architecture.md` §7.12. The `(tenant_id, person_id, requisition_id)` partial-unique index is the load-bearing tenant + ownership guarantee.
 
 ## candidate_dedup_attempts
 
@@ -211,6 +232,7 @@ Audit of every submission attempt that did not become a candidate. Already defin
 ```sql
 CREATE TABLE candidate_dedup_attempts (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  tenant_id UUID NOT NULL REFERENCES tenants(id),
   attempted_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   attempted_by_partner_org_id UUID NULL REFERENCES partner_orgs(id),  -- NULL if direct application
   contact_email TEXT NULL,
@@ -221,12 +243,14 @@ CREATE TABLE candidate_dedup_attempts (
   rejection_reason TEXT NULL
 );
 
-CREATE INDEX idx_dedup_partner_outcome ON candidate_dedup_attempts (attempted_by_partner_org_id, outcome);
-CREATE INDEX idx_dedup_resolved_person ON candidate_dedup_attempts (resolved_to_person_id);
+CREATE INDEX idx_dedup_tenant_partner_outcome
+  ON candidate_dedup_attempts (tenant_id, attempted_by_partner_org_id, outcome);
+CREATE INDEX idx_dedup_tenant_resolved_person
+  ON candidate_dedup_attempts (tenant_id, resolved_to_person_id);
 ```
 
-- **FKs:** `attempted_by_partner_org_id` → `partner_orgs(id)` (nullable); `resolved_to_person_id` → `persons(id)` (nullable).
-- **RLS:** Internal admins read all. Partner users read only their own attempts.
+- **FKs:** `tenant_id` → `tenants(id)`; `attempted_by_partner_org_id` → `partner_orgs(id)` (nullable); `resolved_to_person_id` → `persons(id)` (nullable).
+- **RLS:** tenant-scoped (outermost), then tenant admins read all; partner users read only their own attempts.
 - **Wave 1 scope:** all columns ship.
 
 ## requisition_knockouts
@@ -236,6 +260,7 @@ Knockout questions per req. Cross-references `architecture.md` §5.1 (recruitmen
 ```sql
 CREATE TABLE requisition_knockouts (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  tenant_id UUID NOT NULL REFERENCES tenants(id),
   req_id UUID NOT NULL REFERENCES requisitions(id) ON DELETE CASCADE,
   question_text TEXT NOT NULL,
   type TEXT NOT NULL,                                  -- 'boolean' | 'numeric_min' | 'numeric_max' | 'enum'
@@ -244,11 +269,12 @@ CREATE TABLE requisition_knockouts (
   order_index INT NOT NULL DEFAULT 0
 );
 
-CREATE INDEX idx_knockouts_req ON requisition_knockouts (req_id, order_index);
+CREATE INDEX idx_knockouts_tenant_req
+  ON requisition_knockouts (tenant_id, req_id, order_index);
 ```
 
-- **FKs:** `req_id` → `requisitions(id)`.
-- **RLS:** Internal users read/write. Partner users read knockouts for reqs they're assigned to (`partner-wireflows.md` §3.4 displays them).
+- **FKs:** `tenant_id` → `tenants(id)`; `req_id` → `requisitions(id)`.
+- **RLS:** tenant-scoped (outermost), then internal users read/write; partner users read knockouts for reqs they're assigned to (`partner-wireflows.md` §3.4 displays them).
 - **Wave 1 scope:** all columns ship; UI for editing knockouts is internal-portal only.
 
 ## partner_candidate_messages
@@ -258,6 +284,7 @@ Logged partner-to-candidate messages. Referenced in `partner-wireflows.md` §3.1
 ```sql
 CREATE TABLE partner_candidate_messages (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  tenant_id UUID NOT NULL REFERENCES tenants(id),
   partner_org_id UUID NOT NULL REFERENCES partner_orgs(id),
   partner_user_id UUID NOT NULL REFERENCES partner_users(id),
   candidate_person_id UUID NOT NULL REFERENCES persons(id),
@@ -273,17 +300,17 @@ CREATE TABLE partner_candidate_messages (
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-CREATE INDEX idx_pcmsgs_thread
-  ON partner_candidate_messages (application_id, created_at);
-CREATE INDEX idx_pcmsgs_partner_org
-  ON partner_candidate_messages (partner_org_id, created_at DESC);
-CREATE INDEX idx_pcmsgs_flagged
-  ON partner_candidate_messages (partner_org_id, flagged_at)
+CREATE INDEX idx_pcmsgs_tenant_thread
+  ON partner_candidate_messages (tenant_id, application_id, created_at);
+CREATE INDEX idx_pcmsgs_tenant_partner_org
+  ON partner_candidate_messages (tenant_id, partner_org_id, created_at DESC);
+CREATE INDEX idx_pcmsgs_tenant_flagged
+  ON partner_candidate_messages (tenant_id, partner_org_id, flagged_at)
   WHERE flagged_at IS NOT NULL;
 ```
 
-- **FKs:** `partner_org_id`, `partner_user_id`, `candidate_person_id`, `application_id`.
-- **RLS:** Partner users read only messages where `partner_org_id` matches their own AND (`partner_user_id` is themselves OR they're org-admin AND the message is flagged). Org-admins do not get content access on un-flagged messages — see `partner-wireflows.md` §3.10. Internal admins read all in audit view; reads logged to `pii_access_log`.
+- **FKs:** `tenant_id` → `tenants(id)`; `partner_org_id`, `partner_user_id`, `candidate_person_id`, `application_id`.
+- **RLS:** tenant-scoped (outermost), then partner users read only messages where `partner_org_id` matches their own AND (`partner_user_id` is themselves OR they're org-admin AND the message is flagged). Org-admins do not get content access on un-flagged messages — see `partner-wireflows.md` §3.10. Tenant admins read all in audit view; reads logged to `pii_access_log`.
 - **Wave 1 scope:** schema only. Messaging UI + content scanner = Wave 2.
 
 ## intake_attempts
@@ -293,6 +320,7 @@ Audit of inbound email-intake attempts (parsed or rejected). Referenced in `part
 ```sql
 CREATE TABLE intake_attempts (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  tenant_id UUID NOT NULL REFERENCES tenants(id),
   received_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   inbound_alias TEXT NOT NULL,                         -- e.g. 'cvs-REQ-2026-0847@kyndryl-hireops.com'
   resolved_req_id UUID NULL REFERENCES requisitions(id),
@@ -307,13 +335,15 @@ CREATE TABLE intake_attempts (
   raw_email_s3_key TEXT NULL                           -- pointer to KMS-encrypted full email payload
 );
 
-CREATE INDEX idx_intake_attempts_partner ON intake_attempts (resolved_partner_org_id, received_at DESC);
-CREATE INDEX idx_intake_attempts_outcome ON intake_attempts (outcome, received_at DESC);
+CREATE INDEX idx_intake_attempts_tenant_partner
+  ON intake_attempts (tenant_id, resolved_partner_org_id, received_at DESC);
+CREATE INDEX idx_intake_attempts_tenant_outcome
+  ON intake_attempts (tenant_id, outcome, received_at DESC);
 ```
 
-- **FKs:** `resolved_req_id` → `requisitions(id)` (nullable); `resolved_partner_org_id` → `partner_orgs(id)` (nullable).
-- **RLS:** Internal admins read all. Partner users do not see this table (ad-hoc partners have no portal anyway).
-- **Wave 1 scope:** all columns ship; surfaced in admin email-intake config view (`partner-wireflows.md` §5.2).
+- **FKs:** `tenant_id` → `tenants(id)`; `resolved_req_id` → `requisitions(id)` (nullable); `resolved_partner_org_id` → `partner_orgs(id)` (nullable).
+- **RLS:** tenant-scoped (outermost), then tenant admins read all. Partner users do not see this table (ad-hoc partners have no portal anyway).
+- **Wave 1 scope:** all columns ship; surfaced in admin email-intake config view (`partner-wireflows.md` §5.2). Per ADR-002 §5.2, the per-req inbound alias namespace is per-tenant — `cvs-REQ-2026-0847@<tenant>.hireops.app` style routing or tenant-prefixed aliases handle multiple tenants having the same human-readable req-id.
 
 ## partner_activity_log
 
@@ -322,9 +352,10 @@ Per-org activity feed driving the dashboard "recent activity" panel (`partner-wi
 ```sql
 CREATE TABLE partner_activity_log (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  tenant_id UUID NOT NULL REFERENCES tenants(id),
   partner_org_id UUID NOT NULL REFERENCES partner_orgs(id) ON DELETE CASCADE,
   actor_partner_user_id UUID NULL REFERENCES partner_users(id),
-  actor_kyndryl_user_id UUID NULL REFERENCES profiles(id),
+  actor_internal_user_id UUID NULL REFERENCES profiles(id),
   event_type TEXT NOT NULL,                            -- e.g. 'submission_created' | 'candidate_stage_changed' | 'req_opened_to_org' | 'invoice_generated'
   subject_application_id UUID NULL REFERENCES applications(id),
   subject_requisition_id UUID NULL REFERENCES requisitions(id),
@@ -333,12 +364,14 @@ CREATE TABLE partner_activity_log (
   occurred_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-CREATE INDEX idx_activity_org_time ON partner_activity_log (partner_org_id, occurred_at DESC);
-CREATE INDEX idx_activity_org_eventtype ON partner_activity_log (partner_org_id, event_type);
+CREATE INDEX idx_activity_tenant_org_time
+  ON partner_activity_log (tenant_id, partner_org_id, occurred_at DESC);
+CREATE INDEX idx_activity_tenant_org_eventtype
+  ON partner_activity_log (tenant_id, partner_org_id, event_type);
 ```
 
-- **FKs:** `partner_org_id`, `actor_partner_user_id`, `actor_kyndryl_user_id`, `subject_application_id`, `subject_requisition_id`, `subject_candidate_person_id`.
-- **RLS:** Partner users read only rows for their own `partner_org_id`. Internal admins read all.
+- **FKs:** `tenant_id` → `tenants(id)`; `partner_org_id`, `actor_partner_user_id`, `actor_internal_user_id`, `subject_application_id`, `subject_requisition_id`, `subject_candidate_person_id`.
+- **RLS:** tenant-scoped (outermost), then partner users read only rows for their own `partner_org_id`; tenant admins read all in their tenant.
 - **Wave 1 scope:** all columns ship; events emitted from the application layer on relevant state transitions.
 
 ---
@@ -359,6 +392,7 @@ CREATE INDEX idx_activity_org_eventtype ON partner_activity_log (partner_org_id,
 ```sql
 CREATE TABLE ad_hoc_partner_domains (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  tenant_id UUID NOT NULL REFERENCES tenants(id),
   partner_org_id UUID NOT NULL REFERENCES partner_orgs(id) ON DELETE CASCADE,
   domain TEXT NOT NULL,                                -- normalised lowercase
   default_consent_text TEXT NOT NULL,
@@ -368,13 +402,18 @@ CREATE TABLE ad_hoc_partner_domains (
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-CREATE UNIQUE INDEX idx_ad_hoc_domain_unique ON ad_hoc_partner_domains (domain) WHERE active = TRUE;
-CREATE INDEX idx_ad_hoc_org ON ad_hoc_partner_domains (partner_org_id, active);
+-- Unique per tenant, not globally — two tenants can each register acme-recruiting.com if both
+-- separately empanel that vendor. Domain uniqueness within a tenant is the operating constraint.
+CREATE UNIQUE INDEX idx_ad_hoc_domain_per_tenant
+  ON ad_hoc_partner_domains (tenant_id, domain)
+  WHERE active = TRUE;
+CREATE INDEX idx_ad_hoc_tenant_org
+  ON ad_hoc_partner_domains (tenant_id, partner_org_id, active);
 ```
 
-- **FKs:** `partner_org_id` → `partner_orgs(id)`.
-- **RLS:** Internal admins read/write only; ad-hoc partners have no portal.
-- **Wave 1 scope:** all columns ship; consumed by the email-intake parser.
+- **FKs:** `tenant_id` → `tenants(id)`; `partner_org_id` → `partner_orgs(id)`.
+- **RLS:** tenant-scoped (outermost), then tenant admins read/write only; ad-hoc partners have no portal.
+- **Wave 1 scope:** all columns ship; consumed by the email-intake parser, which receives `tenant_id` from the inbound mailbox routing layer (per ADR-002 §5.2: tenant-prefixed aliases or per-tenant subdomain mailboxes) before sender-domain lookup.
 
 ---
 
@@ -385,7 +424,7 @@ What was already in `architecture.md` §7 and remains authoritative:
 - `partner_orgs`, `partner_users` — referenced in §7.3 and §7.4. This doc adds full column definitions.
 - `partner_msa` — defined in §7.8. This doc adds `tier`, `replacement_guarantee_days`, `replacement_mode` columns (per B5) and updates the holdback default comment (per B6).
 - `partner_fees` — defined in §7.8. Reproduced here unchanged.
-- `candidate_ownership_claims` — defined in §7.4. Reproduced here unchanged; the unique partial index remains the load-bearing guarantee.
+- `candidate_ownership_claims` — defined in §7.4. Reproduced here with `tenant_id` added per ADR-002. The unique partial index is now `(tenant_id, person_id, requisition_id) WHERE status = 'active'` — tenant-scoping the partial-unique constraint is non-negotiable: without it, two tenants with the same `requisition_id` value (the namespace is per-tenant) would share the uniqueness constraint they shouldn't share.
 - `candidate_dedup_attempts` — defined in §7.4. Reproduced here.
 
 What this doc adds (these tables are referenced in `partner-wireflows.md` but were not previously specified):

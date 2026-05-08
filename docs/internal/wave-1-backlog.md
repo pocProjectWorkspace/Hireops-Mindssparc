@@ -27,7 +27,12 @@ This is intentionally not exhaustive — it's the minimum to land the thin slice
 | FND-12 | Pick + configure API runtime host (Fly.io picked per `architecture.md` §17 Q3 default); Dockerise `apps/api` + `apps/workers` | M | — | `architecture.md` §17 Q3, §12.2 |
 | FND-13 | Lighthouse CI + bundle-size budgets per frontend bundle, in CI | S | FND-01 | `architecture.md` §12.4 |
 | FND-14 | Snyk / npm audit / Dependabot turned on; baseline triage | S | FND-01 | `architecture.md` §9.5 |
-| FND-15 | Multi-tenancy structural prep per the Multi-Tenancy ADR (when it lands): tenant model, `tenant_id` on every domain table, tenant-scoped RLS extensions, per-tenant `integration_credentials`, tenant-onboarding admin surface scaffolding. Wave 1 prerequisite for everything else — every other DB / API / portal task assumes tenant-scoped reads and writes. | L | ADR-002 | Multi-Tenancy ADR (forthcoming); `architecture.md` §1.1 |
+| FND-15a | Create `tenants`, `tenant_encryption_keys` tables; seed local-dev tenant. | S | DB-02 | ADR-002 §5.1; `architecture.md` §5.1 (Tenancy core) |
+| FND-15b | Implement `current_tenant_id()` SECURITY DEFINER helper function; verify JWT custom claim `tid` propagates from Supabase Auth via login hook. | S | FND-15a, FND-07 | ADR-002 §5.3 |
+| FND-15c | Tenant context middleware: subdomain extraction in Next.js middleware; JWT `tid` validation in Hono middleware; AsyncLocalStorage propagation for tenant_id throughout request lifecycle. | M | FND-15b, API-01 | ADR-002 §5.2 |
+| FND-15d | Tenant DEK generation + KMS wrapping flow; envelope-encryption helpers in `packages/db`; DEK cache (5-min TTL) per worker process. | M | FND-15a, FND-10 | ADR-002 §5.5 |
+| FND-15e | RLS policy framework: enforce tenant scoping as outermost predicate on every new table migration; CI check that fails when a table is created without RLS policies. | M | FND-15b, DB-02 | ADR-002 §5.3 |
+| FND-15f | Tenant onboarding workflow MVP: provisioning UI for HireOps internal admin, tenant settings + integration configuration tabs, sub-flow per ADR-002 §5.6 steps 1–3 (steps 4–8 move to Wave 2). | L | FND-15c, FND-15d, FND-15e, INT-01 | ADR-002 §5.6 |
 
 ## Database & schema (DB)
 
@@ -240,7 +245,7 @@ Excludes: Exit interview LLM theme analysis, attrition cohort analytics, regrett
 
 ## Backlog totals
 
-- Foundations: 15 tasks
+- Foundations: 20 tasks (FND-01..FND-14 + FND-15a..FND-15f)
 - Database & schema: 32 tasks
 - AI client: 2 tasks
 - Internal API: 17 tasks
@@ -253,7 +258,7 @@ Excludes: Exit interview LLM theme analysis, attrition cohort analytics, regrett
 - Onboarding: 9 tasks
 - Offboarding: 9 tasks
 
-**Total: 153 tasks.** This is over the suggested 80–120 cap. Two reasons: (1) database schema is itemised per logical group (32 rows), which the prompt's grouping of entities encourages and which is hard to compress without losing the dependency graph; (2) the partner portal in Wave 1 is intentionally non-trivial because the ownership state machine cannot be retrofitted (`requirements.md` §11 closing argument).
+**Total: 158 tasks.** (Net +5 from the previous 153 — the placeholder FND-15 was replaced by six concrete sub-tasks FND-15a..FND-15f.) This is over the suggested 80–120 cap. Two reasons: (1) database schema is itemised per logical group (32 rows), which the prompt's grouping of entities encourages and which is hard to compress without losing the dependency graph; (2) the partner portal in Wave 1 is intentionally non-trivial because the ownership state machine cannot be retrofitted (`requirements.md` §11 closing argument).
 
 Tasks that could be merged to bring the count down: the DB schema rows (DB-04..DB-07 could collapse to "Recruitment core schema"; DB-18..DB-21 could collapse to "Onboarding/offboarding schema"). They are kept granular here because each one represents a distinct migration that can ship independently and unblock independent tracks. Flagging this as something to revisit if the user wants the count compressed.
 
@@ -264,19 +269,23 @@ Tasks that could be merged to bring the count down: the DB schema rows (DB-04..D
 The longest dependency chain through the backlog — the path that must clear before the thin slice can run end-to-end. Each step lists the chain's runtime, not the cumulative effort.
 
 ```
-FND-15 (L)  →  Multi-tenancy structural prep (tenant model + RLS + per-tenant credentials)
-   ↓             — gates every DB / API / portal task downstream
 FND-12 (M)  →  Pick API runtime (Fly.io per arch §17 Q3 default)
    ↓
 DB-01 (S)   →  Postgres provisioned on Supabase ap-south-1 (per arch §17 Q1, Q2 defaults)
    ↓
 DB-02 (M)   →  Migrations framework
    ↓
-DB-03 (M)   →  persons / candidates / employees split (now tenant-scoped per FND-15)
+FND-15a (S) →  Create tenants + tenant_encryption_keys; seed local-dev tenant
+   ↓             — first tenancy-core migration; gates every other domain-table migration
+FND-15b (S) →  current_tenant_id() helper + JWT tid propagation from Supabase Auth
    ↓
-DB-08 (M)   →  candidate_ownership_claims (with partial-unique index, tenant-scoped)
+FND-15c (M) →  Tenant context middleware (subdomain + JWT tid + AsyncLocalStorage)
+   ↓             — top of the request-time critical path; every API route sits behind this
+DB-03 (M)   →  persons / candidates / employees split (tenant-scoped per FND-15a/b/c)
    ↓
-DB-26 / DB-28 (L)  →  RLS for internal users + partners (composes with tenant-scope from FND-15)
+DB-08 (M)   →  candidate_ownership_claims (partial-unique index now tenant-scoped:
+   ↓             (tenant_id, person_id, requisition_id) WHERE status='active')
+DB-26 / DB-28 (L)  →  RLS for internal users + partners (tenant-scope outermost, composes per ADR-002 §5.3)
    ↓
 API-01 (M)  →  tRPC server + JWT verification
    ↓
