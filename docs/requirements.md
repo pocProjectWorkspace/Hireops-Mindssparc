@@ -3,7 +3,7 @@
 **Version:** 0.1 (POC scoping draft)
 **Date:** 8 May 2026
 **Audience:** Internal product + engineering, Kyndryl GCC stakeholders
-**Context:** Kyndryl GCC POC — 300 hires/month for 12 months (3,600 hires/year), full lifecycle (recruitment + onboarding + offboarding), HireOps as ATS, Workday as HRIS-of-record. **Sourcing model: ~60% via HR partners (mix of empanelled vendors and ad-hoc agencies), ~40% direct/referrals.** Partner portal is a first-class capability of the platform.
+**Context:** HireOps is a multi-tenant SaaS ATS for enterprise hirers, with full lifecycle coverage (recruitment + onboarding + offboarding) and Workday as the customer-side HRIS-of-record where applicable. **Kyndryl's GCC is the first POC customer**, funding the initial platform build and serving as launch design partner — 300 hires/month for 12 months (3,600 hires/year) at production volumes; **sourcing model: ~60% via HR partners (mix of empanelled vendors and ad-hoc agencies), ~40% direct/referrals.** Partner portal is a first-class capability of the platform. On successful POC, Kyndryl becomes Tenant #1 in production and additional enterprise tenants follow.
 
 ---
 
@@ -15,7 +15,19 @@ The Lovable codebase has 78 pages across 7 personas. Most of them describe a rec
 2. **Goes through every Lovable feature** and marks it Keep / Modify / Drop / Missing, with reasoning grounded in the 300/month workload.
 3. **Flags everything Lovable never covered** — sourcing channels, BGV, compliance, IT provisioning, asset management, exit workflows, observability, bulk operations, etc.
 
-Where Kyndryl-specific context matters (volume, geography, Workday, GCC-specific compliance) it is called out inline.
+Where Kyndryl-specific context matters (volume, geography, Workday, GCC-specific compliance) it is called out inline. Read those callouts as launch-customer design constraints — they shape the product for Tenant #1 and validate it for Tenant #N.
+
+---
+
+## 1.5 Product positioning
+
+HireOps is a multi-tenant SaaS platform for enterprise hiring. The product is sold to enterprises that run their own hiring at scale — typically Global Capability Centers (GCCs), Indian enterprises, and SE-Asian high-volume hirers. Each customer becomes a tenant on shared platform infrastructure, isolated from other tenants by `tenant_id`-scoped row-level security and per-tenant integration credentials. The closest comparables are Ashby and Greenhouse, not Workday — one product, one codebase, one production deployment, many tenants.
+
+The current build is funded by a paid POC engagement with Kyndryl's GCC. That engagement validates the platform end-to-end — recruitment, onboarding, offboarding, Workday integration, partner ecosystem — at production volumes (300 hires/month). On successful POC, Kyndryl becomes the first paying production customer (Tenant #1) and the platform is then sold to additional enterprise customers. Subsequent tenants follow the same onboarding flow without code changes.
+
+All product decisions in this document are made by the HireOps team as the platform vendor. Customer-specific concerns — Kyndryl's choice of SSO, BGV vendor, approval matrix, partner panel composition, MSA template — are handled through tenant-onboarding configuration, not through bespoke development. Where a customer's needs cannot be met by configuration, the platform is extended with new configurability for everyone, never with one-off customer code.
+
+The Multi-Tenancy ADR (forthcoming, ADR-002) is the architectural decision-of-record for how tenant isolation, configuration, integration credential management, and tenant onboarding work. Until that ADR lands, this document and `architecture.md` describe the platform as if Kyndryl were the only tenant; that simplification is removed once the ADR ships, at which point every domain entity carries `tenant_id` and every read/write is scoped accordingly.
 
 ---
 
@@ -826,30 +838,78 @@ Three reasons:
 
 ---
 
-## 12. Open questions for Kyndryl
+## 12. POC-onboarding configuration items
 
-These need answers before architecture is locked down. Listed in priority order.
+The following are POC-onboarding configuration items. As the platform vendor we have made defensible defaults for each; Kyndryl confirms or configures differently as part of their tenant onboarding flow. **None of these block product development** — they all map to features we ship that are tenant-configurable.
 
-1. **GCC location?** Affects compliance (DPDPA for India, Data Privacy Act 10173 for Philippines, etc.), data residency, holiday calendars, language, payroll integration partner.
-2. **Workday tenant access?** Kyndryl-prod, Kyndryl-impl (sandbox), or net-new tenant for the GCC? When can we get ISU credentials and webhook setup?
-3. **Kyndryl careers site?** Is HireOps-hosted careers page sufficient, or must apply originate on `careers.kyndryl.com`?
-4. **SSO provider?** Okta, Azure AD, Kyndryl-internal IdP?
-5. **BGV vendor?** Existing Kyndryl contract (HireRight / FirstAdvantage / AuthBridge / etc.) or vendor of our choice?
-6. **Job-board contracts?** LinkedIn Recruiter seats? Naukri RMS account? Kyndryl-existing?
-7. **IT provisioning systems?** What downstream — Okta SCIM? ServiceNow? Internal ticketing?
-8. **Approval matrix?** Who approves what at what grade / cost? Kyndryl will have a documented matrix; we need it.
-9. **Compensation bands & grade structure?** Required to drive comp recommendations.
-10. **Production data residency requirement?** ap-south-1 (Mumbai) vs us-east-1 vs EU?
-11. **SOC 2 / ISO 27001 timeline?** POC tolerance vs production blocker.
-12. **Branding?** Kyndryl logo / colours / "powered by HireOps" positioning?
-13. **Volume ramp?** 300/month from week 1 of go-live, or ramp from 50 → 150 → 300 over Q1?
+### Q1 — GCC location
+
+- **Default:** India (Bangalore, Pune). Drives DPDPA compliance posture, data-residency selection, holiday calendars, language, payroll integration partner.
+- **Configuration surface:** tenant settings → primary region (drives downstream defaults — document_types geography_code, calendar locale, etc.).
+- **POC onboarding:** confirmed during initial tenant provisioning. Platform supports any region; only the connected integrations (BGV vendor, payroll forms) shift per region.
+
+### Q2 — Workday tenant access
+
+- **Default:** customer provides ISU + OAuth credentials in admin → integrations → Workday. Encrypted credentials stored in Vault per `architecture.md` §6.3.
+- **Configuration surface:** per-tenant Workday connection settings (`integration_credentials` row scoped by tenant).
+- **POC onboarding:** Kyndryl HRIS Lead provisions sandbox tenant + ISU + Integration System Security Group + OAuth client in week 1 of POC; production credentials provisioned at cutover. Provisioning steps in `workday-adr.md` §5.3 + §6.1.
+
+### Q4 — SSO provider
+
+- **Default:** platform supports both Okta and Azure AD via SAML/OIDC, plus any OIDC-compliant IdP. Audience-scoped JWTs per portal per `architecture.md` §7.2.
+- **Configuration surface:** tenant settings → identity → SSO. SCIM provisioning configured separately when the IdP supports it.
+- **POC onboarding:** Kyndryl provides OIDC discovery URL or SAML metadata during onboarding; SCIM provisioning configured optionally for downstream app provisioning (`requirements.md` §7.3).
+
+### Q5 — BGV vendor
+
+- **Default:** AuthBridge (India-strong, fast turnaround) is the platform's first-party integration. HireRight and FirstAdvantage are also supported as first-party integrations. Selection per tenant.
+- **Configuration surface:** tenant settings → integrations → BGV vendor. Per-tenant credentials in Vault; webhook secrets per environment per vendor per `architecture.md` §8.1.
+- **POC onboarding:** Kyndryl picks from the platform's supported list during onboarding. Switching vendors later is a config change, not code.
+
+### Q8 — Approval matrix
+
+- **Default:** platform ships a configurable approval-matrix engine (grade × cost × org-level rules). Pre-loaded templates for common patterns. Maps to `approval_chains` / `approval_requests` / `approval_decisions` per `architecture.md` §5.1.
+- **Configuration surface:** admin → workflows → approvals. Per-tenant configuration; no platform changes required for new chains.
+- **POC onboarding:** Kyndryl HR Director defines their approval matrix during onboarding using the configurator. Matrix can evolve over time without code change.
+
+### Q15 — Partner panel composition
+
+- **Default:** platform supports onboarding any number of empanelled partners + ad-hoc registrations. No platform-side constraint on panel size.
+- **Configuration surface:** admin → partners → invite (empanelled flow per `partner-wireflows.md` §5.1) and admin → partners → register-ad-hoc (sender-domain registration).
+- **POC onboarding:** Kyndryl's TA Lead invites their existing 3-5 friendly partners during onboarding; ad-hoc partners self-register-by-domain as they show up.
+
+### Q16 — Partner MSA template
+
+- **Default:** platform ships a configurable commercial-terms engine (fee structure, exclusivity windows, holdback, replacement guarantees, dispute rules). Standard MSA archetypes pre-loaded. Schema per `architecture.md` §7.8 + `/docs/partner-data-model.md`.
+- **Configuration surface:** admin → partners → commercial templates. Per-partner overrides supported via `partner_msa` rows.
+- **POC onboarding:** Kyndryl's procurement uploads their standard MSA, the configurator captures the salient terms (fee structure, exclusivity scope, holdback, replacement mode); per-partner MSA overrides supported.
+
+### Q18 — Partner panel governance owner
+
+- **Default:** platform supports both unified ("TA Lead owns partners end-to-end") and split ("Procurement owns commercials, TA Lead owns operations") org models via role permissions.
+- **Configuration surface:** admin → users → roles. Permission grants on `partner_msa`, `partner_fees`, `partner_invitations` etc. are scoped to roles, not job titles.
+- **POC onboarding:** Kyndryl decides during onboarding; role permissions configured accordingly. Switching models later is a config change.
+
+### Other items (Wave 2 or already resolved)
+
+These remain in the table but are not Wave 1 POC-onboarding blockers. Listed for completeness.
+
+3. **Kyndryl careers site?** Is HireOps-hosted careers page sufficient, or must apply originate on `careers.kyndryl.com`? — Default per `open-questions.md` §c: HireOps-hosted careers site for POC; if `careers.kyndryl.com` must front, CRS-02 doubles in scope.
+6. **Job-board contracts?** LinkedIn Recruiter seats? Naukri RMS account? Kyndryl-existing? — Wave 2 (job-board posting deferred per §11).
+7. **IT provisioning systems?** What downstream — Okta SCIM? ServiceNow? Internal ticketing? — Default: SCIM target follows Q4 SSO decision; manual stub for any apps without SCIM.
+9. **Compensation bands & grade structure?** Required to drive comp recommendations. — Wave 2 for full comp engine.
+10. **Production data residency requirement?** ap-south-1 (Mumbai) vs us-east-1 vs EU? — Non-blocking for POC; production roadmap. Per-tenant data residency is acknowledged in the Multi-Tenancy ADR (forthcoming).
+11. **SOC 2 / ISO 27001 timeline?** POC tolerance vs production blocker. — POC tolerated; production roadmap.
+12. **Branding?** Kyndryl logo / colours / "powered by HireOps" positioning? — Default: white-label per tenant (admin → branding); Wave 2 polish.
+13. **Volume ramp?** 300/month from week 1 of go-live, or ramp from 50 → 150 → 300 over Q1? — Production rollout question, not Wave 1 build.
 14. **Languages?** English-only acceptable? Hindi / Tagalog needed for candidate portal? — **RESOLVED:** English only for POC (per §9.9); Hindi / Tagalog deferred to production roadmap.
-15. **Partner panel size & composition?** How many empanelled partners are envisioned? Are we starting with the existing Kyndryl agency panel or building net-new?
-16. **Partner MSA template?** Does Kyndryl have a standard MSA we should align the platform's commercial model to (fee structures, exclusivity terms, payment terms, dispute clauses)? If not, we're guessing on key data fields.
-17. **Existing partner data?** Are there candidates already in flight via partners that need to be migrated in with ownership preserved?
-18. **Partner panel governance?** Who at Kyndryl owns the partner relationship — TA Lead? Procurement? A separate Vendor Management Office? Drives admin permissions design.
-19. **Invoicing & finance integration?** Does Kyndryl AP have an existing system we should integrate with for partner invoicing (SAP, Oracle, Coupa)? Or do partners invoice through email/PDF?
+17. **Existing partner data?** Are there candidates already in flight via partners that need to be migrated in with ownership preserved? — Non-blocking; migration is a separate workstream.
+19. **Invoicing & finance integration?** Does Kyndryl AP have an existing system we should integrate with for partner invoicing (SAP, Oracle, Coupa)? Or do partners invoice through email/PDF? — Wave 3.
 20. **Ad-hoc partner email aliases?** Will Kyndryl provision per-partner email addresses (`partner-acme-cvs@kyndryl-hireops.com`) or do we need a different attribution mechanism? — **RESOLVED:** per-req aliases (`cvs-{req-id}@kyndryl-hireops.com`) plus `cvs-talent-pool@kyndryl-hireops.com`; partner attribution comes from sender-domain lookup against `ad_hoc_partners` (per §6.5).
+
+### Closing note
+
+Each of the items above is a tenant-onboarding flow, documented in the (forthcoming) Multi-Tenancy ADR. None block platform development. They are surfaced here only as the POC onboarding checklist for Kyndryl.
 
 ---
 

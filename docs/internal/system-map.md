@@ -8,6 +8,12 @@ This is a structured representation of the system, written to support new questi
 
 ---
 
+## Product model
+
+HireOps is a multi-tenant SaaS platform — one codebase, one production deployment, many enterprise tenants — per `requirements.md` §1.5 and `architecture.md` §1, §1.1. The system map below currently models the system as if it serves a single tenant; that simplification is intentional and tracks what the source docs themselves describe today. The Multi-Tenancy ADR (forthcoming, ADR-002) layers in tenant isolation across the schema, the request path, and the integration credential model. Until the ADR lands, treat every reference to "Kyndryl" in the entries below as "Tenant #1, the first POC customer." Personas, lifecycle stages, data entities, integrations, and the workspace map remain accurate per-tenant; multi-tenancy adds `tenant_id` scoping and per-tenant configuration around them.
+
+---
+
 ## a) Personas
 
 The personas listed below are taken directly from `requirements.md` §3 (3.1 keep-as-is, 3.2 restructure, 3.3 new). `requirements.md` §3.3 has been updated to read `Final persona count: 13` and the supporting math has been corrected (Lovable's 7 + 6 net-new = 13). The enumeration below lists all 13.

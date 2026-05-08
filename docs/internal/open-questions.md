@@ -223,26 +223,38 @@ The Hiring Approver Chain persona (`requirements.md` §3.3) is described as *"Li
 
 The four docs each have an "open questions" or "open decisions" section, but they don't always indicate blocking-ness for Wave 1. (See section c below for a triaged version.) Wave 1 cannot start cleanly until at minimum: GCC location, Workday tenant access, SSO provider, BGV vendor, partner panel composition, MSA template, hosting region, Postgres host, API runtime host, e-signature provider, calendar (single or both), interview platform are answered.
 
+**Status update (post product-positioning reframe):** all of the above are now tenant-configurable platform features with platform defaults applied; none block Wave 1 platform development. Triage in §c moved them out of "blocking" and into "POC-onboarding configuration items." The only remaining real-world dependency is Kyndryl provisioning their Workday sandbox in week 1 of the POC, which is a customer-side action.
+
+### 13. Multi-tenancy structural prep is undefined
+
+The product is multi-tenant SaaS but the docs currently describe the architecture as if for a single Kyndryl deployment. Tenant_id columns, tenant-scoped RLS, per-tenant integration credentials, tenant onboarding workflows, per-tenant configuration surfaces — none are specified.
+
+**Where it should live:** A new ADR (`docs/multi-tenancy-adr.md`, ADR-002) is required, equivalent in importance to `workday-adr.md`.
+
+**Proposed direction:** Shared-database / shared-schema with a `tenant_id` column on every domain table and RLS enforcement (the Ashby pattern). Tenant onboarding as a product workflow (admin invites tenant → tenant admin completes onboarding flow → integrations configured → first users invited). Per-tenant configuration surfaces with sensible platform defaults. Region-per-tenant accommodated in the data model (a tenant attribute drives storage/compute placement) but not implemented in POC — Wave 1 ships single-region (ap-south-1) and the data model doesn't paint us into a corner. Until ADR-002 lands, FND-15 in the backlog is its placeholder.
+
 ---
 
 ## c) Decisions still open per `requirements.md` §12 and `architecture.md` §17
 
-After the resolution pass, the count of genuinely Wave-1-blocking Kyndryl decisions has dropped from 21 to **8**. Architecture decisions have all been resolved with defensible defaults (subject to Kyndryl override). The remaining 8 are decisions only Kyndryl can make.
+After the product-positioning reframe, the previously-named "Wave-1-blocking Kyndryl questions" are reclassified as **POC-onboarding configuration items.** They do not block platform development — they map to tenant-configurable features the platform must support. They are listed here only as the configuration checklist for Kyndryl's tenant onboarding.
 
-### Wave 1 blocking — Kyndryl conversation (8 questions, with our recommended defaults)
+### POC-onboarding configuration items (for Kyndryl tenant onboarding)
 
-- **`requirements.md` §12 Q1 — GCC location.** Recommended default: India (Bangalore) for POC. Drives DB region, document types (PAN/Aadhaar/Form 11/Form F), holiday calendars, language defaults, payroll forms. Confirm or override.
-- **`requirements.md` §12 Q2 — Workday tenant access.** No default possible — Kyndryl must provision: sandbox tenant + ISU + ISG + OAuth client by week 1. True blocker for WD-01 onwards (the entire integration critical path).
-- **`requirements.md` §12 Q4 — SSO provider.** Recommended default: Okta if Kyndryl-IdP is Okta-backed, otherwise Azure AD. Pick one. Affects FND-06, INT-02, ONB-06 (SCIM target).
-- **`requirements.md` §12 Q5 — BGV vendor.** Recommended default: AuthBridge for India POC (fast, India-strong); HireRight if Kyndryl already has a contract. Pick one. Affects ONB-04, ONB-05. (Same as `architecture.md` §17 Q9.)
-- **`requirements.md` §12 Q8 — Approval matrix.** No safe default — Kyndryl's documented approval matrix per grade/cost is required to seed `approval_chains`. Affects DB-24, INT-11, INT-13.
-- **`requirements.md` §12 Q15 — Partner panel composition for Wave 1.** Recommended default: 3-5 high-volume empanelled partners committed by week 2. Without named partners, the partner thin slice has no realism check.
-- **`requirements.md` §12 Q16 — Partner MSA template.** No safe default — Kyndryl's standard MSA covering fee structures, exclusivity terms, payment terms, dispute clauses, replacement-guarantee mechanic seeds `partner_msa` rows. Without it, the commercial schema is guessing.
-- **`requirements.md` §12 Q18 — Partner panel governance.** Recommended default: TA Lead owns partner relationships (with VMO copy on commercials). Confirm or override. Drives admin permissions on INT-21 and team-mgmt scope on PRT-10.
+The 8 items below are tenant-configurable platform features. The platform ships with defensible defaults; Kyndryl confirms or configures during their tenant-onboarding flow. Cross-references to `requirements.md` §12 (now reframed as the POC-onboarding checklist).
 
-### Resolved with defaults (subject to Kyndryl override)
+- **`requirements.md` §12 Q1 — GCC location.** Default: India (Bangalore). Drives DB region, document types (PAN/Aadhaar/Form 11/Form F), holiday calendars, language defaults, payroll forms. Configuration: tenant settings → primary region. POC: confirmed during initial tenant provisioning.
+- **`requirements.md` §12 Q2 — Workday tenant access.** Default: customer provides ISU + OAuth credentials in admin → integrations → Workday. Configuration: per-tenant Workday connection (encrypted credentials in Vault). POC: Kyndryl HRIS Lead provisions sandbox tenant + ISU in week 1; production credentials at cutover. Customer-side action by Kyndryl, not a platform-build blocker.
+- **`requirements.md` §12 Q4 — SSO provider.** Default: platform supports both Okta and Azure AD via SAML/OIDC plus any OIDC-compliant IdP. Configuration: tenant settings → identity → SSO. POC: Kyndryl provides OIDC discovery URL or SAML metadata.
+- **`requirements.md` §12 Q5 — BGV vendor.** Default: AuthBridge as the platform's first-party integration; HireRight + FirstAdvantage also supported. Configuration: tenant settings → integrations → BGV vendor. POC: Kyndryl picks from supported list; switching is a config change.
+- **`requirements.md` §12 Q8 — Approval matrix.** Default: platform ships a configurable approval-matrix engine (grade × cost × org-level) with pre-loaded templates. Configuration: admin → workflows → approvals. POC: Kyndryl HR Director defines their matrix using the configurator.
+- **`requirements.md` §12 Q15 — Partner panel composition.** Default: platform supports onboarding any number of empanelled partners + ad-hoc registrations; no platform-side cap. Configuration: admin → partners → invite (+ admin → partners → register-ad-hoc). POC: Kyndryl's TA Lead invites 3-5 friendly partners during onboarding.
+- **`requirements.md` §12 Q16 — Partner MSA template.** Default: platform ships a configurable commercial-terms engine with standard archetypes pre-loaded. Configuration: admin → partners → commercial templates; per-partner overrides via `partner_msa` rows. POC: Kyndryl's procurement uploads their standard MSA; configurator captures terms.
+- **`requirements.md` §12 Q18 — Partner panel governance owner.** Default: platform supports both unified and split governance models via role permissions. Configuration: admin → users → roles. POC: Kyndryl decides during onboarding; switching models is a config change.
 
-These were Wave-1-blocking before the resolution pass; they now have defensible defaults applied in the source docs. Listed for Kyndryl's reference; any override moves them back to "blocking" until reflected in the docs.
+### Resolved with defaults (tenant-configurable or platform-wide)
+
+These were Wave-1-blocking before the resolution and product-positioning passes; they now have platform defaults applied in the source docs. Items marked tenant-configurable are picked per tenant during onboarding; platform-wide items are infrastructure decisions the platform vendor revisits with growth. Listed for the POC tenant's reference.
 
 - **`requirements.md` §12 Q3 — Kyndryl careers site.** Default: HireOps-hosted careers site for POC. If `careers.kyndryl.com` must front, CRS-02 doubles in scope (proxy/redirect work). Confirm if HireOps-hosted is acceptable.
 - **`requirements.md` §12 Q7 — IT provisioning systems.** Default: Okta SCIM target if Kyndryl IdP is Okta; Azure AD SCIM if Azure. Manual stub for any apps without SCIM. Same answer as Q4.

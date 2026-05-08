@@ -1,11 +1,11 @@
 # HireOps — Wave 1 Backlog
 
-**Scope:** Wave 1 only — "End-to-end thin slice" weeks 1–11 per `requirements.md` §11. Goal: process one hire end-to-end through every lifecycle stage, with the partner sourcing channel functional. Volume: 10 hires across the wave, 6 via partner submission. 3 friendly empanelled vendors.
+**Scope:** Wave 1 — "End-to-end thin slice running on a synthetic tenant" — validates the platform end-to-end (recruitment → onboarding → offboarding, partner channel, Workday integration) before Kyndryl is onboarded as Tenant #1 in Wave 2/3. Weeks 1–11 per `requirements.md` §11. Goal: process one hire end-to-end through every lifecycle stage, with the partner sourcing channel functional. Volume target: 10 hires across the wave, 6 via partner submission, against a synthetic tenant seeded with 3 friendly empanelled vendors. Wave 2 onboards Kyndryl as the first real tenant and stress-tests at 50/month; Wave 3 hardens to 300/month sustained and ships the rest of the partner ecosystem.
 **Effort scale:** S = ≤2 days, M = 3–5 days, L = 1–2 weeks, XL = >2 weeks (flag for breakdown).
 **Citations:** Every task is backed by a `file.md §section` reference.
 **Out of scope (deferred):** Bulk operations, partner bulk submission, partner messaging + content scanner, partner commercials beyond read-only, full AI scoring + bias shield, WhatsApp/SMS, job-board posting, reporting suite, onboarding analytics, dispute resolution UI, invoice integration with finance, multi-language UI, mobile-native — these are Wave 2 or Wave 3 per `requirements.md` §11.
 
-This is intentionally not exhaustive — it's the minimum to land the thin slice. Tasks marked `BLOCKED ON KYNDRYL` cannot start until the named open question is resolved (see `open-questions.md` §c).
+This is intentionally not exhaustive — it's the minimum to land the thin slice. After the product-positioning reframe, no tasks are blocked on Kyndryl decisions; previously-named "blockers" are now tenant-configurable platform features (defaults documented in `requirements.md` §12). The single remaining real-world dependency is WD-01, which awaits Kyndryl's sandbox tenant being provisioned by their HRIS Lead in week 1 of the POC engagement (a customer-side action, not a platform-build blocker).
 
 ---
 
@@ -18,7 +18,7 @@ This is intentionally not exhaustive — it's the minimum to land the thin slice
 | FND-03 | Wire PostHog into 4 frontends; instrument apply funnel as board-level metric | S | FND-01 | `architecture.md` §12.5; `requirements.md` §9.4 |
 | FND-04 | Wire Datadog APM + structured logs into `apps/api` + `apps/workers`; runbook conventions | M | FND-01 | `architecture.md` §12.5; `workday-adr.md` §5.9 |
 | FND-05 | Bootstrap Storybook in `packages/ui`; CI builds the Storybook on PR | S | FND-01 | `architecture.md` §4.1 |
-| FND-06 | Provision SSO bridge (SAML/OIDC → Kyndryl IdP) for `apps/internal-portal`; audience-scoped JWT `aud=internal-portal` | M | Q4 (SSO provider) — **BLOCKED ON KYNDRYL** | `architecture.md` §9.1, §7.2; `requirements.md` §12 Q4 |
+| FND-06 | Provision SSO bridge (SAML/OIDC) for `apps/internal-portal`; audience-scoped JWT `aud=internal-portal`. Configurable per tenant; POC tenant defaults documented in §12 of `requirements.md`. | M | — | `architecture.md` §9.1, §7.2; `requirements.md` §12 Q4 |
 | FND-07 | Set up candidate auth (Supabase Auth: email/password + magic link + phone OTP); audience-scoped JWT `aud=candidate-portal`; MFA optional | S | — | `architecture.md` §9.1 |
 | FND-08 | Set up partner auth in a separate tenant (Supabase Auth or Auth0/Clerk); magic-link + mandatory MFA; 5-fail lockout; 90-day inactivity suspend | M | — | `architecture.md` §7.2; `partner-wireflows.md` §3.1 |
 | FND-09 | Cloudflare WAF + per-portal rate limits (partner stricter); geo routing | S | FND-06, FND-07, FND-08 | `architecture.md` §3 (diagram), §7.2 |
@@ -27,6 +27,7 @@ This is intentionally not exhaustive — it's the minimum to land the thin slice
 | FND-12 | Pick + configure API runtime host (Fly.io picked per `architecture.md` §17 Q3 default); Dockerise `apps/api` + `apps/workers` | M | — | `architecture.md` §17 Q3, §12.2 |
 | FND-13 | Lighthouse CI + bundle-size budgets per frontend bundle, in CI | S | FND-01 | `architecture.md` §12.4 |
 | FND-14 | Snyk / npm audit / Dependabot turned on; baseline triage | S | FND-01 | `architecture.md` §9.5 |
+| FND-15 | Multi-tenancy structural prep per the Multi-Tenancy ADR (when it lands): tenant model, `tenant_id` on every domain table, tenant-scoped RLS extensions, per-tenant `integration_credentials`, tenant-onboarding admin surface scaffolding. Wave 1 prerequisite for everything else — every other DB / API / portal task assumes tenant-scoped reads and writes. | L | ADR-002 | Multi-Tenancy ADR (forthcoming); `architecture.md` §1.1 |
 
 ## Database & schema (DB)
 
@@ -167,7 +168,7 @@ Implements the ad-hoc partner channel only. Mailbox pattern resolved: per-req al
 | EMI-02 | Email-intake parser worker: identify partner from sender domain via `ad_hoc_partners` lookup; extract subject/body for req hint or talent-pool tag | M | EMI-01, DB-12 | `architecture.md` §7.9; `partner-wireflows.md` §4 |
 | EMI-03 | CV-attachment extraction (PDF/DOC/DOCX); OCR fallback for image-only scans | M | EMI-02 | `architecture.md` §7.9; `partner-wireflows.md` §4.3 |
 | EMI-04 | Run resume parser → candidate record; default consent attestation pulled from partner registration when email body lacks consent language | M | EMI-03, API-08 | `partner-wireflows.md` §4.2, §5.2 |
-| EMI-05 | Dedup + ad-hoc ownership claim creation: 60-day window, flat reduced fee per `partner_msa` row with `tier='ad_hoc'`, no holdback. Ad-hoc claims lose to empanelled in disputes. **BLOCKED ON KYNDRYL Q16** for the actual fee terms to seed (resolved structurally — only the values remain). | M | API-09, DB-11, EMI-04 | `requirements.md` §6.4, §6.5; `partner-wireflows.md` §4.1; `architecture.md` §7.8 |
+| EMI-05 | Dedup + ad-hoc ownership claim creation: 60-day window, flat reduced fee per `partner_msa` row with `tier='ad_hoc'`, no holdback. Ad-hoc claims lose to empanelled in disputes. Configurable per tenant; POC tenant defaults documented in §12 of `requirements.md`. | M | API-09, DB-11, EMI-04 | `requirements.md` §6.4, §6.5; `partner-wireflows.md` §4.1; `architecture.md` §7.8 |
 | EMI-06 | Auto-reply with per-CV success/duplicate/unparseable summary (Section 4.2 default template, configurable in admin) | S | EMI-05 | `partner-wireflows.md` §4.2 |
 | EMI-07 | "Needs human review" queue surfaced to recruiters for unparseable CVs and unknown-sender attempts | M | EMI-02, EMI-03 | `architecture.md` §7.9; `partner-wireflows.md` §4.3 |
 | EMI-08 | Admin email-intake configuration (mailbox base, default consent text, parser confidence threshold, per-partner quota, BCC detection toggle) | M | INT-01, DB-12 | `partner-wireflows.md` §5.2 |
@@ -188,7 +189,7 @@ The longest and most fragile critical-path stretch. `requirements.md` §11 place
 
 | ID | Description | Effort | Depends on | Source |
 |---|---|---|---|---|
-| WD-01 | Sandbox tenant access provisioned (ISU + Integration System Security Group + OAuth client) — **BLOCKED ON KYNDRYL Q2**; runbook in `runbooks/workday.md` | S | — | `workday-adr.md` §5.3, §6.1; `requirements.md` §12 Q2 |
+| WD-01 | Sandbox tenant access provisioned (ISU + Integration System Security Group + OAuth client). **Awaiting Kyndryl sandbox tenant provisioning (Week 1 of POC engagement)** — customer-side action by Kyndryl HRIS Lead, not a platform-build blocker. Runbook in `runbooks/workday.md`. | S | — | `workday-adr.md` §5.3, §6.1; `requirements.md` §12 Q2 |
 | WD-02 | Smoke-test script (`workday:smoke`) — REST `Get_Workers limit=1` + SOAP `Get_Organizations limit=1`; gate Wave 1 cutover on green | S | WD-01 | `workday-adr.md` §6.1 |
 | WD-03 | OAuth 2.0 client-credentials token cache + refresh-on-expiry-window (no refresh tokens — re-fetch when within 60s of expiry) | S | WD-01 | `workday-adr.md` §1, §5.3 |
 | WD-04 | SOAP client in `packages/workday-client` (handlebars-templated envelopes, WS-Security header, response parser) | L | WD-01 | `workday-adr.md` §2, §5.4 |
@@ -211,8 +212,8 @@ Excludes: Time-to-productivity dashboard, retention curves, NPS pulse, funnel an
 |---|---|---|---|---|
 | ONB-01 | Onboarding case state machine (Pre-board → BGV Cleared → Document Collected → Workday Hire Sync → IT Provisioned → Day 1 Welcome → 30-Day Check-in → Probation Confirmed) | M | DB-18 | `requirements.md` §4, §7 |
 | ONB-02 | Pre-board welcome flow (candidate-side: branded page, FAQ, joining-day expectations, equipment preferences) | M | CND-09 | `requirements.md` §7.1 |
-| ONB-03 | Document collection — BGV docs + joining docs; geography-specific document set (India: PAN/Aadhaar/Form 11/Form F; PH: BIR 2316/SSS/PhilHealth/Pag-IBIG) — **BLOCKED ON KYNDRYL Q1 (GCC location)** | L | API-04, DB-18 | `requirements.md` §7.1, §12 Q1 |
-| ONB-04 | BGV vendor integration — **BLOCKED ON KYNDRYL Q5** for vendor selection (HireRight / FirstAdvantage / AuthBridge); REST initiate + webhook receive | M | DB-19, API-04 | `requirements.md` §7.1; `architecture.md` §8.1 |
+| ONB-03 | Document collection — BGV docs + joining docs; geography-specific document set (India: PAN/Aadhaar/Form 11/Form F; PH: BIR 2316/SSS/PhilHealth/Pag-IBIG). Configurable per tenant via `document_types.geography_code`; POC tenant defaults documented in §12 of `requirements.md`. | L | API-04, DB-18 | `requirements.md` §7.1, §12 Q1 |
+| ONB-04 | BGV vendor integration — first-party adapters for AuthBridge (default), HireRight, FirstAdvantage; REST initiate + webhook receive. Configurable per tenant; POC tenant defaults documented in §12 of `requirements.md`. | M | DB-19, API-04 | `requirements.md` §7.1; `architecture.md` §8.1 |
 | ONB-05 | BGV webhook receiver + status update on `bgv_results` | S | ONB-04, DB-19 | `architecture.md` §8.1 |
 | ONB-06 | IT provisioning queue UI + manual SCIM stub (full SCIM automation deferred). SCIM target follows Q4 SSO decision (Okta or Azure AD); manual stub for any apps without SCIM. | M | DB-20, INT-12 | `requirements.md` §7.3, §12 Q7 |
 | ONB-07 | Day 1 checklist (manager + buddy confirmation + 1:1 scheduled stub) | S | ONB-01, INT-12 | `requirements.md` §7.3 |
@@ -239,7 +240,7 @@ Excludes: Exit interview LLM theme analysis, attrition cohort analytics, regrett
 
 ## Backlog totals
 
-- Foundations: 14 tasks
+- Foundations: 15 tasks
 - Database & schema: 32 tasks
 - AI client: 2 tasks
 - Internal API: 17 tasks
@@ -252,7 +253,7 @@ Excludes: Exit interview LLM theme analysis, attrition cohort analytics, regrett
 - Onboarding: 9 tasks
 - Offboarding: 9 tasks
 
-**Total: 152 tasks.** This is over the suggested 80–120 cap. Two reasons: (1) database schema is itemised per logical group (32 rows), which the prompt's grouping of entities encourages and which is hard to compress without losing the dependency graph; (2) the partner portal in Wave 1 is intentionally non-trivial because the ownership state machine cannot be retrofitted (`requirements.md` §11 closing argument).
+**Total: 153 tasks.** This is over the suggested 80–120 cap. Two reasons: (1) database schema is itemised per logical group (32 rows), which the prompt's grouping of entities encourages and which is hard to compress without losing the dependency graph; (2) the partner portal in Wave 1 is intentionally non-trivial because the ownership state machine cannot be retrofitted (`requirements.md` §11 closing argument).
 
 Tasks that could be merged to bring the count down: the DB schema rows (DB-04..DB-07 could collapse to "Recruitment core schema"; DB-18..DB-21 could collapse to "Onboarding/offboarding schema"). They are kept granular here because each one represents a distinct migration that can ship independently and unblock independent tracks. Flagging this as something to revisit if the user wants the count compressed.
 
@@ -263,17 +264,19 @@ Tasks that could be merged to bring the count down: the DB schema rows (DB-04..D
 The longest dependency chain through the backlog — the path that must clear before the thin slice can run end-to-end. Each step lists the chain's runtime, not the cumulative effort.
 
 ```
+FND-15 (L)  →  Multi-tenancy structural prep (tenant model + RLS + per-tenant credentials)
+   ↓             — gates every DB / API / portal task downstream
 FND-12 (M)  →  Pick API runtime (Fly.io per arch §17 Q3 default)
    ↓
 DB-01 (S)   →  Postgres provisioned on Supabase ap-south-1 (per arch §17 Q1, Q2 defaults)
    ↓
 DB-02 (M)   →  Migrations framework
    ↓
-DB-03 (M)   →  persons / candidates / employees split
+DB-03 (M)   →  persons / candidates / employees split (now tenant-scoped per FND-15)
    ↓
-DB-08 (M)   →  candidate_ownership_claims (with partial-unique index)
+DB-08 (M)   →  candidate_ownership_claims (with partial-unique index, tenant-scoped)
    ↓
-DB-26 / DB-28 (L)  →  RLS for internal users + partners
+DB-26 / DB-28 (L)  →  RLS for internal users + partners (composes with tenant-scope from FND-15)
    ↓
 API-01 (M)  →  tRPC server + JWT verification
    ↓
@@ -287,7 +290,7 @@ API-13 (M)  →  Offer drafting + multi-level approval
    ↓
 API-14 (M)  →  Offer e-signature integration (DocuSign per arch §17 Q10 default)
    ↓
-WD-01 (S)   →  Workday tenant access — BLOCKED ON KYNDRYL Q2
+WD-01 (S)   →  Workday tenant access — Awaiting POC tenant provisioning (customer-side, week 1)
    ↓
 WD-04 (L)   →  SOAP client
    ↓
@@ -297,9 +300,9 @@ WD-11 (L)   →  Hire_Employee + BP completion polling
    ↓
 ONB-01 / ONB-09 (M+S)  →  Onboarding case state machine + cross-link to Workday Hire
    ↓
-ONB-03 (L)  →  Document collection — BLOCKED ON KYNDRYL Q1 (GCC location for doc set)
+ONB-03 (L)  →  Document collection — Configurable per tenant (POC default: India doc set)
    ↓
-ONB-04 (M)  →  BGV vendor integration — BLOCKED ON KYNDRYL Q5
+ONB-04 (M)  →  BGV vendor integration — Configurable per tenant (POC default: AuthBridge)
 ```
 
 What this tells us:

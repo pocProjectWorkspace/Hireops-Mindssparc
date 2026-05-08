@@ -3,15 +3,36 @@
 **Version:** 0.1 (POC architecture draft)
 **Date:** 8 May 2026
 **Companion to:** `requirements.md`
-**Context:** Kyndryl GCC POC — 300 hires/month, full lifecycle, HireOps as ATS, Workday as HRIS-of-record.
+**Context:** HireOps multi-tenant SaaS platform. Kyndryl's GCC POC is the first paying engagement (300 hires/month, full lifecycle, Workday as the customer-side HRIS-of-record where applicable) and becomes Tenant #1 in production.
 
 ---
 
 ## 1. Framing
 
+HireOps is a multi-tenant SaaS platform. **One codebase, one production deployment, many enterprise tenants** — isolated from each other by `tenant_id`-scoped row-level security and per-tenant integration credentials. Each tenant configures their own Workday connection, their own approval matrix, their own partner ecosystem, their own BGV vendor, their own job-board contracts. The platform supports this through configuration, not customisation: when a customer needs something the platform doesn't yet offer, we add configurability for everyone, never bespoke code for one customer.
+
+Kyndryl's GCC POC is funding the initial build of this platform. Kyndryl becomes Tenant #1 when the platform is production-ready. Subsequent tenants follow the same onboarding flow without code changes.
+
+The Multi-Tenancy ADR (forthcoming, ADR-002) is the architectural decision-of-record for tenant isolation, configuration, integration credential management, and tenant onboarding. Until that ADR lands, this document describes the platform's logical architecture without elaborating tenant isolation in detail; the ADR layers in the multi-tenancy semantics across the schema and the request path.
+
 This document treats the Lovable codebase as **directional inspiration**, not a starting point. We will reuse the design tokens, the shadcn component library, the React Router structure, the Supabase RLS schema patterns, and selected page concepts. We will **not** treat the existing code as production-ready, and we will rebuild the data layer, integration layer, and several of the persona models from scratch.
 
-The architecture below is sized for Kyndryl's stated workload (300 hires/month) plus a 3x safety margin for ramp-up and bursts.
+The architecture below is sized for Kyndryl's stated workload (300 hires/month) plus a 3x safety margin for ramp-up and bursts. That sizing is the launch-customer constraint; the architecture itself does not assume only one tenant of that volume.
+
+---
+
+## 1.1 Multi-tenancy as a foundational principle
+
+Multi-tenancy is structural, not bolted-on. The defining choices:
+
+1. **Shared database, shared schema, tenant-scoped rows.** Every domain entity carries `tenant_id`. Postgres RLS enforces tenant scoping at the database boundary; application bugs cannot leak data across tenants because the policy denies the read before the application gets a chance to mishandle it. This is the same pattern Ashby, Linear, and most modern multi-tenant SaaS use.
+2. **Configuration vs customisation.** A new customer's needs are met by extending platform configuration surfaces (admin UI, tenant settings, role permissions, workflow definitions). They are *not* met by customer-specific code paths. The distinction is load-bearing — bespoke per-customer code destroys multi-tenant economics.
+3. **Per-tenant integration credentials.** Workday ISU + OAuth, BGV vendor API keys, e-signature credentials, IdP SSO config, calendar OAuth tokens — all stored in `integration_credentials` rows scoped by `tenant_id`, encrypted at rest with KMS, isolated. One tenant's Workday outage cannot affect another's hire flow.
+4. **Tenant onboarding is a product feature.** Inviting a new tenant, provisioning their integrations, configuring their approval matrix, registering their partners, seeding their consent text — all flows in the admin surface. The HireOps team does not ship database changes per customer.
+5. **Per-tenant data residency** is acknowledged as a future need (region-per-tenant for jurisdictions that mandate local data). The data model accommodates it (a tenant's region is a tenant attribute that drives storage/compute placement), but Wave 1 ships single-region (ap-south-1, Mumbai). Multi-region tenant placement is Wave 3+ and will be revisited in the production roadmap.
+6. **Configurable per-tenant defaults with platform-wide guardrails.** The platform sets safe defaults (e.g., 90-day partner ownership window, 24h triage SLA, 25% holdback). Tenants override within bounds; the bounds themselves are platform decisions.
+
+The Multi-Tenancy ADR (forthcoming, ADR-002) elaborates the schema, the RLS policy patterns, the credential storage model, the tenant-onboarding workflow, and the operational runbooks. Treat the rest of this document as the per-tenant view of the platform until the ADR lands.
 
 ---
 
@@ -1043,22 +1064,22 @@ Realistic burn at fully-loaded rates: roughly $1.4M–$2.0M for the 24-week POC,
 
 ---
 
-## 17. Open architecture decisions
+## 17. Architecture decisions and tenant-configurable choices
 
-These need explicit decisions before we lock the architecture. Listed in priority.
+Each entry below names the platform decision and indicates whether the choice is platform-wide (one decision for the whole product) or tenant-configurable (each tenant picks during onboarding). Most have been resolved with defensible defaults; the platform-wide ones may revisit with growth. Two genuinely-open items remain — they involve customer-side contracts the platform vendor cannot force.
 
-1. **Hosting region.** ap-south-1 (Mumbai) for India GCC? AP region for Philippines? Multi-region from POC or single? — **RESOLVED:** ap-south-1 (Mumbai), single-region for POC. Kyndryl can override.
-2. **Postgres host.** Supabase managed (we already have an instance) vs Neon vs RDS vs CloudSQL? Lean toward Supabase for POC, RDS/CloudSQL at scale. — **RESOLVED:** Supabase managed for POC; revisit RDS/CloudSQL for production. Kyndryl can override.
-3. **API runtime host.** Fly.io vs Render vs Cloud Run vs Kubernetes? Lean toward Fly.io for POC simplicity. — **RESOLVED:** Fly.io for POC. Kyndryl can override.
-4. **Object storage.** S3 vs Cloudflare R2 vs Supabase Storage? Lean toward S3 for KMS integration. — **RESOLVED:** S3 + KMS. Kyndryl can override.
-5. **LLM primary.** Anthropic direct vs Bedrock vs Vertex? Affects data residency + Kyndryl AWS relationship. — **RESOLVED:** Anthropic Claude direct as primary; Bedrock retained as fallback. Kyndryl can override (if data-residency policy mandates Bedrock).
-6. **Career site framework.** Next.js (React, familiar) vs Astro (better SEO, less JS)? Lean Next.js for team familiarity. — **RESOLVED:** Next.js with SSR (already noted in §4.1).
-7. **Mobile strategy.** PWA only for POC (responsive web)? Native later? Defer decision to post-POC. — **RESOLVED:** PWA-quality responsive web for POC; native deferred to post-POC.
-8. **Job board partnerships.** Which boards mandatory for POC? LinkedIn + Naukri (India) is minimum. *(Open — genuine Kyndryl decision; depends on existing contracts. Wave 2 work.)*
-9. **BGV vendor.** Kyndryl-existing or new? Affects week-1 contract motion. *(Open — genuine Kyndryl decision; same as `requirements.md` §12 Q5.)*
-10. **E-signature provider.** DocuSign or Adobe Sign? Either fine; pick what Kyndryl already has. — **RESOLVED:** DocuSign as default; Adobe Sign available as alternative if Kyndryl already has a contract. Kyndryl can override.
-11. **Calendar — single or both?** Google + Outlook both? Defer cost to scope. — **RESOLVED:** Both Google + Outlook from POC (Kyndryl GCC users will be on either). Kyndryl can override to single if scope tightens.
-12. **Interview platform.** Zoom or Teams? Pick Kyndryl's standard. — **RESOLVED:** Zoom as default; pivot to Teams is straightforward. Kyndryl can override.
+1. **Hosting region.** Platform-wide for POC. ap-south-1 (Mumbai) for India GCC; AP region for Philippines; multi-region from POC or single? — **RESOLVED:** ap-south-1 (Mumbai), single-region for POC. Per-tenant data residency is a future capability per §1.1; revisit when a tenant's compliance posture forces region-per-tenant placement.
+2. **Postgres host.** Platform-wide. Supabase managed (we already have an instance) vs Neon vs RDS vs CloudSQL? Lean toward Supabase for POC, RDS/CloudSQL at scale. — **RESOLVED:** Supabase managed for POC, with the platform-default being Supabase; revisit RDS/CloudSQL when scale or compliance demands it.
+3. **API runtime host.** Platform-wide. Fly.io vs Render vs Cloud Run vs Kubernetes? Lean toward Fly.io for POC simplicity. — **RESOLVED:** Fly.io as the platform default for POC.
+4. **Object storage.** Platform-wide. S3 vs Cloudflare R2 vs Supabase Storage? Lean toward S3 for KMS integration. — **RESOLVED:** S3 + KMS as the platform default.
+5. **LLM primary.** Tenant-configurable, with the platform default being Anthropic Claude direct as primary and Bedrock retained as fallback. Tenants can override per their data-residency posture (a tenant whose policy mandates AWS-only data flow selects Bedrock at onboarding).
+6. **Career site framework.** Platform-wide. Next.js (React, familiar) vs Astro (better SEO, less JS)? Lean Next.js for team familiarity. — **RESOLVED:** Next.js with SSR (already noted in §4.1).
+7. **Mobile strategy.** Platform-wide for POC. PWA only for POC (responsive web)? Native later? Defer decision to post-POC. — **RESOLVED:** PWA-quality responsive web; native deferred to post-POC.
+8. **Job board partnerships.** *(Open — Wave 2; depends on the per-tenant LinkedIn/Naukri/Indeed contracts each customer holds. Platform supports each board as a first-party integration; selection is tenant-configurable.)*
+9. **BGV vendor.** Tenant-configurable, with the platform default being AuthBridge for the India launch tenant; HireRight and FirstAdvantage also supported as first-party integrations. *(Selection per tenant; same as `requirements.md` §12 Q5.)*
+10. **E-signature provider.** Tenant-configurable, with the platform default being DocuSign; Adobe Sign available as an alternative if the tenant already has a contract.
+11. **Calendar.** Tenant-configurable, with the platform default being both Google + Outlook supported from POC (most enterprises run a mix). Tenants whose users are exclusively on one stack can disable the other to simplify onboarding.
+12. **Interview platform.** Tenant-configurable, with the platform default being Zoom; Teams is a supported alternative and the integration shape is symmetric.
 
 ---
 
