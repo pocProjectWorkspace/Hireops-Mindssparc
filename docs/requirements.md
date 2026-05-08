@@ -3,7 +3,7 @@
 **Version:** 0.1 (POC scoping draft)
 **Date:** 8 May 2026
 **Audience:** Internal product + engineering, Kyndryl GCC stakeholders
-**Context:** HireOps is a multi-tenant SaaS ATS for enterprise hirers, with full lifecycle coverage (recruitment + onboarding + offboarding) and Workday as the customer-side HRIS-of-record where applicable. **Kyndryl's GCC is the first POC customer**, funding the initial platform build and serving as launch design partner — 300 hires/month for 12 months (3,600 hires/year) at production volumes; **sourcing model: ~60% via HR partners (mix of empanelled vendors and ad-hoc agencies), ~40% direct/referrals.** Partner portal is a first-class capability of the platform. On successful POC, Kyndryl becomes Tenant #1 in production and additional enterprise tenants follow.
+**Context:** HireOps is a multi-tenant SaaS ATS for enterprise hirers, with full lifecycle coverage (recruitment + onboarding + offboarding) and Workday as the customer-side HRIS-of-record where applicable. **Kyndryl's GCC is the first POC customer**, funding the initial platform build and serving as launch design partner — 300 hires/month for 12 months (3,600 hires/year) at production volumes; **sourcing model: ~60% via HR partners (mix of empanelled vendors and ad-hoc agencies), ~25% direct (career site, inbound), ~15% referrals.** Partner portal is a first-class capability of the platform. On successful POC, Kyndryl becomes Tenant #1 in production and additional enterprise tenants follow.
 
 ---
 
@@ -64,6 +64,8 @@ Lovable defines 7 personas: `requirement_owner`, `hr_head`, `recruiter`, `panel`
 | **Candidate** | Apply, track, AI assistant, attend interview | The most-touched persona. Critical for NPS and offer-acceptance rate. |
 | **Admin** | Settings, integrations, governance | Becomes more important — config-as-code for hiring workflows, role permissions, integration credentials. |
 
+**Mobile interaction budgets.** Hiring manager and Interview Panel personas have mobile as a primary surface. The platform commits to: P95 page load < 2s on a representative 4G connection (Mumbai/Bangalore baseline; we measure against ~10 Mbps down with ~80ms RTT); core workflows (review candidate / approve req / submit feedback / accept-reject offer) reachable in ≤ 5 taps from email or in-app notification entry; viewport target 375px minimum width; touch targets ≥ 44x44px per Apple HIG. Recruiter persona is desktop-first and exempt from these budgets.
+
 ### 3.2 Personas to restructure
 
 | Lovable persona | Issue | Recommendation |
@@ -81,8 +83,9 @@ Lovable defines 7 personas: `requirement_owner`, `hr_head`, `recruiter`, `panel`
 | **Background Verification Vendor (external)** | Read-only candidate context + write-only verification outcomes. | API-only persona — no UI. Webhook-fed status updates. |
 | **Hiring Approver Chain** | Workday integration: org-level approvals for headcount, offers above grade, NPS-impacting decisions. | Lightweight inbox view: approve / reject with comment. Often mobile. |
 | **Employee (post-hire)** | Once onboarded, the candidate becomes an employee with ongoing rights: data access, exit initiation, document downloads. | Carries forward the candidate portal, with extended scope for active employees. |
+| **Platform admin (HireOps internal staff)** | Provisions tenants, monitors cross-tenant platform health, runs support escalations. **Out of scope as a tenant-facing persona** — they are HireOps staff, not customer users — but called out here so it's clear the platform has cross-tenant operational surfaces. | Cross-tenant ops dashboard, tenant provisioning UI, tenant suspension / deletion controls. Detailed in `multi-tenancy-adr.md` §5.6 and the (forthcoming) ops runbook, not in this document. |
 
-**Final persona count: 13.** Lovable's 7 (recruiter, requirement_owner, hr_head, hr_team, panel, candidate, admin) plus the 6 net-new personas defined in §3.3 (People Ops, IT/Workplace Services, HR Partner, BGV Vendor, Hiring Approver Chain, Employee). This is significantly more than Lovable's 7 but it is honest about the actual operating reality of a GCC at this scale. The HR Partner persona alone may carry more daily user load than any internal persona — at 60% of 9,000 monthly applications, that's ~5,500 partner-side submissions/month spread across 20-30 partner organisations.
+**Final tenant-facing persona count: 13.** Lovable's 7 (recruiter, requirement_owner, hr_head, hr_team, panel, candidate, admin) plus the 6 net-new tenant-facing personas defined in §3.3 (People Ops, IT/Workplace Services, HR Partner, BGV Vendor, Hiring Approver Chain, Employee). A 14th platform-admin persona exists (HireOps internal staff for cross-tenant ops) but is out of scope for this document — see the row above for context. This is significantly more than Lovable's 7 but it is honest about the actual operating reality of a GCC at this scale. The HR Partner persona alone may carry more daily user load than any internal persona — at 60% of 9,000 monthly applications, that's ~5,500 partner-side submissions/month spread across 20-30 partner organisations.
 
 ---
 
@@ -120,17 +123,22 @@ This is the single most important diagram in the doc. Every screen, every workfl
 │    (drives fee attribution)                          │
 └──────────────────────────────────────────────────────┘
                          ↓
-┌──────────────────── ONBOARDING ─────────────────────┐
-│                                                      │
-│  Pre-board     BGV         Document      Workday    │
-│  Initiated  →  Cleared  →  Collected  →  Hire Sync  │
-│                                                      │
-│  IT            Day 1       30-Day       Probation   │
-│  Provisioned → Welcome  →  Check-in  →  Confirmed   │
-│                                                      │
-│  → ACTIVE EMPLOYEE                                   │
-│  → Partner fee invoice eligible (post-probation)    │
-└──────────────────────────────────────────────────────┘
+┌──────────────────── ONBOARDING ───────────────────────┐
+│                                                        │
+│  Pre-board     BGV         Document                   │
+│  Initiated  →  Cleared  →  Collected                  │
+│                              ↓                         │
+│  Workday Pre-Hire   (auto-fired on offer-accept)      │
+│                              ↓                         │
+│                            Workday Hire   (auto-fired │
+│                                            on Day 1)  │
+│                              ↓                         │
+│  IT            Day 1       30-Day       Probation     │
+│  Provisioned → Welcome  →  Check-in  →  Confirmed     │
+│                                                        │
+│  → ACTIVE EMPLOYEE                                     │
+│  → Partner fee invoice eligible (post-probation)      │
+└────────────────────────────────────────────────────────┘
                          ↓
                    (months / years)
                          ↓
@@ -182,12 +190,12 @@ This is where Lovable is weakest. The mock data has candidates magically appeari
 |---|---|---|---|
 | Job-board posting & sync (LinkedIn, Naukri, Indeed) | ❌ Missing | Multi-board posting, applicant pull, dedup against existing candidates. | **Missing — critical.** |
 | Career site (Kyndryl-branded apply page) | ❌ Missing | Public-facing, mobile-first apply form. Resume parsing on submit. CAPTCHA, rate limiting, GDPR/DPDPA consent. | **Missing — critical.** |
-| Resume parsing | ❌ Missing | LLM-based parser → structured candidate record. Support PDF, DOCX, image-based scans (OCR). | **Missing — critical.** |
+| Resume parsing | ❌ Missing | LLM-based parser → structured candidate record. Support PDF, DOCX, image-based scans (OCR). **Accuracy threshold:** parser correctly extracts name + email + phone + total years of experience + primary skills on **≥ 95% of representative Indian CV corpus** (curated test set of 100 CVs spanning fancy designer formats, single-column, two-column, table-heavy, image-heavy). Edge-case formats (vertical layouts, scanned poor-resolution PDFs, non-English content) route to a manual edit flow rather than block submission. Parser quality is monitored continuously; weekly quality report surfaces drift. | **Missing — critical.** |
 | Email-to-apply (forward resumes to a mailbox) | ❌ Missing | Common in IN/PH GCC sourcing — agency partners email resumes. | **Missing — required.** |
-| Referral programme | ❌ Missing | Internal referral submission, tracking, payout workflow. Often 30–40% of GCC hires. | **Missing — Phase 2.** |
+| Referral programme | ❌ Missing | Internal referral submission, tracking, payout workflow. **In partner-heavy GCC contexts (like Kyndryl's, where partners are ~60% of flow), referrals typically account for 15–20% of hires** rather than the 30–40% seen in non-partner-heavy environments. Wave 1 ships a minimal "submit a referral" form (employee → application with `source='referral'` + referrer_id); the full programme infrastructure (payout workflow, leaderboards, gamification) is Phase 2. | **Missing — Phase 2.** |
 | Agency / HR partner portal | ❌ Missing | Empanelled partners submit CVs against reqs, track pipeline, see commercials. **See Section 6 for full requirements** — this is now treated as a first-class capability and Wave 1 in-scope rather than a Phase 2 nice-to-have. | **Missing — P0 for POC.** |
 | Talent pool / silver-medallist recontact | ❌ Missing | DPDPA-relevant: requires explicit consent. Rejected-but-strong candidates re-engaged for future roles. | **Missing — Phase 2.** |
-| Candidate dedup | ❌ Missing | Same person applies via 3 channels — must be merged. Email + phone + name fuzzy match. | **Missing — critical.** |
+| Candidate dedup | ❌ Missing | Same person applies via 3 channels — must be merged. Email + phone + name fuzzy match. **Dedup runs synchronously on every submission, before the application row is committed.** Atomic INSERT ... ON CONFLICT against the partial-unique index on `candidate_ownership_claims (tenant_id, person_id, requisition_id) WHERE status = 'active'` (per `architecture.md` §7.4 and `partner-data-model.md`). Blocking dedup is acceptable because the operation is sub-100ms; eventual consistency is not — partner ownership disputes cost more than the latency cost of synchronous checks. | **Missing — critical.** |
 | WhatsApp / SMS apply | ✅ Partial (WhatsApp infra) | Lovable has WhatsApp infrastructure but no apply flow built. Worth completing — IN/PH candidates respond to WhatsApp at 4–10x email rates. | **Modify.** |
 
 ### 5.3a Recruiter intake & triage
@@ -206,7 +214,7 @@ The §5.3 sourcing requirements describe how applications enter HireOps. This su
 
 | Capability | Lovable status | Required behaviour | Disposition |
 |---|---|---|---|
-| AI candidate scoring | ✅ Present (mocked) | Real implementation: weighted skill match against JD, resume-vs-JD semantic match, experience alignment. Score ∈ [0, 100]. | **Keep, build for real.** |
+| AI candidate scoring | ✅ Present (mocked) | Real implementation: weighted skill match against JD, resume-vs-JD semantic match, experience alignment. Score ∈ [0, 100]. **Quality gate:** AI score must correlate with eventual hire decisions at Spearman rho ≥ 0.4 on a calibration set of ≥ 200 historical hires per role family. AI's top-decile must rank in the top quintile of human-graded candidates with precision ≥ 0.7. Below these thresholds the score is surfaced as advisory only (not a primary sort key). | **Keep, build for real.** |
 | Bias shield / fairness check | ✅ Present (UI only) | Must produce **auditable** fairness reports (selection rate by protected characteristic — DPDPA requires fairness, EEOC analogue if Kyndryl serves US). | **Keep, harden.** |
 | Skill weighting | ✅ Present | Per-role weights set by HM. Must persist in `jd_skills`. | **Keep.** |
 | Recruiter shortlist | ✅ Present | Must support bulk actions, filtering by score band, score-ordered view with quick reject reasons. | **Keep, harden for volume.** |
@@ -231,7 +239,7 @@ The §5.3 sourcing requirements describe how applications enter HireOps. This su
 | Capability | Lovable status | Required behaviour | Disposition |
 |---|---|---|---|
 | Offer generation | ✅ Present | Must produce a Workday-compatible offer record with grade, comp band, location, start date. PDF generation for candidate signature. | **Modify.** |
-| Comp recommendation | ✅ Present (mocked) | Real: market data + internal equity check + budget envelope check. | **Modify.** |
+| Comp recommendation | ✅ Present (mocked) | Wave 1/2 implementation: tenant-configured benchmarks (uploaded salary bands per role family per location, refreshed by tenant admin) + internal equity check (recent hires in same role/grade within tenant) + budget envelope check (against `headcount_envelopes`). **Third-party market data feeds (Mercer, Aon, Glassdoor APIs) are Phase 2** — they require tenant-side commercial agreements with the data provider and are not part of POC scope. | **Modify.** |
 | Multi-level offer approval | ✅ Present | Same as requisition approval — configurable, role-based. | **Keep.** |
 | Offer letter e-signature | ❌ Missing | DocuSign / Adobe Sign integration. Cannot be PDF download + scan in 2026. | **Missing — required.** |
 | Counter-offer / negotiation log | ⚠️ Partial | Audit trail of comp negotiation. Important for DPDPA + dispute defence. | **Modify.** |
@@ -329,7 +337,7 @@ If Partner A's submission of Candidate X against Req R is the first valid submis
 | Candidate applies directly while in an active partner ownership window | Partner ownership stands; direct application is logged but does not displace partner. |
 | Empanelled partner A submits → ownership lapses → ad-hoc agency emails same CV → HireOps re-creates dedup-matched record | Ad-hoc submissions DO create ownership claims (consistent with §6.5 and `partner-wireflows.md` §4.1), but with: (a) a 60-day window (shorter than empanelled 90-day, recognising lower MSA backing), (b) fee per `ad_hoc_partners.default_fee_terms` with no holdback, (c) ad-hoc claims lose to empanelled claims in disputes when both are within window. |
 | Disputed ownership (partners disagree) | Manual review queue. Kyndryl admin sees full submission history with timestamps and resolves with audit trail. Default ruling: timestamp wins; in mixed empanelled/ad-hoc disputes, empanelled wins regardless of timestamp. |
-| Candidate submitted to a req that gets cancelled | Ownership transfers to the speculative talent pool **and the window resets to 180 days from the original submission date** (or the current 90-day window remainder, whichever is greater). Practically: a recently-submitted candidate gets the longer speculative window; a near-expired one keeps whatever time remained on the 90-day clock. |
+| Candidate submitted to a req that gets cancelled | Ownership transfers to the speculative talent pool **with the window reset to 180 days from the original submission date.** This always gives the partner more time than the remaining 90-day req-bound window, so no special-case logic is needed — the speculative window simply replaces the req-bound window. |
 
 #### Non-disclosure of ownership status to other partners
 
@@ -356,7 +364,7 @@ Partner-to-candidate communication is necessary (partners coach their candidates
 - All messages logged in HireOps, viewable by Kyndryl admin
 - Outbound messages from partner go through HireOps (not partner's own email) to enforce logging
 - Inbound replies route back through HireOps, displayed to partner without leaking candidate's actual email
-- LLM-based content scanner flags messages containing: alternative job offers, references to competing employers, requests for personal contact info outside the platform, derogatory references to Kyndryl
+- LLM-based content scanner flags messages containing: alternative job offers, references to competing employers, requests for personal contact info outside the platform, derogatory references to Kyndryl. **Quality thresholds:** scanner achieves **precision ≥ 0.85 and recall ≥ 0.7** on the calibration corpus (curated set of representative partner-candidate exchanges). Precision is the priority — false positives erode partner trust faster than false negatives miss abuse. Flagged messages route to a Kyndryl-admin review queue; the partner is notified that a message is held for review without being told the specific flag reason. Calibration corpus is reviewed and updated quarterly.
 - Volume rate limits per partner-recruiter to prevent spamming
 
 ### 6.7 Partner SLA & performance management
@@ -368,6 +376,8 @@ Partner-to-candidate communication is necessary (partners coach their candidates
 | Hire conversion rate (submitted → hired) | Empanelled: ≥3%. Below this, panel review. |
 | Partner exclusivity compliance | 100% — measured by zero double-submissions across vendors |
 | Partner panel review cadence | Quarterly — empanelled partners with bottom-quartile metrics flagged for renegotiation or panel removal |
+
+**Metric definitions.** Submission quality rate = (submissions reaching screen-pass) / (total valid submissions in the measurement period); a "valid submission" is one that passed dedup and ownership checks (per §6.4). Hire conversion rate = (hires originating from this partner's submissions) / (their total valid submissions). Time-to-first-submission is measured from the moment the req is opened to the partner via `partner_assignments` to the timestamp of the first valid submission against that req. All metrics are tenant-scoped and do not aggregate across tenants.
 
 Partners see their own metrics but not other partners'. Kyndryl admins see comparative panel view.
 
@@ -424,7 +434,7 @@ This is where HireOps stops being the system of record and Workday takes over fo
 | Hire Employee transaction | **Automatically on Day 1** (cron-style scheduler at 00:00 IST on the candidate's first working day → queued `Hire_Employee`). No human trigger. For volume: use `Import_Hire_Employee` (parallel-safe). |
 | Position assignment | Map to Workday Position created upstream during requisition approval. |
 | Compensation, location, reporting line | All synced as part of Hire transaction. |
-| Idempotency & reconciliation | If Workday call fails, retry. Daily reconciliation: all Day-0 hires in HireOps must have Workday Worker IDs by Day 1 EOD. |
+| Idempotency & reconciliation | If Workday call fails, retry per `workday-adr.md` §5.7 backoff matrix. **Daily reconciliation SLA: all Day-0 hires in HireOps must have Workday Worker IDs by Day 1 EOD (00:00 IST + 24h). Reconciliation surfaces any HireOps↔Workday divergence (worker active in one, terminated in the other; positions out of sync; etc.) within 24h of the discrepancy occurring. More than 5 divergences in any rolling 7-day window triggers a P2 PagerDuty alert and runbook activation per `workday-adr.md` §6.3.** |
 | Worker ID write-back | Workday Worker ID written back to HireOps employee record. Permanent linkage. |
 
 ### 7.3 Day 1 to Day 30
@@ -436,7 +446,7 @@ This is where HireOps stops being the system of record and Workday takes over fo
 | Buddy / manager assignment confirmation | Manager confirms buddy paired, first 1:1 scheduled. |
 | Training assignment | Mandatory compliance training (POSH for India, harassment training for PH/US, security awareness, code of conduct). LMS integration or built-in. |
 | 7-day, 14-day, 30-day check-ins | Auto-scheduled with manager + People Ops. Pulse survey at 30 days. |
-| Probation tracking | Default 3 or 6 months. Probation review milestone. Probation confirmation or extension. |
+| Probation tracking | Default 90 days, configurable up to 180 days per role/grade. Per-tenant override supported via admin → workflows → onboarding. Probation review milestone fires at the configured day. |
 
 ### 7.4 Onboarding analytics
 
@@ -457,7 +467,7 @@ This is where HireOps stops being the system of record and Workday takes over fo
 |---|---|
 | Resignation submission | Employee self-service in portal — last working day, reason (drop-down + free text), manager notified. |
 | Termination initiation (HR-side) | HR-led for performance / restructure / misconduct. Different workflow, more sensitive, more approvals. |
-| Notice period management | Calculate based on grade + contract. India: typically 30/60/90 days. Approve early release, garden leave, buy-out. |
+| Notice period management | Calculate based on grade + contract. India: typically 30/60/90 days **(notice period — distinct from probation period in §6.8 which can also be 90/180 days; these are independent clocks)**. Approve early release, garden leave, buy-out. |
 | Manager acknowledgement | Manager confirms within 48h. Triggers downstream. |
 
 ### 8.2 Notice period
@@ -519,7 +529,7 @@ Every sync is **idempotent**, **logged**, **retriable**, and **reconcilable**. T
 | **Consent records** | Retain consent audit for 7 years per DPDPA Rule 4. |
 | **Data residency** | India data may need to stay in Indian data centres (DPDPA does not currently require it but Kyndryl policy may). Architectural implication: Supabase region = ap-south-1 / Mumbai. |
 | **Audit log** | Every PII access logged: who, what, when, why. 7-year retention. |
-| **Bias / fairness reports** | Quarterly: selection rate by gender, age band, region. EEOC analogue if Kyndryl-US is in scope. |
+| **Bias / fairness reports** | Quarterly: selection rate by gender, age band, region. **Threshold: selection rate ratio between any two protected groups must stay above 0.8 per the EEOC 4/5ths rule.** Deviations below 0.8 in any cohort are flagged in the report and trigger a human review of the relevant pipeline stages. EEOC analogue if Kyndryl-US is in scope. Reports are consumed by HR Director and tenant compliance owner. |
 | **PoSH compliance training** | Mandatory in India onboarding flow. |
 | **GDPR** | If any Kyndryl entity touches EU candidates. |
 | **SOC 2** | Kyndryl will ask. POC need not have it; production roadmap must. |
@@ -563,6 +573,25 @@ Lovable has email (SMTP) and WhatsApp scaffolding. Required:
 
 Each channel must have: opt-in, opt-out, throttling, audit, template versioning, multi-language.
 
+**Default notification matrix (per persona × event-type).** Each tenant can override these defaults via admin → workflows → notifications.
+
+| Persona | Critical events | Routine updates | Digest cadence |
+|---|---|---|---|
+| Recruiter | In-app + email (real-time) for partner-submitted candidates and high-AI-score applicants | In-app for stage transitions; daily email digest for pipeline summary | Daily 09:00 IST |
+| Hiring manager | Email (real-time) for "needs your review" + Slack/Teams if integrated | Email digest for pipeline status on their reqs | Daily 08:30 IST |
+| Interview panel | Email + calendar invite for upcoming interviews; in-app reminder 24h before; SMS if feedback overdue | None | Weekly summary of upcoming interviews |
+| HR Operations | In-app + email for offer-related events; SLA-breach alerts in real-time | In-app for routine case updates | Daily 09:00 IST |
+| People Ops | In-app + email for onboarding case state changes; real-time for BGV failures and Workday Hire failures | In-app for routine case updates | Daily 08:00 IST |
+| IT / Workplace Services | In-app + email for new provisioning request; SLA breach in real-time | In-app for completed handoffs | Daily 08:00 IST |
+| Hiring Approver Chain | Email (real-time) with deep-link to approval UI; mobile-optimised | None | None — approvals are event-driven |
+| Candidate | Email (real-time) for stage transitions, interview invites, offer; WhatsApp same events if opted-in | None | None — candidate experience is event-driven |
+| HR Partner (recruiter) | In-app + email for stage changes on own candidates; real-time for offer/hire of own candidate | None | Daily 09:00 IST |
+| HR Partner (org admin) | Email (real-time) for hire confirmations and fee-eligible events | Weekly commercials summary email | Weekly Monday |
+| TA Lead / HR Director | Email digest for pipeline health, SLA breaches, partner quality dips | Quarterly DPDPA fairness report email | Daily TA Lead, Weekly HR Director |
+| Tenant admin | In-app + email for integration failures, tenant-config changes | None | Weekly admin summary |
+
+Notification volume is itself a metric — tenant admins see "notifications sent per persona per day" in admin → workflows → notifications, with the option to throttle if recruiters report notification fatigue. The platform default is calibrated to keep recruiters under ~30 notifications/day at 300/month volume.
+
 ### 9.6 Bulk operations (Lovable does not support this)
 
 At 300/month a recruiter doing one-by-one operations cannot keep up. Required:
@@ -573,6 +602,8 @@ At 300/month a recruiter doing one-by-one operations cannot keep up. Required:
 - Bulk schedule (slot-pool offered to N candidates, first-come-first-served)
 - Bulk export to CSV
 - Bulk import (CSV upload of candidate list from agency)
+
+**Performance budget for bulk operations.** Up to 50 records per operation (Wave 2 ships single-batch limits per `requirements.md` §11). State-transition operations (move, reject) must complete with P95 < 5s end-to-end. Bulk message dispatch — including template rendering, channel routing, and queueing — P95 < 30s for 50 recipients. Bulk export (CSV) P95 < 10s for 50 records. Operations exceeding these budgets degrade gracefully: progress is shown, individual failures are surfaced inline, partial completion is acceptable. The platform never silently fails bulk operations.
 
 ### 9.7 Search
 
@@ -798,7 +829,7 @@ Goal: handle 50 hires/month for 1 month as a stress test, with 10–15 active pa
 - Performance hardening (database indexes, caching, query optimisation)
 
 ### Wave 3 — "Production readiness" (weeks 19–24)
-Goal: 300 hires/month sustained for 1 month before declaring POC successful, full partner panel of 20–30 vendors active.
+Goal: 300 hires/month sustained for 1 month before declaring POC successful, with a working partner panel of 10–15 active empanelled vendors plus an open ad-hoc registration flow. The full panel of 20–30 empanelled vendors ramps over Q2 post-POC; this is intentional — onboarding more than 15 partners in 6 weeks creates panel-management overhead that distorts the POC's quality signal.
 
 - Pen test + remediation (with explicit partner-portal threat modelling)
 - DPDPA compliance audit (partner consent attestation flow critical)
