@@ -70,7 +70,7 @@ Lovable defines 7 personas: `requirement_owner`, `hr_head`, `recruiter`, `panel`
 | **Hiring Approver Chain** | Workday integration: org-level approvals for headcount, offers above grade, NPS-impacting decisions. | Lightweight inbox view: approve / reject with comment. Often mobile. |
 | **Employee (post-hire)** | Once onboarded, the candidate becomes an employee with ongoing rights: data access, exit initiation, document downloads. | Carries forward the candidate portal, with extended scope for active employees. |
 
-**Final persona count: 12.** This is significantly more than Lovable's 7 but it is honest about the actual operating reality of a GCC at this scale. The HR Partner persona alone may carry more daily user load than any internal persona — at 60% of 9,000 monthly applications, that's ~5,500 partner-side submissions/month spread across 20-30 partner organisations.
+**Final persona count: 13.** Lovable's 7 (recruiter, requirement_owner, hr_head, hr_team, panel, candidate, admin) plus the 6 net-new personas defined in §3.3 (People Ops, IT/Workplace Services, HR Partner, BGV Vendor, Hiring Approver Chain, Employee). This is significantly more than Lovable's 7 but it is honest about the actual operating reality of a GCC at this scale. The HR Partner persona alone may carry more daily user load than any internal persona — at 60% of 9,000 monthly applications, that's ~5,500 partner-side submissions/month spread across 20-30 partner organisations.
 
 ---
 
@@ -178,6 +178,18 @@ This is where Lovable is weakest. The mock data has candidates magically appeari
 | Candidate dedup | ❌ Missing | Same person applies via 3 channels — must be merged. Email + phone + name fuzzy match. | **Missing — critical.** |
 | WhatsApp / SMS apply | ✅ Partial (WhatsApp infra) | Lovable has WhatsApp infrastructure but no apply flow built. Worth completing — IN/PH candidates respond to WhatsApp at 4–10x email rates. | **Modify.** |
 
+### 5.3a Recruiter intake & triage
+
+The §5.3 sourcing requirements describe how applications enter HireOps. This sub-section covers what happens on the recruiter side once they land. The Lovable code mocks a populated pipeline; in reality, every new application is an event that needs routing, ack, and a human decision within an SLA.
+
+**Notification on application creation.** Every new `applications` row fires a notification to the recruiter currently assigned to the parent req. Channels: in-app (bell + dashboard "needs attention" tile) plus email digest. Real-time notification is preferred for partner-submitted candidates (which carry a fee clock) and for candidates whose AI score is in the top band. Lower-band direct applications can batch into a daily digest to avoid drowning the recruiter at 450–750 daily applications.
+
+**Default assignment rule.** Applications inherit the recruiter assigned to the req at the moment of req posting. Reassignment is supported (recruiter rotation, leave coverage) but every reassignment is logged in `audit_logs` with actor, target, reason. Multi-assignment (a "team" of recruiters on one req) is allowed; notifications fire to all assignees but the SLA clock attaches to the primary.
+
+**Triage SLA.** Recruiter must take a triage decision (accept-into-pipeline / reject-with-reason / route-to-other-recruiter) within **24 working hours** of application creation. SLA breach is surfaced on the recruiter dashboard, the TA Lead's pipeline-health view, and the partner-side dashboard if applicable (the partner sees "awaiting screen >5 days" exactly because this SLA exists). Triage decisions are themselves auditable state transitions.
+
+**Bulk triage.** Out of scope for Wave 1. Wave 1 ships single-record triage only. Bulk move/reject/message lands in Wave 2 per `requirements.md` §11 and §9.6.
+
 ### 5.4 Screening & shortlisting
 
 | Capability | Lovable status | Required behaviour | Disposition |
@@ -264,7 +276,9 @@ The distinction matters because empanelled partners have legal accountability fo
 
 This is the single most disputed area in agency-led hiring. Get this wrong and Kyndryl pays double fees, partners sue, recruiters disengage. The model below is the industry standard with refinements.
 
-**Core rule:** First valid submission wins, with a 90-day exclusivity window per candidate, scoped to the req they were submitted against.
+**Core rule:** First valid submission wins. Exclusivity windows: **90 days for req-bound submissions, 180 days for speculative submissions**, per candidate. **By default, ownership applies to the candidate at Kyndryl during the active window** — meaning if the candidate is hired into a different req at Kyndryl while the window is active, the original partner is still entitled to the fee. MSAs MAY narrow this default to attribute only to the originally-submitted req; this is an MSA-driven configuration, not the platform default.
+
+Throughout this section, "the window" refers to the applicable window for the submission type (90 for req-bound, 180 for speculative). Ad-hoc partner submissions use a shorter **60-day window** (see edge-case row "Empanelled partner A submits → ownership lapses → ad-hoc agency emails same CV..." below).
 
 #### What "valid submission" means
 
@@ -279,16 +293,16 @@ Submissions that fail any of these are rejected with a clear reason code. They d
 
 #### What ownership grants
 
-If Partner A's submission of Candidate X against Req R is the first valid submission:
+If Partner A's submission of Candidate X against Req R is the first valid submission (req-bound case; for speculative, swap "Req R" for "talent pool" and "90 days" for "180 days"):
 
-- **Partner A owns Candidate X for Req R for 90 days from submission date.**
-- If Candidate X is hired into Req R during the 90-day window — by **any** path (partner submission, direct application, recruiter outreach, referral) — Partner A is entitled to the placement fee per their MSA.
-- If Candidate X is hired into a **different req** at Kyndryl during the 90-day window, default rule: Partner A's fee applies, **unless** their MSA explicitly limits exclusivity to the originally-submitted req.
-- If Candidate X is rejected for Req R but is still active at Kyndryl elsewhere within the window, ownership stays with Partner A.
+- **Partner A owns Candidate X for 90 days from submission date** (180 days for speculative).
+- If Candidate X is hired into Req R during the active window — by **any** path (partner submission, direct application, recruiter outreach, referral) — Partner A is entitled to the placement fee per their MSA.
+- If Candidate X is hired into a **different req** at Kyndryl during the active window, the default fee attribution still goes to Partner A (consistent with the core rule above). An MSA MAY override this default to limit attribution to the originally-submitted req — surfaced via `partner_msa.exclusivity_scope = 'req_only'` per `architecture.md` §7.8.
+- If Candidate X is rejected for Req R but is still active at Kyndryl elsewhere within the active window, ownership stays with Partner A.
 
 #### When ownership lapses
 
-- 90 days from submission with no hire: lapses. Candidate becomes fair game for re-submission by any partner or for direct sourcing without fee attribution to Partner A.
+- The applicable window from submission with no hire (90 days req-bound, 180 days speculative, 60 days ad-hoc) elapses: lapses. Candidate becomes fair game for re-submission by any partner or for direct sourcing without fee attribution to Partner A.
 - Candidate explicitly opts out: lapses (DPDPA right). No fee.
 - Partner withdraws the candidate or breaches MSA: lapses, with audit trail.
 
@@ -297,13 +311,13 @@ If Partner A's submission of Candidate X against Req R is the first valid submis
 | Scenario | Resolution |
 |---|---|
 | Two partners submit same candidate within seconds | Database timestamp wins, with millisecond resolution. Loser sees a "candidate already submitted" message and their submission is recorded for audit but not counted. |
-| Candidate previously rejected from Kyndryl 6 months ago, now re-submitted by Partner B | If 90-day window from prior submission has lapsed, Partner B gets fresh ownership. If not lapsed (rare, 6-month-rejection means prior partner's window has long expired), Partner B gets fresh ownership. |
+| Candidate previously rejected from Kyndryl 6 months ago, now re-submitted by Partner B | If the prior submission's applicable window (90 / 180 / 60) has lapsed, Partner B gets fresh ownership. After 6 months, the prior partner's window has long expired regardless of submission type, so Partner B gets fresh ownership. |
 | Candidate self-applied directly 30 days before any partner submission | Direct application creates a record but no ownership claim (no fee owed). If a partner subsequently submits the same candidate, the partner's submission is **invalidated** because the candidate is already in HireOps. Direct-applied candidates are protected from retroactive partner claims. |
 | Partner submits same candidate to two different reqs simultaneously | Allowed. Each submission is tracked separately; ownership applies to whichever req results in hire first. |
 | Candidate applies directly while in an active partner ownership window | Partner ownership stands; direct application is logged but does not displace partner. |
-| Empanelled partner A submits → ownership lapses → ad-hoc agency emails same CV → HireOps re-creates dedup-matched record | Ad-hoc submissions never carry ownership (no MSA backing). Candidate becomes available for direct sourcing. |
-| Disputed ownership (partners disagree) | Manual review queue. Kyndryl admin sees full submission history with timestamps and resolves with audit trail. Default ruling: timestamp wins. |
-| Candidate submitted to a req that gets cancelled | Ownership transfers to the speculative talent pool for the remainder of the 90-day window. |
+| Empanelled partner A submits → ownership lapses → ad-hoc agency emails same CV → HireOps re-creates dedup-matched record | Ad-hoc submissions DO create ownership claims (consistent with §6.5 and `partner-wireflows.md` §4.1), but with: (a) a 60-day window (shorter than empanelled 90-day, recognising lower MSA backing), (b) fee per `ad_hoc_partners.default_fee_terms` with no holdback, (c) ad-hoc claims lose to empanelled claims in disputes when both are within window. |
+| Disputed ownership (partners disagree) | Manual review queue. Kyndryl admin sees full submission history with timestamps and resolves with audit trail. Default ruling: timestamp wins; in mixed empanelled/ad-hoc disputes, empanelled wins regardless of timestamp. |
+| Candidate submitted to a req that gets cancelled | Ownership transfers to the speculative talent pool **and the window resets to 180 days from the original submission date** (or the current 90-day window remainder, whichever is greater). Practically: a recently-submitted candidate gets the longer speculative window; a near-expired one keeps whatever time remained on the 90-day clock. |
 
 #### Non-disclosure of ownership status to other partners
 
@@ -313,14 +327,15 @@ Other partners attempting to submit the same candidate are not told **who** owns
 
 For partners without portal access:
 
-1. Kyndryl operates a per-partner email alias: `partner-acme-cvs@kyndryl-hireops.com`. Each empanelled-but-not-portal-using or ad-hoc partner gets their own alias for attribution.
+1. Kyndryl operates **per-req email aliases**: `cvs-{req-id}@kyndryl-hireops.com`, plus `cvs-talent-pool@kyndryl-hireops.com` for speculative ad-hoc submissions. Partner attribution comes from sender-domain lookup against the `ad_hoc_partners` registered domain list — not from the recipient mailbox. Per-req aliases auto-expire when the req closes.
 2. Inbound email is parsed by an ingest worker:
    - Extract CVs from attachments (PDF/DOC/DOCX)
-   - Extract subject line / body for req hint, candidate name, contact info
+   - Extract subject line / body for candidate name, contact info, and any optional consent attestation language
+   - Identify partner from the sender domain
    - Resume-parser fills in the rest
-3. Each parsed candidate creates a record with `source_partner_id` set to the alias's owning partner.
-4. If submission is for a specific req (mentioned in subject/body or via a unique alias per req), it routes there. Otherwise lands in talent pool.
-5. Same dedup + ownership rules apply, but ad-hoc partners get **a flat reduced fee** (or no fee, depending on MSA — most ad-hoc engagements are pay-per-hire-only with lower rates).
+3. Each parsed candidate creates a record with `source_partner_id` resolved from the sender-domain lookup.
+4. The req binding comes from the recipient alias: a `cvs-{req-id}@…` mail routes to that req; `cvs-talent-pool@…` routes to the talent pool.
+5. Same dedup + ownership rules apply (per §6.4 the ad-hoc window is 60 days), and ad-hoc partners get **a flat reduced fee** per `ad_hoc_partners.default_fee_terms` (or no fee, depending on the registered terms — most ad-hoc engagements are pay-per-hire-only with lower rates). No holdback applies to ad-hoc fees.
 
 ### 6.6 Communication guardrails
 
@@ -385,14 +400,16 @@ This entire section is net-new build. Lovable mentions "onboarding" once as a st
 | Probation policy acknowledgement | DPDPA-relevant — explicit acceptance, timestamped. |
 | Tax / PF / payroll forms | India: Form 11 (PF), Form F (gratuity nominee), tax declaration. Philippines: BIR 2316, SSS, PhilHealth, Pag-IBIG. **Geography-specific.** |
 
+**Document taxonomy.** Document categories are stored in a `document_types` lookup table — `document_types(id, code, name, geography_code, required_for_lifecycle_stage, retention_years)` — which drives both UI rendering and DPDPA retention. The `geography_code` field allows India-specific documents (PAN, Aadhaar, Form 11, Form F, tax declaration) and Philippines-specific documents (BIR 2316, SSS, PhilHealth, Pag-IBIG) to be filtered per the candidate's GCC location. `onboarding_documents` rows reference `document_types` via FK so each uploaded document has a typed category and a per-category retention policy. Schema in `architecture.md` §5.1 (onboarding group).
+
 ### 7.2 Day 0 — Workday hire sync (the critical integration moment)
 
 This is where HireOps stops being the system of record and Workday takes over for that worker.
 
 | Capability | Required behaviour |
 |---|---|
-| Pre-Hire creation in Workday | On offer-accept, create Workday Pre-Hire (SOAP `Put_Applicant` or staffing equivalent). |
-| Hire Employee transaction | On Day 1, fire `Hire_Employee` SOAP. For volume: use `Import_Hire_Employee` (parallel-safe). |
+| Pre-Hire creation in Workday | **Automatically on offer-accept** (e-sign webhook → `offer_accepted` event → queued `Put_Applicant`). No recruiter or People Ops click. SOAP `Put_Applicant` or staffing equivalent. |
+| Hire Employee transaction | **Automatically on Day 1** (cron-style scheduler at 00:00 IST on the candidate's first working day → queued `Hire_Employee`). No human trigger. For volume: use `Import_Hire_Employee` (parallel-safe). |
 | Position assignment | Map to Workday Position created upstream during requisition approval. |
 | Compensation, location, reporting line | All synced as part of Hire transaction. |
 | Idempotency & reconciliation | If Workday call fails, retry. Daily reconciliation: all Day-0 hires in HireOps must have Workday Worker IDs by Day 1 EOD. |
@@ -472,7 +489,7 @@ This is detailed in `architecture.md` but the requirements are:
 | Sync | Direction | Trigger | Frequency / mode |
 |---|---|---|---|
 | Org structure (departments, cost centers, locations) | WD → HireOps | Daily snapshot | Batch, nightly |
-| Positions | WD → HireOps | On position create/update in WD | Near-real-time (webhook or 15-min poll) |
+| Positions | WD → HireOps | On position create/update in WD | 15-min poll (Workday does not natively support outbound webhooks; see `workday-adr.md` §1). |
 | Headcount approvals | HireOps → WD | New requisition approved | Real-time (REST) |
 | Hire (Pre-Hire + Hire) | HireOps → WD | Offer accepted → Day 1 | Real-time (SOAP `Hire_Employee` or `Import_Hire_Employee` for batch) |
 | Worker updates (post-hire data corrections) | Bidirectional | On change | Real-time |
@@ -826,13 +843,13 @@ These need answers before architecture is locked down. Listed in priority order.
 11. **SOC 2 / ISO 27001 timeline?** POC tolerance vs production blocker.
 12. **Branding?** Kyndryl logo / colours / "powered by HireOps" positioning?
 13. **Volume ramp?** 300/month from week 1 of go-live, or ramp from 50 → 150 → 300 over Q1?
-14. **Languages?** English-only acceptable? Hindi / Tagalog needed for candidate portal?
+14. **Languages?** English-only acceptable? Hindi / Tagalog needed for candidate portal? — **RESOLVED:** English only for POC (per §9.9); Hindi / Tagalog deferred to production roadmap.
 15. **Partner panel size & composition?** How many empanelled partners are envisioned? Are we starting with the existing Kyndryl agency panel or building net-new?
 16. **Partner MSA template?** Does Kyndryl have a standard MSA we should align the platform's commercial model to (fee structures, exclusivity terms, payment terms, dispute clauses)? If not, we're guessing on key data fields.
 17. **Existing partner data?** Are there candidates already in flight via partners that need to be migrated in with ownership preserved?
 18. **Partner panel governance?** Who at Kyndryl owns the partner relationship — TA Lead? Procurement? A separate Vendor Management Office? Drives admin permissions design.
 19. **Invoicing & finance integration?** Does Kyndryl AP have an existing system we should integrate with for partner invoicing (SAP, Oracle, Coupa)? Or do partners invoice through email/PDF?
-20. **Ad-hoc partner email aliases?** Will Kyndryl provision per-partner email addresses (`partner-acme-cvs@kyndryl-hireops.com`) or do we need a different attribution mechanism?
+20. **Ad-hoc partner email aliases?** Will Kyndryl provision per-partner email addresses (`partner-acme-cvs@kyndryl-hireops.com`) or do we need a different attribution mechanism? — **RESOLVED:** per-req aliases (`cvs-{req-id}@kyndryl-hireops.com`) plus `cvs-talent-pool@kyndryl-hireops.com`; partner attribution comes from sender-domain lookup against `ad_hoc_partners` (per §6.5).
 
 ---
 

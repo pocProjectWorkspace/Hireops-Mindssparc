@@ -156,8 +156,8 @@ Use a unified-API vendor that abstracts away Workday-specific quirks.
 | Locations | WD → HireOps | Daily snapshot | REST + WQL | Nightly |
 | Job profiles | WD → HireOps | On change | REST + WQL `SELECT ... FROM jobProfiles WHERE lastModified > ?` | Hourly poll |
 | Positions | WD → HireOps | On lifecycle event | REST + WQL `SELECT ... FROM positions WHERE lastModified > ?` | 15-minute poll |
-| Pre-Hire (Applicant) | HireOps → WD | Offer accepted | SOAP `Put_Applicant` | Real-time, queued |
-| Hire (full Worker creation) | HireOps → WD | Day 1 of new hire | SOAP `Hire_Employee` | Real-time, queued (or `Import_Hire_Employee` for batch days) |
+| Pre-Hire (Applicant) | HireOps → WD | Offer accepted | SOAP `Put_Applicant`. **Auto-triggered by `offer_accepted` event** (e-sign webhook); no human click. | Real-time, queued |
+| Hire (full Worker creation) | HireOps → WD | Day 1 of new hire | SOAP `Hire_Employee` (or `Import_Hire_Employee` for batch days). **Auto-triggered by Day-1 calendar event** (00:00 IST on first working day); no human click. | Real-time, queued |
 | Hire BP completion confirmation | WD → HireOps | After Hire call | SOAP `Get_Business_Process_Parameters` against returned Event_Reference | Poll every 60s for up to 24h |
 | Worker reads (manager view, payroll, etc.) | WD → HireOps | On demand | REST `GET /workers/{id}` | Real-time, cached 5min |
 | Worker updates (post-hire data corrections) | Bidirectional | On change | SOAP `Edit_Position_Restrictions`, `Change_Job` | Queued |
@@ -166,34 +166,67 @@ Use a unified-API vendor that abstracts away Workday-specific quirks.
 
 ### 5.2 The integration worker process
 
+Pre-Hire and Hire are **two distinct events at two distinct moments**, each fired automatically without a human click. Pre-Hire is queued by the e-sign webhook on offer-accept; Hire is queued by a cron-style scheduler on the candidate's first working day at 00:00 IST. Both flows share the same idempotency check, the same `FOR UPDATE` row lock, and the same failure-mode handling.
+
+#### Sequence 1 — Pre-Hire on offer-accept
+
 ```mermaid
 sequenceDiagram
+    participant ES as E-sign Provider
     participant App as HireOps API
     participant Q as BullMQ (Redis)
     participant W as workday-sync-worker
     participant WD as Workday Tenant
     participant DB as Postgres
 
-    Note over App: Recruiter clicks "Mark as Hired" on candidate
-    App->>DB: Insert workday_sync_jobs row<br/>(status='pending', business_key='hire:{candidate_id}:{position_id}')
-    App->>Q: Enqueue 'workday.hire' job
-    App-->>App: Return 202 Accepted to recruiter
+    Note over ES,App: Candidate countersigns offer; e-sign provider fires webhook
+    ES->>App: POST /webhooks/esign (offer_accepted)
+    App->>DB: Insert workday_sync_jobs row<br/>(status='pending', business_key='put_applicant:{candidate_id}')
+    App->>Q: Enqueue 'workday.put_applicant' job
+    App-->>ES: 200 OK
 
     Q->>W: Pop job
     W->>DB: Lock workday_sync_jobs row<br/>(SELECT FOR UPDATE)
     W->>DB: Check business_key not already completed
-    
+
     alt Already completed (idempotency hit)
         W->>DB: Mark job as 'duplicate', return
     else New job
-        W->>WD: SOAP Put_Applicant<br/>(create pre-hire if not exists)
+        W->>WD: SOAP Put_Applicant<br/>(candidate identity + position reference)
         WD-->>W: Applicant_Reference
-        W->>DB: Store Workday applicant_wid
-        
-        W->>WD: SOAP Hire_Employee<br/>(with Position_Reference, Hire_Date, Personal_Data)
+        W->>DB: UPDATE candidates SET workday_applicant_wid<br/>Mark job 'completed'
+    end
+```
+
+#### Sequence 2 — Hire on Day 1
+
+```mermaid
+sequenceDiagram
+    participant Cron as Day-1 Scheduler
+    participant App as HireOps API
+    participant Q as BullMQ (Redis)
+    participant W as workday-sync-worker
+    participant WD as Workday Tenant
+    participant DB as Postgres
+    participant Onb as Onboarding Case
+
+    Note over Cron: 00:00 IST on candidate's first working day
+    Cron->>App: Trigger hire for candidate
+    App->>DB: Insert workday_sync_jobs row<br/>(status='pending', business_key='hire:{candidate_id}:{position_id}')
+    App->>Q: Enqueue 'workday.hire_employee' job
+
+    Q->>W: Pop job
+    W->>DB: Lock workday_sync_jobs row<br/>(SELECT FOR UPDATE)
+    W->>DB: Check business_key not already completed
+
+    alt Already completed (idempotency hit)
+        W->>DB: Mark job as 'duplicate', return
+    else New job
+        W->>DB: Read candidates.workday_applicant_wid<br/>(populated by Sequence 1)
+        W->>WD: SOAP Hire_Employee<br/>(against existing Applicant_Reference)
         WD-->>W: Event_Reference (BP started)
         W->>DB: Store event_wid, status='hire_initiated'
-        
+
         loop Poll BP status every 60s, up to 24h
             W->>WD: SOAP Get_Business_Process_Parameters
             WD-->>W: BP status (in_progress / completed / failed / cancelled)
@@ -201,13 +234,13 @@ sequenceDiagram
                 W->>WD: REST GET /workers/{wid}<br/>(fetch worker_wid)
                 WD-->>W: Worker record
                 W->>DB: UPDATE workday_worker_links<br/>(person_id, worker_wid)
-                W->>DB: Mark job as 'completed'
-                W->>App: Webhook back to HireOps<br/>(employee record now active)
+                W->>DB: Mark job 'completed'
+                W->>Onb: Emit 'workday_hire_synced' event<br/>(onboarding case advances)
             else BP failed/cancelled
-                W->>DB: Mark job as 'failed_bp'<br/>(requires_human=true)
+                W->>DB: Mark job 'failed_bp'<br/>(requires_human=true)
                 W->>App: Notify People Ops persona
             else Still in progress after 24h
-                W->>DB: Mark job as 'bp_timeout'<br/>(requires_human=true)
+                W->>DB: Mark job 'bp_timeout'<br/>(requires_human=true)
                 W->>App: Notify People Ops + on-call
             end
         end

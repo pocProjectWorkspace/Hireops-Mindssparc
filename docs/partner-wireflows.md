@@ -783,7 +783,7 @@ Layout is similar to single-candidate submit but without the req-specific fields
 ```
 
 **Permission notes:**
-- Different ownership rules: speculative submissions have a 180-day window (vs 90 for req-bound)
+- Different ownership rules: speculative submissions have a **180-day exclusivity window** (vs 90 days for req-bound, 60 days for ad-hoc), per the canonical rules in `requirements.md` §6.4
 - Consent record explicitly tagged as `consent_purpose='talent_pool'` for retention compliance
 
 ### 3.10 Messaging with candidates
@@ -845,6 +845,7 @@ Layout is similar to single-candidate submit but without the req-specific fields
 - Every message logged in `partner_candidate_messages` with full content
 - LLM monitor runs on every outgoing message before delivery
 - Kyndryl admins can read all messages in audit view (partners are told this in the consent flow)
+- Partner-org-admins see aggregated metrics across their org and have access to commercials. They **cannot** read message content unless a message has been flagged by content monitoring. This mirrors how Kyndryl admins behave for partner audit purposes — the org-admin role exists to manage the team and reconcile commercials, not to surveil individual conversations.
 
 ### 3.11 Commercials & invoices
 
@@ -1161,14 +1162,14 @@ Partner portal must meet WCAG 2.1 AA:
 
 ## 8. Open questions to resolve before build
 
-1. **Partner-org-admin role granularity** — should partner-org-admin have ability to override their own recruiters' submissions? (current design: no)
-2. **Speculative submission ownership window** — proposed 180 days. Confirm with Kyndryl legal.
-3. **Bulk submit quota** — proposed 50/email for ad-hoc, 50/upload for portal. Acceptable?
-4. **Replacement guarantee mechanics** — when a hire leaves in 90 days, does the partner get a free replacement attempt or just clawback? Both? Per-MSA?
-5. **Talent pool re-prompt** — at 24-month consent expiry, does the system auto-prompt the candidate or partner? (proposed: candidate, with partner cc'd)
-6. **Mobile partner portal** — full feature parity at launch, or web-only with mobile-responsive? (proposed: mobile-responsive web for POC)
-7. **Multi-language consent text** — must be available in candidate's language at attestation time (English + Hindi for India POC?)
-8. **Partner-side webhooks** — partners may want HireOps to push events to their internal CRMs. Phase 2 capability or POC scope?
+1. **Partner-org-admin role granularity** — should partner-org-admin have ability to override their own recruiters' submissions? (current design: no) — **RESOLVED:** no override. Org-admin sees aggregated metrics across their org and has access to commercials, but cannot edit recruiter submissions. They cannot read message content unless a message has been flagged by content monitoring (mirrors how Kyndryl admins behave).
+2. **Speculative submission ownership window** — proposed 180 days. Confirm with Kyndryl legal. — **RESOLVED:** 180 days, codified in `requirements.md` §6.4.
+3. **Bulk submit quota** — proposed 50/email for ad-hoc, 50/upload for portal. Acceptable? *(Open — Wave 2 question; bulk submission is not in Wave 1 scope.)*
+4. **Replacement guarantee mechanics** — when a hire leaves in 90 days, does the partner get a free replacement attempt or just clawback? Both? Per-MSA? — **RESOLVED:** clawback-only as Wave 1 seed (`partner_msa.replacement_mode = 'clawback_only'`). Schema accommodates `free_replacement` and `hybrid` per MSA for Wave 2; see `architecture.md` §7.8.
+5. **Talent pool re-prompt** — at 24-month consent expiry, does the system auto-prompt the candidate or partner? (proposed: candidate, with partner cc'd) *(Open — Wave 2 question; talent pool is not in Wave 1 scope.)*
+6. **Mobile partner portal** — full feature parity at launch, or web-only with mobile-responsive? (proposed: mobile-responsive web for POC) — **RESOLVED:** mobile-responsive web for POC; native deferred.
+7. **Multi-language consent text** — must be available in candidate's language at attestation time (English + Hindi for India POC?) — **RESOLVED:** English Wave 1; Hindi/Tagalog Wave 2/Phase 2 per `requirements.md` §9.9.
+8. **Partner-side webhooks** — partners may want HireOps to push events to their internal CRMs. Phase 2 capability or POC scope? — **RESOLVED:** Phase 2 capability; not in POC.
 
 ---
 

@@ -169,6 +169,8 @@ Lovable's 45-table schema is a decent foundation for the **recruitment** half. I
 
 **Tables to keep largely as-is:** `profiles`, `user_roles`, `requisitions`, `jobs`, `applications`, `interviews`, `interview_feedback`, `interview_summaries`, `interview_plans`, `offers`, `offer_recommendations`, `jd_versions`, `jd_skills`, `bias_rules`, `audit_logs`, `notifications`, `ai_usage_logs`, `kb_articles`, `whatsapp_*`, `messaging_providers`, `workflows`, `workflow_runs`.
 
+**Note: partner submissions are NOT a separate table.** They use the existing `applications` table with three new columns: `source_partner_id` (FK to `partner_orgs`, nullable for direct applications), `submitted_by_partner_user_id` (FK to `partner_users`, nullable), and `partner_submission_metadata` (JSONB carrying partner-side context such as the consent attestation timestamp and the partner-supplied recruiter note). The "submission" verb is informal language used in `partner-wireflows.md`; the canonical table is `applications`.
+
 **Tables to restructure:**
 
 - `candidates` — split into `candidates` (recruitment-side identity) and `employees` (post-hire). They share a `person_id` foreign key. This is critical for DPDPA: a candidate has different consent than an employee, and an alumni has different retention than either.
@@ -188,10 +190,22 @@ positions                       -- Workday-mirrored position records
 headcount_envelopes             -- approved hiring budget by org/period
 position_assignments            -- which person occupies which position when
 
+-- Recruitment core (extension)
+requisition_knockouts           -- (id, req_id FK→requisitions, question_text TEXT,
+                                --  type ENUM('boolean','numeric_min','numeric_max','enum'),
+                                --  threshold_value JSONB,
+                                --  source ENUM('parsed_cv','candidate_asserted','partner_asserted'),
+                                --  order_index INT)
+                                -- Gates submission validity per requirements.md §5.4
+
 -- Onboarding
 onboarding_cases                -- one per new hire
 onboarding_tasks                -- atomic tasks (collect doc, IT provision, training, etc.)
-onboarding_documents            -- KMS-encrypted document blobs metadata
+document_types                  -- (id, code TEXT UNIQUE, name TEXT, geography_code CHAR(2),
+                                --  required_for_lifecycle_stage TEXT, retention_years INT)
+                                -- Drives onboarding_documents.document_type_id FK and
+                                -- per-geography filtering. Cross-references requirements.md §7.1.
+onboarding_documents            -- KMS-encrypted document blob metadata; FK document_type_id → document_types
 bgv_runs                        -- BGV vendor coordination
 bgv_results                     -- vendor outcomes
 it_provisioning_requests        -- handoff to IT persona
@@ -283,8 +297,8 @@ This is the make-or-break part of the POC. Detailed design.
 | Object | Direction | Trigger | API | Frequency |
 |---|---|---|---|---|
 | Organisations (depts, cost centres, locations) | WD → HireOps | Daily snapshot | REST + WQL | Nightly batch |
-| Job profiles | WD → HireOps | On change | REST + WQL | Hourly poll initially; webhook later |
-| Positions | WD → HireOps | On position lifecycle event | SOAP `Get_Positions` + REST | 15-min poll, eventually webhook |
+| Job profiles | WD → HireOps | On change | REST + WQL | Hourly poll. Workday does not natively support outbound webhooks for HR data changes; see `workday-adr.md` §1. |
+| Positions | WD → HireOps | On position lifecycle event | SOAP `Get_Positions` + REST | 15-min poll. Workday does not natively support outbound webhooks for HR data changes; see `workday-adr.md` §1. Third-party "virtual webhook" vendors (Knit, Merge) poll on customer's behalf — out of scope for POC. |
 | Pre-Hire | HireOps → WD | Offer accepted | SOAP `Put_Applicant` | Real-time, queued |
 | Hire | HireOps → WD | Day 1 of new hire | SOAP `Hire_Employee` (or `Import_Hire_Employee` for batch) | Real-time, queued |
 | Worker reads | WD → HireOps on demand | Manager view, payroll, etc. | REST `/workers/{id}` | Real-time |
@@ -486,8 +500,11 @@ Step-by-step, in order, with system actions:
    ├─ Submitting partner empanelled for this req? → if no, REJECT
    ├─ Required fields populated? → if no, route to "missing info" queue
    ↓
-5. Insert candidate record + application record + ownership claim in single transaction.
-   Transaction commits or rolls back atomically. No half-states.
+5. Single transaction inserts a row into `applications` with `source_partner_id` set,
+   plus a `candidate_ownership_claims` row, plus a `consents` row. (`candidates` row
+   created earlier in step 3 if no existing person.) Note: there is no separate
+   `submissions` table — partner submissions are `applications` rows tagged with the
+   partner FKs. Transaction commits or rolls back atomically. No half-states.
    ↓
 6. Async: notify Kyndryl recruiter assigned to this req.
    Async: send confirmation to partner.
@@ -546,16 +563,26 @@ Architecture:
 ```sql
 CREATE TABLE partner_msa (
   partner_org_id UUID PRIMARY KEY,
-  fee_structure TEXT NOT NULL,               -- 'percentage_ctc' | 'flat_per_grade'
+  tier TEXT NOT NULL,                        -- 'empanelled' | 'ad_hoc'
+  fee_structure TEXT NOT NULL,               -- 'percentage_ctc' | 'flat_per_grade' | 'flat_per_hire'
   fee_rate JSONB NOT NULL,                   -- structured per fee structure
-  exclusivity_window_days INT NOT NULL DEFAULT 90,
-  exclusivity_scope TEXT NOT NULL,           -- 'req_only' | 'org_wide'
+  exclusivity_window_days INT NOT NULL DEFAULT 90,    -- 90 empanelled / 60 ad-hoc / 180 speculative
+  exclusivity_scope TEXT NOT NULL,           -- 'req_only' | 'org_wide' (default 'org_wide')
   probation_holdback_days INT NOT NULL DEFAULT 90,
-  probation_holdback_pct NUMERIC NOT NULL,   -- e.g. 50.00 = 50% withheld until probation
+  probation_holdback_pct NUMERIC NOT NULL,   -- e.g. 25.00 = 25% (Wave 1 default for empanelled);
+                                             -- ad-hoc rows have probation_holdback_pct = 0
+  replacement_guarantee_days INT NOT NULL DEFAULT 90,
+  replacement_mode TEXT NOT NULL DEFAULT 'clawback_only',
+                                             -- 'clawback_only' | 'free_replacement' | 'hybrid'
   effective_from DATE NOT NULL,
   effective_to DATE NULL,
-  signed_msa_url TEXT NOT NULL               -- pointer to KMS-encrypted contract
+  signed_msa_url TEXT NULL                   -- pointer to KMS-encrypted contract;
+                                             -- NULL for ad-hoc tier (no MSA)
 );
+
+-- Ad-hoc partners share this table with tier='ad_hoc'. Seed defaults for ad-hoc rows:
+-- fee_structure='flat_per_hire', probation_holdback_pct=0, replacement_mode='clawback_only',
+-- exclusivity_window_days=60, signed_msa_url=NULL. See requirements.md §6.5 and §6.4.
 
 CREATE TABLE partner_fees (
   id UUID PRIMARY KEY,
@@ -578,21 +605,24 @@ Invoice generation is partner-initiated from their portal. The system pre-fills 
 
 ### 7.9 Email-intake parser for ad-hoc partners
 
-A separate worker process subscribes to per-partner email aliases:
+A separate worker process subscribes to per-req email aliases:
 
 ```
-partner-acme-cvs@kyndryl-hireops.com → routed to S3 bucket via SES (or equivalent)
-                                       → S3 event triggers parser worker
+cvs-{req-id}@kyndryl-hireops.com  →  routed to S3 bucket via SES (or equivalent)
+cvs-talent-pool@kyndryl-hireops.com  →  S3 event triggers parser worker
                                        → Worker:
+                                         ├─ Identify partner from sender domain
+                                         │  (lookup against ad_hoc_partners.registered_domains)
                                          ├─ Extract attachments
                                          ├─ Parse CVs (PDF/DOC/DOCX/IMG with OCR)
-                                         ├─ Extract subject/body for req hint
+                                         ├─ Extract subject/body for candidate name + consent language
                                          ├─ Run dedup check (same as portal flow)
-                                         ├─ Create candidate + reduced-rate ownership claim
+                                         ├─ Create candidate + ad-hoc ownership claim
+                                         │  (60-day window per requirements.md §6.4)
                                          └─ Send acknowledgement email back
 ```
 
-Per-partner aliases are the attribution mechanism. Each empanelled-but-non-portal partner gets one alias; ad-hoc agencies get aliases on demand. The alias-to-partner mapping is configured by Kyndryl admin.
+**Per-req aliases are the routing mechanism; sender-domain lookup is the partner attribution mechanism.** This matches `requirements.md` §6.5 and `partner-wireflows.md` §4.2. Each open req gets a `cvs-{req-id}@…` alias auto-generated at posting time and auto-expired at req close. Speculative ad-hoc submissions go to the single `cvs-talent-pool@…` alias. The sender-domain → partner mapping is configured by Kyndryl admin via the ad-hoc registration flow (`partner-wireflows.md` §5.1).
 
 Failure handling: emails that can't be parsed (corrupted PDFs, unintelligible content, no contact info) route to a "needs human review" queue surfaced to recruiters. They are never silently dropped.
 
@@ -644,6 +674,8 @@ These are foundational. They cannot be retrofitted in Wave 2. They have to ship 
 
 Pattern: HireOps initiates a BGV check with candidate + role context, vendor processes (1–10 days), webhook back with verification report. Status surfaces in onboarding case.
 
+**Webhook authentication and isolation.** Inbound vendor webhooks are authenticated via HMAC-SHA256 of the request body using a shared secret stored in Vault per environment per vendor. IP allowlisting is scoped per environment (sandbox / staging / production) and configured at the Cloudflare WAF tier. Vendor-specific SDK or REST bindings are deferred until §17 Q9 (vendor selection) is answered; the integration interface lives behind a `packages/bgv-client` (to be created) so switching vendors is a config change rather than a refactor.
+
 ### 8.2 Job boards
 
 | Board | Geography | Integration |
@@ -694,9 +726,10 @@ DocuSign or Adobe Sign. Generate offer PDF → kick off envelope → webhook on 
 | User type | Auth method | MFA |
 |---|---|---|
 | Internal users (recruiter, HM, panel, HR Ops, IT, admin) | SSO (SAML / OIDC) via Kyndryl IdP | Mandatory, IdP-enforced |
+| Hiring Approver Chain | SSO (SAML / OIDC) via Kyndryl IdP. Lightweight inbox view inside `apps/internal-portal`, reachable from email deep-links. Workday-originated approvals are read back via reconciliation, not pushed (see `workday-adr.md` §1). | Mandatory, IdP-enforced |
 | Candidates | Email + password OR magic link OR phone OTP | Optional |
 | Employees (post-hire) | Continues SSO once provisioned | Mandatory |
-| External users (BGV vendor) | API key + IP allowlist | n/a — service account |
+| External users (BGV vendor) | API key + IP allowlist; inbound webhooks HMAC-SHA256 signed (per §8.1) | n/a — service account |
 | API integrations | OAuth 2.0 client credentials or signed JWT | n/a |
 
 The Lovable demo bypass is removed entirely from the production build via build flag. It can stay in a separate sales-demo environment.
@@ -1014,18 +1047,18 @@ Realistic burn at fully-loaded rates: roughly $1.4M–$2.0M for the 24-week POC,
 
 These need explicit decisions before we lock the architecture. Listed in priority.
 
-1. **Hosting region.** ap-south-1 (Mumbai) for India GCC? AP region for Philippines? Multi-region from POC or single?
-2. **Postgres host.** Supabase managed (we already have an instance) vs Neon vs RDS vs CloudSQL? Lean toward Supabase for POC, RDS/CloudSQL at scale.
-3. **API runtime host.** Fly.io vs Render vs Cloud Run vs Kubernetes? Lean toward Fly.io for POC simplicity.
-4. **Object storage.** S3 vs Cloudflare R2 vs Supabase Storage? Lean toward S3 for KMS integration.
-5. **LLM primary.** Anthropic direct vs Bedrock vs Vertex? Affects data residency + Kyndryl AWS relationship.
-6. **Career site framework.** Next.js (React, familiar) vs Astro (better SEO, less JS)? Lean Next.js for team familiarity.
-7. **Mobile strategy.** PWA only for POC (responsive web)? Native later? Defer decision to post-POC.
-8. **Job board partnerships.** Which boards mandatory for POC? LinkedIn + Naukri (India) is minimum.
-9. **BGV vendor.** Kyndryl-existing or new? Affects week-1 contract motion.
-10. **E-signature provider.** DocuSign or Adobe Sign? Either fine; pick what Kyndryl already has.
-11. **Calendar — single or both?** Google + Outlook both? Defer cost to scope.
-12. **Interview platform.** Zoom or Teams? Pick Kyndryl's standard.
+1. **Hosting region.** ap-south-1 (Mumbai) for India GCC? AP region for Philippines? Multi-region from POC or single? — **RESOLVED:** ap-south-1 (Mumbai), single-region for POC. Kyndryl can override.
+2. **Postgres host.** Supabase managed (we already have an instance) vs Neon vs RDS vs CloudSQL? Lean toward Supabase for POC, RDS/CloudSQL at scale. — **RESOLVED:** Supabase managed for POC; revisit RDS/CloudSQL for production. Kyndryl can override.
+3. **API runtime host.** Fly.io vs Render vs Cloud Run vs Kubernetes? Lean toward Fly.io for POC simplicity. — **RESOLVED:** Fly.io for POC. Kyndryl can override.
+4. **Object storage.** S3 vs Cloudflare R2 vs Supabase Storage? Lean toward S3 for KMS integration. — **RESOLVED:** S3 + KMS. Kyndryl can override.
+5. **LLM primary.** Anthropic direct vs Bedrock vs Vertex? Affects data residency + Kyndryl AWS relationship. — **RESOLVED:** Anthropic Claude direct as primary; Bedrock retained as fallback. Kyndryl can override (if data-residency policy mandates Bedrock).
+6. **Career site framework.** Next.js (React, familiar) vs Astro (better SEO, less JS)? Lean Next.js for team familiarity. — **RESOLVED:** Next.js with SSR (already noted in §4.1).
+7. **Mobile strategy.** PWA only for POC (responsive web)? Native later? Defer decision to post-POC. — **RESOLVED:** PWA-quality responsive web for POC; native deferred to post-POC.
+8. **Job board partnerships.** Which boards mandatory for POC? LinkedIn + Naukri (India) is minimum. *(Open — genuine Kyndryl decision; depends on existing contracts. Wave 2 work.)*
+9. **BGV vendor.** Kyndryl-existing or new? Affects week-1 contract motion. *(Open — genuine Kyndryl decision; same as `requirements.md` §12 Q5.)*
+10. **E-signature provider.** DocuSign or Adobe Sign? Either fine; pick what Kyndryl already has. — **RESOLVED:** DocuSign as default; Adobe Sign available as alternative if Kyndryl already has a contract. Kyndryl can override.
+11. **Calendar — single or both?** Google + Outlook both? Defer cost to scope. — **RESOLVED:** Both Google + Outlook from POC (Kyndryl GCC users will be on either). Kyndryl can override to single if scope tightens.
+12. **Interview platform.** Zoom or Teams? Pick Kyndryl's standard. — **RESOLVED:** Zoom as default; pivot to Teams is straightforward. Kyndryl can override.
 
 ---
 

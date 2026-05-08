@@ -9,3 +9,6 @@ pnpm-lock.yaml
 
 # Design docs are authored prose — do not reflow.
 docs/
+
+# Internal modelling artefacts — also authored prose, do not reflow.
+docs/internal/
