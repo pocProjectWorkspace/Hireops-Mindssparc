@@ -233,6 +233,8 @@ The product is multi-tenant SaaS but the docs currently describe the architectur
 
 **Proposed direction:** Shared-database / shared-schema with a `tenant_id` column on every domain table and RLS enforcement (the Ashby pattern). Tenant onboarding as a product workflow (admin invites tenant → tenant admin completes onboarding flow → integrations configured → first users invited). Per-tenant configuration surfaces with sensible platform defaults. Region-per-tenant accommodated in the data model (a tenant attribute drives storage/compute placement) but not implemented in POC — Wave 1 ships single-region (ap-south-1) and the data model doesn't paint us into a corner. Until ADR-002 lands, FND-15 in the backlog is its placeholder.
 
+**RESOLVED:** ADR-002 (`/docs/multi-tenancy-adr.md`) landed 2026-05-09. Locks the six interlocking decisions: shared DB + tenant_id + RLS (Decision 1); subdomain primary + JWT `tid` claim authoritative (Decision 2); RLS as outermost predicate composing with role scoping via SECURITY DEFINER `current_tenant_id()` helper (Decision 3); hybrid configuration model — typed tables for behaviour, JSONB for cosmetics (Decision 4); per-tenant DEK envelope encryption for integration credentials (Decision 5); multi-step tenant onboarding as a product workflow (Decision 6). The implications for existing schemas (adding `tenant_id` columns, RLS policy updates, `integration_credentials` envelope-encryption migration) are tracked separately for follow-up application; FND-15 in the Wave 1 backlog is the implementation task.
+
 ---
 
 ## c) Decisions still open per `requirements.md` §12 and `architecture.md` §17
