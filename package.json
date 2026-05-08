@@ -1,0 +1,28 @@
+{
+  "name": "hireops",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Enterprise ATS platform for the Kyndryl GCC POC.",
+  "engines": {
+    "node": ">=22.0.0 <23"
+  },
+  "packageManager": "pnpm@11.0.8",
+  "scripts": {
+    "build": "turbo build",
+    "lint": "turbo lint",
+    "typecheck": "turbo typecheck",
+    "format": "prettier --write .",
+    "format:check": "prettier --check ."
+  },
+  "devDependencies": {
+    "@eslint/js": "9.18.0",
+    "@types/node": "22.10.5",
+    "eslint": "9.18.0",
+    "eslint-config-prettier": "9.1.0",
+    "prettier": "3.4.2",
+    "turbo": "2.3.3",
+    "typescript": "5.7.3",
+    "typescript-eslint": "8.20.0"
+  }
+}
