@@ -15,6 +15,13 @@
       "when": 1778292213951,
       "tag": "0001_early_mindworm",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1778292213952,
+      "tag": "0002_auth_integration",
+      "breakpoints": true
     }
   ]
 }

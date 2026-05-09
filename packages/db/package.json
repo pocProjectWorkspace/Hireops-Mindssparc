@@ -12,9 +12,12 @@
     "db:migrate": "tsx src/migrate.ts",
     "db:seed": "tsx src/seed.ts",
     "db:studio": "drizzle-kit studio",
-    "db:push": "drizzle-kit push"
+    "db:push": "drizzle-kit push",
+    "db:test:setup": "tsx src/test-fixtures/setup-test-user.ts",
+    "db:test:verify": "tsx src/test-fixtures/verify-jwt-claims.ts"
   },
   "dependencies": {
+    "@supabase/supabase-js": "^2.105.3",
     "drizzle-orm": "^0.45.2",
     "postgres": "^3.4.9"
   },
