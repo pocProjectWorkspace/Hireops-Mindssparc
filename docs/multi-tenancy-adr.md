@@ -341,6 +341,16 @@ Out of POC scope but architecturally accommodated. The flow:
 
 No code path needs to change; the alias table is the only addition.
 
+#### Active tenant selection at login
+
+A user can belong to multiple tenants (consultants, internal-staff support access, transient access during company acquisitions). The Custom Access Token hook (FND-15b) resolves the *active* tenant for a JWT issuance using this priority order:
+
+1. If `auth.users.raw_user_meta_data.tenant_slug` is set: pick that tenant if the user has an active membership there.
+2. Otherwise, if the user has exactly one active membership: pick that one.
+3. Otherwise: claims `tid`, `tenant_slug`, `roles` are not set on the JWT. The application API layer must reject such tokens at the auth middleware.
+
+When subdomain-based auth flows are wired up (FND-06 in Phase 2), the client at `kyndryl.hireops.app/login` passes `tenant_slug='kyndryl'` to `signInWithPassword` / `signInWithOAuth`, which Supabase Auth stores in `raw_user_meta_data` for that session. This is how the subdomain becomes the active-tenant signal in production.
+
 ### 5.3 RLS pattern — tenant-then-role composition
 
 The single most load-bearing part of this ADR. RLS bugs are security vulnerabilities; the pattern below is what keeps them from happening.
