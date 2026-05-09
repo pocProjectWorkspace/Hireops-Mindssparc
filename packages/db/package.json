@@ -7,6 +7,20 @@
   "scripts": {
     "build": "tsc --noEmit",
     "lint": "eslint src",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "db:generate": "drizzle-kit generate",
+    "db:migrate": "tsx src/migrate.ts",
+    "db:seed": "tsx src/seed.ts",
+    "db:studio": "drizzle-kit studio",
+    "db:push": "drizzle-kit push"
+  },
+  "dependencies": {
+    "drizzle-orm": "^0.45.2",
+    "postgres": "^3.4.9"
+  },
+  "devDependencies": {
+    "dotenv": "^17.4.2",
+    "drizzle-kit": "^0.31.10",
+    "tsx": "^4.21.0"
   }
 }
