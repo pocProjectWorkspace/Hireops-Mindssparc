@@ -1,17 +1,25 @@
 /**
- * FND-15e integration verification.
+ * Tenant-context + RLS integration verification.
  *
  * Covers, end to end through the Hono app + withTenantContext:
- *   - no Authorization header → 401 (reason: "missing")
- *   - malformed Bearer token → 401
- *   - valid JWT → 200, /test/whoami returns tenantId/userId/roles
- *   - RLS scoping → /test/tenants returns exactly 1 row for the test user
- *   - Worker-side parity → withTenantContext called directly yields the
- *     same single-tenant view as the HTTP path
+ *
+ * FND-15e:
+ *   1. no Authorization header → 401 (reason: "missing")
+ *   2. malformed Bearer token → 401
+ *   3. valid JWT → 200, /test/whoami returns tenantId/userId/roles
+ *   4. RLS scoping → /test/tenants returns exactly 1 row for the test user
+ *   5. Worker-side parity → withTenantContext called directly yields the
+ *      same single-tenant view as the HTTP path
+ *
+ * DB-01:
+ *   6. public.users RLS — the user sees only their own profile row
+ *   7. public.business_units RLS — tenant isolation; the test user sees
+ *      only the kyndryl-poc business unit, not the one in a synthetic
+ *      second tenant
  *
  * Test user comes from FND-15b: test-fnd15b@hireops-dev.local with the
- * fnd15b-test-password-do-not-reuse password. The auth hook (FND-15b)
- * stamps tid + tenant_slug + roles into the JWT at issuance time.
+ * fnd15b-test-password-do-not-reuse password. The auth hook stamps
+ * tid + tenant_slug + roles into the JWT at issuance time.
  */
 
 import "../src/bootstrap";
@@ -20,12 +28,24 @@ import { strict as assert } from "node:assert";
 import { createClient } from "@supabase/supabase-js";
 import { decodeJwt } from "jose";
 import { app } from "../src/index.js";
-import { withTenantContext, drizzleSql, type JwtClaims } from "@hireops/db";
+import {
+  sql as poolSql,
+  withTenantContext,
+  drizzleSql,
+  users,
+  businessUnits,
+  type JwtClaims,
+} from "@hireops/db";
 
 const TEST_EMAIL = "test-fnd15b@hireops-dev.local";
 const TEST_PASSWORD = "fnd15b-test-password-do-not-reuse";
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY;
+
+// Synthetic second tenant for test 7. Fixed UUID + slug so cleanup-then-
+// create is reliable across re-runs.
+const SYNTH_TENANT_ID = "00000000-0000-0000-0000-000000db0107";
+const SYNTH_TENANT_SLUG = "synth-db01-test";
 
 if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
   throw new Error("Required env: SUPABASE_URL, SUPABASE_ANON_KEY (set in workspace-root .env)");
@@ -60,7 +80,7 @@ async function getTestJwt(): Promise<string> {
 }
 
 async function run(): Promise<void> {
-  console.log("FND-15e integration tests starting...\n");
+  console.log("Tenant-context + RLS integration tests starting...\n");
 
   // === Test 1: no JWT → 401 ===
   {
@@ -88,6 +108,8 @@ async function run(): Promise<void> {
   // === Test 3: valid JWT → 200 with correct claims ===
   const jwt = await getTestJwt();
   const decodedClaims = decodeJwt(jwt) as JwtClaims;
+  const testUserId = decodedClaims.sub!;
+  const testTenantId = decodedClaims.tid!;
   {
     const res = await app.request("/test/whoami", {
       headers: { Authorization: `Bearer ${jwt}` },
@@ -118,9 +140,6 @@ async function run(): Promise<void> {
 
   // === Test 5: worker-side withTenantContext parity ===
   {
-    // Use the real claims from the test JWT (rather than synthesising) — the
-    // tenant UUID isn't stable across environments. RLS reads `tid` from
-    // request.jwt.claims, so what matters is that the claim is set.
     const result = await withTenantContext(decodedClaims, async ({ db }) => {
       return db.execute<{ id: string; slug: string }>(drizzleSql`SELECT id, slug FROM tenants`);
     });
@@ -129,15 +148,72 @@ async function run(): Promise<void> {
     console.log("  ✓ withTenantContext worker pattern matches HTTP path");
   }
 
+  // === Test 6: public.users RLS — self-row visible (DB-01) ===
+  {
+    // Setup runs as the postgres pool role (BYPASSRLS) because users has
+    // no INSERT policy for `authenticated`. Idempotent across re-runs.
+    await poolSql`
+      INSERT INTO public.users (id, display_name)
+      VALUES (${testUserId}, 'FND-15b Test User')
+      ON CONFLICT (id) DO NOTHING
+    `;
+
+    const visible = await withTenantContext(decodedClaims, async ({ db }) => {
+      return db.select().from(users);
+    });
+    assert.equal(visible.length, 1, "user sees exactly their own profile");
+    assert.equal(visible[0]?.id, testUserId);
+    console.log("  ✓ public.users RLS: self-row visible");
+  }
+
+  // === Test 7: business_units RLS — tenant isolation (DB-01) ===
+  let cleanupSynthTenant = false;
+  try {
+    // Defensive pre-cleanup in case a prior run left rows.
+    await poolSql`DELETE FROM public.tenants WHERE id = ${SYNTH_TENANT_ID}`;
+
+    await poolSql`
+      INSERT INTO public.tenants (id, slug, display_name, primary_region, status)
+      VALUES (${SYNTH_TENANT_ID}, ${SYNTH_TENANT_SLUG}, 'Synthetic DB-01 Test', 'ap-northeast-1', 'active')
+    `;
+    cleanupSynthTenant = true;
+
+    await poolSql`
+      INSERT INTO public.business_units (tenant_id, name, slug)
+      VALUES
+        (${testTenantId}, 'Bangalore GCC', 'bangalore-gcc'),
+        (${SYNTH_TENANT_ID}, 'Should Not Be Visible', 'invisible')
+      ON CONFLICT (tenant_id, slug) DO NOTHING
+    `;
+
+    const visible = await withTenantContext(decodedClaims, async ({ db }) => {
+      return db.select().from(businessUnits);
+    });
+    assert.equal(visible.length, 1, "user sees exactly their own tenant's business units");
+    assert.equal(visible[0]?.slug, "bangalore-gcc");
+    console.log("  ✓ business_units RLS: tenant isolation");
+  } finally {
+    // The kyndryl-poc business_unit row stays around for later tests; the
+    // synth tenant + its business_unit cascade-delete together.
+    if (cleanupSynthTenant) {
+      await poolSql`DELETE FROM public.business_units WHERE tenant_id = ${testTenantId} AND slug = 'bangalore-gcc'`;
+      await poolSql`DELETE FROM public.tenants WHERE id = ${SYNTH_TENANT_ID}`;
+    }
+  }
+
   console.log("\n=========================================");
-  console.log("FND-15e verification: PASS");
+  console.log("Tenant-context + RLS verification: PASS");
   console.log("=========================================");
 }
 
 run()
-  .then(() => process.exit(0))
+  .then(() => {
+    void poolSql.end({ timeout: 2 });
+    process.exit(0);
+  })
   .catch((err) => {
-    console.error("\nFND-15e verification: FAIL");
+    console.error("\nTenant-context + RLS verification: FAIL");
     console.error(err);
+    void poolSql.end({ timeout: 2 });
     process.exit(1);
   });
