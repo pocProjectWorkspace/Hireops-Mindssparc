@@ -43,7 +43,7 @@ async function main() {
   });
 
   // Dynamic imports so dotenv is loaded first
-  const { db } = await import("../client");
+  const { db, sql: poolSql } = await import("../client");
   const { tenants, tenantUserMemberships } = await import("../schema");
   const { eq } = await import("drizzle-orm");
 
@@ -92,13 +92,13 @@ async function main() {
     .where(eq(tenantUserMemberships.userId, user.id));
 
   if (existingMembership.length === 0) {
-    await db.insert(tenantUserMemberships).values({
-      userId: user.id,
-      tenantId: tenant.id,
-      roles: ["admin"],
-      status: "active",
-      acceptedAt: new Date(),
-    });
+    // Drizzle schema still types roles as text[]; the DB column is
+    // tenant_role[] (DB-01). Use raw SQL with an explicit enum cast so the
+    // insert doesn't hit "text[] cannot be assigned to tenant_role[]".
+    await poolSql`
+      INSERT INTO tenant_user_memberships (user_id, tenant_id, roles, status, accepted_at)
+      VALUES (${user.id}, ${tenant.id}, ARRAY['admin']::tenant_role[], 'active', now())
+    `;
     console.log("Created membership with admin role");
   } else {
     console.log("Membership already exists");

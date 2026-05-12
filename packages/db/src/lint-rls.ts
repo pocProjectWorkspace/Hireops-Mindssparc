@@ -41,6 +41,7 @@ const PLATFORM_TABLES_ALLOWLIST = new Set<string>([
   "tenants", // the tenant registry itself; rows keyed by tenant id, not tenant_id
   "tenant_user_memberships", // membership join table (user-scoped, not tenant-scoped)
   "tenant_encryption_keys", // DEK store; service-role only per ADR-002 §5.5, no authenticated reads
+  "users", // platform-level user profile (user-scoped via id = auth.uid(), survives tenant deletion)
 ]);
 
 interface TableRow {
