@@ -14,7 +14,10 @@
     "db:studio": "drizzle-kit studio",
     "db:push": "drizzle-kit push",
     "db:test:setup": "tsx src/test-fixtures/setup-test-user.ts",
-    "db:test:verify": "tsx src/test-fixtures/verify-jwt-claims.ts"
+    "db:test:verify": "tsx src/test-fixtures/verify-jwt-claims.ts",
+    "db:test:verify-rls": "tsx src/verify-rls.ts",
+    "db:diagnose:hook": "tsx src/diagnose-hook.ts",
+    "db:lint:rls": "tsx src/lint-rls.ts"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.105.3",
