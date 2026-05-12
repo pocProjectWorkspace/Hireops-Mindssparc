@@ -7,6 +7,23 @@
   "scripts": {
     "build": "tsc --noEmit",
     "lint": "eslint src",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "dev": "tsx watch src/index.ts",
+    "start": "tsx src/index.ts",
+    "test": "NODE_ENV=test tsx test/tenant-context.test.ts"
+  },
+  "dependencies": {
+    "@hireops/db": "workspace:*",
+    "@hireops/types": "workspace:*",
+    "@hono/node-server": "^2.0.2",
+    "@supabase/supabase-js": "^2.105.3",
+    "@trpc/server": "^11.17.0",
+    "hono": "^4.12.18",
+    "jose": "^6.2.3",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "dotenv": "^17.4.2",
+    "tsx": "^4.21.0"
   }
 }
