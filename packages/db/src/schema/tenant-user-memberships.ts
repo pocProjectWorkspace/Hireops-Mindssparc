@@ -1,5 +1,14 @@
-import { pgTable, uuid, text, timestamp, index, uniqueIndex } from "drizzle-orm/pg-core";
+import {
+  pgTable,
+  uuid,
+  text,
+  timestamp,
+  index,
+  uniqueIndex,
+  type AnyPgColumn,
+} from "drizzle-orm/pg-core";
 import { tenants } from "./tenants";
+import { businessUnits } from "./business-units";
 
 /**
  * Maps Supabase Auth users (auth.users.id) to HireOps tenants.
@@ -21,8 +30,19 @@ export const tenantUserMemberships = pgTable(
     tenantId: uuid("tenant_id")
       .notNull()
       .references(() => tenants.id, { onDelete: "cascade" }),
-    roles: text("roles").array().notNull().default([]), // ['admin', 'recruiter', etc.] — tenant-scoped
+    roles: text("roles").array().notNull().default([]), // ['admin', 'recruiter', etc.] — tenant-scoped. Column is migrated to tenant_role[] in 0004_db01_identity; Drizzle schema stays text[] until pgEnum support stabilises.
     status: text("status").notNull().default("active"), // 'active' | 'suspended' | 'revoked'
+    // Tenant-specific profile attributes (DB-01).
+    jobTitle: text("job_title"),
+    // Self-FK: managers are members in the same tenant, not users (which
+    // would lose tenant scoping).
+    managerId: uuid("manager_id").references((): AnyPgColumn => tenantUserMemberships.id, {
+      onDelete: "set null",
+    }),
+    businessUnitId: uuid("business_unit_id").references(() => businessUnits.id, {
+      onDelete: "set null",
+    }),
+    joinedTenantAt: timestamp("joined_tenant_at", { withTimezone: true }).notNull().defaultNow(),
     invitedAt: timestamp("invited_at", { withTimezone: true }),
     acceptedAt: timestamp("accepted_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
