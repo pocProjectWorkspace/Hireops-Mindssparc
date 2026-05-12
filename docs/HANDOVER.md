@@ -182,6 +182,27 @@ These can be batched into a "Tier 3 cleanup" prompt later if the user wants. Or 
 
 The repo has the scaffold and the design docs. **No product code exists.** No database migrations have been run. No tests have been written. No CI is configured beyond the lint/typecheck/build basics. Every "Wave 1" task in `wave-1-backlog.md` is in the not-started state.
 
+> Caveat: §4.5 below is the only exception — the FND-15a/b/c foundations have shipped, ahead of the rest of Wave 1. Everything outside the FND-15 series is still in the not-started state.
+
+### 4.5 Foundations progress (FND-15 series)
+
+- **FND-15a — DONE** (commits `8e87ba8`, `156d8c7`, `c1b7f6e`)
+  Drizzle ORM + dual Supabase connections (transaction pooler for runtime, session pooler for migrations). `tenants` + `tenant_encryption_keys` tables. Migration 0000.
+- **FND-15b — DONE** (commits `156d8c7`, `647a478`, `e854737`)
+  `current_tenant_id()` + `has_role()` SECURITY DEFINER helpers. `custom_access_token_hook` injects `tid` / `tenant_slug` / `roles` JWT claims at sign-in. `tenant_user_memberships` join table. Verified end-to-end via `pnpm db:test:verify`.
+- **FND-15c — DONE** (commits `76fe10c`, `16e72d2`, plus the chore commit at the tip of `feat/fnd-15c-rls-baseline`)
+  RLS baseline + framework + lint script. Migration `0003_rls_baseline.sql` enables RLS + FORCE on `tenants`, `tenant_user_memberships`, and `tenant_encryption_keys`, with bespoke self-select policies on the first two and default-deny (no policies, service_role-only) on the third per ADR-002 §5.5. `packages/db/src/verify-rls.ts` runs an end-to-end isolation test. `packages/db/src/lint-rls.ts` queries pg_catalog and fails if any new public-schema table lacks RLS+FORCE+`tenant_isolation`, unless allowlisted. `auth_admin_read` policies allow `supabase_auth_admin` to read tenants + memberships from inside the SECURITY INVOKER auth hook. Root-level `pnpm db:*` proxy scripts added. Tagalong fixes: `migrate.ts` error-string wording for session-mode pooler; `turbo.json` outputs override for `@hireops/db#build`. **Re-tagging note:** the original `wave-1-backlog.md` had FND-15c as tenant-context middleware; that work has been renumbered to FND-15e (see backlog) and this RLS-framework work — originally FND-15e — adopted the FND-15c tag.
+- **FND-15d — NOT STARTED.** KMS envelope encryption: DEK generation, KMS-wrap on insert, DEK cache + unwrap on read, KEK rotation runbook. Per ADR-002 §5.5.
+- **FND-15e — NOT STARTED.** Tenant-context middleware: subdomain extraction in Next.js, JWT `tid` validation in Hono, AsyncLocalStorage propagation. Was originally FND-15c — renumbered when this set landed.
+- **FND-15f — NOT STARTED.** Tenant onboarding workflow MVP. Depends on 15c, 15d, 15e, plus INT-01.
+
+**Codebase realities introduced by FND-15c:**
+
+1. **RLS framework via lint script.** `packages/db/src/lint-rls.ts` is the source of truth for which tables are tenant-scoped vs platform. Every new table added in a migration must either satisfy the tenant-isolation policy contract or be added to the `PLATFORM_TABLES_ALLOWLIST` set in that script with a justifying comment. Don't disable the lint; if it fails, fix the schema.
+2. **Auth-hook reads need an explicit policy.** The Custom Access Token hook (FND-15b) runs as `supabase_auth_admin`, which does **not** have `BYPASSRLS`. Any table the hook reads must have a `TO supabase_auth_admin` policy alongside the `TO authenticated` policies. Without it, FORCE RLS silently returns zero rows and the JWT goes out with no `tid` claim — visible only as "auth doesn't work" downstream, hard to root-cause.
+3. **`tenant_encryption_keys` is allowlisted and policy-less.** RLS+FORCE on, no policies → default-deny for `authenticated`. `service_role` (BYPASSRLS) is the only legitimate access path. Don't add an authenticated-role policy here — the DEK store must never be reachable via a user JWT.
+4. **Migrations apply via session-mode pooler.** `DIRECT_URL` is `aws-N-<region>.pooler.supabase.com:5432` (dual-stack IPv4+IPv6). The error string in `migrate.ts:15` documents this. If you see "This must be the direct connection" anywhere, it's an outdated comment and needs updating.
+
 ---
 
 ## 5. How the user works

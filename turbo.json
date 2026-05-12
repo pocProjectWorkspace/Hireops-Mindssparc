@@ -5,6 +5,10 @@
       "dependsOn": ["^build"],
       "outputs": ["dist/**", ".next/**", "!.next/cache/**"]
     },
+    "@hireops/db#build": {
+      "dependsOn": ["^build"],
+      "outputs": []
+    },
     "lint": {
       "dependsOn": ["^lint"]
     },

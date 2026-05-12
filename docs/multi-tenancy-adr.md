@@ -522,6 +522,8 @@ test('cross-tenant read is denied', async () => {
 
 Every domain-table CRUD test gets a "cross-tenant denial" companion. The companion is required by code review for any new policy.
 
+**Framework implementation (FND-15c).** The pattern above is enforced by `packages/db/src/lint-rls.ts`, which queries pg_catalog after every migration and fails if any public-schema table is missing RLS+FORCE+tenant_isolation policy, unless it's on the platform-table allowlist in that script. The lint runs locally via `pnpm db:lint:rls` and will wire into CI when FND-01..14 lands. Verification of the pattern in action lives in `packages/db/src/verify-rls.ts`.
+
 ### 5.4 Configuration model — typed tables + JSONB cosmetics
 
 Three storage locations:

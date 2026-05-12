@@ -29,9 +29,9 @@ This is intentionally not exhaustive — it's the minimum to land the thin slice
 | FND-14 | Snyk / npm audit / Dependabot turned on; baseline triage | S | FND-01 | `architecture.md` §9.5 |
 | FND-15a | Create `tenants`, `tenant_encryption_keys` tables; seed local-dev tenant. | S | DB-02 | ADR-002 §5.1; `architecture.md` §5.1 (Tenancy core) |
 | FND-15b | Implement `current_tenant_id()` SECURITY DEFINER helper function; verify JWT custom claim `tid` propagates from Supabase Auth via login hook. | S | FND-15a, FND-07 | ADR-002 §5.3 |
-| FND-15c | Tenant context middleware: subdomain extraction in Next.js middleware; JWT `tid` validation in Hono middleware; AsyncLocalStorage propagation for tenant_id throughout request lifecycle. | M | FND-15b, API-01 | ADR-002 §5.2 |
+| FND-15c | RLS baseline + framework + lint: RLS+FORCE on existing tenancy-core tables with tenant_isolation policy as outermost predicate; `pnpm db:lint:rls` fails when any public-schema table is created without RLS+FORCE+tenant_isolation, unless it's on the documented platform-table allowlist. **DONE** — `packages/db/src/lint-rls.ts`, `verify-rls.ts`, migration `0003_rls_baseline.sql`. (Renumbered from FND-15e; old FND-15c collapsed into FND-15e below.) | M | FND-15b, DB-02 | ADR-002 §5.3 |
 | FND-15d | Tenant DEK generation + KMS wrapping flow; envelope-encryption helpers in `packages/db`; DEK cache (5-min TTL) per worker process. | M | FND-15a, FND-10 | ADR-002 §5.5 |
-| FND-15e | RLS policy framework: enforce tenant scoping as outermost predicate on every new table migration; CI check that fails when a table is created without RLS policies. | M | FND-15b, DB-02 | ADR-002 §5.3 |
+| FND-15e | Tenant context middleware: subdomain extraction in Next.js middleware; JWT `tid` validation in Hono middleware; AsyncLocalStorage propagation for tenant_id throughout request lifecycle. (Renumbered from FND-15c.) | M | FND-15c, API-01 | ADR-002 §5.2 |
 | FND-15f | Tenant onboarding workflow MVP: provisioning UI for HireOps internal admin, tenant settings + integration configuration tabs, sub-flow per ADR-002 §5.6 steps 1–3 (steps 4–8 move to Wave 2). | L | FND-15c, FND-15d, FND-15e, INT-01 | ADR-002 §5.6 |
 
 ## Database & schema (DB)
@@ -279,9 +279,12 @@ FND-15a (S) →  Create tenants + tenant_encryption_keys; seed local-dev tenant
    ↓             — first tenancy-core migration; gates every other domain-table migration
 FND-15b (S) →  current_tenant_id() helper + JWT tid propagation from Supabase Auth
    ↓
-FND-15c (M) →  Tenant context middleware (subdomain + JWT tid + AsyncLocalStorage)
-   ↓             — top of the request-time critical path; every API route sits behind this
+FND-15c (M) →  RLS baseline + framework + lint (RLS+FORCE on tenancy-core tables;
+   ↓             pnpm db:lint:rls enforces the pattern on every new migration)
 DB-03 (M)   →  persons / candidates / employees split (tenant-scoped per FND-15a/b/c)
+   ↓
+FND-15e (M) →  Tenant context middleware (subdomain + JWT tid + AsyncLocalStorage)
+   ↓             — top of the request-time critical path; every API route sits behind this
    ↓
 DB-08 (M)   →  candidate_ownership_claims (partial-unique index now tenant-scoped:
    ↓             (tenant_id, person_id, requisition_id) WHERE status='active')

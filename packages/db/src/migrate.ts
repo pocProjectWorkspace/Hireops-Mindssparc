@@ -12,7 +12,7 @@ loadDotenv({ path: resolve(here, "../../../.env") });
 const directUrl = process.env.DIRECT_URL;
 if (!directUrl) {
   throw new Error(
-    "DIRECT_URL is not set. Add it to your .env file. This must be the direct connection (port 5432), not the pooler.",
+    "DIRECT_URL is not set. Add it to your .env file. This must be the session-mode pooler (port 5432), not the transaction-mode pooler (port 6543).",
   );
 }
 

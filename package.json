@@ -13,7 +13,13 @@
     "lint": "turbo lint",
     "typecheck": "turbo typecheck",
     "format": "prettier --write .",
-    "format:check": "prettier --check ."
+    "format:check": "prettier --check .",
+    "db:migrate": "pnpm --filter @hireops/db db:migrate",
+    "db:test:setup": "pnpm --filter @hireops/db db:test:setup",
+    "db:test:verify": "pnpm --filter @hireops/db db:test:verify",
+    "db:test:verify-rls": "pnpm --filter @hireops/db db:test:verify-rls",
+    "db:diagnose:hook": "pnpm --filter @hireops/db db:diagnose:hook",
+    "db:lint:rls": "pnpm --filter @hireops/db db:lint:rls"
   },
   "devDependencies": {
     "@eslint/js": "9.18.0",
