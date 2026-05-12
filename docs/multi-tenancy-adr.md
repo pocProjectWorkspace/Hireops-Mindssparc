@@ -524,6 +524,15 @@ Every domain-table CRUD test gets a "cross-tenant denial" companion. The compani
 
 **Framework implementation (FND-15c).** The pattern above is enforced by `packages/db/src/lint-rls.ts`, which queries pg_catalog after every migration and fails if any public-schema table is missing RLS+FORCE+tenant_isolation policy, unless it's on the platform-table allowlist in that script. The lint runs locally via `pnpm db:lint:rls` and will wire into CI when FND-01..14 lands. Verification of the pattern in action lives in `packages/db/src/verify-rls.ts`.
 
+**Auth-hook table reads.** The Custom Access Token hook runs as `supabase_auth_admin`. With `FORCE ROW LEVEL SECURITY` enabled (required by our framework), this role is subject to RLS policies — it does not bypass them. Any table the hook reads to construct JWT claims must therefore have an explicit policy granting `supabase_auth_admin` SELECT access on the rows it needs.
+
+Current tables in this category:
+
+- `tenants` (policy: `tenants_auth_admin_read`)
+- `tenant_user_memberships` (policy: `memberships_auth_admin_read`)
+
+When extending the hook to read additional tables (e.g. feature flags, session context, additional role/permission tables), the corresponding SELECT policy MUST be added in the same migration as the hook change. Failure mode is silent: the hook returns no custom claims, JWTs are issued without `tid`/`tenant_slug`/`roles`, and `current_tenant_id()` returns null in downstream RLS policies.
+
 ### 5.4 Configuration model — typed tables + JSONB cosmetics
 
 Three storage locations:
