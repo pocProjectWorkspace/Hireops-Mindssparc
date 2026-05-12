@@ -1,0 +1,166 @@
+/* HireOps design tokens — see docs/design-system.md §2 for full spec.
+ *
+ * This file is the single source of truth for design values. Tailwind config,
+ * TypeScript constants, and component styles all reference these variables.
+ * Never hard-code design values anywhere else in the codebase.
+ */
+
+@import "@fontsource/inter/400.css";
+@import "@fontsource/inter/500.css";
+@import "@fontsource/inter/600.css";
+@import "@fontsource/inter/700.css";
+@import "@fontsource/jetbrains-mono/400.css";
+@import "@fontsource/jetbrains-mono/500.css";
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  /* ============================================================
+   * 2.1 Colour
+   * ============================================================ */
+
+  /* Neutrals — the workhorse scale */
+  --color-neutral-50: #fafafa;
+  --color-neutral-100: #f5f5f5;
+  --color-neutral-200: #e5e5e5;
+  --color-neutral-300: #d4d4d4;
+  --color-neutral-400: #a3a3a3;
+  --color-neutral-500: #737373;
+  --color-neutral-600: #525252;
+  --color-neutral-700: #404040;
+  --color-neutral-800: #262626;
+  --color-neutral-900: #171717;
+
+  /* Brand — used sparingly, primary actions only.
+   * Per-tenant white-labelling overrides --color-brand-* only. */
+  --color-brand-50: #eff6ff;
+  --color-brand-100: #dbeafe;
+  --color-brand-500: #3b82f6;
+  --color-brand-600: #2563eb;
+  --color-brand-700: #1d4ed8;
+
+  /* Semantic — never decorative */
+  --color-status-positive-50: #f0fdf4;
+  --color-status-positive-500: #22c55e;
+  --color-status-positive-700: #15803d;
+
+  --color-status-warning-50: #fffbeb;
+  --color-status-warning-500: #f59e0b;
+  --color-status-warning-700: #b45309;
+
+  --color-status-error-50: #fef2f2;
+  --color-status-error-500: #ef4444;
+  --color-status-error-700: #b91c1c;
+
+  --color-status-info-50: #eff6ff;
+  --color-status-info-500: #3b82f6;
+
+  /* Partner portal accent — navigation chrome only */
+  --color-partner-accent-50: #fff7ed;
+  --color-partner-accent-500: #ea580c;
+
+  /* AI components — distinct neutral-but-warmer palette, §5 only */
+  --color-ai-surface: #faf5ff;
+  --color-ai-border: #e9d5ff;
+  --color-ai-accent: #7c3aed;
+
+  /* ============================================================
+   * 2.2 Typography
+   * ============================================================ */
+
+  --font-family-ui: "Inter", system-ui, -apple-system, sans-serif;
+  --font-family-mono: "JetBrains Mono", "SF Mono", Menlo, Consolas, monospace;
+
+  --font-size-xs: 0.75rem;
+  --font-size-sm: 0.875rem;
+  --font-size-base: 1rem;
+  --font-size-md: 1.125rem;
+  --font-size-lg: 1.25rem;
+  --font-size-xl: 1.5rem;
+  --font-size-2xl: 1.875rem;
+  --font-size-3xl: 2.25rem;
+
+  --font-weight-regular: 400;
+  --font-weight-medium: 500;
+  --font-weight-semibold: 600;
+  --font-weight-bold: 700;
+
+  --line-height-tight: 1.25;
+  --line-height-normal: 1.5;
+  --line-height-relaxed: 1.75;
+
+  /* ============================================================
+   * 2.3 Spacing — 4px base, geometric
+   * ============================================================ */
+
+  --space-0: 0;
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+  --space-3: 0.75rem;
+  --space-4: 1rem;
+  --space-5: 1.25rem;
+  --space-6: 1.5rem;
+  --space-8: 2rem;
+  --space-10: 2.5rem;
+  --space-12: 3rem;
+  --space-16: 4rem;
+  --space-20: 5rem;
+  --space-24: 6rem;
+
+  /* ============================================================
+   * 2.4 Elevation — three levels only
+   * ============================================================ */
+
+  --elevation-1: 0 1px 2px 0 rgb(0 0 0 / 0.05);
+  --elevation-2: 0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1);
+  --elevation-3: 0 20px 25px -5px rgb(0 0 0 / 0.1), 0 8px 10px -6px rgb(0 0 0 / 0.1);
+
+  /* ============================================================
+   * 2.5 Border radius
+   * ============================================================ */
+
+  --radius-sm: 0.25rem;
+  --radius-md: 0.5rem;
+  --radius-lg: 0.75rem;
+  --radius-full: 9999px;
+
+  /* ============================================================
+   * 2.6 Density — comfortable default
+   * ============================================================ */
+
+  --density-row-height: 44px;
+  --density-input-height: 40px;
+  --density-button-height: 40px;
+  --density-card-padding: var(--space-6);
+
+  /* ============================================================
+   * 2.7 Z-index — five tokens, no ad-hoc values anywhere
+   * ============================================================ */
+
+  --z-base: 0;
+  --z-dropdown: 100;
+  --z-sticky: 200;
+  --z-overlay: 300;
+  --z-modal: 400;
+  --z-toast: 500;
+}
+
+/* Recruiter compact density — opt-in at screen level only.
+ * Approved screens: candidates list, pipeline kanban, panel feedback inbox. */
+[data-density="compact"] {
+  --density-row-height: 36px;
+  --density-input-height: 32px;
+  --density-button-height: 32px;
+  --density-card-padding: var(--space-4);
+}
+
+/* Global defaults */
+body {
+  font-family: var(--font-family-ui);
+  font-size: var(--font-size-base);
+  line-height: var(--line-height-normal);
+  color: var(--color-neutral-700);
+  background-color: var(--color-neutral-50);
+}
