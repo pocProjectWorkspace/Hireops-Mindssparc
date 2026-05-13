@@ -35,3 +35,6 @@ Thumbs.db
 
 # claude code harness
 .claude/
+
+# drizzle snapshot backups (re-baselining safety net)
+packages/db/drizzle/migrations/meta.bak/
