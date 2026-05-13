@@ -1,4 +1,15 @@
-import { pgTable, uuid, text, timestamp, type AnyPgColumn } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
+import {
+  pgTable,
+  uuid,
+  text,
+  timestamp,
+  index,
+  uniqueIndex,
+  foreignKey,
+  pgPolicy,
+  type AnyPgColumn,
+} from "drizzle-orm/pg-core";
 import { tenants } from "./tenants";
 
 /**
@@ -7,32 +18,52 @@ import { tenants } from "./tenants";
  *
  * - Hierarchical via parent_business_unit_id (self-FK). NULL = top-level.
  *   No DB-level depth limit; the app enforces sensible limits if needed.
- * - Tenant-scoped: standard tenant_isolation RLS policy in 0005.
- * - (tenant_id, slug) unique constraint added in 0005 SQL.
+ * - Tenant-scoped: standard tenant_isolation RLS policy.
+ * - (tenant_id, slug) unique constraint.
  *
- * Tenant-specific terminology: a tenant whose internal language is
- * "departments" or "divisions" can override the display label in tenant
- * settings without changing the schema.
+ * FK constraint names are explicit (`*_fkey`) to match the hand-written
+ * 0004 migration's Postgres-default names; Drizzle's auto-derived names
+ * would diverge and produce spurious renames on db:generate.
  */
 
-export const businessUnits = pgTable("business_units", {
-  id: uuid("id").primaryKey().defaultRandom().notNull(),
+export const businessUnits = pgTable(
+  "business_units",
+  {
+    id: uuid("id").primaryKey().defaultRandom().notNull(),
 
-  tenantId: uuid("tenant_id")
-    .notNull()
-    .references(() => tenants.id, { onDelete: "cascade" }),
+    tenantId: uuid("tenant_id").notNull(),
 
-  parentBusinessUnitId: uuid("parent_business_unit_id").references(
-    (): AnyPgColumn => businessUnits.id,
-    { onDelete: "set null" },
-  ),
+    parentBusinessUnitId: uuid("parent_business_unit_id"),
 
-  name: text("name").notNull(),
-  slug: text("slug").notNull(),
+    name: text("name").notNull(),
+    slug: text("slug").notNull(),
 
-  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
-});
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex("business_units_tenant_id_slug_key").on(table.tenantId, table.slug),
+    index("idx_business_units_tenant").on(table.tenantId),
+    index("idx_business_units_parent").on(table.parentBusinessUnitId),
+    foreignKey({
+      columns: [table.tenantId],
+      foreignColumns: [tenants.id],
+      name: "business_units_tenant_id_fkey",
+    }).onDelete("cascade"),
+    foreignKey({
+      columns: [table.parentBusinessUnitId],
+      foreignColumns: [table.id as AnyPgColumn],
+      name: "business_units_parent_business_unit_id_fkey",
+    }).onDelete("set null"),
+    pgPolicy("tenant_isolation", {
+      as: "permissive",
+      for: "all",
+      to: ["authenticated"],
+      using: sql`tenant_id = current_tenant_id()`,
+      withCheck: sql`tenant_id = current_tenant_id()`,
+    }),
+  ],
+).enableRLS();
 
 export type BusinessUnit = typeof businessUnits.$inferSelect;
 export type NewBusinessUnit = typeof businessUnits.$inferInsert;

@@ -30,12 +30,15 @@ import { decodeJwt } from "jose";
 import { app } from "../src/index.js";
 import {
   sql as poolSql,
+  db,
   withTenantContext,
   drizzleSql,
   users,
   businessUnits,
+  tenantUserMemberships,
   type JwtClaims,
 } from "@hireops/db";
+import { eq } from "drizzle-orm";
 
 const TEST_EMAIL = "test-fnd15b@hireops-dev.local";
 const TEST_PASSWORD = "fnd15b-test-password-do-not-reuse";
@@ -46,6 +49,10 @@ const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY;
 // create is reliable across re-runs.
 const SYNTH_TENANT_ID = "00000000-0000-0000-0000-000000db0107";
 const SYNTH_TENANT_SLUG = "synth-db01-test";
+
+// Separate synthetic tenant for test 8 (Drizzle round-trip).
+const ROUNDTRIP_TENANT_ID = "00000000-0000-0000-0000-000000db0108";
+const ROUNDTRIP_TENANT_SLUG = "synth-roundtrip";
 
 if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
   throw new Error("Required env: SUPABASE_URL, SUPABASE_ANON_KEY (set in workspace-root .env)");
@@ -198,6 +205,47 @@ async function run(): Promise<void> {
     if (cleanupSynthTenant) {
       await poolSql`DELETE FROM public.business_units WHERE tenant_id = ${testTenantId} AND slug = 'bangalore-gcc'`;
       await poolSql`DELETE FROM public.tenants WHERE id = ${SYNTH_TENANT_ID}`;
+    }
+  }
+
+  // === Test 8: Drizzle round-trip for tenant_user_memberships.roles ===
+  // After DRIZZLE-INFRA-01, the roles column is modeled as tenantRoleEnum().array()
+  // in the Drizzle schema. A normal Drizzle insert with roles: TenantRole[] must
+  // round-trip through Postgres without manual ::tenant_role[] casts.
+  let cleanupRoundtripTenant = false;
+  try {
+    await poolSql`DELETE FROM public.tenants WHERE id = ${ROUNDTRIP_TENANT_ID}`;
+    await poolSql`
+      INSERT INTO public.tenants (id, slug, display_name, primary_region, status)
+      VALUES (${ROUNDTRIP_TENANT_ID}, ${ROUNDTRIP_TENANT_SLUG}, 'Roundtrip Test', 'ap-northeast-1', 'active')
+    `;
+    cleanupRoundtripTenant = true;
+
+    // Drizzle insert with pgEnum-typed array — would have failed before
+    // DRIZZLE-INFRA-01 with "text[] cannot be assigned to tenant_role[]".
+    await db.insert(tenantUserMemberships).values({
+      userId: testUserId,
+      tenantId: ROUNDTRIP_TENANT_ID,
+      roles: ["recruiter", "hiring_manager"],
+      status: "active",
+    });
+
+    const rows = await db
+      .select()
+      .from(tenantUserMemberships)
+      .where(eq(tenantUserMemberships.tenantId, ROUNDTRIP_TENANT_ID));
+
+    assert.equal(rows.length, 1, "Drizzle select should return the inserted row");
+    assert.deepEqual(
+      [...(rows[0]?.roles ?? [])].sort(),
+      ["hiring_manager", "recruiter"],
+      "round-trip should preserve role values",
+    );
+    console.log("  ✓ Drizzle round-trip for tenant_role[] works");
+  } finally {
+    if (cleanupRoundtripTenant) {
+      await poolSql`DELETE FROM public.tenant_user_memberships WHERE tenant_id = ${ROUNDTRIP_TENANT_ID}`;
+      await poolSql`DELETE FROM public.tenants WHERE id = ${ROUNDTRIP_TENANT_ID}`;
     }
   }
 

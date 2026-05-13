@@ -169,8 +169,7 @@ async function main() {
     assert(synthUserId, "synth user createUser returned no id");
     console.log(`  synth user: ${synthUserId}`);
 
-    // Create membership linking synth user to synth tenant. The roles
-    // column is tenant_role[] (DB-01); cast the array literal explicitly.
+    // Create membership linking synth user to synth tenant.
     await sql`
       INSERT INTO tenant_user_memberships (user_id, tenant_id, roles, status, accepted_at)
       VALUES (${synthUserId}, ${synthTenantId}, ARRAY['admin']::tenant_role[], 'active', now())

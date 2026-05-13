@@ -8,6 +8,8 @@ const bytea = customType<{ data: Buffer; default: false }>({
   },
 });
 
+// RLS enabled with no policies → default-deny for `authenticated` per
+// ADR-002 §5.5. `service_role` (BYPASSRLS) is the only legitimate path.
 export const tenantEncryptionKeys = pgTable("tenant_encryption_keys", {
   tenantId: uuid("tenant_id")
     .primaryKey()
@@ -17,7 +19,7 @@ export const tenantEncryptionKeys = pgTable("tenant_encryption_keys", {
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   rotatedAt: timestamp("rotated_at", { withTimezone: true }),
   rotationStatus: text("rotation_status"), // NULL | 'rotating' | 'failed'
-});
+}).enableRLS();
 
 export type TenantEncryptionKey = typeof tenantEncryptionKeys.$inferSelect;
 export type NewTenantEncryptionKey = typeof tenantEncryptionKeys.$inferInsert;

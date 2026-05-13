@@ -1,4 +1,5 @@
-import { pgTable, uuid, text, jsonb, timestamp, index } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
+import { pgTable, uuid, text, jsonb, timestamp, index, pgPolicy } from "drizzle-orm/pg-core";
 
 export const tenants = pgTable(
   "tenants",
@@ -17,10 +18,23 @@ export const tenants = pgTable(
     suspendedAt: timestamp("suspended_at", { withTimezone: true }),
     scheduledDeletionAt: timestamp("scheduled_deletion_at", { withTimezone: true }), // DPDPA-aware soft-delete: 30-day grace
   },
-  (table) => ({
-    statusIdx: index("idx_tenants_status").on(table.status),
-  }),
-);
+  (table) => [
+    index("idx_tenants_status").on(table.status),
+    // Policies — mirror migration 0003_rls_baseline.sql so db:generate stays clean.
+    pgPolicy("tenants_self_select", {
+      as: "permissive",
+      for: "select",
+      to: ["authenticated"],
+      using: sql`id = current_tenant_id()`,
+    }),
+    pgPolicy("tenants_auth_admin_read", {
+      as: "permissive",
+      for: "select",
+      to: ["supabase_auth_admin"],
+      using: sql`true`,
+    }),
+  ],
+).enableRLS();
 
 export type Tenant = typeof tenants.$inferSelect;
 export type NewTenant = typeof tenants.$inferInsert;

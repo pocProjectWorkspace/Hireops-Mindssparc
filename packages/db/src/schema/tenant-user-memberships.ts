@@ -1,3 +1,4 @@
+import { sql } from "drizzle-orm";
 import {
   pgTable,
   uuid,
@@ -5,58 +6,80 @@ import {
   timestamp,
   index,
   uniqueIndex,
+  foreignKey,
+  pgPolicy,
   type AnyPgColumn,
 } from "drizzle-orm/pg-core";
 import { tenants } from "./tenants";
 import { businessUnits } from "./business-units";
+import { tenantRoleEnum } from "./roles";
 
 /**
- * Maps Supabase Auth users (auth.users.id) to HireOps tenants.
- * A user can belong to multiple tenants (consultants, internal-staff support access, etc.).
- * Roles are tenant-scoped — a user can be admin in one tenant and recruiter in another.
+ * Maps Supabase Auth users (auth.users.id) to HireOps tenants. A user can
+ * belong to multiple tenants; roles are tenant-scoped (admin in tenant A,
+ * recruiter in tenant B). The Custom Access Token hook reads this table at
+ * JWT issuance to populate tid/tenant_slug/roles claims (FND-15b, §5.2).
  *
- * Per multi-tenancy-adr.md §5.2, this table is read by the Custom Access Token hook
- * at JWT issuance time to populate tid, tenant_slug, and roles claims.
- *
- * Note: we don't add a foreign key reference to auth.users.id here because Drizzle
- * does not model the auth schema. The FK exists at the SQL level (added in the
- * raw migration in Step 4) — we just don't represent it in the TypeScript schema.
+ * The user_id FK actually references auth.users.id. Drizzle can't model
+ * cross-schema FKs, so it lives only at the SQL level (0002 migration).
+ * Setting `name` on each modelled foreign key matches the Postgres-default
+ * constraint names used in the live DB, so db:generate doesn't churn them.
  */
 export const tenantUserMemberships = pgTable(
   "tenant_user_memberships",
   {
     id: uuid("id").primaryKey().defaultRandom(),
-    userId: uuid("user_id").notNull(), // FK to auth.users(id), enforced at SQL level
-    tenantId: uuid("tenant_id")
-      .notNull()
-      .references(() => tenants.id, { onDelete: "cascade" }),
-    roles: text("roles").array().notNull().default([]), // ['admin', 'recruiter', etc.] — tenant-scoped. Column is migrated to tenant_role[] in 0004_db01_identity; Drizzle schema stays text[] until pgEnum support stabilises.
+    userId: uuid("user_id").notNull(), // FK to auth.users(id), enforced at SQL level only
+    tenantId: uuid("tenant_id").notNull(),
+    roles: tenantRoleEnum("roles").array().notNull().default([]), // tenant-scoped role array
     status: text("status").notNull().default("active"), // 'active' | 'suspended' | 'revoked'
-    // Tenant-specific profile attributes (DB-01).
     jobTitle: text("job_title"),
-    // Self-FK: managers are members in the same tenant, not users (which
-    // would lose tenant scoping).
-    managerId: uuid("manager_id").references((): AnyPgColumn => tenantUserMemberships.id, {
-      onDelete: "set null",
-    }),
-    businessUnitId: uuid("business_unit_id").references(() => businessUnits.id, {
-      onDelete: "set null",
-    }),
+    managerId: uuid("manager_id"),
+    businessUnitId: uuid("business_unit_id"),
     joinedTenantAt: timestamp("joined_tenant_at", { withTimezone: true }).notNull().defaultNow(),
     invitedAt: timestamp("invited_at", { withTimezone: true }),
     acceptedAt: timestamp("accepted_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
-  (table) => ({
-    // A user has at most one membership row per tenant
-    uniqueUserTenant: uniqueIndex("idx_membership_user_tenant").on(table.userId, table.tenantId),
-    // Hot path for the hook: lookup memberships by user_id quickly
-    userIdx: index("idx_membership_user").on(table.userId),
-    // For tenant admin views: list all members of a tenant
-    tenantIdx: index("idx_membership_tenant").on(table.tenantId),
-  }),
-);
+  (table) => [
+    uniqueIndex("idx_membership_user_tenant").on(table.userId, table.tenantId),
+    index("idx_membership_user").on(table.userId),
+    index("idx_membership_tenant").on(table.tenantId),
+    index("idx_membership_manager").on(table.managerId),
+    index("idx_membership_business_unit").on(table.businessUnitId),
+    // tenant_id FK was created by Drizzle in 0001, so its constraint name
+    // follows Drizzle's auto-derivation convention (table_col_reftable_refcol_fk),
+    // not the Postgres-default _fkey shorthand.
+    foreignKey({
+      columns: [table.tenantId],
+      foreignColumns: [tenants.id],
+      name: "tenant_user_memberships_tenant_id_tenants_id_fk",
+    }).onDelete("cascade"),
+    foreignKey({
+      columns: [table.managerId],
+      foreignColumns: [table.id as AnyPgColumn],
+      name: "tenant_user_memberships_manager_id_fkey",
+    }).onDelete("set null"),
+    foreignKey({
+      columns: [table.businessUnitId],
+      foreignColumns: [businessUnits.id],
+      name: "tenant_user_memberships_business_unit_id_fkey",
+    }).onDelete("set null"),
+    pgPolicy("memberships_self_select", {
+      as: "permissive",
+      for: "select",
+      to: ["authenticated"],
+      using: sql`user_id = auth.uid()`,
+    }),
+    pgPolicy("memberships_auth_admin_read", {
+      as: "permissive",
+      for: "select",
+      to: ["supabase_auth_admin"],
+      using: sql`true`,
+    }),
+  ],
+).enableRLS();
 
 export type TenantUserMembership = typeof tenantUserMemberships.$inferSelect;
 export type NewTenantUserMembership = typeof tenantUserMemberships.$inferInsert;
