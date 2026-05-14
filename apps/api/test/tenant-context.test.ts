@@ -36,6 +36,9 @@ import {
   users,
   businessUnits,
   tenantUserMemberships,
+  positions,
+  jdVersions,
+  jdSkills,
   type JwtClaims,
 } from "@hireops/db";
 import { eq } from "drizzle-orm";
@@ -53,6 +56,12 @@ const SYNTH_TENANT_SLUG = "synth-db01-test";
 // Separate synthetic tenant for test 8 (Drizzle round-trip).
 const ROUNDTRIP_TENANT_ID = "00000000-0000-0000-0000-000000db0108";
 const ROUNDTRIP_TENANT_SLUG = "synth-roundtrip";
+
+// DB-02a synthetic tenant + BUs for tests 9-10.
+const DB02A_SYNTH_TENANT_ID = "00000000-0000-0000-0000-000000db02a1";
+const DB02A_SYNTH_BU_ID = "00000000-0000-0000-0000-000000db02a2";
+const DB02A_OWN_BU_ID = "00000000-0000-0000-0000-000000db02a3";
+const DB02A_JD_BU_ID = "00000000-0000-0000-0000-000000db02b1";
 
 if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
   throw new Error("Required env: SUPABASE_URL, SUPABASE_ANON_KEY (set in workspace-root .env)");
@@ -246,6 +255,136 @@ async function run(): Promise<void> {
     if (cleanupRoundtripTenant) {
       await poolSql`DELETE FROM public.tenant_user_memberships WHERE tenant_id = ${ROUNDTRIP_TENANT_ID}`;
       await poolSql`DELETE FROM public.tenants WHERE id = ${ROUNDTRIP_TENANT_ID}`;
+    }
+  }
+
+  // === Test 9: positions RLS — tenant isolation (DB-02a) ===
+  let cleanupDb02aIsolation = false;
+  try {
+    // Defensive pre-cleanup in case a prior run died mid-test.
+    await poolSql`DELETE FROM public.positions WHERE business_unit_id = ${DB02A_OWN_BU_ID}`;
+    await poolSql`DELETE FROM public.business_units WHERE id = ${DB02A_OWN_BU_ID}`;
+    await poolSql`DELETE FROM public.tenants WHERE id = ${DB02A_SYNTH_TENANT_ID}`;
+
+    await poolSql`
+      INSERT INTO public.tenants (id, slug, display_name, primary_region, status)
+      VALUES (${DB02A_SYNTH_TENANT_ID}, 'synth-db02a', 'Synth DB-02a', 'ap-northeast-1', 'active')
+    `;
+    cleanupDb02aIsolation = true;
+
+    await poolSql`
+      INSERT INTO public.business_units (id, tenant_id, name, slug)
+      VALUES
+        (${DB02A_SYNTH_BU_ID}, ${DB02A_SYNTH_TENANT_ID}, 'Synth BU', 'synth-bu'),
+        (${DB02A_OWN_BU_ID}, ${testTenantId}, 'Test BU DB02a', 'test-bu-db02a')
+    `;
+
+    await poolSql`
+      INSERT INTO public.positions (tenant_id, business_unit_id, title)
+      VALUES
+        (${DB02A_SYNTH_TENANT_ID}, ${DB02A_SYNTH_BU_ID}, 'Should Not Be Visible'),
+        (${testTenantId}, ${DB02A_OWN_BU_ID}, 'Senior Backend Engineer')
+    `;
+
+    const visible = await withTenantContext(decodedClaims, async ({ db }) => {
+      return db.select().from(positions);
+    });
+
+    const ourPositions = visible.filter((p) => p.businessUnitId === DB02A_OWN_BU_ID);
+    assert.equal(ourPositions.length, 1, "sees own-tenant position");
+    assert.equal(ourPositions[0]?.title, "Senior Backend Engineer");
+
+    const leaked = visible.filter((p) => p.tenantId === DB02A_SYNTH_TENANT_ID);
+    assert.equal(leaked.length, 0, "no cross-tenant leakage");
+
+    console.log("  ✓ positions RLS: tenant isolation");
+  } finally {
+    if (cleanupDb02aIsolation) {
+      // positions.business_unit_id is ON DELETE RESTRICT, so delete the
+      // position rows in the own-tenant BU before dropping the BU itself.
+      // The synth tenant's positions + BU cascade-delete with the tenant.
+      await poolSql`DELETE FROM public.positions WHERE business_unit_id = ${DB02A_OWN_BU_ID}`;
+      await poolSql`DELETE FROM public.business_units WHERE id = ${DB02A_OWN_BU_ID}`;
+      await poolSql`DELETE FROM public.tenants WHERE id = ${DB02A_SYNTH_TENANT_ID}`;
+    }
+  }
+
+  // === Test 10: JD version + skills round-trip through Drizzle (DB-02a) ===
+  let cleanupDb02aJd = false;
+  try {
+    // Defensive pre-cleanup.
+    await poolSql`DELETE FROM public.positions WHERE business_unit_id = ${DB02A_JD_BU_ID}`;
+    await poolSql`DELETE FROM public.business_units WHERE id = ${DB02A_JD_BU_ID}`;
+
+    await poolSql`
+      INSERT INTO public.business_units (id, tenant_id, name, slug)
+      VALUES (${DB02A_JD_BU_ID}, ${testTenantId}, 'JD Test BU', 'jd-test-bu')
+    `;
+    cleanupDb02aJd = true;
+
+    const result = await withTenantContext(decodedClaims, async ({ db }) => {
+      const [position] = await db
+        .insert(positions)
+        .values({
+          tenantId: testTenantId,
+          businessUnitId: DB02A_JD_BU_ID,
+          title: "Test Position DB-02a",
+          level: "L4",
+          locationType: "hybrid",
+        })
+        .returning();
+      if (!position) throw new Error("position insert returned no row");
+
+      const [jd1] = await db
+        .insert(jdVersions)
+        .values({
+          tenantId: testTenantId,
+          positionId: position.id,
+          versionNumber: 1,
+          status: "draft",
+          jdText: "Initial JD",
+        })
+        .returning();
+      if (!jd1) throw new Error("jd_version insert returned no row");
+
+      await db.insert(jdSkills).values([
+        {
+          tenantId: testTenantId,
+          jdVersionId: jd1.id,
+          skillName: "TypeScript",
+          weight: "2.00",
+          isRequired: true,
+        },
+        {
+          tenantId: testTenantId,
+          jdVersionId: jd1.id,
+          skillName: "PostgreSQL",
+          weight: "1.50",
+          isRequired: true,
+        },
+      ]);
+
+      const skills = await db.select().from(jdSkills).where(eq(jdSkills.jdVersionId, jd1.id));
+
+      return { position, jd: jd1, skills };
+    });
+
+    assert.equal(result.skills.length, 2);
+    assert.ok(
+      result.skills.find((s) => s.skillName === "TypeScript"),
+      "TypeScript skill round-tripped",
+    );
+    assert.ok(
+      result.skills.find((s) => s.skillName === "PostgreSQL"),
+      "PostgreSQL skill round-tripped",
+    );
+    console.log("  ✓ JD version + skills round-trip through Drizzle");
+  } finally {
+    if (cleanupDb02aJd) {
+      // Deleting the BU cascades positions → jd_versions → jd_skills (the
+      // BU FK is RESTRICT so we delete positions first).
+      await poolSql`DELETE FROM public.positions WHERE business_unit_id = ${DB02A_JD_BU_ID}`;
+      await poolSql`DELETE FROM public.business_units WHERE id = ${DB02A_JD_BU_ID}`;
     }
   }
 
