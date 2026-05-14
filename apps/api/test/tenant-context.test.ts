@@ -39,6 +39,9 @@ import {
   positions,
   jdVersions,
   jdSkills,
+  requisitions,
+  requisitionKnockouts,
+  requisitionStateTransitions,
   type JwtClaims,
 } from "@hireops/db";
 import { eq } from "drizzle-orm";
@@ -62,6 +65,11 @@ const DB02A_SYNTH_TENANT_ID = "00000000-0000-0000-0000-000000db02a1";
 const DB02A_SYNTH_BU_ID = "00000000-0000-0000-0000-000000db02a2";
 const DB02A_OWN_BU_ID = "00000000-0000-0000-0000-000000db02a3";
 const DB02A_JD_BU_ID = "00000000-0000-0000-0000-000000db02b1";
+
+// DB-02b synthetic tenant + BUs for tests 11-13.
+const DB02B_SYNTH_TENANT_ID = "00000000-0000-0000-0000-000000db02b2";
+const DB02B_SYNTH_BU_ID = "00000000-0000-0000-0000-000000db02b3";
+const DB02B_OWN_BU_ID = "00000000-0000-0000-0000-000000db02b4";
 
 if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
   throw new Error("Required env: SUPABASE_URL, SUPABASE_ANON_KEY (set in workspace-root .env)");
@@ -385,6 +393,296 @@ async function run(): Promise<void> {
       // BU FK is RESTRICT so we delete positions first).
       await poolSql`DELETE FROM public.positions WHERE business_unit_id = ${DB02A_JD_BU_ID}`;
       await poolSql`DELETE FROM public.business_units WHERE id = ${DB02A_JD_BU_ID}`;
+    }
+  }
+
+  // Test user's membership id — needed as primary_recruiter / hiring_manager
+  // for requisitions in DB-02b tests. Fetched via the unscoped pool so we
+  // don't need to set up a separate withTenantContext just to read it.
+  const [membership] = await poolSql<{ id: string }[]>`
+    SELECT id FROM public.tenant_user_memberships
+    WHERE user_id = ${testUserId} AND tenant_id = ${testTenantId}
+    LIMIT 1
+  `;
+  if (!membership) {
+    throw new Error("test user has no membership in its tenant — fixture broken");
+  }
+  const testMembershipId = membership.id;
+
+  // === Test 11: requisitions RLS — tenant isolation (DB-02b) ===
+  let cleanupDb02bIsolation = false;
+  try {
+    // Defensive pre-cleanup.
+    await poolSql`DELETE FROM public.requisition_state_transitions WHERE tenant_id IN (${testTenantId}, ${DB02B_SYNTH_TENANT_ID})`;
+    await poolSql`DELETE FROM public.requisitions WHERE tenant_id IN (${testTenantId}, ${DB02B_SYNTH_TENANT_ID}) AND id IN (SELECT r.id FROM public.requisitions r JOIN public.positions p ON r.position_id = p.id WHERE p.business_unit_id IN (${DB02B_OWN_BU_ID}, ${DB02B_SYNTH_BU_ID}))`;
+    await poolSql`DELETE FROM public.jd_versions WHERE position_id IN (SELECT id FROM public.positions WHERE business_unit_id IN (${DB02B_OWN_BU_ID}, ${DB02B_SYNTH_BU_ID}))`;
+    await poolSql`DELETE FROM public.positions WHERE business_unit_id IN (${DB02B_OWN_BU_ID}, ${DB02B_SYNTH_BU_ID})`;
+    await poolSql`DELETE FROM public.business_units WHERE id = ${DB02B_OWN_BU_ID}`;
+    await poolSql`DELETE FROM public.tenants WHERE id = ${DB02B_SYNTH_TENANT_ID}`;
+
+    // Synth tenant: tenant → BU → position → jd_version → requisition.
+    await poolSql`
+      INSERT INTO public.tenants (id, slug, display_name, primary_region, status)
+      VALUES (${DB02B_SYNTH_TENANT_ID}, 'synth-db02b', 'Synth DB-02b', 'ap-northeast-1', 'active')
+    `;
+    cleanupDb02bIsolation = true;
+
+    await poolSql`
+      INSERT INTO public.business_units (id, tenant_id, name, slug)
+      VALUES
+        (${DB02B_SYNTH_BU_ID}, ${DB02B_SYNTH_TENANT_ID}, 'Synth BU', 'synth-bu-02b'),
+        (${DB02B_OWN_BU_ID}, ${testTenantId}, 'Test BU DB02b', 'test-bu-db02b')
+    `;
+
+    const synthPositionId = "00000000-0000-0000-0000-0000000201a1";
+    const ownPositionId = "00000000-0000-0000-0000-0000000201a2";
+    const synthJdId = "00000000-0000-0000-0000-0000000201b1";
+    const ownJdId = "00000000-0000-0000-0000-0000000201b2";
+
+    await poolSql`
+      INSERT INTO public.positions (id, tenant_id, business_unit_id, title)
+      VALUES
+        (${synthPositionId}, ${DB02B_SYNTH_TENANT_ID}, ${DB02B_SYNTH_BU_ID}, 'Synth Position'),
+        (${ownPositionId}, ${testTenantId}, ${DB02B_OWN_BU_ID}, 'Own Position')
+    `;
+
+    await poolSql`
+      INSERT INTO public.jd_versions (id, tenant_id, position_id, version_number, jd_text)
+      VALUES
+        (${synthJdId}, ${DB02B_SYNTH_TENANT_ID}, ${synthPositionId}, 1, 'synth JD'),
+        (${ownJdId}, ${testTenantId}, ${ownPositionId}, 1, 'own JD')
+    `;
+
+    // The synth tenant's req can reuse the test user's membership for its
+    // recruiter/HM FKs — there's no DB constraint forcing membership tenant
+    // to match req tenant, and RLS is what we're actually testing.
+    await poolSql`
+      INSERT INTO public.requisitions
+        (tenant_id, position_id, jd_version_id, primary_recruiter_id, hiring_manager_id, status)
+      VALUES
+        (${DB02B_SYNTH_TENANT_ID}, ${synthPositionId}, ${synthJdId}, ${testMembershipId}, ${testMembershipId}, 'draft'),
+        (${testTenantId}, ${ownPositionId}, ${ownJdId}, ${testMembershipId}, ${testMembershipId}, 'draft')
+    `;
+
+    const visible = await withTenantContext(decodedClaims, async ({ db }) => {
+      return db.select().from(requisitions);
+    });
+
+    const ourReqs = visible.filter((r) => r.positionId === ownPositionId);
+    assert.equal(ourReqs.length, 1, "sees own-tenant requisition");
+    const leaked = visible.filter((r) => r.tenantId === DB02B_SYNTH_TENANT_ID);
+    assert.equal(leaked.length, 0, "no cross-tenant requisition leakage");
+    console.log("  ✓ requisitions RLS: tenant isolation");
+  } finally {
+    if (cleanupDb02bIsolation) {
+      // FK cleanup order: state_transitions(RESTRICT)→reqs(cascades knockouts+recruiters)
+      // →jd_versions(cascades skills)→positions(RESTRICT to BU)→BUs→synth tenant
+      await poolSql`DELETE FROM public.requisition_state_transitions WHERE tenant_id IN (${testTenantId}, ${DB02B_SYNTH_TENANT_ID})`;
+      await poolSql`DELETE FROM public.requisitions WHERE tenant_id IN (${testTenantId}, ${DB02B_SYNTH_TENANT_ID}) AND id IN (SELECT r.id FROM public.requisitions r JOIN public.positions p ON r.position_id = p.id WHERE p.business_unit_id IN (${DB02B_OWN_BU_ID}, ${DB02B_SYNTH_BU_ID}))`;
+      await poolSql`DELETE FROM public.jd_versions WHERE position_id IN (SELECT id FROM public.positions WHERE business_unit_id IN (${DB02B_OWN_BU_ID}, ${DB02B_SYNTH_BU_ID}))`;
+      await poolSql`DELETE FROM public.positions WHERE business_unit_id IN (${DB02B_OWN_BU_ID}, ${DB02B_SYNTH_BU_ID})`;
+      await poolSql`DELETE FROM public.business_units WHERE id = ${DB02B_OWN_BU_ID}`;
+      await poolSql`DELETE FROM public.tenants WHERE id = ${DB02B_SYNTH_TENANT_ID}`;
+    }
+  }
+
+  // === Test 12: append-only state transitions (DB-02b) ===
+  // The state_transitions table has split policies: tenant_isolation_select
+  // and tenant_isolation_insert. There's no UPDATE or DELETE policy for
+  // `authenticated`, so attempts via withTenantContext should match zero
+  // rows (RLS filters them out).
+  const APPEND_BU_ID = "00000000-0000-0000-0000-0000000202a1";
+  const APPEND_POSITION_ID = "00000000-0000-0000-0000-0000000202a2";
+  const APPEND_JD_ID = "00000000-0000-0000-0000-0000000202a3";
+  const APPEND_REQ_ID = "00000000-0000-0000-0000-0000000202a4";
+  let cleanupAppendOnly = false;
+  try {
+    // Pre-cleanup
+    await poolSql`DELETE FROM public.requisition_state_transitions WHERE requisition_id = ${APPEND_REQ_ID}`;
+    await poolSql`DELETE FROM public.requisitions WHERE id = ${APPEND_REQ_ID}`;
+    await poolSql`DELETE FROM public.jd_versions WHERE id = ${APPEND_JD_ID}`;
+    await poolSql`DELETE FROM public.positions WHERE id = ${APPEND_POSITION_ID}`;
+    await poolSql`DELETE FROM public.business_units WHERE id = ${APPEND_BU_ID}`;
+
+    await poolSql`
+      INSERT INTO public.business_units (id, tenant_id, name, slug)
+      VALUES (${APPEND_BU_ID}, ${testTenantId}, 'Append-Only BU', 'append-only-bu')
+    `;
+    cleanupAppendOnly = true;
+    await poolSql`
+      INSERT INTO public.positions (id, tenant_id, business_unit_id, title)
+      VALUES (${APPEND_POSITION_ID}, ${testTenantId}, ${APPEND_BU_ID}, 'Append Test Position')
+    `;
+    await poolSql`
+      INSERT INTO public.jd_versions (id, tenant_id, position_id, version_number, jd_text)
+      VALUES (${APPEND_JD_ID}, ${testTenantId}, ${APPEND_POSITION_ID}, 1, 'append JD')
+    `;
+    await poolSql`
+      INSERT INTO public.requisitions
+        (id, tenant_id, position_id, jd_version_id, primary_recruiter_id, hiring_manager_id, status)
+      VALUES (${APPEND_REQ_ID}, ${testTenantId}, ${APPEND_POSITION_ID}, ${APPEND_JD_ID}, ${testMembershipId}, ${testMembershipId}, 'draft')
+    `;
+
+    // INSERT a transition via withTenantContext — must succeed.
+    const inserted = await withTenantContext(decodedClaims, async ({ db }) => {
+      return db
+        .insert(requisitionStateTransitions)
+        .values({
+          tenantId: testTenantId,
+          requisitionId: APPEND_REQ_ID,
+          fromStatus: null,
+          toStatus: "draft",
+          transitionedBy: testMembershipId,
+          reason: "initial creation",
+        })
+        .returning();
+    });
+    assert.equal(inserted.length, 1, "INSERT into state_transitions allowed");
+    const transitionId = inserted[0]!.id;
+
+    // SELECT via withTenantContext — must succeed and return the row.
+    const selected = await withTenantContext(decodedClaims, async ({ db }) => {
+      return db
+        .select()
+        .from(requisitionStateTransitions)
+        .where(eq(requisitionStateTransitions.id, transitionId));
+    });
+    assert.equal(selected.length, 1, "SELECT from state_transitions returns the row");
+    assert.equal(selected[0]?.toStatus, "draft");
+
+    // UPDATE via withTenantContext — no UPDATE policy ⇒ zero rows affected.
+    const updated = await withTenantContext(decodedClaims, async ({ db }) => {
+      return db
+        .update(requisitionStateTransitions)
+        .set({ reason: "tampered" })
+        .where(eq(requisitionStateTransitions.id, transitionId))
+        .returning();
+    });
+    assert.equal(updated.length, 0, "UPDATE on state_transitions blocked by RLS");
+
+    // DELETE via withTenantContext — no DELETE policy ⇒ zero rows affected.
+    const deleted = await withTenantContext(decodedClaims, async ({ db }) => {
+      return db
+        .delete(requisitionStateTransitions)
+        .where(eq(requisitionStateTransitions.id, transitionId))
+        .returning();
+    });
+    assert.equal(deleted.length, 0, "DELETE on state_transitions blocked by RLS");
+
+    // Verify the row is still intact and reason is unchanged.
+    const reread = await withTenantContext(decodedClaims, async ({ db }) => {
+      return db
+        .select()
+        .from(requisitionStateTransitions)
+        .where(eq(requisitionStateTransitions.id, transitionId));
+    });
+    assert.equal(reread.length, 1, "row still present after blocked UPDATE/DELETE");
+    assert.equal(reread[0]?.reason, "initial creation", "reason unchanged");
+
+    console.log("  ✓ state_transitions append-only enforced via split RLS policies");
+  } finally {
+    if (cleanupAppendOnly) {
+      await poolSql`DELETE FROM public.requisition_state_transitions WHERE requisition_id = ${APPEND_REQ_ID}`;
+      await poolSql`DELETE FROM public.requisitions WHERE id = ${APPEND_REQ_ID}`;
+      await poolSql`DELETE FROM public.jd_versions WHERE id = ${APPEND_JD_ID}`;
+      await poolSql`DELETE FROM public.positions WHERE id = ${APPEND_POSITION_ID}`;
+      await poolSql`DELETE FROM public.business_units WHERE id = ${APPEND_BU_ID}`;
+    }
+  }
+
+  // === Test 13: knockout ordering + threshold_value JSONB round-trip (DB-02b) ===
+  const KO_BU_ID = "00000000-0000-0000-0000-0000000203a1";
+  const KO_POSITION_ID = "00000000-0000-0000-0000-0000000203a2";
+  const KO_JD_ID = "00000000-0000-0000-0000-0000000203a3";
+  const KO_REQ_ID = "00000000-0000-0000-0000-0000000203a4";
+  let cleanupKnockouts = false;
+  try {
+    await poolSql`DELETE FROM public.requisition_state_transitions WHERE requisition_id = ${KO_REQ_ID}`;
+    await poolSql`DELETE FROM public.requisitions WHERE id = ${KO_REQ_ID}`;
+    await poolSql`DELETE FROM public.jd_versions WHERE id = ${KO_JD_ID}`;
+    await poolSql`DELETE FROM public.positions WHERE id = ${KO_POSITION_ID}`;
+    await poolSql`DELETE FROM public.business_units WHERE id = ${KO_BU_ID}`;
+
+    await poolSql`
+      INSERT INTO public.business_units (id, tenant_id, name, slug)
+      VALUES (${KO_BU_ID}, ${testTenantId}, 'Knockout BU', 'knockout-bu')
+    `;
+    cleanupKnockouts = true;
+    await poolSql`
+      INSERT INTO public.positions (id, tenant_id, business_unit_id, title)
+      VALUES (${KO_POSITION_ID}, ${testTenantId}, ${KO_BU_ID}, 'Knockout Test Position')
+    `;
+    await poolSql`
+      INSERT INTO public.jd_versions (id, tenant_id, position_id, version_number, jd_text)
+      VALUES (${KO_JD_ID}, ${testTenantId}, ${KO_POSITION_ID}, 1, 'knockout JD')
+    `;
+    await poolSql`
+      INSERT INTO public.requisitions
+        (id, tenant_id, position_id, jd_version_id, primary_recruiter_id, hiring_manager_id, status)
+      VALUES (${KO_REQ_ID}, ${testTenantId}, ${KO_POSITION_ID}, ${KO_JD_ID}, ${testMembershipId}, ${testMembershipId}, 'draft')
+    `;
+
+    const ordered = await withTenantContext(decodedClaims, async ({ db }) => {
+      await db.insert(requisitionKnockouts).values([
+        {
+          tenantId: testTenantId,
+          requisitionId: KO_REQ_ID,
+          questionText: "Do you have a valid work permit?",
+          type: "boolean",
+          thresholdValue: { required: true },
+          source: "candidate_asserted",
+          orderIndex: 0,
+        },
+        {
+          tenantId: testTenantId,
+          requisitionId: KO_REQ_ID,
+          questionText: "Years of experience?",
+          type: "numeric_min",
+          thresholdValue: { min: 5 },
+          source: "parsed_cv",
+          orderIndex: 1,
+        },
+        {
+          tenantId: testTenantId,
+          requisitionId: KO_REQ_ID,
+          questionText: "Preferred location?",
+          type: "enum",
+          thresholdValue: { allowed: ["Bangalore", "Hyderabad"] },
+          source: "candidate_asserted",
+          orderIndex: 2,
+        },
+      ]);
+
+      return db
+        .select()
+        .from(requisitionKnockouts)
+        .where(eq(requisitionKnockouts.requisitionId, KO_REQ_ID))
+        .orderBy(requisitionKnockouts.orderIndex);
+    });
+
+    assert.equal(ordered.length, 3, "three knockouts round-trip");
+    assert.deepEqual(
+      ordered.map((k) => k.orderIndex),
+      [0, 1, 2],
+      "ordering preserved",
+    );
+    assert.equal(ordered[0]?.type, "boolean");
+    assert.equal(ordered[1]?.type, "numeric_min");
+    assert.equal(ordered[2]?.type, "enum");
+    assert.deepEqual(ordered[0]?.thresholdValue, { required: true });
+    assert.deepEqual(ordered[1]?.thresholdValue, { min: 5 });
+    assert.deepEqual(ordered[2]?.thresholdValue, {
+      allowed: ["Bangalore", "Hyderabad"],
+    });
+    console.log("  ✓ knockouts: ordered insert + jsonb round-trip + enum type");
+  } finally {
+    if (cleanupKnockouts) {
+      // Knockouts cascade with the req; state_transitions don't (RESTRICT).
+      await poolSql`DELETE FROM public.requisition_state_transitions WHERE requisition_id = ${KO_REQ_ID}`;
+      await poolSql`DELETE FROM public.requisitions WHERE id = ${KO_REQ_ID}`;
+      await poolSql`DELETE FROM public.jd_versions WHERE id = ${KO_JD_ID}`;
+      await poolSql`DELETE FROM public.positions WHERE id = ${KO_POSITION_ID}`;
+      await poolSql`DELETE FROM public.business_units WHERE id = ${KO_BU_ID}`;
     }
   }
 
