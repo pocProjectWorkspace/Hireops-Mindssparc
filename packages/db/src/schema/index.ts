@@ -15,3 +15,5 @@ export * from "./requisition-recruiters";
 export * from "./requisition-knockouts";
 export * from "./requisition-state-transitions";
 export * from "./integration-credentials";
+export * from "./audit-action";
+export * from "./audit-logs";

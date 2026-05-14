@@ -48,6 +48,7 @@ interface TableRow {
   relname: string;
   relrowsecurity: boolean;
   relforcerowsecurity: boolean;
+  relkind: string;
 }
 
 interface PolicyRow {
@@ -65,12 +66,19 @@ async function main() {
   });
 
   try {
+    // Include both regular tables (relkind='r') and partitioned tables
+    // (relkind='p'). Skip partition children (relispartition=true) — they
+    // inherit policies from the partitioned parent; lint-checking them
+    // separately would flag false missing-policy violations because
+    // pg_policies records entries against the parent only. FORCE is set
+    // on each partition explicitly in the migration regardless.
     const tables = await sql<TableRow[]>`
-      SELECT c.relname, c.relrowsecurity, c.relforcerowsecurity
+      SELECT c.relname, c.relrowsecurity, c.relforcerowsecurity, c.relkind::text AS relkind
       FROM pg_class c
       JOIN pg_namespace n ON c.relnamespace = n.oid
       WHERE n.nspname = 'public'
-        AND c.relkind = 'r'
+        AND c.relkind IN ('r', 'p')
+        AND c.relispartition = false
         AND c.relname NOT LIKE '__drizzle%'
       ORDER BY c.relname
     `;
@@ -145,7 +153,10 @@ async function main() {
     console.log("");
     for (const t of tables) {
       const tag = PLATFORM_TABLES_ALLOWLIST.has(t.relname) ? "[platform]" : "[tenant]";
-      console.log(`  ${tag} ${t.relname}  rls=${t.relrowsecurity} forced=${t.relforcerowsecurity}`);
+      const kind = t.relkind === "p" ? " (partitioned)" : "";
+      console.log(
+        `  ${tag} ${t.relname}${kind}  rls=${t.relrowsecurity} forced=${t.relforcerowsecurity}`,
+      );
     }
 
     if (violations.length > 0) {

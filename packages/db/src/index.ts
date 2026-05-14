@@ -1,7 +1,13 @@
 export * from "./client";
 export * from "./schema";
 export { withTenantContext, drizzleSql } from "./with-tenant-context";
-export type { JwtClaims, TenantContext, TenantBoundDb } from "./with-tenant-context";
+export type {
+  JwtClaims,
+  TenantContext,
+  TenantBoundDb,
+  TenantContextMetadata,
+  TenantContextSource,
+} from "./with-tenant-context";
 
 // Envelope encryption + KMS (FND-15d).
 export * from "./kms";

@@ -42,6 +42,7 @@ import {
   requisitions,
   requisitionKnockouts,
   requisitionStateTransitions,
+  auditLogs,
   storeIntegrationCredential,
   getIntegrationCredential,
   getKmsClient,
@@ -111,8 +112,29 @@ async function getTestJwt(): Promise<string> {
   return data.session.access_token;
 }
 
+// Hex-only suffixes (UUIDs only allow 0-9 and a-f). "adda" stands in for
+// "audit-data-access" — pick whatever mnemonic fits; the digits are what
+// matters. Declared at module scope so the pre-test cleanup below and the
+// DB-AUDIT tests at the bottom share the same constants.
+const AUDIT_BU_ID = "00000000-0000-0000-0000-0000adda0001";
+const AUDIT_SYNTH_TENANT_ID = "00000000-0000-0000-0000-0000adda0002";
+const AUDIT_SYNTH_BU_ID = "00000000-0000-0000-0000-0000adda0003";
+const AUDIT_NOOP_BU_ID = "00000000-0000-0000-0000-0000adda0004";
+const AUDIT_DIFF_BU_ID = "00000000-0000-0000-0000-0000adda0005";
+const AUDIT_VARS_BU_ID = "00000000-0000-0000-0000-0000adda0006";
+const AUDIT_MISSING_BU_ID = "00000000-0000-0000-0000-0000adda0007";
+const AUDIT_PART_BU_ID = "00000000-0000-0000-0000-0000adda0008";
+
 async function run(): Promise<void> {
   console.log("Tenant-context + RLS integration tests starting...\n");
+
+  // Pre-clean any business_units / audit_logs / tenants left from a prior
+  // aborted DB-AUDIT run. These run BEFORE the older RLS tests because
+  // those tests assert exact row counts in business_units for the test
+  // tenant — leftover audit-test BUs would break them.
+  await poolSql`DELETE FROM public.audit_logs WHERE entity_id IN (${AUDIT_BU_ID}, ${AUDIT_NOOP_BU_ID}, ${AUDIT_DIFF_BU_ID}, ${AUDIT_VARS_BU_ID}, ${AUDIT_MISSING_BU_ID}, ${AUDIT_PART_BU_ID}, ${AUDIT_SYNTH_BU_ID})`;
+  await poolSql`DELETE FROM public.business_units WHERE id IN (${AUDIT_BU_ID}, ${AUDIT_NOOP_BU_ID}, ${AUDIT_DIFF_BU_ID}, ${AUDIT_VARS_BU_ID}, ${AUDIT_MISSING_BU_ID}, ${AUDIT_PART_BU_ID}, ${AUDIT_SYNTH_BU_ID})`;
+  await poolSql`DELETE FROM public.tenants WHERE id = ${AUDIT_SYNTH_TENANT_ID}`;
 
   // === Test 1: no JWT → 401 ===
   {
@@ -899,6 +921,271 @@ async function run(): Promise<void> {
     );
     console.log("  ✓ provision-dev-dek idempotent (no DEK rewrite when keyId matches)");
   }
+
+  // === DB-AUDIT tests (18–25) ===================================================
+  // The audit_record_change() trigger fires AFTER INSERT/UPDATE/DELETE on each
+  // mutable tenant-scoped table. It reads request-level metadata from session
+  // vars set by withTenantContext and writes a row to the partitioned
+  // audit_logs table. Tests below cover trigger behaviour, no-op skip,
+  // changed_columns diffing, tenant isolation, append-only enforcement,
+  // session-var propagation, missing-vars fallback, and partition routing.
+  // The constants and the leftover-row pre-cleanup live at the top of run()
+  // because earlier tests count business_units per tenant exactly.
+
+  // === Test 18: trigger fires on insert / update / delete ===
+  {
+    // INSERT
+    await poolSql`
+      INSERT INTO public.business_units (id, tenant_id, name, slug)
+      VALUES (${AUDIT_BU_ID}, ${testTenantId}, 'Audit BU', 'audit-bu')
+    `;
+    const afterInsert = await poolSql<{ action: string }[]>`
+      SELECT action FROM public.audit_logs WHERE entity_id = ${AUDIT_BU_ID}
+    `;
+    assert.equal(afterInsert.length, 1, "INSERT produced one audit row");
+    assert.equal(afterInsert[0]?.action, "insert");
+
+    // UPDATE
+    await poolSql`UPDATE public.business_units SET name = 'Audit BU v2' WHERE id = ${AUDIT_BU_ID}`;
+    const afterUpdate = await poolSql<{ action: string }[]>`
+      SELECT action FROM public.audit_logs WHERE entity_id = ${AUDIT_BU_ID} ORDER BY created_at
+    `;
+    assert.equal(afterUpdate.length, 2, "UPDATE produced a second audit row");
+    assert.equal(afterUpdate[1]?.action, "update");
+
+    // DELETE
+    await poolSql`DELETE FROM public.business_units WHERE id = ${AUDIT_BU_ID}`;
+    const afterDelete = await poolSql<{ action: string }[]>`
+      SELECT action FROM public.audit_logs WHERE entity_id = ${AUDIT_BU_ID} ORDER BY created_at
+    `;
+    assert.equal(afterDelete.length, 3, "DELETE produced a third audit row");
+    assert.equal(afterDelete[2]?.action, "delete");
+
+    console.log("  ✓ audit trigger fires on insert / update / delete");
+  }
+
+  // === Test 19: no-op update doesn't audit ===
+  {
+    await poolSql`
+      INSERT INTO public.business_units (id, tenant_id, name, slug)
+      VALUES (${AUDIT_NOOP_BU_ID}, ${testTenantId}, 'No-Op BU', 'no-op-bu')
+    `;
+    const before = await poolSql<{ c: string }[]>`
+      SELECT count(*)::text AS c FROM public.audit_logs WHERE entity_id = ${AUDIT_NOOP_BU_ID}
+    `;
+    // UPDATE with the same value(s) — no actual column changes. The
+    // trigger compares to_jsonb(OLD) vs to_jsonb(NEW); equal → skip.
+    await poolSql`UPDATE public.business_units SET name = 'No-Op BU' WHERE id = ${AUDIT_NOOP_BU_ID}`;
+    const after = await poolSql<{ c: string }[]>`
+      SELECT count(*)::text AS c FROM public.audit_logs WHERE entity_id = ${AUDIT_NOOP_BU_ID}
+    `;
+    assert.equal(after[0]?.c, before[0]?.c, "no-op UPDATE produced no new audit row");
+    console.log("  ✓ no-op update doesn't audit");
+  }
+
+  // === Test 20: changed_columns is correct ===
+  {
+    await poolSql`
+      INSERT INTO public.business_units (id, tenant_id, name, slug)
+      VALUES (${AUDIT_DIFF_BU_ID}, ${testTenantId}, 'Diff BU', 'diff-bu-original')
+    `;
+    await poolSql`
+      UPDATE public.business_units SET name = 'Diff BU v2', slug = 'diff-bu-renamed'
+      WHERE id = ${AUDIT_DIFF_BU_ID}
+    `;
+    const [row] = await poolSql<{ changed_columns: string[] }[]>`
+      SELECT changed_columns FROM public.audit_logs
+      WHERE entity_id = ${AUDIT_DIFF_BU_ID} AND action = 'update'
+    `;
+    assert.ok(row, "update audit row exists");
+    const changed = row.changed_columns?.slice().sort() ?? [];
+    assert.deepEqual(changed, ["name", "slug"], "changed_columns lists only the modified columns");
+    console.log("  ✓ changed_columns is correct for partial update");
+  }
+
+  // === Test 21: tenant isolation on audit_logs ===
+  {
+    // Insert a synth tenant + business_unit (the latter triggers an audit row
+    // in the synth tenant's scope).
+    await poolSql`
+      INSERT INTO public.tenants (id, slug, display_name, primary_region, status)
+      VALUES (${AUDIT_SYNTH_TENANT_ID}, 'synth-audit', 'Synth Audit', 'ap-northeast-1', 'active')
+    `;
+    await poolSql`
+      INSERT INTO public.business_units (id, tenant_id, name, slug)
+      VALUES (${AUDIT_SYNTH_BU_ID}, ${AUDIT_SYNTH_TENANT_ID}, 'Synth BU', 'synth-audit-bu')
+    `;
+    // Confirm the synth audit row exists at the raw-pool level.
+    const synthRows = await poolSql<{ id: string }[]>`
+      SELECT id FROM public.audit_logs WHERE tenant_id = ${AUDIT_SYNTH_TENANT_ID}
+    `;
+    assert.ok(synthRows.length >= 1, "synth tenant has at least one audit row in the DB");
+
+    // Under the test user's claims, audit_logs RLS must hide synth-tenant rows.
+    const visible = await withTenantContext(decodedClaims, async ({ db }) => {
+      return db
+        .select({ id: auditLogs.id, tenantId: auditLogs.tenantId })
+        .from(auditLogs)
+        .where(eq(auditLogs.tenantId, AUDIT_SYNTH_TENANT_ID));
+    });
+    assert.equal(visible.length, 0, "no cross-tenant audit rows leak via RLS");
+    console.log("  ✓ audit_logs tenant isolation enforced via RLS");
+  }
+
+  // === Test 22: append-only on audit_logs (no UPDATE / DELETE policies) ===
+  {
+    // Take any existing own-tenant audit row. We created at least one above.
+    const [picked] = await poolSql<{ id: string }[]>`
+      SELECT id FROM public.audit_logs WHERE tenant_id = ${testTenantId} LIMIT 1
+    `;
+    assert.ok(picked, "test tenant has at least one audit row to attempt to mutate");
+    const targetId = picked.id;
+
+    const updated = await withTenantContext(decodedClaims, async ({ db }) => {
+      return db
+        .update(auditLogs)
+        .set({ source: "tampered" })
+        .where(eq(auditLogs.id, targetId))
+        .returning();
+    });
+    assert.equal(updated.length, 0, "UPDATE on audit_logs blocked by RLS (no UPDATE policy)");
+
+    const deleted = await withTenantContext(decodedClaims, async ({ db }) => {
+      return db.delete(auditLogs).where(eq(auditLogs.id, targetId)).returning();
+    });
+    assert.equal(deleted.length, 0, "DELETE on audit_logs blocked by RLS (no DELETE policy)");
+
+    // Row is intact and unchanged.
+    const [reread] = await poolSql<{ source: string }[]>`
+      SELECT source FROM public.audit_logs WHERE id = ${targetId} LIMIT 1
+    `;
+    assert.ok(reread, "audit row still present after blocked UPDATE/DELETE");
+    assert.notEqual(reread.source, "tampered", "source value unchanged");
+    console.log("  ✓ audit_logs append-only enforced via split RLS policies");
+  }
+
+  // === Test 23: session vars propagate (actor / request / source) ===
+  {
+    const REQ_ID_PROBE = "req-audit-vars-probe-XYZ";
+    const UA_PROBE = "vitest/audit-vars";
+    const IP_PROBE = "203.0.113.42";
+    await withTenantContext(
+      decodedClaims,
+      async ({ db }) => {
+        await db.insert(businessUnits).values({
+          id: AUDIT_VARS_BU_ID,
+          tenantId: testTenantId,
+          name: "Vars BU",
+          slug: "audit-vars-bu",
+        });
+      },
+      {
+        actorUserId: testUserId,
+        actorMembershipId: testMembershipId,
+        requestId: REQ_ID_PROBE,
+        userAgent: UA_PROBE,
+        ipAddress: IP_PROBE,
+        source: "app",
+      },
+    );
+
+    const [row] = await poolSql<
+      {
+        actor_user_id: string;
+        actor_membership_id: string;
+        request_id: string;
+        user_agent: string;
+        ip_address: string;
+        source: string;
+      }[]
+    >`
+      SELECT actor_user_id, actor_membership_id, request_id, user_agent, ip_address::text AS ip_address, source
+      FROM public.audit_logs
+      WHERE entity_id = ${AUDIT_VARS_BU_ID} AND action = 'insert'
+    `;
+    assert.ok(row, "audit row exists for the insert");
+    assert.equal(row.actor_user_id, testUserId, "actor_user_id propagated from metadata");
+    assert.equal(row.actor_membership_id, testMembershipId, "actor_membership_id propagated");
+    assert.equal(row.request_id, REQ_ID_PROBE, "request_id propagated");
+    assert.equal(row.user_agent, UA_PROBE, "user_agent propagated");
+    // PG canonicalizes inet for a bare IPv4 to include /32 (and IPv6 to /128).
+    // The cast to text reflects that canonical form, so strip the suffix.
+    assert.equal(row.ip_address.replace(/\/(32|128)$/, ""), IP_PROBE, "ip_address propagated");
+    assert.equal(row.source, "app", "source propagated");
+    console.log("  ✓ session vars propagate from withTenantContext to audit row");
+  }
+
+  // === Test 24: missing session vars don't crash ===
+  {
+    // Direct poolSql insert: no withTenantContext, no app.* settings. The
+    // trigger should still fire and write a row with NULL actor fields and
+    // source defaulted to 'app' (the trigger's COALESCE fallback).
+    await poolSql`
+      INSERT INTO public.business_units (id, tenant_id, name, slug)
+      VALUES (${AUDIT_MISSING_BU_ID}, ${testTenantId}, 'Missing-Vars BU', 'audit-missing-bu')
+    `;
+    const [row] = await poolSql<
+      {
+        actor_user_id: string | null;
+        actor_membership_id: string | null;
+        request_id: string | null;
+        user_agent: string | null;
+        ip_address: string | null;
+        source: string;
+      }[]
+    >`
+      SELECT actor_user_id, actor_membership_id, request_id, user_agent,
+             ip_address::text AS ip_address, source
+      FROM public.audit_logs
+      WHERE entity_id = ${AUDIT_MISSING_BU_ID} AND action = 'insert'
+    `;
+    assert.ok(row, "audit row exists");
+    assert.equal(row.actor_user_id, null);
+    assert.equal(row.actor_membership_id, null);
+    assert.equal(row.request_id, null);
+    assert.equal(row.user_agent, null);
+    assert.equal(row.ip_address, null);
+    assert.equal(row.source, "app", "source defaults to 'app' when unset");
+    console.log("  ✓ missing session vars don't crash; nulls + default source");
+  }
+
+  // === Test 25: partition routing ===
+  {
+    await poolSql`
+      INSERT INTO public.business_units (id, tenant_id, name, slug)
+      VALUES (${AUDIT_PART_BU_ID}, ${testTenantId}, 'Part BU', 'audit-part-bu')
+    `;
+    // Query the current-month partition directly. We expect the row to be
+    // there. tableoid on a partitioned-table row returns the child partition.
+    const [routed] = await poolSql<{ relname: string }[]>`
+      SELECT tableoid::regclass::text AS relname FROM public.audit_logs
+      WHERE entity_id = ${AUDIT_PART_BU_ID} AND action = 'insert'
+    `;
+    assert.ok(routed, "audit row exists");
+    // The row's created_at is now() — pick the correct partition by month.
+    const now = new Date();
+    const expected = `audit_logs_${now.getUTCFullYear()}_${String(now.getUTCMonth() + 1).padStart(2, "0")}`;
+    assert.equal(
+      routed.relname,
+      expected,
+      `row should live in the current-month partition (${expected})`,
+    );
+
+    // Belt-and-braces: a direct SELECT against the partition should find the row.
+    const direct = await poolSql<{ id: string }[]>`
+      SELECT id FROM public.audit_logs_2026_05 WHERE entity_id = ${AUDIT_PART_BU_ID}
+    `;
+    assert.equal(direct.length, 1, "row reachable through the partition directly");
+
+    console.log("  ✓ partition routing: row lands in the current-month partition");
+  }
+
+  // Audit-tests teardown — drop the rows we introduced. Synth tenant
+  // cascades its own business_unit; we explicitly clear audit rows since
+  // there's no FK to cascade them.
+  await poolSql`DELETE FROM public.audit_logs WHERE entity_id IN (${AUDIT_BU_ID}, ${AUDIT_NOOP_BU_ID}, ${AUDIT_DIFF_BU_ID}, ${AUDIT_VARS_BU_ID}, ${AUDIT_MISSING_BU_ID}, ${AUDIT_PART_BU_ID}, ${AUDIT_SYNTH_BU_ID})`;
+  await poolSql`DELETE FROM public.business_units WHERE id IN (${AUDIT_NOOP_BU_ID}, ${AUDIT_DIFF_BU_ID}, ${AUDIT_VARS_BU_ID}, ${AUDIT_MISSING_BU_ID}, ${AUDIT_PART_BU_ID})`;
+  await poolSql`DELETE FROM public.tenants WHERE id = ${AUDIT_SYNTH_TENANT_ID}`;
 
   console.log("\n=========================================");
   console.log("Tenant-context + RLS verification: PASS");
