@@ -1728,13 +1728,18 @@ async function run(): Promise<void> {
 }
 
 run()
-  .then(() => {
-    void poolSql.end({ timeout: 2 });
+  .then(async () => {
+    // Await the pool drain so connections are returned cleanly before the
+    // process exits. With `void ... ; process.exit(0)` the next sequential
+    // tsx invocation (`pnpm api:test` chains this with db-approval.test.ts)
+    // can stall waiting for our orphaned connections to time out on the
+    // pooler side.
+    await poolSql.end({ timeout: 5 });
     process.exit(0);
   })
-  .catch((err) => {
+  .catch(async (err) => {
     console.error("\nTenant-context + RLS verification: FAIL");
     console.error(err);
-    void poolSql.end({ timeout: 2 });
+    await poolSql.end({ timeout: 5 });
     process.exit(1);
   });

@@ -113,6 +113,20 @@
       "when": 1778761749299,
       "tag": "0015_db03_force_rls_triggers",
       "breakpoints": true
+    },
+    {
+      "idx": 16,
+      "version": "7",
+      "when": 1778769752573,
+      "tag": "0016_skinny_jack_power",
+      "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "7",
+      "when": 1778769752574,
+      "tag": "0017_db_approval_force_rls_triggers",
+      "breakpoints": true
     }
   ]
 }
