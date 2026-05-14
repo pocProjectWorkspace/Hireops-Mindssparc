@@ -410,6 +410,7 @@ async function run(): Promise<void> {
   const testMembershipId = membership.id;
 
   // === Test 11: requisitions RLS — tenant isolation (DB-02b) ===
+  const SYNTH_MEMBERSHIP_ID = "00000000-0000-0000-0000-0000000201c1";
   let cleanupDb02bIsolation = false;
   try {
     // Defensive pre-cleanup.
@@ -418,6 +419,7 @@ async function run(): Promise<void> {
     await poolSql`DELETE FROM public.jd_versions WHERE position_id IN (SELECT id FROM public.positions WHERE business_unit_id IN (${DB02B_OWN_BU_ID}, ${DB02B_SYNTH_BU_ID}))`;
     await poolSql`DELETE FROM public.positions WHERE business_unit_id IN (${DB02B_OWN_BU_ID}, ${DB02B_SYNTH_BU_ID})`;
     await poolSql`DELETE FROM public.business_units WHERE id = ${DB02B_OWN_BU_ID}`;
+    await poolSql`DELETE FROM public.tenant_user_memberships WHERE id = ${SYNTH_MEMBERSHIP_ID}`;
     await poolSql`DELETE FROM public.tenants WHERE id = ${DB02B_SYNTH_TENANT_ID}`;
 
     // Synth tenant: tenant → BU → position → jd_version → requisition.
@@ -432,6 +434,16 @@ async function run(): Promise<void> {
       VALUES
         (${DB02B_SYNTH_BU_ID}, ${DB02B_SYNTH_TENANT_ID}, 'Synth BU', 'synth-bu-02b'),
         (${DB02B_OWN_BU_ID}, ${testTenantId}, 'Test BU DB02b', 'test-bu-db02b')
+    `;
+
+    // After DB-TENANT-FK the compound FK refuses cross-tenant membership
+    // references. Reuse the test user's auth identity but give them a
+    // second membership scoped to the synth tenant — a legitimate
+    // multi-tenant scenario in our schema.
+    await poolSql`
+      INSERT INTO public.tenant_user_memberships
+        (id, user_id, tenant_id, roles, status, accepted_at)
+      VALUES (${SYNTH_MEMBERSHIP_ID}, ${testUserId}, ${DB02B_SYNTH_TENANT_ID}, ARRAY['admin']::tenant_role[], 'active', now())
     `;
 
     const synthPositionId = "00000000-0000-0000-0000-0000000201a1";
@@ -453,14 +465,11 @@ async function run(): Promise<void> {
         (${ownJdId}, ${testTenantId}, ${ownPositionId}, 1, 'own JD')
     `;
 
-    // The synth tenant's req can reuse the test user's membership for its
-    // recruiter/HM FKs — there's no DB constraint forcing membership tenant
-    // to match req tenant, and RLS is what we're actually testing.
     await poolSql`
       INSERT INTO public.requisitions
         (tenant_id, position_id, jd_version_id, primary_recruiter_id, hiring_manager_id, status)
       VALUES
-        (${DB02B_SYNTH_TENANT_ID}, ${synthPositionId}, ${synthJdId}, ${testMembershipId}, ${testMembershipId}, 'draft'),
+        (${DB02B_SYNTH_TENANT_ID}, ${synthPositionId}, ${synthJdId}, ${SYNTH_MEMBERSHIP_ID}, ${SYNTH_MEMBERSHIP_ID}, 'draft'),
         (${testTenantId}, ${ownPositionId}, ${ownJdId}, ${testMembershipId}, ${testMembershipId}, 'draft')
     `;
 
@@ -476,12 +485,14 @@ async function run(): Promise<void> {
   } finally {
     if (cleanupDb02bIsolation) {
       // FK cleanup order: state_transitions(RESTRICT)→reqs(cascades knockouts+recruiters)
-      // →jd_versions(cascades skills)→positions(RESTRICT to BU)→BUs→synth tenant
+      // →jd_versions(cascades skills)→positions(RESTRICT to BU)→BUs→synth tenant.
+      // Drop the synth membership before its tenant cascades it.
       await poolSql`DELETE FROM public.requisition_state_transitions WHERE tenant_id IN (${testTenantId}, ${DB02B_SYNTH_TENANT_ID})`;
       await poolSql`DELETE FROM public.requisitions WHERE tenant_id IN (${testTenantId}, ${DB02B_SYNTH_TENANT_ID}) AND id IN (SELECT r.id FROM public.requisitions r JOIN public.positions p ON r.position_id = p.id WHERE p.business_unit_id IN (${DB02B_OWN_BU_ID}, ${DB02B_SYNTH_BU_ID}))`;
       await poolSql`DELETE FROM public.jd_versions WHERE position_id IN (SELECT id FROM public.positions WHERE business_unit_id IN (${DB02B_OWN_BU_ID}, ${DB02B_SYNTH_BU_ID}))`;
       await poolSql`DELETE FROM public.positions WHERE business_unit_id IN (${DB02B_OWN_BU_ID}, ${DB02B_SYNTH_BU_ID})`;
       await poolSql`DELETE FROM public.business_units WHERE id = ${DB02B_OWN_BU_ID}`;
+      await poolSql`DELETE FROM public.tenant_user_memberships WHERE id = ${SYNTH_MEMBERSHIP_ID}`;
       await poolSql`DELETE FROM public.tenants WHERE id = ${DB02B_SYNTH_TENANT_ID}`;
     }
   }
@@ -683,6 +694,61 @@ async function run(): Promise<void> {
       await poolSql`DELETE FROM public.jd_versions WHERE id = ${KO_JD_ID}`;
       await poolSql`DELETE FROM public.positions WHERE id = ${KO_POSITION_ID}`;
       await poolSql`DELETE FROM public.business_units WHERE id = ${KO_BU_ID}`;
+    }
+  }
+
+  // === Test 14: compound FK rejects cross-tenant reference (DB-TENANT-FK) ===
+  // Smoking gun: inserting a position into the test tenant while pointing
+  // its business_unit_id at a BU in a different tenant must fail with a
+  // foreign-key violation. Runs via poolSql so RLS isn't involved — this
+  // is testing the DB-level constraint, not the policy filter.
+  const FK_SYNTH_TENANT_ID = "00000000-0000-0000-0000-0000000204a1";
+  const FK_SYNTH_BU_ID = "00000000-0000-0000-0000-0000000204a2";
+  let cleanupFkTest = false;
+  try {
+    await poolSql`DELETE FROM public.business_units WHERE id = ${FK_SYNTH_BU_ID}`;
+    await poolSql`DELETE FROM public.tenants WHERE id = ${FK_SYNTH_TENANT_ID}`;
+    await poolSql`
+      INSERT INTO public.tenants (id, slug, display_name, primary_region, status)
+      VALUES (${FK_SYNTH_TENANT_ID}, 'synth-fk-test', 'Synth FK Test', 'ap-northeast-1', 'active')
+    `;
+    cleanupFkTest = true;
+    await poolSql`
+      INSERT INTO public.business_units (id, tenant_id, name, slug)
+      VALUES (${FK_SYNTH_BU_ID}, ${FK_SYNTH_TENANT_ID}, 'Synth FK BU', 'synth-fk-bu')
+    `;
+
+    let threwAsExpected = false;
+    let errorMessage = "";
+    try {
+      // Cross-tenant: tenant_id = testTenantId, business_unit_id = synth BU.
+      // Pre-DB-TENANT-FK this would have silently succeeded.
+      await poolSql`
+        INSERT INTO public.positions (tenant_id, business_unit_id, title)
+        VALUES (${testTenantId}, ${FK_SYNTH_BU_ID}, 'Cross-Tenant Forbidden')
+      `;
+    } catch (err: unknown) {
+      threwAsExpected = true;
+      errorMessage = err instanceof Error ? err.message : String(err);
+    }
+    assert.ok(threwAsExpected, "cross-tenant insert should throw a FK violation");
+    assert.match(
+      errorMessage,
+      /foreign key|violates|fk_positions_business_unit/i,
+      `unexpected error message: ${errorMessage}`,
+    );
+
+    // Confirm no leak row landed.
+    const leaked = await poolSql<{ id: string }[]>`
+      SELECT id FROM public.positions
+      WHERE tenant_id = ${testTenantId} AND business_unit_id = ${FK_SYNTH_BU_ID}
+    `;
+    assert.equal(leaked.length, 0, "no cross-tenant position row exists");
+    console.log("  ✓ compound FK rejects cross-tenant reference");
+  } finally {
+    if (cleanupFkTest) {
+      await poolSql`DELETE FROM public.business_units WHERE id = ${FK_SYNTH_BU_ID}`;
+      await poolSql`DELETE FROM public.tenants WHERE id = ${FK_SYNTH_TENANT_ID}`;
     }
   }
 
