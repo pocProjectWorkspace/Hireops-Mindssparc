@@ -14,8 +14,8 @@ export const tenantEncryptionKeys = pgTable("tenant_encryption_keys", {
   tenantId: uuid("tenant_id")
     .primaryKey()
     .references(() => tenants.id, { onDelete: "cascade" }),
-  encryptedDek: bytea("encrypted_dek").notNull(), // TODO FND-15d: real DEK wrapped by KMS master KEK; placeholder for now
-  kmsKeyId: text("kms_key_id").notNull(), // which master key wrapped this DEK
+  encryptedDek: bytea("encrypted_dek").notNull(), // tenant DEK wrapped by the active KMS master key (FND-15d)
+  kmsKeyId: text("kms_key_id").notNull(), // which master key wrapped this DEK ('local:v1' for LocalKmsClient, ARN for AWS)
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   rotatedAt: timestamp("rotated_at", { withTimezone: true }),
   rotationStatus: text("rotation_status"), // NULL | 'rotating' | 'failed'
