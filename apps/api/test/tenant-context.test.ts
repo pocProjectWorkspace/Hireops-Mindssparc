@@ -43,11 +43,17 @@ import {
   requisitionKnockouts,
   requisitionStateTransitions,
   auditLogs,
+  persons,
+  candidates,
+  applications,
+  applicationStateTransitions,
   storeIntegrationCredential,
   getIntegrationCredential,
   getKmsClient,
   unwrapDek,
   decryptStringWithDek,
+  type ApplicationSource,
+  type ApplicationStage,
   type JwtClaims,
 } from "@hireops/db";
 import { eq } from "drizzle-orm";
@@ -125,6 +131,41 @@ const AUDIT_VARS_BU_ID = "00000000-0000-0000-0000-0000adda0006";
 const AUDIT_MISSING_BU_ID = "00000000-0000-0000-0000-0000adda0007";
 const AUDIT_PART_BU_ID = "00000000-0000-0000-0000-0000adda0008";
 
+// DB-03 fixtures. Hex-only suffixes. "db03" namespace per ticket. Each
+// test sets up the entities it needs and tears them down in finally;
+// these IDs let the module-scope pre-cleanup wipe leftover rows from
+// aborted prior runs.
+const DB03_SYNTH_TENANT_ID = "00000000-0000-0000-0000-0000db03ee01";
+const DB03_OWN_BU_ID = "00000000-0000-0000-0000-0000db03ee02";
+const DB03_OWN_POSITION_ID = "00000000-0000-0000-0000-0000db03ee03";
+const DB03_OWN_JD_ID = "00000000-0000-0000-0000-0000db03ee04";
+const DB03_OWN_REQ_ID = "00000000-0000-0000-0000-0000db03ee05";
+// Persons / candidates / applications for tests that need own-tenant entities.
+const DB03_PERSON_A_ID = "00000000-0000-0000-0000-0000db03aa01";
+const DB03_PERSON_B_ID = "00000000-0000-0000-0000-0000db03aa02";
+const DB03_PERSON_C_ID = "00000000-0000-0000-0000-0000db03aa03";
+const DB03_CANDIDATE_A_ID = "00000000-0000-0000-0000-0000db03ca01";
+const DB03_CANDIDATE_B_ID = "00000000-0000-0000-0000-0000db03ca02";
+const DB03_CANDIDATE_C_ID = "00000000-0000-0000-0000-0000db03ca03";
+const DB03_APP_A_ID = "00000000-0000-0000-0000-0000db03ad01";
+const DB03_APP_B_ID = "00000000-0000-0000-0000-0000db03ad02";
+const DB03_APP_C_ID = "00000000-0000-0000-0000-0000db03ad03";
+
+// All the IDs the pre-cleanup needs to touch. Order matters at delete time:
+// children before parents.
+const DB03_APPLICATION_IDS = [DB03_APP_A_ID, DB03_APP_B_ID, DB03_APP_C_ID];
+const DB03_CANDIDATE_IDS = [DB03_CANDIDATE_A_ID, DB03_CANDIDATE_B_ID, DB03_CANDIDATE_C_ID];
+const DB03_PERSON_IDS = [DB03_PERSON_A_ID, DB03_PERSON_B_ID, DB03_PERSON_C_ID];
+const DB03_AUDIT_ENTITY_IDS = [
+  ...DB03_PERSON_IDS,
+  ...DB03_CANDIDATE_IDS,
+  ...DB03_APPLICATION_IDS,
+  DB03_OWN_REQ_ID,
+  DB03_OWN_JD_ID,
+  DB03_OWN_POSITION_ID,
+  DB03_OWN_BU_ID,
+];
+
 async function run(): Promise<void> {
   console.log("Tenant-context + RLS integration tests starting...\n");
 
@@ -135,6 +176,23 @@ async function run(): Promise<void> {
   await poolSql`DELETE FROM public.audit_logs WHERE entity_id IN (${AUDIT_BU_ID}, ${AUDIT_NOOP_BU_ID}, ${AUDIT_DIFF_BU_ID}, ${AUDIT_VARS_BU_ID}, ${AUDIT_MISSING_BU_ID}, ${AUDIT_PART_BU_ID}, ${AUDIT_SYNTH_BU_ID})`;
   await poolSql`DELETE FROM public.business_units WHERE id IN (${AUDIT_BU_ID}, ${AUDIT_NOOP_BU_ID}, ${AUDIT_DIFF_BU_ID}, ${AUDIT_VARS_BU_ID}, ${AUDIT_MISSING_BU_ID}, ${AUDIT_PART_BU_ID}, ${AUDIT_SYNTH_BU_ID})`;
   await poolSql`DELETE FROM public.tenants WHERE id = ${AUDIT_SYNTH_TENANT_ID}`;
+
+  // DB-03 pre-cleanup. Order matters — children before parents. The synth
+  // tenant CASCADE-deletes everything that belongs to it; explicit deletes
+  // here only target rows in the test tenant. The audit_logs FK was
+  // intentionally dropped (DB-AUDIT) so cascading the tenant doesn't take
+  // audit rows with it; we wipe those by entity_id.
+  await poolSql`DELETE FROM public.audit_logs WHERE entity_id = ANY(${DB03_AUDIT_ENTITY_IDS}::uuid[])`;
+  await poolSql`DELETE FROM public.application_state_transitions WHERE application_id = ANY(${DB03_APPLICATION_IDS}::uuid[])`;
+  await poolSql`DELETE FROM public.applications WHERE id = ANY(${DB03_APPLICATION_IDS}::uuid[])`;
+  await poolSql`DELETE FROM public.candidates WHERE id = ANY(${DB03_CANDIDATE_IDS}::uuid[])`;
+  await poolSql`DELETE FROM public.persons WHERE id = ANY(${DB03_PERSON_IDS}::uuid[])`;
+  await poolSql`DELETE FROM public.requisition_state_transitions WHERE requisition_id = ${DB03_OWN_REQ_ID}`;
+  await poolSql`DELETE FROM public.requisitions WHERE id = ${DB03_OWN_REQ_ID}`;
+  await poolSql`DELETE FROM public.jd_versions WHERE id = ${DB03_OWN_JD_ID}`;
+  await poolSql`DELETE FROM public.positions WHERE id = ${DB03_OWN_POSITION_ID}`;
+  await poolSql`DELETE FROM public.business_units WHERE id = ${DB03_OWN_BU_ID}`;
+  await poolSql`DELETE FROM public.tenants WHERE id = ${DB03_SYNTH_TENANT_ID}`;
 
   // === Test 1: no JWT → 401 ===
   {
@@ -1186,6 +1244,483 @@ async function run(): Promise<void> {
   await poolSql`DELETE FROM public.audit_logs WHERE entity_id IN (${AUDIT_BU_ID}, ${AUDIT_NOOP_BU_ID}, ${AUDIT_DIFF_BU_ID}, ${AUDIT_VARS_BU_ID}, ${AUDIT_MISSING_BU_ID}, ${AUDIT_PART_BU_ID}, ${AUDIT_SYNTH_BU_ID})`;
   await poolSql`DELETE FROM public.business_units WHERE id IN (${AUDIT_NOOP_BU_ID}, ${AUDIT_DIFF_BU_ID}, ${AUDIT_VARS_BU_ID}, ${AUDIT_MISSING_BU_ID}, ${AUDIT_PART_BU_ID})`;
   await poolSql`DELETE FROM public.tenants WHERE id = ${AUDIT_SYNTH_TENANT_ID}`;
+
+  // === DB-03 tests (26–35) ====================================================
+  // persons / candidates / applications / application_state_transitions.
+  // The shared own-tenant chain (BU → position → JD → requisition) is built
+  // once and torn down at the end of the block. The synth tenant gets a
+  // full mirror chain so cross-tenant tests have something to read.
+
+  await poolSql`
+    INSERT INTO public.business_units (id, tenant_id, name, slug)
+    VALUES (${DB03_OWN_BU_ID}, ${testTenantId}, 'DB-03 BU', 'db03-bu')
+  `;
+  await poolSql`
+    INSERT INTO public.positions (id, tenant_id, business_unit_id, title)
+    VALUES (${DB03_OWN_POSITION_ID}, ${testTenantId}, ${DB03_OWN_BU_ID}, 'DB-03 Position')
+  `;
+  await poolSql`
+    INSERT INTO public.jd_versions (id, tenant_id, position_id, version_number, jd_text)
+    VALUES (${DB03_OWN_JD_ID}, ${testTenantId}, ${DB03_OWN_POSITION_ID}, 1, 'DB-03 JD')
+  `;
+  await poolSql`
+    INSERT INTO public.requisitions
+      (id, tenant_id, position_id, jd_version_id, primary_recruiter_id, hiring_manager_id, status)
+    VALUES (${DB03_OWN_REQ_ID}, ${testTenantId}, ${DB03_OWN_POSITION_ID}, ${DB03_OWN_JD_ID}, ${testMembershipId}, ${testMembershipId}, 'draft')
+  `;
+
+  // === Test 26: tenant isolation across persons / candidates / applications / state_transitions ===
+  // Build a parallel chain inside a synth tenant (separate membership too,
+  // since requisitions FK to memberships compound-FK on (tenant_id, id)).
+  const DB03_SYNTH_BU_ID = "00000000-0000-0000-0000-0000db03ef02";
+  const DB03_SYNTH_POSITION_ID = "00000000-0000-0000-0000-0000db03ef03";
+  const DB03_SYNTH_JD_ID = "00000000-0000-0000-0000-0000db03ef04";
+  const DB03_SYNTH_REQ_ID = "00000000-0000-0000-0000-0000db03ef05";
+  const DB03_SYNTH_MEMBERSHIP_ID = "00000000-0000-0000-0000-0000db03ef06";
+  const DB03_SYNTH_PERSON_ID = "00000000-0000-0000-0000-0000db03ef07";
+  const DB03_SYNTH_CANDIDATE_ID = "00000000-0000-0000-0000-0000db03ef08";
+  const DB03_SYNTH_APP_ID = "00000000-0000-0000-0000-0000db03ef09";
+  const DB03_SYNTH_TRANSITION_ID = "00000000-0000-0000-0000-0000db03ef10";
+
+  await poolSql`
+    INSERT INTO public.tenants (id, slug, display_name, primary_region, status)
+    VALUES (${DB03_SYNTH_TENANT_ID}, 'synth-db03', 'Synth DB-03', 'ap-northeast-1', 'active')
+  `;
+  await poolSql`
+    INSERT INTO public.tenant_user_memberships (id, user_id, tenant_id, roles, status, accepted_at)
+    VALUES (${DB03_SYNTH_MEMBERSHIP_ID}, ${testUserId}, ${DB03_SYNTH_TENANT_ID}, ARRAY['admin']::tenant_role[], 'active', now())
+  `;
+  await poolSql`
+    INSERT INTO public.business_units (id, tenant_id, name, slug)
+    VALUES (${DB03_SYNTH_BU_ID}, ${DB03_SYNTH_TENANT_ID}, 'Synth BU', 'synth-db03-bu')
+  `;
+  await poolSql`
+    INSERT INTO public.positions (id, tenant_id, business_unit_id, title)
+    VALUES (${DB03_SYNTH_POSITION_ID}, ${DB03_SYNTH_TENANT_ID}, ${DB03_SYNTH_BU_ID}, 'Synth Position')
+  `;
+  await poolSql`
+    INSERT INTO public.jd_versions (id, tenant_id, position_id, version_number, jd_text)
+    VALUES (${DB03_SYNTH_JD_ID}, ${DB03_SYNTH_TENANT_ID}, ${DB03_SYNTH_POSITION_ID}, 1, 'synth JD')
+  `;
+  await poolSql`
+    INSERT INTO public.requisitions
+      (id, tenant_id, position_id, jd_version_id, primary_recruiter_id, hiring_manager_id, status)
+    VALUES (${DB03_SYNTH_REQ_ID}, ${DB03_SYNTH_TENANT_ID}, ${DB03_SYNTH_POSITION_ID}, ${DB03_SYNTH_JD_ID}, ${DB03_SYNTH_MEMBERSHIP_ID}, ${DB03_SYNTH_MEMBERSHIP_ID}, 'draft')
+  `;
+  await poolSql`
+    INSERT INTO public.persons (id, tenant_id, full_name, email_primary, email_normalised)
+    VALUES (${DB03_SYNTH_PERSON_ID}, ${DB03_SYNTH_TENANT_ID}, 'Synth Candidate', 'synth@example.com', 'synth@example.com')
+  `;
+  await poolSql`
+    INSERT INTO public.candidates (id, tenant_id, person_id, source)
+    VALUES (${DB03_SYNTH_CANDIDATE_ID}, ${DB03_SYNTH_TENANT_ID}, ${DB03_SYNTH_PERSON_ID}, 'career_site')
+  `;
+  await poolSql`
+    INSERT INTO public.applications
+      (id, tenant_id, candidate_id, requisition_id, source, current_stage)
+    VALUES (${DB03_SYNTH_APP_ID}, ${DB03_SYNTH_TENANT_ID}, ${DB03_SYNTH_CANDIDATE_ID}, ${DB03_SYNTH_REQ_ID}, 'career_site', 'application_received')
+  `;
+  await poolSql`
+    INSERT INTO public.application_state_transitions
+      (id, tenant_id, application_id, from_stage, to_stage, reason)
+    VALUES (${DB03_SYNTH_TRANSITION_ID}, ${DB03_SYNTH_TENANT_ID}, ${DB03_SYNTH_APP_ID}, NULL, 'application_received', 'initial')
+  `;
+
+  // Also seed own-tenant entities for the isolation comparison.
+  await poolSql`
+    INSERT INTO public.persons (id, tenant_id, full_name, email_primary, email_normalised)
+    VALUES (${DB03_PERSON_A_ID}, ${testTenantId}, 'Own Candidate A', 'a@own.test', 'a@own.test')
+  `;
+  await poolSql`
+    INSERT INTO public.candidates (id, tenant_id, person_id, source)
+    VALUES (${DB03_CANDIDATE_A_ID}, ${testTenantId}, ${DB03_PERSON_A_ID}, 'referral')
+  `;
+  await poolSql`
+    INSERT INTO public.applications
+      (id, tenant_id, candidate_id, requisition_id, source, current_stage)
+    VALUES (${DB03_APP_A_ID}, ${testTenantId}, ${DB03_CANDIDATE_A_ID}, ${DB03_OWN_REQ_ID}, 'referral', 'application_received')
+  `;
+  const DB03_OWN_TRANSITION_ID = "00000000-0000-0000-0000-0000db03fa01";
+  await poolSql`
+    INSERT INTO public.application_state_transitions
+      (id, tenant_id, application_id, from_stage, to_stage, reason)
+    VALUES (${DB03_OWN_TRANSITION_ID}, ${testTenantId}, ${DB03_APP_A_ID}, NULL, 'application_received', 'initial')
+  `;
+
+  {
+    const view = await withTenantContext(decodedClaims, async ({ db }) => {
+      const p = await db.select().from(persons);
+      const c = await db.select().from(candidates);
+      const a = await db.select().from(applications);
+      const t = await db.select().from(applicationStateTransitions);
+      return { p, c, a, t };
+    });
+    const synth = (id: string) => view.p.find((r) => r.id === id);
+    assert.ok(
+      view.p.find((r) => r.id === DB03_PERSON_A_ID),
+      "own person visible",
+    );
+    assert.equal(synth(DB03_SYNTH_PERSON_ID), undefined, "synth person not visible via RLS");
+    assert.ok(
+      view.c.find((r) => r.id === DB03_CANDIDATE_A_ID),
+      "own candidate visible",
+    );
+    assert.equal(
+      view.c.find((r) => r.id === DB03_SYNTH_CANDIDATE_ID),
+      undefined,
+      "synth candidate not visible via RLS",
+    );
+    assert.ok(
+      view.a.find((r) => r.id === DB03_APP_A_ID),
+      "own application visible",
+    );
+    assert.equal(
+      view.a.find((r) => r.id === DB03_SYNTH_APP_ID),
+      undefined,
+      "synth application not visible via RLS",
+    );
+    assert.ok(
+      view.t.find((r) => r.id === DB03_OWN_TRANSITION_ID),
+      "own transition visible",
+    );
+    assert.equal(
+      view.t.find((r) => r.id === DB03_SYNTH_TRANSITION_ID),
+      undefined,
+      "synth transition not visible via RLS",
+    );
+    console.log("  ✓ DB-03 tenant isolation across persons/candidates/applications/transitions");
+  }
+
+  // === Test 27: compound FK rejects cross-tenant application ===
+  {
+    // Try to insert an application into the test tenant pointing at the
+    // SYNTH tenant's candidate. The compound FK (tenant_id, candidate_id)
+    // must reject it.
+    let threw = false;
+    let errMsg = "";
+    try {
+      await poolSql`
+        INSERT INTO public.applications
+          (tenant_id, candidate_id, requisition_id, source, current_stage)
+        VALUES (${testTenantId}, ${DB03_SYNTH_CANDIDATE_ID}, ${DB03_OWN_REQ_ID}, 'career_site', 'application_received')
+      `;
+    } catch (err: unknown) {
+      threw = true;
+      errMsg = err instanceof Error ? err.message : String(err);
+    }
+    assert.ok(threw, "cross-tenant application insert should throw a FK violation");
+    assert.match(
+      errMsg,
+      /foreign key|fk_applications_candidate/i,
+      `unexpected error message: ${errMsg}`,
+    );
+    console.log("  ✓ compound FK rejects cross-tenant candidate reference");
+  }
+
+  // === Test 28: one-candidate-per-person-per-tenant ===
+  {
+    let threw = false;
+    let errMsg = "";
+    try {
+      await poolSql`
+        INSERT INTO public.candidates (id, tenant_id, person_id, source)
+        VALUES (${DB03_CANDIDATE_B_ID}, ${testTenantId}, ${DB03_PERSON_A_ID}, 'job_board')
+      `;
+    } catch (err: unknown) {
+      threw = true;
+      errMsg = err instanceof Error ? err.message : String(err);
+    }
+    assert.ok(threw, "duplicate candidate for same person should throw");
+    assert.match(
+      errMsg,
+      /uniq_candidates_one_per_person|duplicate key/i,
+      `unexpected error: ${errMsg}`,
+    );
+    console.log("  ✓ partial unique index enforces one-candidate-per-person-per-tenant");
+  }
+
+  // === Test 29: one-application-per-candidate-per-req ===
+  {
+    let threw = false;
+    let errMsg = "";
+    try {
+      await poolSql`
+        INSERT INTO public.applications
+          (tenant_id, candidate_id, requisition_id, source, current_stage)
+        VALUES (${testTenantId}, ${DB03_CANDIDATE_A_ID}, ${DB03_OWN_REQ_ID}, 'whatsapp', 'application_received')
+      `;
+    } catch (err: unknown) {
+      threw = true;
+      errMsg = err instanceof Error ? err.message : String(err);
+    }
+    assert.ok(threw, "duplicate (candidate, req) application should throw");
+    assert.match(
+      errMsg,
+      /uniq_applications_candidate_req|duplicate key/i,
+      `unexpected error: ${errMsg}`,
+    );
+    console.log("  ✓ unique constraint enforces one-application-per-candidate-per-req");
+  }
+
+  // === Test 30: audit triggers fire on persons / candidates / applications ===
+  {
+    const personRows = await poolSql<{ action: string }[]>`
+      SELECT action FROM public.audit_logs
+      WHERE entity_type = 'persons' AND entity_id = ${DB03_PERSON_A_ID}
+    `;
+    const candidateRows = await poolSql<{ action: string }[]>`
+      SELECT action FROM public.audit_logs
+      WHERE entity_type = 'candidates' AND entity_id = ${DB03_CANDIDATE_A_ID}
+    `;
+    const applicationRows = await poolSql<{ action: string }[]>`
+      SELECT action FROM public.audit_logs
+      WHERE entity_type = 'applications' AND entity_id = ${DB03_APP_A_ID}
+    `;
+    assert.ok(
+      personRows.length >= 1 && personRows[0]?.action === "insert",
+      "audit row for person insert",
+    );
+    assert.ok(
+      candidateRows.length >= 1 && candidateRows[0]?.action === "insert",
+      "audit row for candidate insert",
+    );
+    assert.ok(
+      applicationRows.length >= 1 && applicationRows[0]?.action === "insert",
+      "audit row for application insert",
+    );
+    console.log("  ✓ audit trigger fires on persons/candidates/applications inserts");
+  }
+
+  // === Test 31: application_state_transitions append-only enforced ===
+  {
+    // INSERT via withTenantContext — must succeed.
+    const inserted = await withTenantContext(decodedClaims, async ({ db }) => {
+      return db
+        .insert(applicationStateTransitions)
+        .values({
+          tenantId: testTenantId,
+          applicationId: DB03_APP_A_ID,
+          fromStage: "application_received",
+          toStage: "ai_screening",
+          actorMembershipId: testMembershipId,
+          reason: "ai pipeline picked it up",
+        })
+        .returning();
+    });
+    assert.equal(inserted.length, 1, "INSERT into application_state_transitions allowed");
+    const txId = inserted[0]!.id;
+
+    // UPDATE → blocked.
+    const updated = await withTenantContext(decodedClaims, async ({ db }) => {
+      return db
+        .update(applicationStateTransitions)
+        .set({ reason: "tampered" })
+        .where(eq(applicationStateTransitions.id, txId))
+        .returning();
+    });
+    assert.equal(updated.length, 0, "UPDATE blocked by RLS (no UPDATE policy)");
+
+    // DELETE → blocked.
+    const deleted = await withTenantContext(decodedClaims, async ({ db }) => {
+      return db
+        .delete(applicationStateTransitions)
+        .where(eq(applicationStateTransitions.id, txId))
+        .returning();
+    });
+    assert.equal(deleted.length, 0, "DELETE blocked by RLS (no DELETE policy)");
+
+    // Row + original reason still intact.
+    const [rereread] = await poolSql<{ reason: string }[]>`
+      SELECT reason FROM public.application_state_transitions WHERE id = ${txId}
+    `;
+    assert.ok(rereread, "transition row still present");
+    assert.equal(rereread.reason, "ai pipeline picked it up", "reason unchanged");
+    console.log("  ✓ application_state_transitions append-only enforced via split RLS");
+  }
+
+  // === Test 32: redaction nulls PII but preserves FKs and audit history ===
+  {
+    // Update person A to redact PII — FKs from candidate / application
+    // remain intact; the prior values survive in audit_logs.before_data.
+    await poolSql`
+      UPDATE public.persons SET
+        full_name = NULL,
+        first_name = NULL,
+        last_name = NULL,
+        email_primary = NULL,
+        email_normalised = NULL,
+        phone_primary = NULL,
+        phone_normalised = NULL,
+        location_country = NULL,
+        location_city = NULL,
+        linkedin_url = NULL,
+        redacted_at = now(),
+        redaction_reason = 'erasure_request'
+      WHERE id = ${DB03_PERSON_A_ID}
+    `;
+    const [redacted] = await poolSql<
+      {
+        full_name: string | null;
+        email_primary: string | null;
+        redacted_at: string | null;
+        redaction_reason: string | null;
+      }[]
+    >`
+      SELECT full_name, email_primary, redacted_at, redaction_reason
+      FROM public.persons WHERE id = ${DB03_PERSON_A_ID}
+    `;
+    assert.ok(redacted, "redacted person row still present");
+    assert.equal(redacted.full_name, null);
+    assert.equal(redacted.email_primary, null);
+    assert.ok(redacted.redacted_at, "redacted_at set");
+    assert.equal(redacted.redaction_reason, "erasure_request");
+
+    // Candidate's FK to person still resolves.
+    const [joined] = await poolSql<{ candidate_id: string; person_id: string }[]>`
+      SELECT c.id AS candidate_id, p.id AS person_id
+      FROM public.candidates c
+      JOIN public.persons p ON p.tenant_id = c.tenant_id AND p.id = c.person_id
+      WHERE c.id = ${DB03_CANDIDATE_A_ID}
+    `;
+    assert.ok(joined, "candidate→person join still resolves after redaction");
+
+    // Pre-redaction value is preserved in an audit row.
+    const updateRows = await poolSql<
+      {
+        before_data: { full_name?: string; email_primary?: string };
+        after_data: { full_name?: string; email_primary?: string };
+      }[]
+    >`
+      SELECT before_data, after_data FROM public.audit_logs
+      WHERE entity_type = 'persons' AND entity_id = ${DB03_PERSON_A_ID} AND action = 'update'
+      ORDER BY created_at DESC LIMIT 1
+    `;
+    assert.ok(updateRows.length >= 1, "audit row recorded the redaction update");
+    assert.equal(updateRows[0]?.before_data.full_name, "Own Candidate A", "prior name in audit");
+    assert.equal(updateRows[0]?.after_data.full_name, null, "post-redaction null in audit");
+    console.log("  ✓ redaction nulls PII while FKs + audit history survive");
+  }
+
+  // === Test 33: stage enum accepts all 11 values ===
+  {
+    const STAGES: ApplicationStage[] = [
+      "application_received",
+      "ai_screening",
+      "recruiter_review",
+      "shortlisted",
+      "tech_interview",
+      "hr_round",
+      "offer_drafted",
+      "offer_accepted",
+      "offer_declined",
+      "withdrawn",
+      "recruiter_rejected",
+    ];
+    for (const stage of STAGES) {
+      await poolSql`
+        UPDATE public.applications SET current_stage = ${stage}, stage_entered_at = now()
+        WHERE id = ${DB03_APP_A_ID}
+      `;
+      const [row] = await poolSql<{ current_stage: string }[]>`
+        SELECT current_stage FROM public.applications WHERE id = ${DB03_APP_A_ID}
+      `;
+      assert.equal(row?.current_stage, stage, `current_stage accepts ${stage}`);
+    }
+    console.log("  ✓ application_stage enum accepts all 11 values");
+  }
+
+  // === Test 34: source enum accepts all 8 values ===
+  {
+    const SOURCES: ApplicationSource[] = [
+      "career_site",
+      "referral",
+      "partner_empanelled",
+      "partner_adhoc",
+      "job_board",
+      "agency_search",
+      "talent_pool",
+      "whatsapp",
+    ];
+    for (const source of SOURCES) {
+      await poolSql`UPDATE public.applications SET source = ${source} WHERE id = ${DB03_APP_A_ID}`;
+      const [row] = await poolSql<{ source: string }[]>`
+        SELECT source FROM public.applications WHERE id = ${DB03_APP_A_ID}
+      `;
+      assert.equal(row?.source, source, `source accepts ${source}`);
+    }
+    console.log("  ✓ application_source enum accepts all 8 values");
+  }
+
+  // === Test 35: session vars propagate to audit row on application insert ===
+  {
+    const REQ_ID_PROBE = "req-db03-vars-probe-1234";
+    // Use a fresh person + candidate so the new application doesn't trip
+    // uniq_applications_candidate_req.
+    await poolSql`
+      INSERT INTO public.persons (id, tenant_id, full_name, email_primary, email_normalised)
+      VALUES (${DB03_PERSON_B_ID}, ${testTenantId}, 'DB-03 Vars Person', 'vars@own.test', 'vars@own.test')
+    `;
+    await poolSql`
+      INSERT INTO public.candidates (id, tenant_id, person_id, source)
+      VALUES (${DB03_CANDIDATE_B_ID}, ${testTenantId}, ${DB03_PERSON_B_ID}, 'career_site')
+    `;
+    await withTenantContext(
+      decodedClaims,
+      async ({ db }) => {
+        await db.insert(applications).values({
+          id: DB03_APP_B_ID,
+          tenantId: testTenantId,
+          candidateId: DB03_CANDIDATE_B_ID,
+          requisitionId: DB03_OWN_REQ_ID,
+          source: "career_site",
+          currentStage: "application_received",
+        });
+      },
+      {
+        actorUserId: testUserId,
+        actorMembershipId: testMembershipId,
+        requestId: REQ_ID_PROBE,
+        userAgent: "tsx/db03",
+        ipAddress: "198.51.100.10",
+        source: "app",
+      },
+    );
+
+    const [row] = await poolSql<
+      {
+        actor_user_id: string;
+        actor_membership_id: string;
+        request_id: string;
+        source: string;
+      }[]
+    >`
+      SELECT actor_user_id, actor_membership_id, request_id, source
+      FROM public.audit_logs
+      WHERE entity_type = 'applications' AND entity_id = ${DB03_APP_B_ID} AND action = 'insert'
+    `;
+    assert.ok(row, "audit row exists for application insert");
+    assert.equal(row.actor_user_id, testUserId, "actor_user_id propagated");
+    assert.equal(row.actor_membership_id, testMembershipId, "actor_membership_id propagated");
+    assert.equal(row.request_id, REQ_ID_PROBE, "request_id propagated");
+    assert.equal(row.source, "app");
+    console.log("  ✓ session vars propagate to audit row on application insert");
+  }
+
+  // DB-03 teardown — children before parents. Order is critical here
+  // because the FKs from applications → candidates → persons are
+  // ON DELETE RESTRICT (compliance shape). The synth tenant CASCADE
+  // handles its mirror chain in one statement.
+  await poolSql`DELETE FROM public.audit_logs WHERE entity_id = ANY(${DB03_AUDIT_ENTITY_IDS}::uuid[])`;
+  await poolSql`DELETE FROM public.application_state_transitions WHERE application_id = ANY(${DB03_APPLICATION_IDS}::uuid[])`;
+  await poolSql`DELETE FROM public.applications WHERE id = ANY(${DB03_APPLICATION_IDS}::uuid[])`;
+  await poolSql`DELETE FROM public.candidates WHERE id = ANY(${DB03_CANDIDATE_IDS}::uuid[])`;
+  await poolSql`DELETE FROM public.persons WHERE id = ANY(${DB03_PERSON_IDS}::uuid[])`;
+  await poolSql`DELETE FROM public.requisition_state_transitions WHERE requisition_id = ${DB03_OWN_REQ_ID}`;
+  await poolSql`DELETE FROM public.requisitions WHERE id = ${DB03_OWN_REQ_ID}`;
+  await poolSql`DELETE FROM public.jd_versions WHERE id = ${DB03_OWN_JD_ID}`;
+  await poolSql`DELETE FROM public.positions WHERE id = ${DB03_OWN_POSITION_ID}`;
+  await poolSql`DELETE FROM public.business_units WHERE id = ${DB03_OWN_BU_ID}`;
+  await poolSql`DELETE FROM public.tenants WHERE id = ${DB03_SYNTH_TENANT_ID}`;
 
   console.log("\n=========================================");
   console.log("Tenant-context + RLS verification: PASS");
