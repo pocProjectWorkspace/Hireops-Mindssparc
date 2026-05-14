@@ -14,3 +14,4 @@ export * from "./requisitions";
 export * from "./requisition-recruiters";
 export * from "./requisition-knockouts";
 export * from "./requisition-state-transitions";
+export * from "./integration-credentials";

@@ -20,6 +20,7 @@
     "db:test:verify-rls": "pnpm --filter @hireops/db db:test:verify-rls",
     "db:diagnose:hook": "pnpm --filter @hireops/db db:diagnose:hook",
     "db:lint:rls": "pnpm --filter @hireops/db db:lint:rls",
+    "db:provision:dev-dek": "pnpm --filter @hireops/db db:provision:dev-dek",
     "api:dev": "pnpm --filter @hireops/api dev",
     "api:start": "pnpm --filter @hireops/api start",
     "api:test": "pnpm --filter @hireops/api test"

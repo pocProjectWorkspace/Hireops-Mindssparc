@@ -17,7 +17,8 @@
     "db:test:verify": "tsx src/test-fixtures/verify-jwt-claims.ts",
     "db:test:verify-rls": "tsx src/verify-rls.ts",
     "db:diagnose:hook": "tsx src/diagnose-hook.ts",
-    "db:lint:rls": "tsx src/lint-rls.ts"
+    "db:lint:rls": "tsx src/lint-rls.ts",
+    "db:provision:dev-dek": "tsx src/scripts/provision-dev-dek.ts"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.105.3",

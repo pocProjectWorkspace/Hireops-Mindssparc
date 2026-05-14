@@ -71,6 +71,20 @@
       "when": 1778745535220,
       "tag": "0009_last_the_hand",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1778752258961,
+      "tag": "0010_dear_colonel_america",
+      "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1778752268664,
+      "tag": "0011_integration_credentials_force_rls",
+      "breakpoints": true
     }
   ]
 }
