@@ -7,6 +7,8 @@ import {
   date,
   timestamp,
   uniqueIndex,
+  unique,
+  foreignKey,
   check,
   pgPolicy,
 } from "drizzle-orm/pg-core";
@@ -33,16 +35,12 @@ export const headcountEnvelopes = pgTable(
     tenantId: uuid("tenant_id")
       .notNull()
       .references(() => tenants.id, { onDelete: "cascade" }),
-    businessUnitId: uuid("business_unit_id")
-      .notNull()
-      .references(() => businessUnits.id, { onDelete: "restrict" }),
+    businessUnitId: uuid("business_unit_id").notNull(),
     periodStart: date("period_start").notNull(),
     periodEnd: date("period_end").notNull(),
     plannedHeadcount: integer("planned_headcount").notNull(),
     status: text("status").notNull().default("draft"),
-    approvedBy: uuid("approved_by").references(() => tenantUserMemberships.id, {
-      onDelete: "set null",
-    }),
+    approvedBy: uuid("approved_by"),
     approvedAt: timestamp("approved_at", { withTimezone: true }),
     notes: text("notes"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
@@ -55,9 +53,20 @@ export const headcountEnvelopes = pgTable(
       table.periodStart,
       table.periodEnd,
     ),
+    unique("uniq_headcount_envelopes_tenant_id_id").on(table.tenantId, table.id),
     check("envelope_status_check", sql`${table.status} IN ('draft', 'approved', 'closed')`),
     check("envelope_period_check", sql`${table.periodStart} <= ${table.periodEnd}`),
     check("envelope_planned_check", sql`${table.plannedHeadcount} > 0`),
+    foreignKey({
+      columns: [table.tenantId, table.businessUnitId],
+      foreignColumns: [businessUnits.tenantId, businessUnits.id],
+      name: "fk_headcount_envelopes_business_unit",
+    }).onDelete("restrict"),
+    foreignKey({
+      columns: [table.tenantId, table.approvedBy],
+      foreignColumns: [tenantUserMemberships.tenantId, tenantUserMemberships.id],
+      name: "fk_headcount_envelopes_approved_by",
+    }).onDelete("set null"),
     pgPolicy("tenant_isolation", {
       as: "permissive",
       for: "all",

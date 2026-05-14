@@ -7,6 +7,8 @@ import {
   boolean,
   timestamp,
   uniqueIndex,
+  unique,
+  foreignKey,
   check,
   pgPolicy,
 } from "drizzle-orm/pg-core";
@@ -28,9 +30,7 @@ export const jdSkills = pgTable(
     tenantId: uuid("tenant_id")
       .notNull()
       .references(() => tenants.id, { onDelete: "cascade" }),
-    jdVersionId: uuid("jd_version_id")
-      .notNull()
-      .references(() => jdVersions.id, { onDelete: "cascade" }),
+    jdVersionId: uuid("jd_version_id").notNull(),
     skillName: text("skill_name").notNull(),
     category: text("category"),
     weight: numeric("weight", { precision: 4, scale: 2 }).notNull().default("1.00"),
@@ -39,7 +39,13 @@ export const jdSkills = pgTable(
   },
   (table) => [
     uniqueIndex("idx_jd_skill_unique").on(table.jdVersionId, table.skillName),
+    unique("uniq_jd_skills_tenant_id_id").on(table.tenantId, table.id),
     check("jd_skill_weight_check", sql`${table.weight} >= 0`),
+    foreignKey({
+      columns: [table.tenantId, table.jdVersionId],
+      foreignColumns: [jdVersions.tenantId, jdVersions.id],
+      name: "fk_jd_skills_jd_version",
+    }).onDelete("cascade"),
     pgPolicy("tenant_isolation", {
       as: "permissive",
       for: "all",

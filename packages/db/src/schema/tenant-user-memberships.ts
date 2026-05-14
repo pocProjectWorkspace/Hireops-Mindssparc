@@ -6,9 +6,9 @@ import {
   timestamp,
   index,
   uniqueIndex,
+  unique,
   foreignKey,
   pgPolicy,
-  type AnyPgColumn,
 } from "drizzle-orm/pg-core";
 import { tenants } from "./tenants";
 import { businessUnits } from "./business-units";
@@ -24,6 +24,9 @@ import { tenantRoleEnum } from "./roles";
  * cross-schema FKs, so it lives only at the SQL level (0002 migration).
  * Setting `name` on each modelled foreign key matches the Postgres-default
  * constraint names used in the live DB, so db:generate doesn't churn them.
+ *
+ * manager_id and business_unit_id are compound FKs (DB-TENANT-FK) so the
+ * referenced row must share this row's tenant_id.
  */
 export const tenantUserMemberships = pgTable(
   "tenant_user_memberships",
@@ -44,6 +47,7 @@ export const tenantUserMemberships = pgTable(
   },
   (table) => [
     uniqueIndex("idx_membership_user_tenant").on(table.userId, table.tenantId),
+    unique("uniq_tenant_user_memberships_tenant_id_id").on(table.tenantId, table.id),
     index("idx_membership_user").on(table.userId),
     index("idx_membership_tenant").on(table.tenantId),
     index("idx_membership_manager").on(table.managerId),
@@ -56,15 +60,16 @@ export const tenantUserMemberships = pgTable(
       foreignColumns: [tenants.id],
       name: "tenant_user_memberships_tenant_id_tenants_id_fk",
     }).onDelete("cascade"),
+    // Self-FK now compound — managers must be in the same tenant.
     foreignKey({
-      columns: [table.managerId],
-      foreignColumns: [table.id as AnyPgColumn],
-      name: "tenant_user_memberships_manager_id_fkey",
+      columns: [table.tenantId, table.managerId],
+      foreignColumns: [table.tenantId, table.id],
+      name: "fk_membership_manager",
     }).onDelete("set null"),
     foreignKey({
-      columns: [table.businessUnitId],
-      foreignColumns: [businessUnits.id],
-      name: "tenant_user_memberships_business_unit_id_fkey",
+      columns: [table.tenantId, table.businessUnitId],
+      foreignColumns: [businessUnits.tenantId, businessUnits.id],
+      name: "fk_membership_business_unit",
     }).onDelete("set null"),
     pgPolicy("memberships_self_select", {
       as: "permissive",

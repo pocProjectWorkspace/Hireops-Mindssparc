@@ -8,7 +8,9 @@ import {
   timestamp,
   char,
   uniqueIndex,
+  unique,
   index,
+  foreignKey,
   check,
   pgPolicy,
 } from "drizzle-orm/pg-core";
@@ -38,9 +40,7 @@ export const positions = pgTable(
     tenantId: uuid("tenant_id")
       .notNull()
       .references(() => tenants.id, { onDelete: "cascade" }),
-    businessUnitId: uuid("business_unit_id")
-      .notNull()
-      .references(() => businessUnits.id, { onDelete: "restrict" }),
+    businessUnitId: uuid("business_unit_id").notNull(),
     title: text("title").notNull(),
     level: text("level"),
     // Field renamed to jobFunction in TS (the SQL column is still `function`)
@@ -53,15 +53,11 @@ export const positions = pgTable(
     compBandMin: numeric("comp_band_min", { precision: 12, scale: 2 }),
     compBandMax: numeric("comp_band_max", { precision: 12, scale: 2 }),
     compCurrency: char("comp_currency", { length: 3 }),
-    hiringManagerId: uuid("hiring_manager_id").references(() => tenantUserMemberships.id, {
-      onDelete: "set null",
-    }),
+    hiringManagerId: uuid("hiring_manager_id"),
     workdayPositionWid: text("workday_position_wid"),
     isActive: boolean("is_active").notNull().default(true),
     retiredAt: timestamp("retired_at", { withTimezone: true }),
-    createdBy: uuid("created_by").references(() => tenantUserMemberships.id, {
-      onDelete: "set null",
-    }),
+    createdBy: uuid("created_by"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
@@ -70,6 +66,7 @@ export const positions = pgTable(
     uniqueIndex("idx_positions_active_title")
       .on(table.tenantId, table.businessUnitId, table.title)
       .where(sql`is_active = true`),
+    unique("uniq_positions_tenant_id_id").on(table.tenantId, table.id),
     // Query path: positions in a BU.
     index("idx_positions_bu").on(table.tenantId, table.businessUnitId),
     check(
@@ -80,6 +77,21 @@ export const positions = pgTable(
       "positions_retired_coherence_check",
       sql`(${table.isActive} = true AND ${table.retiredAt} IS NULL) OR (${table.isActive} = false AND ${table.retiredAt} IS NOT NULL)`,
     ),
+    foreignKey({
+      columns: [table.tenantId, table.businessUnitId],
+      foreignColumns: [businessUnits.tenantId, businessUnits.id],
+      name: "fk_positions_business_unit",
+    }).onDelete("restrict"),
+    foreignKey({
+      columns: [table.tenantId, table.hiringManagerId],
+      foreignColumns: [tenantUserMemberships.tenantId, tenantUserMemberships.id],
+      name: "fk_positions_hiring_manager",
+    }).onDelete("set null"),
+    foreignKey({
+      columns: [table.tenantId, table.createdBy],
+      foreignColumns: [tenantUserMemberships.tenantId, tenantUserMemberships.id],
+      name: "fk_positions_created_by",
+    }).onDelete("set null"),
     pgPolicy("tenant_isolation", {
       as: "permissive",
       for: "all",

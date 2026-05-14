@@ -8,7 +8,9 @@ import {
   date,
   timestamp,
   uniqueIndex,
+  unique,
   index,
+  foreignKey,
   check,
   pgPolicy,
 } from "drizzle-orm/pg-core";
@@ -44,21 +46,11 @@ export const requisitions = pgTable(
     tenantId: uuid("tenant_id")
       .notNull()
       .references(() => tenants.id, { onDelete: "cascade" }),
-    positionId: uuid("position_id")
-      .notNull()
-      .references(() => positions.id, { onDelete: "restrict" }),
-    jdVersionId: uuid("jd_version_id")
-      .notNull()
-      .references(() => jdVersions.id, { onDelete: "restrict" }),
-    headcountEnvelopeId: uuid("headcount_envelope_id").references(() => headcountEnvelopes.id, {
-      onDelete: "set null",
-    }),
-    primaryRecruiterId: uuid("primary_recruiter_id")
-      .notNull()
-      .references(() => tenantUserMemberships.id, { onDelete: "restrict" }),
-    hiringManagerId: uuid("hiring_manager_id")
-      .notNull()
-      .references(() => tenantUserMemberships.id, { onDelete: "restrict" }),
+    positionId: uuid("position_id").notNull(),
+    jdVersionId: uuid("jd_version_id").notNull(),
+    headcountEnvelopeId: uuid("headcount_envelope_id"),
+    primaryRecruiterId: uuid("primary_recruiter_id").notNull(),
+    hiringManagerId: uuid("hiring_manager_id").notNull(),
     status: text("status").notNull().default("draft"),
     numberOfOpenings: integer("number_of_openings").notNull().default(1),
     targetStartDate: date("target_start_date"),
@@ -67,9 +59,7 @@ export const requisitions = pgTable(
     isPublic: boolean("is_public").notNull().default(false),
     publicSlug: text("public_slug"),
     reasonForHold: text("reason_for_hold"),
-    createdBy: uuid("created_by").references(() => tenantUserMemberships.id, {
-      onDelete: "set null",
-    }),
+    createdBy: uuid("created_by"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
@@ -78,6 +68,7 @@ export const requisitions = pgTable(
     uniqueIndex("idx_requisitions_public_slug")
       .on(table.tenantId, table.publicSlug)
       .where(sql`public_slug IS NOT NULL`),
+    unique("uniq_requisitions_tenant_id_id").on(table.tenantId, table.id),
     // Query path: reqs in a position; reqs in an envelope.
     index("idx_requisitions_position").on(table.tenantId, table.positionId),
     index("idx_requisitions_envelope").on(table.headcountEnvelopeId),
@@ -92,6 +83,36 @@ export const requisitions = pgTable(
       "requisitions_posting_window_check",
       sql`(${table.postedAt} IS NULL OR ${table.expiresAt} IS NULL OR ${table.postedAt} <= ${table.expiresAt})`,
     ),
+    foreignKey({
+      columns: [table.tenantId, table.positionId],
+      foreignColumns: [positions.tenantId, positions.id],
+      name: "fk_requisitions_position",
+    }).onDelete("restrict"),
+    foreignKey({
+      columns: [table.tenantId, table.jdVersionId],
+      foreignColumns: [jdVersions.tenantId, jdVersions.id],
+      name: "fk_requisitions_jd_version",
+    }).onDelete("restrict"),
+    foreignKey({
+      columns: [table.tenantId, table.headcountEnvelopeId],
+      foreignColumns: [headcountEnvelopes.tenantId, headcountEnvelopes.id],
+      name: "fk_requisitions_envelope",
+    }).onDelete("set null"),
+    foreignKey({
+      columns: [table.tenantId, table.primaryRecruiterId],
+      foreignColumns: [tenantUserMemberships.tenantId, tenantUserMemberships.id],
+      name: "fk_requisitions_primary_recruiter",
+    }).onDelete("restrict"),
+    foreignKey({
+      columns: [table.tenantId, table.hiringManagerId],
+      foreignColumns: [tenantUserMemberships.tenantId, tenantUserMemberships.id],
+      name: "fk_requisitions_hiring_manager",
+    }).onDelete("restrict"),
+    foreignKey({
+      columns: [table.tenantId, table.createdBy],
+      foreignColumns: [tenantUserMemberships.tenantId, tenantUserMemberships.id],
+      name: "fk_requisitions_created_by",
+    }).onDelete("set null"),
     pgPolicy("tenant_isolation", {
       as: "permissive",
       for: "all",

@@ -6,9 +6,9 @@ import {
   timestamp,
   index,
   uniqueIndex,
+  unique,
   foreignKey,
   pgPolicy,
-  type AnyPgColumn,
 } from "drizzle-orm/pg-core";
 import { tenants } from "./tenants";
 
@@ -43,6 +43,9 @@ export const businessUnits = pgTable(
   },
   (table) => [
     uniqueIndex("business_units_tenant_id_slug_key").on(table.tenantId, table.slug),
+    // Compound unique enables compound (tenant_id, id) FKs from peer
+    // domain tables (DB-TENANT-FK).
+    unique("uniq_business_units_tenant_id_id").on(table.tenantId, table.id),
     index("idx_business_units_tenant").on(table.tenantId),
     index("idx_business_units_parent").on(table.parentBusinessUnitId),
     foreignKey({
@@ -50,10 +53,11 @@ export const businessUnits = pgTable(
       foreignColumns: [tenants.id],
       name: "business_units_tenant_id_fkey",
     }).onDelete("cascade"),
+    // Self-FK now compound so child + parent must share a tenant.
     foreignKey({
-      columns: [table.parentBusinessUnitId],
-      foreignColumns: [table.id as AnyPgColumn],
-      name: "business_units_parent_business_unit_id_fkey",
+      columns: [table.tenantId, table.parentBusinessUnitId],
+      foreignColumns: [table.tenantId, table.id],
+      name: "fk_business_units_parent",
     }).onDelete("set null"),
     pgPolicy("tenant_isolation", {
       as: "permissive",

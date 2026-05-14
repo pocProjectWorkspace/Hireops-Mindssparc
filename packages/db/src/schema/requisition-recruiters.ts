@@ -1,5 +1,13 @@
 import { sql } from "drizzle-orm";
-import { pgTable, uuid, timestamp, uniqueIndex, pgPolicy } from "drizzle-orm/pg-core";
+import {
+  pgTable,
+  uuid,
+  timestamp,
+  uniqueIndex,
+  unique,
+  foreignKey,
+  pgPolicy,
+} from "drizzle-orm/pg-core";
 import { tenants } from "./tenants";
 import { requisitions } from "./requisitions";
 import { tenantUserMemberships } from "./tenant-user-memberships";
@@ -21,19 +29,29 @@ export const requisitionRecruiters = pgTable(
     tenantId: uuid("tenant_id")
       .notNull()
       .references(() => tenants.id, { onDelete: "cascade" }),
-    requisitionId: uuid("requisition_id")
-      .notNull()
-      .references(() => requisitions.id, { onDelete: "cascade" }),
-    recruiterId: uuid("recruiter_id")
-      .notNull()
-      .references(() => tenantUserMemberships.id, { onDelete: "restrict" }),
+    requisitionId: uuid("requisition_id").notNull(),
+    recruiterId: uuid("recruiter_id").notNull(),
     assignedAt: timestamp("assigned_at", { withTimezone: true }).notNull().defaultNow(),
-    assignedBy: uuid("assigned_by").references(() => tenantUserMemberships.id, {
-      onDelete: "set null",
-    }),
+    assignedBy: uuid("assigned_by"),
   },
   (table) => [
     uniqueIndex("idx_req_recruiters_unique").on(table.requisitionId, table.recruiterId),
+    unique("uniq_requisition_recruiters_tenant_id_id").on(table.tenantId, table.id),
+    foreignKey({
+      columns: [table.tenantId, table.requisitionId],
+      foreignColumns: [requisitions.tenantId, requisitions.id],
+      name: "fk_requisition_recruiters_requisition",
+    }).onDelete("cascade"),
+    foreignKey({
+      columns: [table.tenantId, table.recruiterId],
+      foreignColumns: [tenantUserMemberships.tenantId, tenantUserMemberships.id],
+      name: "fk_requisition_recruiters_recruiter",
+    }).onDelete("restrict"),
+    foreignKey({
+      columns: [table.tenantId, table.assignedBy],
+      foreignColumns: [tenantUserMemberships.tenantId, tenantUserMemberships.id],
+      name: "fk_requisition_recruiters_assigned_by",
+    }).onDelete("set null"),
     pgPolicy("tenant_isolation", {
       as: "permissive",
       for: "all",

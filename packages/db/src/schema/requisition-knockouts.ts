@@ -7,6 +7,8 @@ import {
   jsonb,
   timestamp,
   index,
+  unique,
+  foreignKey,
   check,
   pgPolicy,
 } from "drizzle-orm/pg-core";
@@ -40,9 +42,7 @@ export const requisitionKnockouts = pgTable(
     tenantId: uuid("tenant_id")
       .notNull()
       .references(() => tenants.id, { onDelete: "cascade" }),
-    requisitionId: uuid("requisition_id")
-      .notNull()
-      .references(() => requisitions.id, { onDelete: "cascade" }),
+    requisitionId: uuid("requisition_id").notNull(),
     questionText: text("question_text").notNull(),
     type: knockoutTypeEnum("type").notNull(),
     thresholdValue: jsonb("threshold_value").notNull(),
@@ -53,10 +53,16 @@ export const requisitionKnockouts = pgTable(
   },
   (table) => [
     index("idx_req_knockouts_order").on(table.requisitionId, table.orderIndex),
+    unique("uniq_requisition_knockouts_tenant_id_id").on(table.tenantId, table.id),
     check(
       "req_knockout_source_check",
       sql`${table.source} IN ('parsed_cv', 'candidate_asserted', 'partner_asserted')`,
     ),
+    foreignKey({
+      columns: [table.tenantId, table.requisitionId],
+      foreignColumns: [requisitions.tenantId, requisitions.id],
+      name: "fk_requisition_knockouts_requisition",
+    }).onDelete("cascade"),
     pgPolicy("tenant_isolation", {
       as: "permissive",
       for: "all",

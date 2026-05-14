@@ -1,5 +1,16 @@
 import { sql } from "drizzle-orm";
-import { pgTable, uuid, text, jsonb, timestamp, index, check, pgPolicy } from "drizzle-orm/pg-core";
+import {
+  pgTable,
+  uuid,
+  text,
+  jsonb,
+  timestamp,
+  index,
+  unique,
+  foreignKey,
+  check,
+  pgPolicy,
+} from "drizzle-orm/pg-core";
 import { tenants } from "./tenants";
 import { requisitions } from "./requisitions";
 import { tenantUserMemberships } from "./tenant-user-memberships";
@@ -31,20 +42,17 @@ export const requisitionStateTransitions = pgTable(
     tenantId: uuid("tenant_id")
       .notNull()
       .references(() => tenants.id, { onDelete: "cascade" }),
-    requisitionId: uuid("requisition_id")
-      .notNull()
-      .references(() => requisitions.id, { onDelete: "restrict" }),
+    requisitionId: uuid("requisition_id").notNull(),
     fromStatus: text("from_status"),
     toStatus: text("to_status").notNull(),
-    transitionedBy: uuid("transitioned_by").references(() => tenantUserMemberships.id, {
-      onDelete: "set null",
-    }),
+    transitionedBy: uuid("transitioned_by"),
     transitionedAt: timestamp("transitioned_at", { withTimezone: true }).notNull().defaultNow(),
     reason: text("reason"),
     metadata: jsonb("metadata").notNull().default({}),
   },
   (table) => [
     index("idx_req_transitions_chrono").on(table.requisitionId, table.transitionedAt),
+    unique("uniq_requisition_state_transitions_tenant_id_id").on(table.tenantId, table.id),
     check(
       "req_transition_to_status_check",
       sql`${table.toStatus} IN ('draft', 'pending_approval', 'approved', 'on_hold', 'posted', 'filled', 'cancelled', 'closed')`,
@@ -53,6 +61,16 @@ export const requisitionStateTransitions = pgTable(
       "req_transition_from_status_check",
       sql`${table.fromStatus} IS NULL OR ${table.fromStatus} IN ('draft', 'pending_approval', 'approved', 'on_hold', 'posted', 'filled', 'cancelled', 'closed')`,
     ),
+    foreignKey({
+      columns: [table.tenantId, table.requisitionId],
+      foreignColumns: [requisitions.tenantId, requisitions.id],
+      name: "fk_requisition_transitions_requisition",
+    }).onDelete("restrict"),
+    foreignKey({
+      columns: [table.tenantId, table.transitionedBy],
+      foreignColumns: [tenantUserMemberships.tenantId, tenantUserMemberships.id],
+      name: "fk_requisition_transitions_transitioned_by",
+    }).onDelete("set null"),
     pgPolicy("tenant_isolation_select", {
       as: "permissive",
       for: "select",
