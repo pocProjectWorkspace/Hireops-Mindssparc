@@ -53,7 +53,8 @@ interface TableRow {
 interface PolicyRow {
   tablename: string;
   policyname: string;
-  qual: string;
+  qual: string | null;
+  with_check: string | null;
 }
 
 async function main() {
@@ -75,7 +76,7 @@ async function main() {
     `;
 
     const policies = await sql<PolicyRow[]>`
-      SELECT tablename, policyname, qual
+      SELECT tablename, policyname, qual, with_check
       FROM pg_policies
       WHERE schemaname = 'public'
     `;
@@ -108,15 +109,32 @@ async function main() {
       } else {
         tenantCount += 1;
         const tblPolicies = policiesByTable.get(name) ?? [];
-        const isolation = tblPolicies.find((p) => p.policyname === "tenant_isolation");
-        if (!isolation) {
+        // Accept either a single policy named `tenant_isolation` (the common
+        // shape) OR a set of split policies named `tenant_isolation_*` that
+        // together cover the table (e.g. tenant_isolation_select +
+        // tenant_isolation_insert for append-only audit tables).
+        const isolationPolicies = tblPolicies.filter((p) =>
+          p.policyname.startsWith("tenant_isolation"),
+        );
+        if (isolationPolicies.length === 0) {
           violations.push(
             `${name}: missing tenant_isolation policy (required for non-allowlisted tables)`,
           );
-        } else if (!isolation.qual?.includes("current_tenant_id")) {
-          violations.push(
-            `${name}: tenant_isolation policy does not reference current_tenant_id() (qual=${isolation.qual})`,
+        } else {
+          // At least one of the matching policies must reference
+          // current_tenant_id() in qual or with_check. We require all of
+          // them to reference it — a tenant_isolation_* policy that doesn't
+          // is almost certainly a mistake.
+          const noRef = isolationPolicies.filter(
+            (p) =>
+              !p.qual?.includes("current_tenant_id") &&
+              !p.with_check?.includes("current_tenant_id"),
           );
+          if (noRef.length > 0) {
+            violations.push(
+              `${name}: tenant_isolation policy/policies missing current_tenant_id() reference (${noRef.map((p) => p.policyname).join(", ")})`,
+            );
+          }
         }
       }
     }

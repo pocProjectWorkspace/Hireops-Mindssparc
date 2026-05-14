@@ -50,6 +50,20 @@
       "when": 1778742810330,
       "tag": "0006_db02a_force_rls",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1778744048568,
+      "tag": "0007_living_tempest",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1778744062703,
+      "tag": "0008_db02b_force_rls",
+      "breakpoints": true
     }
   ]
 }
