@@ -14,6 +14,7 @@
     "test:watch": "NODE_ENV=test vitest"
   },
   "dependencies": {
+    "@hireops/ai-client": "workspace:*",
     "@hireops/db": "workspace:*",
     "@hireops/observability": "workspace:*",
     "@hireops/types": "workspace:*",

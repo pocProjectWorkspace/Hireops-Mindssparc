@@ -76,7 +76,9 @@ export const integrationCredentials = pgTable(
         'video_teams',
         'jobboard_linkedin',
         'jobboard_naukri',
-        'jobboard_indeed'
+        'jobboard_indeed',
+        'ai_anthropic',
+        'ai_openai'
       )`,
     ),
     // Admin-only SELECT. App layer MUST project metadata only (not

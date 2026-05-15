@@ -127,6 +127,20 @@
       "when": 1778769752574,
       "tag": "0017_db_approval_force_rls_triggers",
       "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1778825636833,
+      "tag": "0018_complex_squirrel_girl",
+      "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1778825636834,
+      "tag": "0019_ai_usage_logs_force_rls",
+      "breakpoints": true
     }
   ]
 }

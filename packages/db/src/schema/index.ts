@@ -30,3 +30,4 @@ export * from "./approval-matrices";
 export * from "./approval-chains";
 export * from "./approval-requests";
 export * from "./approval-decisions";
+export * from "./ai-usage-logs";
