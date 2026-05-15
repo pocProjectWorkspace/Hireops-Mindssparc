@@ -15,6 +15,7 @@
   },
   "dependencies": {
     "@hireops/db": "workspace:*",
+    "@hireops/observability": "workspace:*",
     "@hireops/types": "workspace:*",
     "@hono/node-server": "^2.0.2",
     "@supabase/supabase-js": "^2.105.3",

@@ -1,0 +1,26 @@
+{
+  "name": "@hireops/observability",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "./src/index.ts",
+  "scripts": {
+    "build": "tsc --noEmit",
+    "lint": "eslint src",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "pino": "^9.5.0"
+  },
+  "peerDependencies": {
+    "@sentry/node": "^9.0.0"
+  },
+  "peerDependenciesMeta": {
+    "@sentry/node": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "pino-pretty": "^11.3.0"
+  }
+}
