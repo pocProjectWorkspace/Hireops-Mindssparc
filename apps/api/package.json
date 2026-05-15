@@ -10,7 +10,8 @@
     "typecheck": "tsc --noEmit",
     "dev": "tsx watch src/index.ts",
     "start": "tsx src/index.ts",
-    "test": "NODE_ENV=test tsx test/tenant-context.test.ts && NODE_ENV=test tsx test/db-approval.test.ts"
+    "test": "NODE_ENV=test vitest run",
+    "test:watch": "NODE_ENV=test vitest"
   },
   "dependencies": {
     "@hireops/db": "workspace:*",
@@ -25,6 +26,7 @@
   },
   "devDependencies": {
     "dotenv": "^17.4.2",
-    "tsx": "^4.21.0"
+    "tsx": "^4.21.0",
+    "vitest": "^4.1.6"
   }
 }

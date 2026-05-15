@@ -10,12 +10,16 @@
  * test user) plus a synthetic second tenant for cross-tenant isolation
  * checks. All entities use hex-only UUID suffixes with a `dba` namespace.
  *
- * Module-scope pre-cleanup wipes leftover rows from aborted prior runs
- * before the first test sets up its chain.
+ * FND-TEST migration note: this file is one describe with 10 sequential
+ * it() blocks. The own-tenant matrix + chain + primary request, plus
+ * the synth-tenant mirror chain, are built in beforeAll so tests 1-10
+ * can reference shared fixtures. Per-test cleanup stays inside each
+ * it() where needed (only test 9 inserts an extra request).
  */
 
 import "../src/bootstrap";
 
+import { afterAll, beforeAll, describe, it } from "vitest";
 import { strict as assert } from "node:assert";
 import { createClient } from "@supabase/supabase-js";
 import { decodeJwt } from "jose";
@@ -39,7 +43,7 @@ if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
   throw new Error("Required env: SUPABASE_URL, SUPABASE_ANON_KEY");
 }
 
-// Own-tenant fixtures (testTenantId).
+// Own-tenant fixtures.
 const DBAP_MATRIX_ID = "00000000-0000-0000-0000-0000dbaa0001";
 const DBAP_CHAIN_ID = "00000000-0000-0000-0000-0000dbaa0002";
 const DBAP_REQUEST_PRIMARY_ID = "00000000-0000-0000-0000-0000dbaa0003";
@@ -49,13 +53,11 @@ const DBAP_REQUEST_PARTIAL_C_ID = "00000000-0000-0000-0000-0000dbaa0006";
 const DBAP_REQUEST_VARS_ID = "00000000-0000-0000-0000-0000dbaa0007";
 const DBAP_REQUEST_WD_ID = "00000000-0000-0000-0000-0000dbaa0008";
 
-// One request per subject_type for the polymorphism test.
 const DBAP_REQUEST_POLY_HC_ID = "00000000-0000-0000-0000-0000dbaa0009";
 const DBAP_REQUEST_POLY_REQ_ID = "00000000-0000-0000-0000-0000dbaa000a";
 const DBAP_REQUEST_POLY_JD_ID = "00000000-0000-0000-0000-0000dbaa000b";
 const DBAP_REQUEST_POLY_OF_ID = "00000000-0000-0000-0000-0000dbaa000c";
 
-// Opaque subject ids (not FK'd anywhere).
 const DBAP_SUBJECT_PRIMARY = "00000000-0000-0000-0000-0000dbab0001";
 const DBAP_SUBJECT_PARTIAL = "00000000-0000-0000-0000-0000dbab0002";
 const DBAP_SUBJECT_VARS = "00000000-0000-0000-0000-0000dbab0003";
@@ -65,11 +67,9 @@ const DBAP_SUBJECT_POLY_REQ = "00000000-0000-0000-0000-0000dbab0006";
 const DBAP_SUBJECT_POLY_JD = "00000000-0000-0000-0000-0000dbab0007";
 const DBAP_SUBJECT_POLY_OF = "00000000-0000-0000-0000-0000dbab0008";
 
-// Decisions used by individual tests.
 const DBAP_DECISION_AUDIT_ID = "00000000-0000-0000-0000-0000dbac0001";
 const DBAP_DECISION_WD_ID = "00000000-0000-0000-0000-0000dbac0002";
 
-// Synth tenant + parallel chain for cross-tenant isolation tests.
 const DBAP_SYNTH_TENANT_ID = "00000000-0000-0000-0000-0000dbad0001";
 const DBAP_SYNTH_MEMBERSHIP_ID = "00000000-0000-0000-0000-0000dbad0002";
 const DBAP_SYNTH_MATRIX_ID = "00000000-0000-0000-0000-0000dbad0003";
@@ -112,136 +112,150 @@ async function getTestJwt(): Promise<string> {
   return data.session.access_token;
 }
 
-async function run(): Promise<void> {
-  console.log("DB-APPROVAL integration tests starting...\n");
+// Shared state populated by beforeAll.
+let jwt: string;
+let decodedClaims: JwtClaims;
+let testUserId: string;
+let testTenantId: string;
+let testMembershipId: string;
 
-  // Pre-cleanup. Order matters — children before parents. The synth
-  // tenant CASCADE-deletes its mirror chain; explicit deletes here only
-  // wipe own-tenant rows.
-  await poolSql`DELETE FROM public.audit_logs WHERE entity_id = ANY(${ALL_AUDIT_ENTITY_IDS}::uuid[])`;
-  await poolSql`DELETE FROM public.approval_decisions WHERE id IN (${DBAP_DECISION_AUDIT_ID}, ${DBAP_DECISION_WD_ID})`;
-  await poolSql`DELETE FROM public.approval_decisions WHERE request_id = ANY(${ALL_REQUEST_IDS}::uuid[])`;
-  await poolSql`DELETE FROM public.approval_requests WHERE id = ANY(${ALL_REQUEST_IDS}::uuid[])`;
-  await poolSql`DELETE FROM public.approval_chains WHERE id = ${DBAP_CHAIN_ID}`;
-  await poolSql`DELETE FROM public.approval_matrices WHERE id = ${DBAP_MATRIX_ID}`;
-  await poolSql`DELETE FROM public.tenants WHERE id = ${DBAP_SYNTH_TENANT_ID}`;
+describe("DB-APPROVAL integration", () => {
+  beforeAll(async () => {
+    // Pre-cleanup.
+    await poolSql`DELETE FROM public.audit_logs WHERE entity_id = ANY(${ALL_AUDIT_ENTITY_IDS}::uuid[])`;
+    await poolSql`DELETE FROM public.approval_decisions WHERE id IN (${DBAP_DECISION_AUDIT_ID}, ${DBAP_DECISION_WD_ID})`;
+    await poolSql`DELETE FROM public.approval_decisions WHERE request_id = ANY(${ALL_REQUEST_IDS}::uuid[])`;
+    await poolSql`DELETE FROM public.approval_requests WHERE id = ANY(${ALL_REQUEST_IDS}::uuid[])`;
+    await poolSql`DELETE FROM public.approval_chains WHERE id = ${DBAP_CHAIN_ID}`;
+    await poolSql`DELETE FROM public.approval_matrices WHERE id = ${DBAP_MATRIX_ID}`;
+    await poolSql`DELETE FROM public.tenants WHERE id = ${DBAP_SYNTH_TENANT_ID}`;
 
-  const jwt = await getTestJwt();
-  const decodedClaims = decodeJwt(jwt) as JwtClaims;
-  const testUserId = decodedClaims.sub!;
-  const testTenantId = decodedClaims.tid!;
+    jwt = await getTestJwt();
+    decodedClaims = decodeJwt(jwt) as JwtClaims;
+    testUserId = decodedClaims.sub!;
+    testTenantId = decodedClaims.tid!;
 
-  const [membership] = await poolSql<{ id: string }[]>`
-    SELECT id FROM public.tenant_user_memberships
-    WHERE user_id = ${testUserId} AND tenant_id = ${testTenantId} LIMIT 1
-  `;
-  if (!membership) throw new Error("test user has no membership");
-  const testMembershipId = membership.id;
+    const [membership] = await poolSql<{ id: string }[]>`
+      SELECT id FROM public.tenant_user_memberships
+      WHERE user_id = ${testUserId} AND tenant_id = ${testTenantId} LIMIT 1
+    `;
+    if (!membership) throw new Error("test user has no membership");
+    testMembershipId = membership.id;
 
-  // === Test 1: shared own-tenant chain setup (used by most tests) ===
-  // Own-tenant matrix + chain + primary request. Each subsequent test
-  // may insert/mutate its own request rows but reuses these.
-  await poolSql`
-    INSERT INTO public.approval_matrices
-      (id, tenant_id, subject_type, name, rules, effective_from, effective_to, created_by_membership_id)
-    VALUES (
-      ${DBAP_MATRIX_ID},
-      ${testTenantId},
-      'requisition',
-      'DB-APPROVAL Test Matrix',
-      ${JSON.stringify({ steps: [{ approver_kind: "role", approver_ref: "hiring_manager", required: true }] })},
-      '2026-01-01T00:00:00Z',
-      '2027-01-01T00:00:00Z',
-      ${testMembershipId}
-    )
-  `;
-  await poolSql`
-    INSERT INTO public.approval_chains
-      (id, tenant_id, matrix_id, matrix_version_snapshot, resolved_steps)
-    VALUES (
-      ${DBAP_CHAIN_ID},
-      ${testTenantId},
-      ${DBAP_MATRIX_ID},
-      ${JSON.stringify({ steps: [{ approver_kind: "role", approver_ref: "hiring_manager" }] })},
-      ${JSON.stringify([{ step_index: 0, approver_kind: "membership", approver_ref: testMembershipId, required: true, order_index: 0 }])}
-    )
-  `;
-  await poolSql`
-    INSERT INTO public.approval_requests
-      (id, tenant_id, chain_id, subject_type, subject_id, status, requested_by_membership_id, context)
-    VALUES (
-      ${DBAP_REQUEST_PRIMARY_ID},
-      ${testTenantId},
-      ${DBAP_CHAIN_ID},
-      'requisition',
-      ${DBAP_SUBJECT_PRIMARY},
-      'pending',
-      ${testMembershipId},
-      ${JSON.stringify({ grade: "L5", cost: 1200000 })}
-    )
-  `;
+    // Own-tenant matrix + chain + primary request.
+    await poolSql`
+      INSERT INTO public.approval_matrices
+        (id, tenant_id, subject_type, name, rules, effective_from, effective_to, created_by_membership_id)
+      VALUES (
+        ${DBAP_MATRIX_ID},
+        ${testTenantId},
+        'requisition',
+        'DB-APPROVAL Test Matrix',
+        ${JSON.stringify({ steps: [{ approver_kind: "role", approver_ref: "hiring_manager", required: true }] })},
+        '2026-01-01T00:00:00Z',
+        '2027-01-01T00:00:00Z',
+        ${testMembershipId}
+      )
+    `;
+    await poolSql`
+      INSERT INTO public.approval_chains
+        (id, tenant_id, matrix_id, matrix_version_snapshot, resolved_steps)
+      VALUES (
+        ${DBAP_CHAIN_ID},
+        ${testTenantId},
+        ${DBAP_MATRIX_ID},
+        ${JSON.stringify({ steps: [{ approver_kind: "role", approver_ref: "hiring_manager" }] })},
+        ${JSON.stringify([{ step_index: 0, approver_kind: "membership", approver_ref: testMembershipId, required: true, order_index: 0 }])}
+      )
+    `;
+    await poolSql`
+      INSERT INTO public.approval_requests
+        (id, tenant_id, chain_id, subject_type, subject_id, status, requested_by_membership_id, context)
+      VALUES (
+        ${DBAP_REQUEST_PRIMARY_ID},
+        ${testTenantId},
+        ${DBAP_CHAIN_ID},
+        'requisition',
+        ${DBAP_SUBJECT_PRIMARY},
+        'pending',
+        ${testMembershipId},
+        ${JSON.stringify({ grade: "L5", cost: 1200000 })}
+      )
+    `;
 
-  // === Test 1: tenant isolation across matrices / chains / requests / decisions ===
-  // Synth chain.
-  await poolSql`
-    INSERT INTO public.tenants (id, slug, display_name, primary_region, status)
-    VALUES (${DBAP_SYNTH_TENANT_ID}, 'synth-db-approval', 'Synth DB-Approval', 'ap-northeast-1', 'active')
-  `;
-  await poolSql`
-    INSERT INTO public.tenant_user_memberships
-      (id, user_id, tenant_id, roles, status, accepted_at)
-    VALUES (${DBAP_SYNTH_MEMBERSHIP_ID}, ${testUserId}, ${DBAP_SYNTH_TENANT_ID}, ARRAY['admin']::tenant_role[], 'active', now())
-  `;
-  await poolSql`
-    INSERT INTO public.approval_matrices
-      (id, tenant_id, subject_type, name, rules, effective_from)
-    VALUES (
-      ${DBAP_SYNTH_MATRIX_ID},
-      ${DBAP_SYNTH_TENANT_ID},
-      'requisition',
-      'Synth matrix',
-      ${JSON.stringify({ steps: [] })},
-      '2026-01-01T00:00:00Z'
-    )
-  `;
-  await poolSql`
-    INSERT INTO public.approval_chains
-      (id, tenant_id, matrix_id, matrix_version_snapshot, resolved_steps)
-    VALUES (
-      ${DBAP_SYNTH_CHAIN_ID},
-      ${DBAP_SYNTH_TENANT_ID},
-      ${DBAP_SYNTH_MATRIX_ID},
-      ${JSON.stringify({ steps: [] })},
-      ${JSON.stringify([])}
-    )
-  `;
-  await poolSql`
-    INSERT INTO public.approval_requests
-      (id, tenant_id, chain_id, subject_type, subject_id, status)
-    VALUES (
-      ${DBAP_SYNTH_REQUEST_ID},
-      ${DBAP_SYNTH_TENANT_ID},
-      ${DBAP_SYNTH_CHAIN_ID},
-      'requisition',
-      ${DBAP_SYNTH_SUBJECT_ID},
-      'pending'
-    )
-  `;
-  await poolSql`
-    INSERT INTO public.approval_decisions
-      (id, tenant_id, request_id, step_index, outcome, approver_membership_id, decided_at)
-    VALUES (
-      ${DBAP_SYNTH_DECISION_ID},
-      ${DBAP_SYNTH_TENANT_ID},
-      ${DBAP_SYNTH_REQUEST_ID},
-      0,
-      'approved',
-      ${DBAP_SYNTH_MEMBERSHIP_ID},
-      now()
-    )
-  `;
+    // Synth-tenant mirror chain for isolation + cross-tenant FK tests.
+    await poolSql`
+      INSERT INTO public.tenants (id, slug, display_name, primary_region, status)
+      VALUES (${DBAP_SYNTH_TENANT_ID}, 'synth-db-approval', 'Synth DB-Approval', 'ap-northeast-1', 'active')
+    `;
+    await poolSql`
+      INSERT INTO public.tenant_user_memberships
+        (id, user_id, tenant_id, roles, status, accepted_at)
+      VALUES (${DBAP_SYNTH_MEMBERSHIP_ID}, ${testUserId}, ${DBAP_SYNTH_TENANT_ID}, ARRAY['admin']::tenant_role[], 'active', now())
+    `;
+    await poolSql`
+      INSERT INTO public.approval_matrices
+        (id, tenant_id, subject_type, name, rules, effective_from)
+      VALUES (
+        ${DBAP_SYNTH_MATRIX_ID},
+        ${DBAP_SYNTH_TENANT_ID},
+        'requisition',
+        'Synth matrix',
+        ${JSON.stringify({ steps: [] })},
+        '2026-01-01T00:00:00Z'
+      )
+    `;
+    await poolSql`
+      INSERT INTO public.approval_chains
+        (id, tenant_id, matrix_id, matrix_version_snapshot, resolved_steps)
+      VALUES (
+        ${DBAP_SYNTH_CHAIN_ID},
+        ${DBAP_SYNTH_TENANT_ID},
+        ${DBAP_SYNTH_MATRIX_ID},
+        ${JSON.stringify({ steps: [] })},
+        ${JSON.stringify([])}
+      )
+    `;
+    await poolSql`
+      INSERT INTO public.approval_requests
+        (id, tenant_id, chain_id, subject_type, subject_id, status)
+      VALUES (
+        ${DBAP_SYNTH_REQUEST_ID},
+        ${DBAP_SYNTH_TENANT_ID},
+        ${DBAP_SYNTH_CHAIN_ID},
+        'requisition',
+        ${DBAP_SYNTH_SUBJECT_ID},
+        'pending'
+      )
+    `;
+    await poolSql`
+      INSERT INTO public.approval_decisions
+        (id, tenant_id, request_id, step_index, outcome, approver_membership_id, decided_at)
+      VALUES (
+        ${DBAP_SYNTH_DECISION_ID},
+        ${DBAP_SYNTH_TENANT_ID},
+        ${DBAP_SYNTH_REQUEST_ID},
+        0,
+        'approved',
+        ${DBAP_SYNTH_MEMBERSHIP_ID},
+        now()
+      )
+    `;
+  });
 
-  {
+  afterAll(async () => {
+    await poolSql`DELETE FROM public.audit_logs WHERE entity_id = ANY(${ALL_AUDIT_ENTITY_IDS}::uuid[])`;
+    await poolSql`DELETE FROM public.approval_decisions WHERE request_id = ANY(${ALL_REQUEST_IDS}::uuid[])`;
+    await poolSql`DELETE FROM public.approval_requests WHERE id = ANY(${ALL_REQUEST_IDS}::uuid[])`;
+    await poolSql`DELETE FROM public.approval_chains WHERE id = ${DBAP_CHAIN_ID}`;
+    await poolSql`DELETE FROM public.approval_matrices WHERE id = ${DBAP_MATRIX_ID}`;
+    await poolSql`DELETE FROM public.tenants WHERE id = ${DBAP_SYNTH_TENANT_ID}`;
+
+    // Drain the pool.
+    await poolSql.end({ timeout: 5 });
+  });
+
+  it("Test 1: tenant isolation across matrices/chains/requests/decisions", async () => {
     const view = await withTenantContext(decodedClaims, async ({ db }) => {
       const m = await db.select().from(approvalMatrices);
       const c = await db.select().from(approvalChains);
@@ -281,13 +295,9 @@ async function run(): Promise<void> {
       undefined,
       "synth decision hidden",
     );
-    console.log("  ✓ tenant isolation across matrices/chains/requests/decisions");
-  }
+  });
 
-  // === Test 2: compound FK rejects cross-tenant chain reference on a request ===
-  {
-    // Use a never-seen subject_id so we don't trip the partial unique
-    // before the FK check fires.
+  it("Test 2: compound FK rejects cross-tenant chain on approval_requests", async () => {
     const FK_PROBE_SUBJECT = "00000000-0000-0000-0000-0000dbab0099";
     let threw = false;
     let errMsg = "";
@@ -303,19 +313,14 @@ async function run(): Promise<void> {
     }
     assert.ok(threw, "cross-tenant chain reference should throw FK violation");
     assert.match(errMsg, /foreign key|fk_approval_requests_chain/i, `unexpected: ${errMsg}`);
-    console.log("  ✓ compound FK rejects cross-tenant chain on approval_requests");
-  }
+  });
 
-  // === Test 3: one pending request per subject (partial unique) ===
-  {
-    // First request against subject_partial — accepted.
+  it("Test 3: partial unique enforces one-pending-per-subject; terminal lets a fresh one through", async () => {
     await poolSql`
       INSERT INTO public.approval_requests
         (id, tenant_id, chain_id, subject_type, subject_id, status)
       VALUES (${DBAP_REQUEST_PARTIAL_A_ID}, ${testTenantId}, ${DBAP_CHAIN_ID}, 'requisition', ${DBAP_SUBJECT_PARTIAL}, 'pending')
     `;
-    // Second pending request against the SAME subject — should fail the
-    // partial unique index.
     let threw = false;
     let errMsg = "";
     try {
@@ -335,8 +340,6 @@ async function run(): Promise<void> {
       `unexpected: ${errMsg}`,
     );
 
-    // Move the first one to a terminal status, then a fresh pending
-    // request against the same subject is accepted.
     await poolSql`
       UPDATE public.approval_requests SET status = 'cancelled', decided_at = now()
       WHERE id = ${DBAP_REQUEST_PARTIAL_A_ID}
@@ -354,14 +357,9 @@ async function run(): Promise<void> {
     assert.equal(survivors.length, 2);
     assert.equal(survivors[0]?.status, "cancelled");
     assert.equal(survivors[1]?.status, "pending");
-    console.log(
-      "  ✓ partial unique enforces one-pending-per-subject; terminal lets a fresh one through",
-    );
-  }
+  });
 
-  // === Test 4: approver XOR CHECK on approval_decisions ===
-  {
-    // Neither → rejected.
+  it("Test 4: CHECK constraint enforces approver XOR (neither / both / exactly one)", async () => {
     let neitherThrew = false;
     try {
       await poolSql`
@@ -374,7 +372,6 @@ async function run(): Promise<void> {
     }
     assert.ok(neitherThrew, "INSERT with neither approver field should throw");
 
-    // Both → rejected.
     let bothThrew = false;
     let bothErr = "";
     try {
@@ -394,7 +391,6 @@ async function run(): Promise<void> {
       `unexpected: ${bothErr}`,
     );
 
-    // Exactly one (membership) → accepted.
     await poolSql`
       INSERT INTO public.approval_decisions
         (tenant_id, request_id, step_index, outcome, approver_membership_id)
@@ -405,11 +401,9 @@ async function run(): Promise<void> {
       WHERE request_id = ${DBAP_REQUEST_PRIMARY_ID}
     `;
     assert.equal(got.length, 1, "single-approver insert accepted");
-    console.log("  ✓ CHECK constraint enforces approver XOR (neither / both / exactly one)");
-  }
+  });
 
-  // === Test 5: approval_decisions append-only ===
-  {
+  it("Test 5: approval_decisions append-only enforced via split RLS policies", async () => {
     const [decision] = await poolSql<{ id: string }[]>`
       SELECT id FROM public.approval_decisions
       WHERE request_id = ${DBAP_REQUEST_PRIMARY_ID} LIMIT 1
@@ -436,11 +430,9 @@ async function run(): Promise<void> {
     `;
     assert.ok(reread, "row still present");
     assert.notEqual(reread.comment, "tampered", "comment unchanged");
-    console.log("  ✓ approval_decisions append-only enforced via split RLS policies");
-  }
+  });
 
-  // === Test 6: audit trigger fires on matrices / chains / requests, NOT decisions ===
-  {
+  it("Test 6: audit trigger fires on matrices/chains/requests; decisions intentionally skipped", async () => {
     const m = await poolSql<{ action: string }[]>`
       SELECT action FROM public.audit_logs
       WHERE entity_type = 'approval_matrices' AND entity_id = ${DBAP_MATRIX_ID}
@@ -473,13 +465,9 @@ async function run(): Promise<void> {
       "request insert audited",
     );
     assert.equal(d[0]?.c, "0", "approval_decisions intentionally not audited");
-    console.log(
-      "  ✓ audit trigger fires on matrices/chains/requests; decisions intentionally skipped",
-    );
-  }
+  });
 
-  // === Test 7: effective-dating round-trip ===
-  {
+  it("Test 7: effective-dating timestamps round-trip through the matrix", async () => {
     const [row] = await poolSql<
       {
         effective_from: string;
@@ -501,11 +489,9 @@ async function run(): Promise<void> {
       "2027-01-01T00:00:00.000Z",
       "effective_to round-trips",
     );
-    console.log("  ✓ effective-dating timestamps round-trip through the matrix");
-  }
+  });
 
-  // === Test 8: polymorphism — request accepted for every subject_type ===
-  {
+  it("Test 8: all approval_subject_type values accepted (headcount_envelope/requisition/jd_version/offer)", async () => {
     const subjects: { id: string; type: ApprovalSubjectType; subj: string }[] = [
       { id: DBAP_REQUEST_POLY_HC_ID, type: "headcount_envelope", subj: DBAP_SUBJECT_POLY_HC },
       { id: DBAP_REQUEST_POLY_REQ_ID, type: "requisition", subj: DBAP_SUBJECT_POLY_REQ },
@@ -523,14 +509,9 @@ async function run(): Promise<void> {
       `;
       assert.equal(row?.subject_type, s.type, `subject_type round-trips for ${s.type}`);
     }
-    console.log(
-      "  ✓ all approval_subject_type values accepted (headcount_envelope/requisition/jd_version/offer)",
-    );
-  }
+  });
 
-  // === Test 9: Workday-style decision (external ref only) ===
-  {
-    // Use a fresh request so the decision is unique.
+  it("Test 9: Workday-style external-ref-only decision accepted", async () => {
     await poolSql`
       INSERT INTO public.approval_requests
         (id, tenant_id, chain_id, subject_type, subject_id, status)
@@ -562,11 +543,9 @@ async function run(): Promise<void> {
     assert.ok(row, "workday decision row exists");
     assert.equal(row.approver_membership_id, null);
     assert.equal(row.approver_external_ref, "WD-APPROVAL-44219");
-    console.log("  ✓ Workday-style external-ref-only decision accepted");
-  }
+  });
 
-  // === Test 10: session vars propagate to audit on chain advancement ===
-  {
+  it("Test 10: session vars propagate to audit row on chain advancement", async () => {
     await poolSql`
       INSERT INTO public.approval_requests
         (id, tenant_id, chain_id, subject_type, subject_id, status, requested_by_membership_id)
@@ -585,7 +564,7 @@ async function run(): Promise<void> {
         actorUserId: testUserId,
         actorMembershipId: testMembershipId,
         requestId: REQ_ID_PROBE,
-        userAgent: "tsx/db-approval",
+        userAgent: "vitest/db-approval",
         ipAddress: "198.51.100.20",
         source: "app",
       },
@@ -611,35 +590,10 @@ async function run(): Promise<void> {
     assert.equal(row.actor_membership_id, testMembershipId);
     assert.equal(row.request_id, REQ_ID_PROBE);
     assert.equal(row.source, "app");
-    console.log("  ✓ session vars propagate to audit row on chain advancement");
-  }
-
-  // Teardown — children before parents.
-  await poolSql`DELETE FROM public.audit_logs WHERE entity_id = ANY(${ALL_AUDIT_ENTITY_IDS}::uuid[])`;
-  await poolSql`DELETE FROM public.approval_decisions WHERE request_id = ANY(${ALL_REQUEST_IDS}::uuid[])`;
-  await poolSql`DELETE FROM public.approval_requests WHERE id = ANY(${ALL_REQUEST_IDS}::uuid[])`;
-  await poolSql`DELETE FROM public.approval_chains WHERE id = ${DBAP_CHAIN_ID}`;
-  await poolSql`DELETE FROM public.approval_matrices WHERE id = ${DBAP_MATRIX_ID}`;
-  await poolSql`DELETE FROM public.tenants WHERE id = ${DBAP_SYNTH_TENANT_ID}`;
-
-  console.log("\n=========================================");
-  console.log("DB-APPROVAL verification: PASS");
-  console.log("=========================================");
-}
-
-run()
-  .then(async () => {
-    // Await the pool drain so connections are returned cleanly before the
-    // process exits. With `void ... ; process.exit(0)` the next sequential
-    // tsx invocation (`pnpm api:test` chains this after tenant-context.test.ts)
-    // can stall waiting for our orphaned connections to time out on the
-    // pooler side.
-    await poolSql.end({ timeout: 5 });
-    process.exit(0);
-  })
-  .catch(async (err) => {
-    console.error("\nDB-APPROVAL verification: FAIL");
-    console.error(err);
-    await poolSql.end({ timeout: 5 });
-    process.exit(1);
   });
+});
+
+// DBAP_DECISION_AUDIT_ID is reserved for a future test that needs a second
+// own-tenant decision separate from the one created in test 4; not used by
+// the current suite but cleaned up by beforeAll alongside the WD decision.
+void DBAP_DECISION_AUDIT_ID;
