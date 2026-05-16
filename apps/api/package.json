@@ -15,10 +15,12 @@
   },
   "dependencies": {
     "@hireops/ai-client": "workspace:*",
+    "@hireops/api-types": "workspace:*",
     "@hireops/db": "workspace:*",
     "@hireops/observability": "workspace:*",
     "@hireops/types": "workspace:*",
     "@hono/node-server": "^2.0.2",
+    "@hono/trpc-server": "^0.4.2",
     "@supabase/supabase-js": "^2.105.3",
     "@trpc/server": "^11.17.0",
     "drizzle-orm": "^0.45.2",

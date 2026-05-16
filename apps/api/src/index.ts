@@ -2,20 +2,83 @@ import "./bootstrap";
 
 import { Hono } from "hono";
 import { serve } from "@hono/node-server";
+import { trpcServer } from "@hono/trpc-server";
+import { sql as poolSql } from "@hireops/db";
 import { tenantContext, type TenantContextVars } from "./middleware/tenant-context";
+import { optionalAuth, type OptionalAuthVars } from "./middleware/optional-auth";
 import { testRoutes } from "./routes/test";
+import { uploadRoutes } from "./routes/upload";
+import { appRouter } from "./trpc/router";
+import type { HonoTRPCContext } from "./trpc/trpc-core";
 import { baseLog, sentry } from "./lib/observability";
 
-const app = new Hono<{ Variables: TenantContextVars }>();
+const app = new Hono<{
+  Variables: TenantContextVars & Partial<OptionalAuthVars>;
+}>();
 
-// Health endpoint — no auth required, no tenant scoping. Cheap, doesn't
-// touch the DB; the load balancer / k8s probes hit this every few seconds.
+// Liveness probes. /health stays for backwards compat; /api/healthz is
+// the documented endpoint going forward. Neither touches the DB —
+// readiness lands in a separate ticket alongside deployment work.
 app.get("/health", (c) => c.json({ ok: true }));
+app.get("/api/healthz", (c) =>
+  c.json({
+    ok: true,
+    service: "hireops-api",
+    version: process.env.APP_VERSION ?? "dev",
+    timestamp: new Date().toISOString(),
+  }),
+);
 
-// All other routes go through the tenant-context middleware (which also
-// sets c.var.log + c.var.requestId).
+// Existing whoami/tenants test endpoints — gated behind the strict
+// tenant-context middleware (401 on missing / invalid JWT) so the
+// tenant-scoped tx is opened around the handler.
 app.use("/test/*", tenantContext);
 app.route("/test", testRoutes);
+
+// Upload + tRPC live behind optionalAuth — public procedures need to
+// work pre-login, protected procedures throw UNAUTHORIZED themselves.
+// optionalAuth populates c.var.{log,requestId,tenantId,userId,claims}.
+app.use("/api/upload/*", optionalAuth);
+app.route("/api/upload", uploadRoutes);
+
+app.use("/trpc/*", optionalAuth);
+app.use(
+  "/trpc/*",
+  trpcServer({
+    router: appRouter,
+    createContext: (_opts, c) => {
+      const ctx: HonoTRPCContext = {
+        tenantId: c.var.tenantId ?? null,
+        userId: c.var.userId ?? null,
+        roles: c.var.roles ?? [],
+        claims: c.var.claims ?? null,
+        db: undefined,
+        sql: poolSql,
+        log: c.var.log,
+        requestId: c.var.requestId,
+        userAgent: c.req.header("user-agent") ?? null,
+        ipAddress:
+          c.req.header("x-forwarded-for")?.split(",")[0]?.trim() ??
+          c.req.header("x-real-ip") ??
+          null,
+      };
+      // @hono/trpc-server types the return as Record<string, unknown>;
+      // we hand back our shaped HonoTRPCContext but the adapter just
+      // forwards it to tRPC's createContext callback, which reads it
+      // through the typed initTRPC.context<HonoTRPCContext>() lens.
+      return ctx as unknown as Record<string, unknown>;
+    },
+    onError: ({ error, path }) => {
+      // Surface unexpected procedure errors via the standard pino +
+      // Sentry path. Zod errors and explicit TRPCErrors flow through
+      // the error formatter; this catches internal failures.
+      if (error.code === "INTERNAL_SERVER_ERROR") {
+        baseLog.error({ err: error, path }, "trpc procedure threw");
+        sentry.captureException(error, { extra: { path: String(path) } });
+      }
+    },
+  }),
+);
 
 // Hono onError fires for any uncaught exception in a handler. We capture
 // to Sentry — including request context if the tenant-context middleware

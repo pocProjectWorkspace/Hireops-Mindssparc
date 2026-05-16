@@ -141,6 +141,20 @@
       "when": 1778825636834,
       "tag": "0019_ai_usage_logs_force_rls",
       "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "7",
+      "when": 1778917205598,
+      "tag": "0020_hard_felicia_hardy",
+      "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "7",
+      "when": 1778917205599,
+      "tag": "0021_api_audit_logs_force_rls",
+      "breakpoints": true
     }
   ]
 }

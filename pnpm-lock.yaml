@@ -41,6 +41,9 @@ importers:
       '@hireops/ai-client':
         specifier: workspace:*
         version: link:../../packages/ai-client
+      '@hireops/api-types':
+        specifier: workspace:*
+        version: link:../../packages/api-types
       '@hireops/db':
         specifier: workspace:*
         version: link:../../packages/db
@@ -53,6 +56,9 @@ importers:
       '@hono/node-server':
         specifier: ^2.0.2
         version: 2.0.2(hono@4.12.18)
+      '@hono/trpc-server':
+        specifier: ^0.4.2
+        version: 0.4.2(@trpc/server@11.17.0(typescript@5.7.3))(hono@4.12.18)
       '@supabase/supabase-js':
         specifier: ^2.105.3
         version: 2.105.3
@@ -122,6 +128,12 @@ importers:
       '@types/pdf-parse':
         specifier: ^1.1.4
         version: 1.1.5
+
+  packages/api-types:
+    dependencies:
+      zod:
+        specifier: ^4.4.3
+        version: 4.4.3
 
   packages/config: {}
 
@@ -854,6 +866,13 @@ packages:
     engines: {node: '>=20'}
     peerDependencies:
       hono: ^4
+
+  '@hono/trpc-server@0.4.2':
+    resolution: {integrity: sha512-3TDrc42CZLgcTFkXQba+y7JlRWRiyw1AqhLqztWyNS2IFT+3bHld0lxKdGBttCtGKHYx0505dM67RMazjhdZqw==}
+    engines: {node: '>=16.0.0'}
+    peerDependencies:
+      '@trpc/server': ^10.10.0 || >11.0.0-rc
+      hono: '>=4.0.0'
 
   '@humanfs/core@0.19.2':
     resolution: {integrity: sha512-UhXNm+CFMWcbChXywFwkmhqjs3PRCmcSa/hfBgLIb7oQ5HNb1wS0icWsGtSAUNgefHeI+eBrA8I1fxmbHsGdvA==}
@@ -4224,6 +4243,11 @@ snapshots:
 
   '@hono/node-server@2.0.2(hono@4.12.18)':
     dependencies:
+      hono: 4.12.18
+
+  '@hono/trpc-server@0.4.2(@trpc/server@11.17.0(typescript@5.7.3))(hono@4.12.18)':
+    dependencies:
+      '@trpc/server': 11.17.0(typescript@5.7.3)
       hono: 4.12.18
 
   '@humanfs/core@0.19.2':
