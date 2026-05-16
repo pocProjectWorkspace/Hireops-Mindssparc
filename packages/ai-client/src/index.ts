@@ -49,3 +49,21 @@ export type {
   AICompleteResult,
   AIUsageLogEntry,
 } from "./types";
+
+// Resume parser (AI-02).
+export { parseResume, parseResumeFromText } from "./parsers/resume";
+export type { ParseResumeOpts, ParseFromBufferOpts } from "./parsers/resume";
+export { extractText, ExtractionError } from "./parsers/extract";
+export type { ExtractTextOpts, ExtractTextResult } from "./parsers/extract";
+export {
+  PARSER_VERSION,
+  parserOutputSchema,
+  parserLLMOutputSchema,
+  parserOutputJsonSchema,
+} from "./parsers/resume-schema";
+export type {
+  ParserOutput,
+  ParserLLMOutput,
+  ParseMetadata,
+  SourceFormat,
+} from "./parsers/resume-schema";

@@ -1,0 +1,80 @@
+{
+  "json": {
+    "personal": {
+      "full_name": "Olivia Bennett",
+      "email": "olivia.bennett.uk@outlook.com",
+      "phone": "+44 7700 900122",
+      "location_city": "London",
+      "location_country": "UK",
+      "linkedin_url": null,
+      "github_url": null,
+      "portfolio_url": null
+    },
+    "summary": "Technology architect specializing in enterprise cloud transformation programs.",
+    "total_years_experience": 7,
+    "current_role": {
+      "title": "Cloud Architect",
+      "company": "HexaCore Digital",
+      "start_date": "2022",
+      "location": null,
+      "description": "Architected Azure infrastructure; Implemented Terraform automation"
+    },
+    "work_history": [
+      {
+        "title": "Cloud Architect",
+        "company": "HexaCore Digital",
+        "start_date": "2022",
+        "end_date": null,
+        "location": null,
+        "description": "Architected Azure infrastructure; Implemented Terraform automation",
+        "employment_type": null
+      },
+      {
+        "title": "Infrastructure Consultant",
+        "company": "BluePeak Systems",
+        "start_date": "2018",
+        "end_date": "2022",
+        "location": null,
+        "description": "Managed virtualization migration",
+        "employment_type": null
+      }
+    ],
+    "education": [
+      {
+        "degree": "MSc",
+        "field_of_study": "Information Systems",
+        "institution": "King's College London",
+        "start_year": null,
+        "end_year": null,
+        "grade": null
+      }
+    ],
+    "skills": {
+      "technical": [
+        "Azure",
+        "Terraform",
+        "DevOps",
+        "Python",
+        "CI/CD",
+        "PowerShell"
+      ],
+      "languages": [],
+      "certifications": [],
+      "domain": [
+        "Cloud Architecture",
+        "Enterprise Cloud Transformation",
+        "Infrastructure",
+        "Virtualization"
+      ]
+    },
+    "notice_period_days": null,
+    "expected_compensation": null,
+    "parse_metadata": {
+      "confidence_score": 0.7
+    }
+  },
+  "inputTokens": 145,
+  "outputTokens": 356,
+  "costMicros": 0,
+  "latencyMs": 6538
+}

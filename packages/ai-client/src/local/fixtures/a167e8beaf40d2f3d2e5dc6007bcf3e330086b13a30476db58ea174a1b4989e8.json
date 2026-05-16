@@ -1,0 +1,81 @@
+{
+  "json": {
+    "personal": {
+      "full_name": "Jonathan Reeves",
+      "email": "jonathan.reeves.consulting@protonmail.com",
+      "phone": "+16045556621",
+      "location_city": "Vancouver",
+      "location_country": "Canada",
+      "linkedin_url": null,
+      "github_url": null,
+      "portfolio_url": null
+    },
+    "summary": "Transformation executive with more than 18 years of experience delivering large-scale digital modernization initiatives.",
+    "total_years_experience": 18,
+    "current_role": {
+      "title": "Global Transformation Director",
+      "company": "NorthBridge Consulting Group",
+      "start_date": "2019",
+      "location": null,
+      "description": "Directed a portfolio exceeding USD 120M annually. Led transformation teams across 14 countries."
+    },
+    "work_history": [
+      {
+        "title": "Global Transformation Director",
+        "company": "NorthBridge Consulting Group",
+        "start_date": "2019",
+        "end_date": null,
+        "location": null,
+        "description": "Directed a portfolio exceeding USD 120M annually. Led transformation teams across 14 countries.",
+        "employment_type": null
+      },
+      {
+        "title": "Senior Program Manager",
+        "company": "Vertex Financial Services",
+        "start_date": "2013",
+        "end_date": "2019",
+        "location": null,
+        "description": "Managed enterprise modernization roadmap.",
+        "employment_type": null
+      }
+    ],
+    "education": [
+      {
+        "degree": "MBA",
+        "field_of_study": "Business Administration",
+        "institution": "University of Toronto",
+        "start_year": null,
+        "end_year": null,
+        "grade": null
+      },
+      {
+        "degree": "Bachelor of Information Technology",
+        "field_of_study": "Information Technology",
+        "institution": "University of British Columbia",
+        "start_year": null,
+        "end_year": null,
+        "grade": null
+      }
+    ],
+    "skills": {
+      "technical": [],
+      "languages": [],
+      "certifications": [],
+      "domain": [
+        "Enterprise Architecture",
+        "Strategic Planning",
+        "Program Governance",
+        "Vendor Management"
+      ]
+    },
+    "notice_period_days": null,
+    "expected_compensation": null,
+    "parse_metadata": {
+      "confidence_score": 0.72
+    }
+  },
+  "inputTokens": 206,
+  "outputTokens": 435,
+  "costMicros": 0,
+  "latencyMs": 9186
+}

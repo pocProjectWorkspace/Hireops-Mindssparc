@@ -1,0 +1,80 @@
+{
+  "json": {
+    "personal": {
+      "full_name": "Alex Rivera",
+      "email": "alex.rivera.creative@icloud.com",
+      "phone": "+34600123456",
+      "location_city": "Barcelona",
+      "location_country": "Spain",
+      "linkedin_url": null,
+      "github_url": null,
+      "portfolio_url": null
+    },
+    "summary": "Multidisciplinary creative technologist combining frontend engineering and immersive storytelling.",
+    "total_years_experience": 7,
+    "current_role": {
+      "title": "Lead Interactive Engineer",
+      "company": "Lumina Studios",
+      "start_date": "2023",
+      "location": null,
+      "description": null
+    },
+    "work_history": [
+      {
+        "title": "Lead Interactive Engineer",
+        "company": "Lumina Studios",
+        "start_date": "2023",
+        "end_date": null,
+        "location": null,
+        "description": null,
+        "employment_type": null
+      },
+      {
+        "title": "Senior Frontend Developer",
+        "company": "MotionGrid",
+        "start_date": "2020",
+        "end_date": "2023",
+        "location": null,
+        "description": null,
+        "employment_type": null
+      },
+      {
+        "title": "Digital Experience Designer",
+        "company": "Nova Interactive",
+        "start_date": "2018",
+        "end_date": "2020",
+        "location": null,
+        "description": null,
+        "employment_type": null
+      }
+    ],
+    "education": [],
+    "skills": {
+      "technical": [
+        "React",
+        "Three.js",
+        "Blender",
+        "Node.js",
+        "Unity",
+        "Figma"
+      ],
+      "languages": [],
+      "certifications": [],
+      "domain": [
+        "Frontend Engineering",
+        "Interactive Design",
+        "Immersive Storytelling",
+        "Creative Technology"
+      ]
+    },
+    "notice_period_days": null,
+    "expected_compensation": null,
+    "parse_metadata": {
+      "confidence_score": 0.62
+    }
+  },
+  "inputTokens": 136,
+  "outputTokens": 330,
+  "costMicros": 0,
+  "latencyMs": 5828
+}

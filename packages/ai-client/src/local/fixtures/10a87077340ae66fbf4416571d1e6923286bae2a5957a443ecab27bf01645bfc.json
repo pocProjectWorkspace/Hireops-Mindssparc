@@ -1,0 +1,81 @@
+{
+  "json": {
+    "personal": {
+      "full_name": "Ethan Carter",
+      "email": "ethan.carter.dev@gmail.com",
+      "phone": "+14155550198",
+      "location_city": "Austin",
+      "location_country": "United States",
+      "linkedin_url": null,
+      "github_url": null,
+      "portfolio_url": null
+    },
+    "summary": "Senior Software Engineer with 9 years of experience building scalable enterprise applications using Java, Python, and cloud-native technologies.",
+    "total_years_experience": 9,
+    "current_role": {
+      "title": "Lead Software Engineer",
+      "company": "BrightScale Technologies",
+      "start_date": "2021-01",
+      "location": null,
+      "description": "Led migration of monolithic applications to microservices. Managed a team of 8 engineers. Improved API response time by 42%."
+    },
+    "work_history": [
+      {
+        "title": "Lead Software Engineer",
+        "company": "BrightScale Technologies",
+        "start_date": "2021-01",
+        "end_date": null,
+        "location": null,
+        "description": "Led migration of monolithic applications to microservices. Managed a team of 8 engineers. Improved API response time by 42%.",
+        "employment_type": "full_time"
+      },
+      {
+        "title": "Software Engineer",
+        "company": "NovaWare Inc",
+        "start_date": "2017-07",
+        "end_date": "2020-12",
+        "location": null,
+        "description": "Built analytics dashboards. Developed REST APIs.",
+        "employment_type": "full_time"
+      }
+    ],
+    "education": [
+      {
+        "degree": "Bachelor of Science",
+        "field_of_study": "Computer Engineering",
+        "institution": "University of Michigan",
+        "start_year": null,
+        "end_year": null,
+        "grade": null
+      }
+    ],
+    "skills": {
+      "technical": [
+        "Java",
+        "Python",
+        "AWS",
+        "Kubernetes",
+        "Docker",
+        "PostgreSQL"
+      ],
+      "languages": [],
+      "certifications": [],
+      "domain": [
+        "Microservices",
+        "REST APIs",
+        "Analytics",
+        "Cloud-Native",
+        "Enterprise Applications"
+      ]
+    },
+    "notice_period_days": null,
+    "expected_compensation": null,
+    "parse_metadata": {
+      "confidence_score": 0.72
+    }
+  },
+  "inputTokens": 189,
+  "outputTokens": 419,
+  "costMicros": 0,
+  "latencyMs": 6345
+}

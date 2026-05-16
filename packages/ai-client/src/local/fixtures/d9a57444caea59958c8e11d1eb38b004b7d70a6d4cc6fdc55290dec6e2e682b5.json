@@ -1,0 +1,78 @@
+{
+  "json": {
+    "personal": {
+      "full_name": "Sophia Nguyen",
+      "email": "sophia.nguyen.pm@gmail.com",
+      "phone": "+61412777222",
+      "location_city": "Sydney",
+      "location_country": "Australia",
+      "linkedin_url": null,
+      "github_url": null,
+      "portfolio_url": null
+    },
+    "summary": "Product leader with 7+ years experience managing SaaS platforms.",
+    "total_years_experience": 7,
+    "current_role": {
+      "title": "Senior Product Manager",
+      "company": "FinPilot",
+      "start_date": "2021",
+      "location": null,
+      "description": "Managed fintech onboarding platform"
+    },
+    "work_history": [
+      {
+        "title": "Senior Product Manager",
+        "company": "FinPilot",
+        "start_date": "2021",
+        "end_date": null,
+        "location": null,
+        "description": "Managed fintech onboarding platform",
+        "employment_type": null
+      },
+      {
+        "title": "Product Manager",
+        "company": "OrbitApps",
+        "start_date": "2018",
+        "end_date": "2021",
+        "location": null,
+        "description": "Coordinated engineering and design teams",
+        "employment_type": null
+      }
+    ],
+    "education": [
+      {
+        "degree": "MBA",
+        "field_of_study": null,
+        "institution": "University of Sydney",
+        "start_year": null,
+        "end_year": null,
+        "grade": null
+      }
+    ],
+    "skills": {
+      "technical": [
+        "Jira",
+        "Figma",
+        "SQL",
+        "Amplitude",
+        "Mixpanel"
+      ],
+      "languages": [],
+      "certifications": [],
+      "domain": [
+        "SaaS",
+        "Fintech",
+        "Product Management"
+      ]
+    },
+    "notice_period_days": null,
+    "expected_compensation": null,
+    "parse_metadata": {
+      "confidence_score": 0.7
+    }
+  },
+  "inputTokens": 108,
+  "outputTokens": 313,
+  "costMicros": 0,
+  "latencyMs": 5719
+}

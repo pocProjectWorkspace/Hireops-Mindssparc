@@ -3,3 +3,6 @@ packages:
   - "packages/*"
 allowBuilds:
   esbuild: true
+  # tesseract.js postinstall is opencollective-postinstall (cosmetic donation
+  # banner). OCR works at runtime without it; explicit deny silences the warning.
+  tesseract.js: false

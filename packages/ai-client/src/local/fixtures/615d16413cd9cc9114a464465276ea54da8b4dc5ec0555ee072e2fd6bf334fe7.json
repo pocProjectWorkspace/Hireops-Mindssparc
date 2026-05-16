@@ -1,0 +1,66 @@
+{
+  "json": {
+    "personal": {
+      "full_name": "Michael Turner",
+      "email": "michael.turner.analytics@gmail.com",
+      "phone": "312-555-9011",
+      "location_city": "Chicago",
+      "location_country": null,
+      "linkedin_url": null,
+      "github_url": null,
+      "portfolio_url": null
+    },
+    "summary": "Data analyst with experience in reporting automation and dashboard creation.",
+    "total_years_experience": 8,
+    "current_role": {
+      "title": "Senior Data Analyst",
+      "company": "DataPulse Analytics",
+      "start_date": "2020",
+      "location": null,
+      "description": null
+    },
+    "work_history": [
+      {
+        "title": "Senior Data Analyst",
+        "company": "DataPulse Analytics",
+        "start_date": "2020",
+        "end_date": null,
+        "location": null,
+        "description": null,
+        "employment_type": null
+      },
+      {
+        "title": "BI Analyst",
+        "company": "RetailMetrics",
+        "start_date": "2017",
+        "end_date": "2020",
+        "location": null,
+        "description": null,
+        "employment_type": null
+      }
+    ],
+    "education": [],
+    "skills": {
+      "technical": [
+        "SQL",
+        "Power BI",
+        "Tableau",
+        "Python",
+        "Excel",
+        "Snowflake"
+      ],
+      "languages": [],
+      "certifications": [],
+      "domain": []
+    },
+    "notice_period_days": null,
+    "expected_compensation": null,
+    "parse_metadata": {
+      "confidence_score": 0.62
+    }
+  },
+  "inputTokens": 105,
+  "outputTokens": 258,
+  "costMicros": 0,
+  "latencyMs": 5140
+}
