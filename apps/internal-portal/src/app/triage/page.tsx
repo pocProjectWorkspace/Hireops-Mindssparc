@@ -1,41 +1,61 @@
 import { requireAuth } from "@/lib/auth";
 import { createServerTRPCCaller } from "@/lib/trpc-server";
-import { TriageRow } from "@/components/TriageRow";
-import { TriageEmptyState } from "@/components/TriageEmptyState";
+import { UndoToastProvider } from "@/components/triage/UndoToastProvider";
+import { FilterChipsBar } from "@/components/triage/FilterChipsBar";
+import { HotZone } from "@/components/triage/HotZone";
+import { MomentumFeed } from "@/components/triage/MomentumFeed";
+import { CandidateDetailDrawer } from "@/components/triage/CandidateDetailDrawer";
 
-export const dynamic = "force-dynamic"; // Auth-gated; never statically render.
+export const dynamic = "force-dynamic"; // Auth-gated + reads searchParams.
 
 /**
- * Module 1a triage stub. Server-renders the candidate list from the
- * listCandidates tRPC procedure — read-only, no filters, no actions,
- * no detail drawer. Module 1b layers the interactive triage workflow
- * on top of this same page.
+ * Module 1b — the real recruiter triage screen.
+ *
+ * Server-renders two parallel listCandidates calls (Hot Zone for SLA
+ * breaches; Momentum Feed for fresh applications sorted by AI score)
+ * via Promise.all so the page lands with data — no client-side
+ * loading flash on first paint.
+ *
+ * Client components downstream re-fetch via React Query when filter
+ * chips change (URL-driven state). The drawer mounts/unmounts off
+ * ?candidateId; everything else (toast, filters) is sibling to it.
+ *
+ * The UndoToastProvider must wrap both the list (which fires
+ * mutations) and the toast itself; placing it at the top of /triage
+ * keeps that contract local — Module 1a's RootErrorBoundary +
+ * TRPCProvider stay in the global layout.
  */
 export default async function TriagePage() {
   const session = await requireAuth();
   const caller = createServerTRPCCaller(session);
-  const result = await caller.listCandidates({
-    pagination: { limit: 50 },
-    sort: "recent",
-  });
+
+  const [breaches, momentum] = await Promise.all([
+    caller.listCandidates({
+      filters: { slaBreachOnly: true },
+      pagination: { limit: 20 },
+      sort: "sla_breach",
+    }),
+    caller.listCandidates({
+      filters: { stage: "application_received" },
+      pagination: { limit: 50 },
+      sort: "ai_score_desc",
+    }),
+  ]);
 
   return (
-    <main className="mx-auto max-w-4xl p-6">
-      <header className="mb-6 flex items-center justify-between">
-        <h1 className="text-2xl font-semibold text-neutral-900">Triage</h1>
-        <a href="/logout" className="text-sm text-neutral-600 underline hover:text-neutral-900">
-          Sign out
-        </a>
-      </header>
-      {result.rows.length === 0 ? (
-        <TriageEmptyState />
-      ) : (
-        <ul className="overflow-hidden rounded-lg border border-neutral-200 bg-white shadow-1">
-          {result.rows.map((c) => (
-            <TriageRow key={c.candidateId} candidate={c} />
-          ))}
-        </ul>
-      )}
-    </main>
+    <UndoToastProvider>
+      <main className="flex h-screen flex-col">
+        <header className="flex items-center justify-between border-b border-neutral-200 bg-white px-6 py-4">
+          <h1 className="text-2xl font-semibold text-neutral-900">Triage</h1>
+          <a href="/logout" className="text-sm text-neutral-600 underline hover:text-neutral-900">
+            Sign out
+          </a>
+        </header>
+        <FilterChipsBar />
+        <HotZone initial={breaches} />
+        <MomentumFeed initial={momentum} />
+        <CandidateDetailDrawer />
+      </main>
+    </UndoToastProvider>
   );
 }

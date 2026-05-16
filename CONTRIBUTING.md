@@ -36,7 +36,7 @@ pnpm db:migrate
 | `pnpm db:lint:rls`                           | Verify every public-schema table has the right RLS shape      |
 | `pnpm db:seed:test-users`                    | Idempotently provision 3 test users in the kyndryl-poc tenant |
 | `pnpm dev`                                   | turbo --parallel: starts apps/api + apps/internal-portal      |
-| `pnpm portal:dev`                            | Internal portal only (`next dev`, port 3000)                  |
+| `pnpm portal:dev`                            | Internal portal only (`next dev`, port 3002)                  |
 | `pnpm e2e`                                   | Playwright golden-path test (boots dev servers via webServer) |
 | `pnpm -F @hireops/ui storybook`              | Storybook on `:6006` (UI primitives)                          |
 | `pnpm -F @hireops/internal-portal storybook` | Storybook on `:6006` (portal screens)                         |
@@ -110,7 +110,7 @@ client switches automatically.
 2. `pnpm install`
 3. `pnpm db:migrate` — applies pending migrations
 4. `pnpm db:seed:test-users` — once per dev DB; creates `recruiter1@kyndryl-poc.test` / `hr_ops1@kyndryl-poc.test` / `admin1@kyndryl-poc.test` with password `TestPassword123!`
-5. `pnpm dev` — boots apps/api on :3001 and apps/internal-portal on :3000 in parallel
+5. `pnpm dev` — boots apps/api on :3001 and apps/internal-portal on :3002 in parallel
 
 ### E2E
 

@@ -23,6 +23,7 @@
     "db:lint:rls": "pnpm --filter @hireops/db db:lint:rls",
     "db:provision:dev-dek": "pnpm --filter @hireops/db db:provision:dev-dek",
     "db:seed:test-users": "pnpm --filter @hireops/db db:seed:test-users",
+    "db:seed:demo-candidates": "pnpm --filter @hireops/db db:seed:demo-candidates",
     "api:dev": "pnpm --filter @hireops/api dev",
     "api:start": "pnpm --filter @hireops/api start",
     "api:test": "pnpm --filter @hireops/api test",

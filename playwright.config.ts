@@ -17,7 +17,7 @@ export default defineConfig({
   retries: process.env.CI ? 1 : 0,
   reporter: "list",
   use: {
-    baseURL: "http://localhost:3000",
+    baseURL: "http://localhost:3002",
     trace: "retain-on-failure",
   },
   projects: [
@@ -30,7 +30,7 @@ export default defineConfig({
     ? undefined
     : {
         command: "pnpm dev",
-        url: "http://localhost:3000/login",
+        url: "http://localhost:3002/login",
         timeout: 180_000,
         reuseExistingServer: !process.env.CI,
       },

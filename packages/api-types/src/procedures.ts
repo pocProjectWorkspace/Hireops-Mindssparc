@@ -81,7 +81,8 @@ export const listCandidatesInputSchema = z.object({
       requisitionId: z.string().uuid().optional(),
       stage: applicationStageSchema.optional(),
       source: applicationSourceSchema.optional(),
-      minAiScore: z.number().min(0).max(1).optional(),
+      minAiScore: z.number().min(0).max(100).optional(),
+      slaBreachOnly: z.boolean().optional(),
     })
     .optional(),
   pagination: z.object({
@@ -91,11 +92,27 @@ export const listCandidatesInputSchema = z.object({
   sort: z.enum(["recent", "ai_score_desc", "sla_breach"]).default("recent"),
 });
 
+/**
+ * Extended in Module 1b to carry what the triage cards render:
+ * applicationId (target for advance/reject mutations), current stage,
+ * stage_entered_at (for the SLA delta), AI score + the top-factors
+ * jsonb slice for the chip rendering.
+ *
+ * Keeping the shape flat (vs nesting application under candidate)
+ * because the triage card is application-centric — one row per
+ * (candidate, application) pair, not per candidate. A candidate with
+ * three applications shows as three rows.
+ */
 export const candidateSummarySchema = z.object({
   candidateId: z.string().uuid(),
+  applicationId: z.string().uuid(),
   fullName: z.string().nullable(),
   email: z.string().nullable(),
   source: applicationSourceSchema.nullable(),
+  stage: applicationStageSchema,
+  stageEnteredAt: z.string(),
+  aiScore: z.number().nullable(),
+  aiScoreExplanation: z.unknown().nullable(),
   createdAt: z.string(),
 });
 
@@ -184,6 +201,52 @@ export const listApplicationsOutputSchema = z.object({
 
 export type ListApplicationsInput = z.infer<typeof listApplicationsInputSchema>;
 export type ListApplicationsOutput = z.infer<typeof listApplicationsOutputSchema>;
+
+// ─────────────── advanceApplication ───────────────
+
+export const advanceApplicationInputSchema = z.object({
+  applicationId: z.string().uuid(),
+  targetStage: applicationStageSchema,
+  reason: z.string().max(500).optional(),
+});
+
+export const advanceApplicationOutputSchema = z.object({
+  applicationId: z.string().uuid(),
+  fromStage: applicationStageSchema,
+  toStage: applicationStageSchema,
+  transitionId: z.string().uuid(),
+});
+
+export type AdvanceApplicationInput = z.infer<typeof advanceApplicationInputSchema>;
+export type AdvanceApplicationOutput = z.infer<typeof advanceApplicationOutputSchema>;
+
+// ─────────────── rejectApplication ───────────────
+
+export const rejectApplicationInputSchema = z.object({
+  applicationId: z.string().uuid(),
+  reason: z.string().max(500).optional(),
+});
+
+export const rejectApplicationOutputSchema = advanceApplicationOutputSchema;
+
+export type RejectApplicationInput = z.infer<typeof rejectApplicationInputSchema>;
+export type RejectApplicationOutput = z.infer<typeof rejectApplicationOutputSchema>;
+
+// ─────────────── revertApplicationStage (undo) ───────────────
+
+export const revertApplicationStageInputSchema = z.object({
+  applicationId: z.string().uuid(),
+  transitionId: z.string().uuid(),
+});
+
+export const revertApplicationStageOutputSchema = z.object({
+  applicationId: z.string().uuid(),
+  currentStage: applicationStageSchema,
+  revertTransitionId: z.string().uuid(),
+});
+
+export type RevertApplicationStageInput = z.infer<typeof revertApplicationStageInputSchema>;
+export type RevertApplicationStageOutput = z.infer<typeof revertApplicationStageOutputSchema>;
 
 // ─────────────── upload response (REST, not tRPC) ───────────────
 

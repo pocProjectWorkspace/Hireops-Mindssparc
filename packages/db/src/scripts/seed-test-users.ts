@@ -26,13 +26,9 @@
 import { config as loadDotenv } from "dotenv";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+
 const here = dirname(fileURLToPath(import.meta.url));
 loadDotenv({ path: resolve(here, "../../../../.env") });
-
-import { createClient } from "@supabase/supabase-js";
-import { eq } from "drizzle-orm";
-import { db } from "../client";
-import { users, tenantUserMemberships, tenants } from "../schema";
 
 const TEST_PASSWORD = "TestPassword123!";
 
@@ -61,6 +57,13 @@ async function main() {
     console.error("Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY in env.");
     process.exit(2);
   }
+
+  // Dynamic imports so dotenv (above) loads before client.ts evaluates
+  // DATABASE_URL at module init. Same pattern as provision-dev-dek.ts.
+  const { createClient } = await import("@supabase/supabase-js");
+  const { eq } = await import("drizzle-orm");
+  const { db } = await import("../client");
+  const { users, tenantUserMemberships, tenants } = await import("../schema");
 
   const admin = createClient(supabaseUrl, serviceRoleKey, {
     auth: { persistSession: false, autoRefreshToken: false },
