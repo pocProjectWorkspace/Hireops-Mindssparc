@@ -155,6 +155,27 @@
       "when": 1778917205599,
       "tag": "0021_api_audit_logs_force_rls",
       "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "7",
+      "when": 1778920587042,
+      "tag": "0025_steep_lenny_balinger",
+      "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "7",
+      "when": 1778920587043,
+      "tag": "0026_db_partner_a_force_rls",
+      "breakpoints": true
+    },
+    {
+      "idx": 27,
+      "version": "7",
+      "when": 1778920587044,
+      "tag": "0027_db_partner_a_audit_triggers",
+      "breakpoints": true
     }
   ]
 }
