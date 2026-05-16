@@ -217,6 +217,58 @@ is the missing piece.
 
 ---
 
+## Notifications / email
+
+### 9. Real EmailProvider — SES vs Resend (deferred from Module 3)
+
+**What.** Module 3 ships with `EmailProvider` interface + `LocalEmailProvider`
+(writes `dev_email_outbox`) + `RealEmailProviderStub` (throws). Pick a real
+provider, build the concrete client, replace the stub. The factory's
+`EMAIL_PROVIDER=real` branch already routes there — body change only.
+
+**Why.** Real candidate-facing email needs to leave the network. The stub
+makes the contract obvious (boot succeeds with `EMAIL_PROVIDER=local`;
+fails loudly if anyone flips to `=real` before a provider lands).
+
+**Trigger.** First Wave-1 customer that needs to send real candidate
+emails (likely Kyndryl GCC POC graduation). Or the day a recruiter
+asks "did the candidate get the rejection email?" against a non-local
+env.
+
+**Origin.** Module 3 final report, deviation; `packages/notifications/src/real-stub.ts`.
+
+### 10. SLA-imminent scan: 4-hour window is a guess
+
+**What.** `apps/workers/src/jobs/sla-imminent-scan.ts` flags applications
+that are within `IMMINENT_WINDOW_HOURS = 4` of their stage SLA threshold.
+4h is a pulled-from-air default — the right value depends on how often
+recruiters actually check the Hot Zone unprompted.
+
+**Why.** Too short → recruiter gets the alert AFTER missing the SLA.
+Too long → spam fatigue. The whole point of the imminent alert is to
+nudge before breach.
+
+**Trigger.** First real complaint that the alert was too late OR too
+spammy. Probably 30 days of POC use will surface a calibrated number.
+
+**Origin.** Module 3 — Wave 1 implementation guess.
+
+### 11. Notification "failed" dashboard
+
+**What.** Rows in `notification_outbox` that hit `attempt_cap` and end
+up `status='failed'` go nowhere obvious today. A small admin view (or a
+dashboard query) lets an operator see "everything that failed to send in
+the last 24h" and decide whether to manually retry / chase up.
+
+**Why.** Outbox-with-cap is correct for production stability, but
+silently swallowing failures is bad ops hygiene.
+
+**Trigger.** First production-class deploy (real SES/Resend wired);
+becomes load-bearing once the LocalEmailProvider doesn't catch every
+failure.
+
+**Origin.** Module 3 — failed status defined; visibility deferred.
+
 ## Lifecycle
 
 This file lives alongside `HANDOVER.md` as a working index — append

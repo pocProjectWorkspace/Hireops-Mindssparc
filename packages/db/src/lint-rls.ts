@@ -42,6 +42,7 @@ const PLATFORM_TABLES_ALLOWLIST = new Set<string>([
   "tenant_user_memberships", // membership join table (user-scoped, not tenant-scoped)
   "tenant_encryption_keys", // DEK store; service-role only per ADR-002 §5.5, no authenticated reads
   "users", // platform-level user profile (user-scoped via id = auth.uid(), survives tenant deletion)
+  "scheduled_job_runs", // worker bookkeeping; service_role only, no authenticated reads (Module 3)
 ]);
 
 interface TableRow {

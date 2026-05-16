@@ -7,6 +7,20 @@
   "scripts": {
     "build": "tsc --noEmit",
     "lint": "eslint src",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "dev": "tsx watch src/index.ts",
+    "start": "tsx src/index.ts"
+  },
+  "dependencies": {
+    "@hireops/db": "workspace:*",
+    "@hireops/email-templates": "workspace:*",
+    "@hireops/notifications": "workspace:*",
+    "@hireops/observability": "workspace:*",
+    "drizzle-orm": "^0.45.2",
+    "postgres": "^3.4.9"
+  },
+  "devDependencies": {
+    "dotenv": "^17.4.2",
+    "tsx": "^4.21.0"
   }
 }

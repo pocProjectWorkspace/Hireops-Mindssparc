@@ -4,10 +4,7 @@
     "baseUrl": ".",
     "paths": {
       "@/*": ["./src/*"]
-    },
-    "lib": ["ES2022", "DOM"],
-    "jsx": "react-jsx",
-    "types": ["node"]
+    }
   },
-  "include": ["src/**/*", "test/**/*"]
+  "include": ["src/**/*"]
 }

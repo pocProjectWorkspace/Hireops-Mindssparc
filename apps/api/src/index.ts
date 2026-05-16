@@ -8,6 +8,7 @@ import { tenantContext, type TenantContextVars } from "./middleware/tenant-conte
 import { optionalAuth, type OptionalAuthVars } from "./middleware/optional-auth";
 import { testRoutes } from "./routes/test";
 import { uploadRoutes } from "./routes/upload";
+import { linksRoutes } from "./routes/links";
 import { appRouter } from "./trpc/router";
 import type { HonoTRPCContext } from "./trpc/trpc-core";
 import { baseLog, sentry } from "./lib/observability";
@@ -40,6 +41,10 @@ app.route("/test", testRoutes);
 // optionalAuth populates c.var.{log,requestId,tenantId,userId,claims}.
 app.use("/api/upload/*", optionalAuth);
 app.route("/api/upload", uploadRoutes);
+
+// Signed-link verification is intentionally unauthenticated — the link
+// IS the credential. The handler does its own audit insert.
+app.route("/api/links", linksRoutes);
 
 app.use("/trpc/*", optionalAuth);
 app.use(

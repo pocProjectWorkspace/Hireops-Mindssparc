@@ -21,6 +21,7 @@
     "@hireops/ai-client": "workspace:*",
     "@hireops/api-types": "workspace:*",
     "@hireops/db": "workspace:*",
+    "@hireops/notifications": "workspace:*",
     "@hireops/observability": "workspace:*",
     "@hireops/types": "workspace:*",
     "@hono/node-server": "^2.0.2",

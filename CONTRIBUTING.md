@@ -106,11 +106,17 @@ client switches automatically.
 
 ## Local dev workflow
 
-1. `cp .env.example .env` (or pull from 1Password), fill in Supabase URLs + keys
+1. `cp .env.example .env` (or pull from 1Password), fill in Supabase URLs + keys.
+   Required for Module 3: `SIGNED_LINK_SECRET` (32+ chars; `openssl rand -base64 48`)
+   and `EMAIL_PROVIDER=local` (default; `real` reaches the not-yet-implemented stub).
 2. `pnpm install`
 3. `pnpm db:migrate` — applies pending migrations
 4. `pnpm db:seed:test-users` — once per dev DB; creates `recruiter1@kyndryl-poc.test` / `hr_ops1@kyndryl-poc.test` / `admin1@kyndryl-poc.test` with password `TestPassword123!`
-5. `pnpm dev` — boots apps/api on :3001 and apps/internal-portal on :3002 in parallel
+5. `pnpm dev` — boots apps/api on :3001, apps/internal-portal on :3002, and
+   apps/workers (no port — long-running outbox drain + scheduler) in parallel.
+   The worker writes rendered emails to `public.dev_email_outbox` when
+   `EMAIL_PROVIDER=local` — inspect with
+   `SELECT subject, rendered_text FROM dev_email_outbox ORDER BY created_at DESC LIMIT 5;`
 
 ### E2E
 

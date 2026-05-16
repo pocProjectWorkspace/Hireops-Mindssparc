@@ -1,0 +1,21 @@
+{
+  "name": "@hireops/email-templates",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "./src/index.ts",
+  "scripts": {
+    "build": "tsc --noEmit",
+    "lint": "eslint src",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@hireops/notifications": "workspace:*",
+    "@react-email/components": "^0.0.36",
+    "@react-email/render": "^1.1.4",
+    "react": "^18.3.1"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.12"
+  }
+}

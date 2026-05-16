@@ -176,6 +176,41 @@
       "when": 1778920587044,
       "tag": "0027_db_partner_a_audit_triggers",
       "breakpoints": true
+    },
+    {
+      "idx": 28,
+      "version": "7",
+      "when": 1778949760801,
+      "tag": "0028_overjoyed_naoko",
+      "breakpoints": true
+    },
+    {
+      "idx": 29,
+      "version": "7",
+      "when": 1778949760802,
+      "tag": "0029_module_3_force_rls",
+      "breakpoints": true
+    },
+    {
+      "idx": 30,
+      "version": "7",
+      "when": 1778949760803,
+      "tag": "0030_module_3_audit_triggers",
+      "breakpoints": true
+    },
+    {
+      "idx": 31,
+      "version": "7",
+      "when": 1778949760804,
+      "tag": "0031_module_3_relax_fks",
+      "breakpoints": true
+    },
+    {
+      "idx": 32,
+      "version": "7",
+      "when": 1778949760805,
+      "tag": "0032_signed_link_uses_partial_unique",
+      "breakpoints": true
     }
   ]
 }

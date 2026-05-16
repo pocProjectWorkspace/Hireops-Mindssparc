@@ -56,9 +56,11 @@ import {
   type GetCandidateByIdOutput,
 } from "@hireops/api-types";
 import { parseResume } from "@hireops/ai-client";
+import { enqueueNotification } from "@hireops/notifications";
 import { router, publicProcedure, protectedProcedure, type HonoTRPCContext } from "./trpc-core";
 import { withAudit } from "./with-audit";
 import { getStorageClient } from "../lib/storage";
+import { tenants, positions } from "@hireops/db";
 
 /**
  * Lowercase, drop +suffix in the local part. Gmail dot-stripping is
@@ -228,6 +230,7 @@ export const appRouter = router({
             )
             .limit(1);
 
+          const wasNewApplication = !existingApp?.id;
           const applicationId = existingApp?.id
             ? existingApp.id
             : await poolDb
@@ -240,6 +243,37 @@ export const appRouter = router({
                 })
                 .returning({ id: applications.id })
                 .then((rows) => firstOrThrow(rows, "applications insert").id);
+
+          // Enqueue the "application received" candidate email only on
+          // first apply — re-submits of the same (candidate, req) pair
+          // hit the dedup branch and should NOT spam the candidate.
+          if (wasNewApplication) {
+            try {
+              const positionTitle = await fetchPositionTitleForRequisition(req.id);
+              const companyName = await fetchTenantDisplayName(req.tenantId);
+              await enqueueNotification(poolDb, {
+                tenantId: req.tenantId,
+                recipientType: "candidate",
+                recipientEmail: input.applicant.email,
+                recipientCandidateId: candidateId,
+                templateKey: "candidate.application_received",
+                templateData: {
+                  candidateName: input.applicant.fullName,
+                  positionTitle,
+                  companyName,
+                },
+                dedupKey: `application_received:${applicationId}`,
+              });
+            } catch (err) {
+              // Don't fail submission on notification enqueue errors —
+              // the application row is the contract, the email is a
+              // nice-to-have. Logged for ops.
+              ctx.log.warn(
+                { err, request_id: ctx.requestId, application_id: applicationId },
+                "submitApplication: enqueueNotification failed",
+              );
+            }
+          }
 
           return { applicationId, candidateId, status: parseStatus };
         },
@@ -695,12 +729,128 @@ async function transitionApplicationStage(
       message: "transition insert returned no row",
     });
   }
+
+  // Enqueue the candidate-facing email — only for stages the candidate
+  // should hear about directly. Internal moves (recruiter_review,
+  // ai_screening) are recruiter workflow, not candidate-visible.
+  // The enqueue is wrapped — a notifications failure must not roll back
+  // the transition itself.
+  if (CANDIDATE_VISIBLE_STAGES.has(targetStage)) {
+    try {
+      const meta = await fetchTransitionEmailContext(db, applicationId);
+      if (meta) {
+        await enqueueNotification(db, {
+          tenantId: app.tenantId,
+          recipientType: "candidate",
+          recipientEmail: meta.candidateEmail,
+          recipientCandidateId: meta.candidateId,
+          templateKey: "candidate.stage_advanced",
+          templateData: {
+            candidateName: meta.candidateName,
+            positionTitle: meta.positionTitle,
+            companyName: meta.companyName,
+            newStageLabel: STAGE_LABELS[targetStage] ?? targetStage,
+          },
+          dedupKey: `stage_advanced:${tx.id}`,
+        });
+      }
+    } catch (err) {
+      ctx.log.warn(
+        { err, request_id: ctx.requestId, application_id: applicationId },
+        "transitionApplicationStage: enqueueNotification failed",
+      );
+    }
+  }
+
   return {
     applicationId,
     fromStage: app.currentStage,
     toStage: targetStage,
     transitionId: tx.id,
   };
+}
+
+/**
+ * Stages the candidate should hear about directly. Wave 1 list — add a
+ * stage here only when there's a copy ready for it and product agrees.
+ */
+const CANDIDATE_VISIBLE_STAGES = new Set<ApplicationStage>([
+  "shortlisted",
+  "tech_interview",
+  "hr_round",
+  "offer_drafted",
+  "offer_accepted",
+  "offer_declined",
+  "recruiter_rejected",
+  "withdrawn",
+]);
+
+const STAGE_LABELS: Partial<Record<ApplicationStage, string>> = {
+  shortlisted: "Shortlisted",
+  tech_interview: "Technical interview",
+  hr_round: "HR round",
+  offer_drafted: "Offer in preparation",
+  offer_accepted: "Offer accepted",
+  offer_declined: "Offer declined",
+  recruiter_rejected: "Not moving forward",
+  withdrawn: "Withdrawn",
+};
+
+interface TransitionEmailContext {
+  candidateId: string;
+  candidateName: string;
+  candidateEmail: string;
+  positionTitle: string;
+  companyName: string;
+}
+
+async function fetchTransitionEmailContext(
+  db: NonNullable<HonoTRPCContext["db"]>,
+  applicationId: string,
+): Promise<TransitionEmailContext | null> {
+  const [row] = await db
+    .select({
+      candidateId: candidates.id,
+      candidateName: persons.fullName,
+      candidateEmail: persons.emailPrimary,
+      positionTitle: positions.title,
+      companyName: tenants.displayName,
+    })
+    .from(applications)
+    .innerJoin(candidates, eq(candidates.id, applications.candidateId))
+    .innerJoin(persons, eq(persons.id, candidates.personId))
+    .innerJoin(requisitions, eq(requisitions.id, applications.requisitionId))
+    .innerJoin(positions, eq(positions.id, requisitions.positionId))
+    .innerJoin(tenants, eq(tenants.id, applications.tenantId))
+    .where(eq(applications.id, applicationId))
+    .limit(1);
+  if (!row || !row.candidateEmail) return null;
+  return {
+    candidateId: row.candidateId,
+    candidateName: row.candidateName ?? "there",
+    candidateEmail: row.candidateEmail,
+    positionTitle: row.positionTitle,
+    companyName: row.companyName,
+  };
+}
+
+async function fetchPositionTitleForRequisition(requisitionId: string): Promise<string> {
+  const [row] = await poolDb
+    .select({ title: positions.title })
+    .from(requisitions)
+    .innerJoin(positions, eq(positions.id, requisitions.positionId))
+    .where(eq(requisitions.id, requisitionId))
+    .limit(1);
+  return row?.title ?? "the role you applied to";
+}
+
+async function fetchTenantDisplayName(tenantId: string): Promise<string> {
+  const [row] = await poolDb
+    .select({ name: tenants.displayName })
+    .from(tenants)
+    .where(eq(tenants.id, tenantId))
+    .limit(1);
+  return row?.name ?? "our team";
 }
 
 /**
