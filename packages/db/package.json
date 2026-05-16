@@ -18,7 +18,8 @@
     "db:test:verify-rls": "tsx src/verify-rls.ts",
     "db:diagnose:hook": "tsx src/diagnose-hook.ts",
     "db:lint:rls": "tsx src/lint-rls.ts",
-    "db:provision:dev-dek": "tsx src/scripts/provision-dev-dek.ts"
+    "db:provision:dev-dek": "tsx src/scripts/provision-dev-dek.ts",
+    "db:seed:test-users": "tsx src/scripts/seed-test-users.ts"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.105.3",

@@ -24,17 +24,22 @@ pnpm db:migrate
 
 ## Common commands
 
-| Command                             | What it does                                                  |
-| ----------------------------------- | ------------------------------------------------------------- |
-| `pnpm typecheck`                    | Repo-wide TypeScript check (turbo-cached)                     |
-| `pnpm lint`                         | ESLint everywhere                                             |
-| `pnpm format` / `pnpm format:check` | Prettier write / verify                                       |
-| `pnpm build`                        | Per-package builds                                            |
-| `pnpm api:test`                     | Vitest integration suite for `apps/api` (~5 min, hits dev DB) |
-| `pnpm db:generate`                  | Drizzle schema → migration SQL                                |
-| `pnpm db:migrate`                   | Apply pending migrations to the DB pointed at by `DIRECT_URL` |
-| `pnpm db:lint:rls`                  | Verify every public-schema table has the right RLS shape      |
-| `pnpm -F @hireops/ui storybook`     | Storybook on `:6006`                                          |
+| Command                                      | What it does                                                  |
+| -------------------------------------------- | ------------------------------------------------------------- |
+| `pnpm typecheck`                             | Repo-wide TypeScript check (turbo-cached)                     |
+| `pnpm lint`                                  | ESLint everywhere                                             |
+| `pnpm format` / `pnpm format:check`          | Prettier write / verify                                       |
+| `pnpm build`                                 | Per-package builds                                            |
+| `pnpm api:test`                              | Vitest integration suite for `apps/api` (~5 min, hits dev DB) |
+| `pnpm db:generate`                           | Drizzle schema → migration SQL                                |
+| `pnpm db:migrate`                            | Apply pending migrations to the DB pointed at by `DIRECT_URL` |
+| `pnpm db:lint:rls`                           | Verify every public-schema table has the right RLS shape      |
+| `pnpm db:seed:test-users`                    | Idempotently provision 3 test users in the kyndryl-poc tenant |
+| `pnpm dev`                                   | turbo --parallel: starts apps/api + apps/internal-portal      |
+| `pnpm portal:dev`                            | Internal portal only (`next dev`, port 3000)                  |
+| `pnpm e2e`                                   | Playwright golden-path test (boots dev servers via webServer) |
+| `pnpm -F @hireops/ui storybook`              | Storybook on `:6006` (UI primitives)                          |
+| `pnpm -F @hireops/internal-portal storybook` | Storybook on `:6006` (portal screens)                         |
 
 ## CI overview
 
@@ -98,6 +103,23 @@ no bucket is required there — `NODE_ENV=test` and `STORAGE_PROVIDER=local`
 both trigger the local path. In production set `SUPABASE_URL` +
 `SUPABASE_SERVICE_ROLE_KEY` (already in CI secrets) and the storage
 client switches automatically.
+
+## Local dev workflow
+
+1. `cp .env.example .env` (or pull from 1Password), fill in Supabase URLs + keys
+2. `pnpm install`
+3. `pnpm db:migrate` — applies pending migrations
+4. `pnpm db:seed:test-users` — once per dev DB; creates `recruiter1@kyndryl-poc.test` / `hr_ops1@kyndryl-poc.test` / `admin1@kyndryl-poc.test` with password `TestPassword123!`
+5. `pnpm dev` — boots apps/api on :3001 and apps/internal-portal on :3000 in parallel
+
+### E2E
+
+`pnpm e2e` runs Playwright. The config boots `pnpm dev` automatically via the
+`webServer` block (180s timeout), then runs the golden-path test at
+`e2e/golden-path.spec.ts` (login → /triage → axe assertion). Set
+`E2E_NO_WEBSERVER=1` to use an externally-started dev server (useful in CI).
+
+First Playwright run on a new machine: `pnpm e2e:install` (downloads Chromium).
 
 ## Logging and Sentry
 
