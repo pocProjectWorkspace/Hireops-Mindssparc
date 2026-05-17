@@ -17,9 +17,18 @@ import { createServerClient, type CookieOptions } from "@supabase/ssr";
 
 const PUBLIC_PATHS = new Set<string>(["/login", "/logout"]);
 
+// Path prefixes that are always public (candidate-side flows). Each
+// entry must end with "/" so a literal segment match doesn't bleed.
+const PUBLIC_PREFIXES = ["/offer/"];
+
 export async function middleware(req: NextRequest) {
   if (PUBLIC_PATHS.has(req.nextUrl.pathname)) {
     return NextResponse.next();
+  }
+  for (const prefix of PUBLIC_PREFIXES) {
+    if (req.nextUrl.pathname.startsWith(prefix)) {
+      return NextResponse.next();
+    }
   }
 
   const res = NextResponse.next();

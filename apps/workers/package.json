@@ -16,6 +16,7 @@
     "@hireops/email-templates": "workspace:*",
     "@hireops/notifications": "workspace:*",
     "@hireops/observability": "workspace:*",
+    "@hireops/sla-thresholds": "workspace:*",
     "drizzle-orm": "^0.45.2",
     "postgres": "^3.4.9"
   },

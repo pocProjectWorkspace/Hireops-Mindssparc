@@ -30,6 +30,8 @@ import {
   applicationStateTransitions,
   requisitions,
   tenantUserMemberships,
+  offers,
+  workdaySyncOutbox,
   type ApplicationStage,
 } from "@hireops/db";
 import { SLA_THRESHOLDS_HOURS } from "../lib/sla-thresholds";
@@ -52,11 +54,21 @@ import {
   rejectApplicationOutputSchema,
   revertApplicationStageInputSchema,
   revertApplicationStageOutputSchema,
+  draftOfferInputSchema,
+  draftOfferOutputSchema,
+  extendOfferInputSchema,
+  extendOfferOutputSchema,
+  cancelOfferInputSchema,
+  cancelOfferOutputSchema,
+  listOffersByApplicationInputSchema,
+  listOffersByApplicationOutputSchema,
+  listWorkdaySyncsInputSchema,
+  listWorkdaySyncsOutputSchema,
   type SubmitApplicationOutput,
   type GetCandidateByIdOutput,
 } from "@hireops/api-types";
 import { parseResume } from "@hireops/ai-client";
-import { enqueueNotification } from "@hireops/notifications";
+import { enqueueNotification, signLink, hashToken } from "@hireops/notifications";
 import { router, publicProcedure, protectedProcedure, type HonoTRPCContext } from "./trpc-core";
 import { withAudit } from "./with-audit";
 import { getStorageClient } from "../lib/storage";
@@ -672,6 +684,340 @@ export const appRouter = router({
         };
       });
     }),
+
+  // ─────────── protected: offers (Module 4) ───────────
+
+  /**
+   * Create a new offer row in 'drafted' state. Doesn't transition the
+   * application — drafting is a recruiter-side action; the candidate
+   * only learns about it on extendOffer.
+   */
+  draftOffer: protectedProcedure
+    .input(draftOfferInputSchema)
+    .output(draftOfferOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      return withAudit("draft_offer", ctx, input, async () => {
+        const db = requireDb(ctx);
+
+        const [app] = await db
+          .select({ tenantId: applications.tenantId, currentStage: applications.currentStage })
+          .from(applications)
+          .where(eq(applications.id, input.applicationId))
+          .limit(1);
+        if (!app) throw new TRPCError({ code: "NOT_FOUND", message: "Application not found" });
+        if (!OFFER_DRAFTABLE_STAGES.has(app.currentStage)) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: `Cannot draft offer from stage ${app.currentStage}`,
+          });
+        }
+
+        const membershipId = await resolveActorMembership(db, ctx);
+        if (!membershipId) {
+          throw new TRPCError({
+            code: "FORBIDDEN",
+            message: "Drafting recruiter membership not found for this tenant",
+          });
+        }
+
+        const expiryAt = new Date(Date.now() + input.expiryDays * 24 * 60 * 60 * 1000);
+
+        const [created] = await db
+          .insert(offers)
+          .values({
+            tenantId: app.tenantId,
+            applicationId: input.applicationId,
+            draftedByMembershipId: membershipId,
+            baseSalaryInrPaise: BigInt(input.baseSalaryInrPaise),
+            variableTargetInrPaise:
+              input.variableTargetInrPaise !== undefined
+                ? BigInt(input.variableTargetInrPaise)
+                : null,
+            joiningBonusInrPaise:
+              input.joiningBonusInrPaise !== undefined
+                ? BigInt(input.joiningBonusInrPaise)
+                : null,
+            joiningDate: input.joiningDate,
+            location: input.location,
+            termsHtml: input.termsHtml ?? null,
+            expiryAt,
+          })
+          .returning({ id: offers.id });
+
+        if (!created) {
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: "offer insert returned no row",
+          });
+        }
+        return { offerId: created.id };
+      });
+    }),
+
+  /**
+   * Move a drafted offer to 'extended' — generates the signed-link
+   * token, stores its hash, transitions the application to
+   * offer_drafted (the "we have an offer out" enum slot), and
+   * enqueues the candidate.offer_extended email. Partial unique on
+   * (tenant, application_id) WHERE status='extended' rejects a second
+   * concurrent extend with 23505.
+   */
+  extendOffer: protectedProcedure
+    .input(extendOfferInputSchema)
+    .output(extendOfferOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      return withAudit("extend_offer", ctx, input, async () => {
+        const db = requireDb(ctx);
+
+        const [offer] = await db
+          .select({
+            id: offers.id,
+            tenantId: offers.tenantId,
+            applicationId: offers.applicationId,
+            status: offers.status,
+            expiryAt: offers.expiryAt,
+            baseSalaryInrPaise: offers.baseSalaryInrPaise,
+            joiningDate: offers.joiningDate,
+            location: offers.location,
+          })
+          .from(offers)
+          .where(eq(offers.id, input.offerId))
+          .limit(1);
+        if (!offer) throw new TRPCError({ code: "NOT_FOUND", message: "Offer not found" });
+        if (offer.status !== "drafted") {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: `Offer must be in 'drafted' status to extend (currently ${offer.status})`,
+          });
+        }
+
+        const meta = await fetchOfferEmailContext(db, offer.applicationId);
+        if (!meta) {
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: "candidate email missing — cannot extend offer",
+          });
+        }
+
+        const token = signLink({
+          action: "candidate.accept_offer",
+          subjectId: offer.id,
+          expiresAt: offer.expiryAt,
+        });
+        const tokenHash = hashToken(token);
+        const portalBase = process.env.NEXT_PUBLIC_SITE_URL ?? "http://localhost:3002";
+        const acceptUrl = `${portalBase}/offer/${token}`;
+
+        await db
+          .update(offers)
+          .set({
+            status: "extended",
+            extendedAt: new Date(),
+            acceptSignedLinkTokenHash: tokenHash,
+            updatedAt: new Date(),
+          })
+          .where(eq(offers.id, offer.id));
+
+        // Transition the application to offer_drafted (the enum value
+        // closest to "we have an outstanding offer"). When the candidate
+        // accepts/declines, the accept route advances further.
+        if (meta.currentStage !== "offer_drafted") {
+          const membershipId = await resolveActorMembership(db, ctx);
+          await db.insert(applicationStateTransitions).values({
+            tenantId: offer.tenantId,
+            applicationId: offer.applicationId,
+            fromStage: meta.currentStage,
+            toStage: "offer_drafted",
+            actorMembershipId: membershipId,
+            reason: `offer extended (offer_id=${offer.id})`,
+          });
+          await db
+            .update(applications)
+            .set({ currentStage: "offer_drafted", stageEnteredAt: new Date() })
+            .where(eq(applications.id, offer.applicationId));
+        }
+
+        try {
+          await enqueueNotification(db, {
+            tenantId: offer.tenantId,
+            recipientType: "candidate",
+            recipientEmail: meta.candidateEmail,
+            recipientCandidateId: meta.candidateId,
+            templateKey: "candidate.offer_extended",
+            templateData: {
+              candidateName: meta.candidateName,
+              companyName: meta.companyName,
+              positionTitle: meta.positionTitle,
+              joiningDate: offer.joiningDate,
+              baseSalaryInrFormatted: formatPaiseAsInr(offer.baseSalaryInrPaise),
+              location: offer.location,
+              expiryAtFormatted: offer.expiryAt.toISOString().slice(0, 10),
+              acceptUrl,
+            },
+            dedupKey: `offer_extended:${offer.id}`,
+          });
+        } catch (err) {
+          ctx.log.warn(
+            { err, request_id: ctx.requestId, offer_id: offer.id },
+            "extendOffer: enqueueNotification failed",
+          );
+        }
+
+        return { offerId: offer.id, signedLinkSentTo: meta.candidateEmail };
+      });
+    }),
+
+  /**
+   * Cancel a drafted or extended offer. The signed-link token is NOT
+   * deleted (signed_link_uses is append-only); the protection is that
+   * /api/offers/accept/:token checks the offer status before honouring
+   * the click. If the offer was already extended, we transition the
+   * application back to hr_round (the typical pre-offer stage). If the
+   * recruiter wants to re-draft, they can.
+   */
+  cancelOffer: protectedProcedure
+    .input(cancelOfferInputSchema)
+    .output(cancelOfferOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      return withAudit("cancel_offer", ctx, input, async () => {
+        const db = requireDb(ctx);
+
+        const [offer] = await db
+          .select({
+            id: offers.id,
+            tenantId: offers.tenantId,
+            applicationId: offers.applicationId,
+            status: offers.status,
+          })
+          .from(offers)
+          .where(eq(offers.id, input.offerId))
+          .limit(1);
+        if (!offer) throw new TRPCError({ code: "NOT_FOUND", message: "Offer not found" });
+        if (!["drafted", "extended"].includes(offer.status)) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: `Cannot cancel offer in status ${offer.status}`,
+          });
+        }
+
+        const wasExtended = offer.status === "extended";
+
+        await db
+          .update(offers)
+          .set({
+            status: "cancelled",
+            cancelledAt: new Date(),
+            cancelledReason: input.reason,
+            updatedAt: new Date(),
+          })
+          .where(eq(offers.id, offer.id));
+
+        if (wasExtended) {
+          const membershipId = await resolveActorMembership(db, ctx);
+          await db.insert(applicationStateTransitions).values({
+            tenantId: offer.tenantId,
+            applicationId: offer.applicationId,
+            fromStage: "offer_drafted",
+            toStage: "hr_round",
+            actorMembershipId: membershipId,
+            reason: `offer cancelled (offer_id=${offer.id}): ${input.reason}`,
+          });
+          await db
+            .update(applications)
+            .set({ currentStage: "hr_round", stageEnteredAt: new Date() })
+            .where(eq(applications.id, offer.applicationId));
+        }
+
+        return { offerId: offer.id };
+      });
+    }),
+
+  listOffersByApplication: protectedProcedure
+    .input(listOffersByApplicationInputSchema)
+    .output(listOffersByApplicationOutputSchema)
+    .query(async ({ ctx, input }) => {
+      const db = requireDb(ctx);
+      const [app] = await db
+        .select({ currentStage: applications.currentStage })
+        .from(applications)
+        .where(eq(applications.id, input.applicationId))
+        .limit(1);
+      if (!app) {
+        throw new TRPCError({ code: "NOT_FOUND", message: "Application not found" });
+      }
+      const rows = await db
+        .select()
+        .from(offers)
+        .where(eq(offers.applicationId, input.applicationId))
+        .orderBy(desc(offers.createdAt));
+      return {
+        applicationCurrentStage: app.currentStage,
+        rows: rows.map((r) => ({
+          id: r.id,
+          applicationId: r.applicationId,
+          status: r.status as "drafted" | "extended" | "accepted" | "declined" | "expired" | "cancelled",
+          baseSalaryInrPaise: Number(r.baseSalaryInrPaise),
+          variableTargetInrPaise:
+            r.variableTargetInrPaise !== null ? Number(r.variableTargetInrPaise) : null,
+          joiningBonusInrPaise:
+            r.joiningBonusInrPaise !== null ? Number(r.joiningBonusInrPaise) : null,
+          joiningDate: r.joiningDate,
+          location: r.location,
+          expiryAt: r.expiryAt.toISOString(),
+          extendedAt: r.extendedAt?.toISOString() ?? null,
+          acceptedAt: r.acceptedAt?.toISOString() ?? null,
+          declinedAt: r.declinedAt?.toISOString() ?? null,
+          cancelledAt: r.cancelledAt?.toISOString() ?? null,
+          declinedReason: r.declinedReason,
+          termsHtml: r.termsHtml,
+          createdAt: r.createdAt.toISOString(),
+        })),
+      };
+    }),
+
+  // ─────────── protected: integration health (admin) ───────────
+
+  listWorkdaySyncs: protectedProcedure
+    .input(listWorkdaySyncsInputSchema)
+    .output(listWorkdaySyncsOutputSchema)
+    .query(async ({ ctx, input }) => {
+      const db = requireDb(ctx);
+      const limit = input.pagination.limit;
+      const cursorDate = input.pagination.cursor ? new Date(input.pagination.cursor) : null;
+      const conds = [
+        ...(input.filters?.status
+          ? [eq(workdaySyncOutbox.status, input.filters.status)]
+          : []),
+        ...(input.filters?.eventType
+          ? [eq(workdaySyncOutbox.eventType, input.filters.eventType)]
+          : []),
+        ...(cursorDate ? [lt(workdaySyncOutbox.createdAt, cursorDate)] : []),
+      ];
+      const rows = await db
+        .select()
+        .from(workdaySyncOutbox)
+        .where(conds.length ? and(...conds) : undefined)
+        .orderBy(desc(workdaySyncOutbox.createdAt))
+        .limit(limit + 1);
+      const hasMore = rows.length > limit;
+      const out = rows.slice(0, limit);
+      return {
+        rows: out.map((r) => ({
+          id: r.id,
+          eventType: r.eventType,
+          businessKey: r.businessKey,
+          status: r.status,
+          subjectApplicationId: r.subjectApplicationId,
+          attemptCount: r.attemptCount,
+          lastError: r.lastError,
+          simulatedAt: r.simulatedAt?.toISOString() ?? null,
+          createdAt: r.createdAt.toISOString(),
+          payload: r.payload,
+          simulatedResponse: r.simulatedResponse,
+        })),
+        nextCursor: hasMore ? lastCursor(out) : null,
+      };
+    }),
 });
 
 /**
@@ -876,6 +1222,66 @@ async function resolveActorMembership(
     )
     .limit(1);
   return row?.id ?? null;
+}
+
+// ─────────── Module 4: offer helpers ───────────
+
+/**
+ * Stages from which a recruiter can draft an offer. Today: only after
+ * the HR round is done OR after a prior draft sits unfilled. Adjust if
+ * product later wants to allow earlier drafts.
+ */
+const OFFER_DRAFTABLE_STAGES = new Set<ApplicationStage>(["hr_round", "offer_drafted"]);
+
+interface OfferEmailContext {
+  candidateId: string;
+  candidateName: string;
+  candidateEmail: string;
+  positionTitle: string;
+  companyName: string;
+  currentStage: ApplicationStage;
+}
+
+async function fetchOfferEmailContext(
+  db: NonNullable<HonoTRPCContext["db"]>,
+  applicationId: string,
+): Promise<OfferEmailContext | null> {
+  const [row] = await db
+    .select({
+      candidateId: candidates.id,
+      candidateName: persons.fullName,
+      candidateEmail: persons.emailPrimary,
+      positionTitle: positions.title,
+      companyName: tenants.displayName,
+      currentStage: applications.currentStage,
+    })
+    .from(applications)
+    .innerJoin(candidates, eq(candidates.id, applications.candidateId))
+    .innerJoin(persons, eq(persons.id, candidates.personId))
+    .innerJoin(requisitions, eq(requisitions.id, applications.requisitionId))
+    .innerJoin(positions, eq(positions.id, requisitions.positionId))
+    .innerJoin(tenants, eq(tenants.id, applications.tenantId))
+    .where(eq(applications.id, applicationId))
+    .limit(1);
+  if (!row || !row.candidateEmail) return null;
+  return {
+    candidateId: row.candidateId,
+    candidateName: row.candidateName ?? "there",
+    candidateEmail: row.candidateEmail,
+    positionTitle: row.positionTitle,
+    companyName: row.companyName,
+    currentStage: row.currentStage,
+  };
+}
+
+/**
+ * Format paise → "₹12,34,567" using en-IN grouping (lakh / crore).
+ * Localised to the Indian rupee convention because that's the Wave 1
+ * currency. Multi-currency Phase 3.
+ */
+export function formatPaiseAsInr(paise: bigint | number): string {
+  const rupees = Number(BigInt(paise) / 100n);
+  return `₹${rupees.toLocaleString("en-IN")}`;
 }
 
 export type AppRouter = typeof appRouter;

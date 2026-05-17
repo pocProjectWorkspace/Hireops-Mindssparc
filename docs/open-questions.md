@@ -269,6 +269,85 @@ failure.
 
 **Origin.** Module 3 — failed status defined; visibility deferred.
 
+### 12. Module 4 followups
+
+Offer approval routing via DB-APPROVAL framework. Schema ships in Wave 1; rules-engine implementation deferred. Wave 1 demo skips approval entirely — drafted offers go directly to candidate. Concretely needed: the function that takes an offer + matrix and produces a resolved chain. ~2-3 days of focused work. Should ship before Kyndryl signs a contract that promises "no offer goes out without director approval" — likely Phase 3.
+
+Formal e-signature on offer acceptance. Wave 1 uses click-is-acceptance with disclaimer text. Click action records intent, audit log captures the timestamp + IP + user agent. Legally adequate for an internal POC but not for production hiring at scale. Integration with an e-sig provider (Aadhaar eSign for India is the strongest option; DocuSign or Zoho Sign as alternatives) is a separate ticket, ~1-2 weeks depending on provider choice. Worth deciding the provider before Phase 3.
+
+Workday integration failure mode demonstration. Wave 1's simulation worker only shows clean successes. The schema supports failure tracking (failure_count, last_error, retry semantics) but they're never exercised. Real Workday integration (Phase 3) will surface real failures — business-process locks, network timeouts, validation errors. Worth a deliberate "Workday failure scenarios" ticket in Phase 3 that exercises the retry path against the real connector.
+
+SLA threshold extraction to shared package. Currently duplicated between apps/api and apps/workers. Worth extracting to packages/sla-thresholds (or folding into packages/notifications). Before Module 4 uses it as a third consumer. ~30 minutes.
+
+The apply form ticket (CRS-01). Public candidate-facing apply page. Not part of Module 4 per our scoping. ~1 day after Module 4.
+
+AI scoring on application submit (AI-03). The recruiter screen displays AI scores from Module 1b, but nothing generates them. The seed-demo workaround can hand-craft scores in the seed data; the real implementation belongs in its own ticket. ~2 days, uses the parser output + AI client.
+
+SEED-DEMO ticket. Realistic seed data covering varied stages, scores, sources, format types. ~1 day. The handcrafted parser fixtures from AI-02 can be reused.
+
+Real email provider activation. Pick provider (recommendation stands: Resend), sign up, configure DNS (SPF/DKIM/DMARC for the sending domain), swap LocalEmailProvider for ResendEmailProvider. ~half day plus DNS propagation wait. Before the demo.
+
+## Module 4 (offers + Workday) follow-ups
+
+### 12. Offer approval routing (deferred from Module 4)
+
+**What.** Today `extendOffer` sends the offer to the candidate
+directly. No approval gate between "drafted" and "extended". The
+approval framework schema (`approval_matrices`, `approval_chains`,
+`approval_requests`, `approval_decisions`) sits unused for offers.
+
+**Why.** Enterprise customers (Kyndryl included) typically want
+HR / finance / hiring-manager sign-off before an offer goes to the
+candidate. Skipping it in Wave 1 is a deliberate Phase-2 simplification
+to keep the demo lifecycle simple; production needs this.
+
+**Trigger.** First Wave-1 customer that pushes back on "offer goes
+straight to candidate without sign-off"; or the engagement where the
+rules engine (the second consumer of `approval_*` tables alongside
+requisition approvals) lands.
+
+**Origin.** Module 4 ticket scope fence + decision-locked list item
+#3 ("Offer approval routing deferred").
+
+### 13. Click-is-acceptance disclaimer — verify wording with legal
+
+**What.** The candidate accept page (`/offer/[token]`) renders:
+"By clicking Accept Offer, you formally accept this offer of
+employment from {tenant_name}." Plus a name-confirmation field as
+the weak forwarded-link defence.
+
+**Why.** No e-signature. No OTP. The disclaimer text is the legal
+mechanism that turns the click into a binding acceptance. The exact
+wording is product-stub; Indian employment law + Kyndryl India legal
+need to bless it before a real candidate sees it.
+
+**Trigger.** Before the first real offer goes out via this flow
+(post-POC, pre-production).
+
+**Origin.** Module 4 ticket decision-locked list item #4 + the
+`/offer/[token]` page's amber disclaimer banner.
+
+### 14. Workday simulator always succeeds — failure-mode coverage
+
+**What.** Wave 1's `drainWorkdayOutboxOnce` deterministically
+"simulates" by sleeping 2-3 s then writing a success response.
+There's no injected failure path. The schema supports
+`status='failed'`, `attempt_count`, `last_error` for the real
+connector but the simulator never exercises it. Operators have
+nothing to test failure-side UI / runbook against.
+
+**Why.** "Demo theatre" — the gates the simulator passes don't tell
+you anything about how the Integration Health screen looks when
+things are actually broken. Once the Phase 3 connector lands the
+failure path becomes real; we want UI ergonomics validated before
+then.
+
+**Trigger.** Phase 3 SOAP connector wiring; OR a deliberate
+"chaos-mode" toggle (`WORKDAY_SIM_FAILURE_RATE=0.1`) added before
+the next stakeholder demo.
+
+**Origin.** Module 4 ticket decision-locked list item #6.
+
 ## Lifecycle
 
 This file lives alongside `HANDOVER.md` as a working index — append

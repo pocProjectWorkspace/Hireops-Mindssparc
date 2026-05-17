@@ -23,6 +23,7 @@
     "@hireops/db": "workspace:*",
     "@hireops/notifications": "workspace:*",
     "@hireops/observability": "workspace:*",
+    "@hireops/sla-thresholds": "workspace:*",
     "@hireops/types": "workspace:*",
     "@hono/node-server": "^2.0.2",
     "@hono/trpc-server": "^0.4.2",

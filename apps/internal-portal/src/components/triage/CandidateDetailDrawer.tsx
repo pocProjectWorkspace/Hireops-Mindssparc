@@ -7,6 +7,7 @@ import { trpc } from "@/lib/trpc-client";
 import { useDrawerRouting } from "@/lib/use-drawer-routing";
 import { useUndoToast } from "./UndoToastProvider";
 import { AIScoreBadge } from "./AIScoreBadge";
+import { OfferSection } from "@/components/offers/OfferSection";
 
 /**
  * Slide-in drawer at 60vw with backdrop, Esc-to-close, click-backdrop-
@@ -172,6 +173,8 @@ export function CandidateDetailDrawer() {
               variant="drawer"
             />
           )}
+
+          {applicationId ? <OfferSection applicationId={applicationId} /> : null}
 
           <section className="rounded-lg border border-neutral-200 bg-white p-4">
             <h3 className="mb-2 text-base font-semibold text-neutral-900">Parser preview</h3>

@@ -34,6 +34,20 @@ export async function requireAuth(): Promise<AuthSession> {
 }
 
 /**
+ * Stronger guard: requires the caller to have the 'admin' role on
+ * their tenant membership. /admin/* routes use this. Anyone else gets
+ * a 403-equivalent (we redirect to /triage rather than show a bare 403
+ * — the user is authenticated, just on the wrong screen).
+ */
+export async function requireAdmin(): Promise<AuthSession> {
+  const session = await requireAuth();
+  if (!session.roles.includes("admin")) {
+    redirect("/triage");
+  }
+  return session;
+}
+
+/**
  * Variant for pages that prefer to render their own "please log in"
  * affordance instead of redirecting. Returns null when unauthenticated.
  */

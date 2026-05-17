@@ -14,7 +14,7 @@
 export type EmailRecipientType = "candidate" | "recruiter" | "hiring_manager";
 
 /**
- * The 3 template keys Wave 1 ships. Adding a key requires:
+ * Template keys Wave 1 ships. Adding a key requires:
  *   1. Add the literal here
  *   2. Add a template file under @hireops/email-templates
  *   3. Update the dispatcher's switch
@@ -25,7 +25,10 @@ export type EmailRecipientType = "candidate" | "recruiter" | "hiring_manager";
 export type TemplateKey =
   | "candidate.application_received"
   | "candidate.stage_advanced"
-  | "recruiter.sla_breach_imminent";
+  | "candidate.offer_extended"
+  | "recruiter.sla_breach_imminent"
+  | "recruiter.offer_accepted"
+  | "recruiter.offer_declined";
 
 export interface EmailMessage {
   /** Render target. */

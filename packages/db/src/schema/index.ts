@@ -49,3 +49,5 @@ export * from "./notification-outbox";
 export * from "./dev-email-outbox";
 export * from "./signed-link-uses";
 export * from "./scheduled-job-runs";
+export * from "./offers";
+export * from "./workday-sync-outbox";

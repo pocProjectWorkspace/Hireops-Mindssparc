@@ -113,10 +113,15 @@ client switches automatically.
 3. `pnpm db:migrate` — applies pending migrations
 4. `pnpm db:seed:test-users` — once per dev DB; creates `recruiter1@kyndryl-poc.test` / `hr_ops1@kyndryl-poc.test` / `admin1@kyndryl-poc.test` with password `TestPassword123!`
 5. `pnpm dev` — boots apps/api on :3001, apps/internal-portal on :3002, and
-   apps/workers (no port — long-running outbox drain + scheduler) in parallel.
-   The worker writes rendered emails to `public.dev_email_outbox` when
-   `EMAIL_PROVIDER=local` — inspect with
-   `SELECT subject, rendered_text FROM dev_email_outbox ORDER BY created_at DESC LIMIT 5;`
+   apps/workers (no port — long-running outbox drain + scheduler + Workday
+   simulation drain) in parallel.
+   - Notifications: writes rendered emails to `public.dev_email_outbox` when
+     `EMAIL_PROVIDER=local` — inspect with
+     `SELECT subject, rendered_text FROM dev_email_outbox ORDER BY created_at DESC LIMIT 5;`
+   - Workday syncs: simulated by the worker; inspect rows + responses with
+     `SELECT event_type, business_key, status, simulated_response FROM workday_sync_outbox ORDER BY created_at DESC LIMIT 5;`
+     or via the Integration Health screen at /admin/integrations (requires
+     the `admin` role on your `tenant_user_memberships.roles[]`).
 
 ### E2E
 

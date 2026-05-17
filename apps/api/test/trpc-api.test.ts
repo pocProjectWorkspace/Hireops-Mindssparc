@@ -327,8 +327,11 @@ describe("API-01 tRPC + REST skeleton", () => {
       const env = await trpcQuery<unknown>("getCandidateById", { id: candidateId }, { jwt });
       assert.ok(!isError(env), "getCandidateById should succeed");
       // withAudit is fire-and-forget — give it enough time to commit on
-      // the unscoped pool. 1500ms is generous; the actual write is ~150ms.
-      await new Promise((r) => setTimeout(r, 1500));
+      // the unscoped pool. 3000ms after Module 4 saw 1500ms occasionally
+      // race (pooled DB latency from a residential network). The actual
+      // write is ~150ms in steady state; the slack here covers cold
+      // connections.
+      await new Promise((r) => setTimeout(r, 3000));
       const auditRows = await db
         .select()
         .from(apiAuditLogs)

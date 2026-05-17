@@ -258,3 +258,162 @@ export const uploadResumeResponseSchema = z.object({
 });
 
 export type UploadResumeResponse = z.infer<typeof uploadResumeResponseSchema>;
+
+// ─────────────── Module 4: offers ───────────────
+
+/**
+ * Offer status — free text (same convention as ai_provider). The Wave 1
+ * values are listed for autocomplete; future statuses can be added in a
+ * follow-up without a Zod migration.
+ */
+export const offerStatusSchema = z.enum([
+  "drafted",
+  "extended",
+  "accepted",
+  "declined",
+  "expired",
+  "cancelled",
+]);
+export type OfferStatus = z.infer<typeof offerStatusSchema>;
+
+export const draftOfferInputSchema = z.object({
+  applicationId: z.string().uuid(),
+  // Paise — bigint expressed as number in transport (JSON has no bigint;
+  // we cap at Number.MAX_SAFE_INTEGER which is comfortably above any
+  // realistic INR amount).
+  baseSalaryInrPaise: z
+    .number()
+    .int()
+    .positive()
+    .max(Number.MAX_SAFE_INTEGER),
+  variableTargetInrPaise: z
+    .number()
+    .int()
+    .nonnegative()
+    .max(Number.MAX_SAFE_INTEGER)
+    .optional(),
+  joiningBonusInrPaise: z
+    .number()
+    .int()
+    .nonnegative()
+    .max(Number.MAX_SAFE_INTEGER)
+    .optional(),
+  joiningDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Expected YYYY-MM-DD"),
+  location: z.string().min(1).max(200),
+  termsHtml: z.string().max(50_000).optional(),
+  expiryDays: z.number().int().min(1).max(60),
+});
+
+export const draftOfferOutputSchema = z.object({
+  offerId: z.string().uuid(),
+});
+
+export type DraftOfferInput = z.infer<typeof draftOfferInputSchema>;
+export type DraftOfferOutput = z.infer<typeof draftOfferOutputSchema>;
+
+export const extendOfferInputSchema = z.object({ offerId: z.string().uuid() });
+export const extendOfferOutputSchema = z.object({
+  offerId: z.string().uuid(),
+  signedLinkSentTo: z.string().email(),
+});
+export type ExtendOfferInput = z.infer<typeof extendOfferInputSchema>;
+export type ExtendOfferOutput = z.infer<typeof extendOfferOutputSchema>;
+
+export const cancelOfferInputSchema = z.object({
+  offerId: z.string().uuid(),
+  reason: z.string().min(1).max(500),
+});
+export const cancelOfferOutputSchema = z.object({ offerId: z.string().uuid() });
+export type CancelOfferInput = z.infer<typeof cancelOfferInputSchema>;
+export type CancelOfferOutput = z.infer<typeof cancelOfferOutputSchema>;
+
+export const offerRowSchema = z.object({
+  id: z.string().uuid(),
+  applicationId: z.string().uuid(),
+  status: offerStatusSchema,
+  baseSalaryInrPaise: z.number().int().positive(),
+  variableTargetInrPaise: z.number().int().nonnegative().nullable(),
+  joiningBonusInrPaise: z.number().int().nonnegative().nullable(),
+  joiningDate: z.string(),
+  location: z.string(),
+  expiryAt: z.string(),
+  extendedAt: z.string().nullable(),
+  acceptedAt: z.string().nullable(),
+  declinedAt: z.string().nullable(),
+  cancelledAt: z.string().nullable(),
+  declinedReason: z.string().nullable(),
+  termsHtml: z.string().nullable(),
+  createdAt: z.string(),
+});
+export type OfferRow = z.infer<typeof offerRowSchema>;
+
+export const listOffersByApplicationInputSchema = z.object({
+  applicationId: z.string().uuid(),
+});
+export const listOffersByApplicationOutputSchema = z.object({
+  rows: z.array(offerRowSchema),
+  // Surfaced so the drafting UI can gate buttons without a second query.
+  applicationCurrentStage: applicationStageSchema,
+});
+export type ListOffersByApplicationInput = z.infer<typeof listOffersByApplicationInputSchema>;
+export type ListOffersByApplicationOutput = z.infer<typeof listOffersByApplicationOutputSchema>;
+
+// ─────────────── Module 4: public offer accept/decline (REST) ───────────────
+
+export const offerAcceptRequestSchema = z.object({
+  fullName: z.string().min(1).max(200),
+});
+export const offerAcceptResponseSchema = z.object({
+  ok: z.literal(true),
+  offerId: z.string().uuid(),
+  applicationId: z.string().uuid(),
+});
+export type OfferAcceptRequest = z.infer<typeof offerAcceptRequestSchema>;
+export type OfferAcceptResponse = z.infer<typeof offerAcceptResponseSchema>;
+
+export const offerDeclineRequestSchema = z.object({
+  reason: z.string().max(500).optional(),
+});
+export const offerDeclineResponseSchema = z.object({
+  ok: z.literal(true),
+  offerId: z.string().uuid(),
+  applicationId: z.string().uuid(),
+});
+export type OfferDeclineRequest = z.infer<typeof offerDeclineRequestSchema>;
+export type OfferDeclineResponse = z.infer<typeof offerDeclineResponseSchema>;
+
+// ─────────────── Module 4: integration health (admin) ───────────────
+
+export const workdaySyncRowSchema = z.object({
+  id: z.string().uuid(),
+  eventType: z.string(),
+  businessKey: z.string(),
+  status: z.string(),
+  subjectApplicationId: z.string().uuid().nullable(),
+  attemptCount: z.number().int(),
+  lastError: z.string().nullable(),
+  simulatedAt: z.string().nullable(),
+  createdAt: z.string(),
+  payload: z.unknown(),
+  simulatedResponse: z.unknown().nullable(),
+});
+export type WorkdaySyncRow = z.infer<typeof workdaySyncRowSchema>;
+
+export const listWorkdaySyncsInputSchema = z.object({
+  filters: z
+    .object({
+      status: z.string().optional(),
+      eventType: z.string().optional(),
+    })
+    .optional(),
+  pagination: z.object({
+    limit: z.number().int().min(1).max(100).default(50),
+    cursor: z.string().optional(),
+  }),
+});
+export const listWorkdaySyncsOutputSchema = z.object({
+  rows: z.array(workdaySyncRowSchema),
+  nextCursor: z.string().nullable(),
+});
+export type ListWorkdaySyncsInput = z.infer<typeof listWorkdaySyncsInputSchema>;
+export type ListWorkdaySyncsOutput = z.infer<typeof listWorkdaySyncsOutputSchema>;

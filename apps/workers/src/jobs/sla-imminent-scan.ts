@@ -1,6 +1,6 @@
 import { sql as poolSql, db as poolDb } from "@hireops/db";
 import { enqueueNotification } from "@hireops/notifications";
-import { SLA_THRESHOLDS_HOURS } from "./sla-thresholds";
+import { SLA_THRESHOLDS_HOURS } from "@hireops/sla-thresholds";
 import type { Logger } from "@hireops/observability";
 
 /**

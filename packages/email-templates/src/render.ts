@@ -9,6 +9,15 @@ import {
   SlaBreachImminent,
   type SlaBreachImminentProps,
 } from "./templates/sla-breach-imminent";
+import { OfferExtended, type OfferExtendedProps } from "./templates/offer-extended";
+import {
+  OfferAcceptedRecruiter,
+  type OfferAcceptedRecruiterProps,
+} from "./templates/offer-accepted-recruiter";
+import {
+  OfferDeclinedRecruiter,
+  type OfferDeclinedRecruiterProps,
+} from "./templates/offer-declined-recruiter";
 
 /**
  * Template registry — single switch the worker calls to turn a
@@ -49,12 +58,39 @@ export async function renderTemplate(
         text: await render(element, { plainText: true }),
       };
     }
+    case "candidate.offer_extended": {
+      const props = data as unknown as OfferExtendedProps;
+      const element = OfferExtended(props);
+      return {
+        subject: `Your offer of employment — ${props.positionTitle} at ${props.companyName}`,
+        html: await render(element),
+        text: await render(element, { plainText: true }),
+      };
+    }
     case "recruiter.sla_breach_imminent": {
       const props = data as unknown as SlaBreachImminentProps;
       const element = SlaBreachImminent(props);
       const noun = props.applicationCount === 1 ? "application" : "applications";
       return {
         subject: `Heads up — ${props.applicationCount} ${noun} near SLA breach`,
+        html: await render(element),
+        text: await render(element, { plainText: true }),
+      };
+    }
+    case "recruiter.offer_accepted": {
+      const props = data as unknown as OfferAcceptedRecruiterProps;
+      const element = OfferAcceptedRecruiter(props);
+      return {
+        subject: `Offer accepted — ${props.candidateName} for ${props.positionTitle}`,
+        html: await render(element),
+        text: await render(element, { plainText: true }),
+      };
+    }
+    case "recruiter.offer_declined": {
+      const props = data as unknown as OfferDeclinedRecruiterProps;
+      const element = OfferDeclinedRecruiter(props);
+      return {
+        subject: `Offer declined — ${props.candidateName} for ${props.positionTitle}`,
         html: await render(element),
         text: await render(element, { plainText: true }),
       };

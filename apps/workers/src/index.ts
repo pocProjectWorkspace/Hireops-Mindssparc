@@ -6,6 +6,7 @@ import { createLogger } from "@hireops/observability";
 import { drainOutboxOnce, recoverOrphans } from "./lib/dispatcher";
 import { runSchedulerTick, type ScheduledJob } from "./lib/scheduler";
 import { slaImminentScan } from "./jobs/sla-imminent-scan";
+import { drainWorkdayOutboxOnce } from "./lib/workday-simulation-drain";
 
 /**
  * Worker entrypoint — three concurrent loops:
@@ -26,6 +27,7 @@ import { slaImminentScan } from "./jobs/sla-imminent-scan";
 const DRAIN_INTERVAL_MS = 5_000;
 const SCHEDULER_INTERVAL_MS = 60_000;
 const ORPHAN_INTERVAL_MS = 5 * 60_000;
+const WORKDAY_DRAIN_INTERVAL_MS = 5_000;
 
 const log = createLogger({ base: { service: "workers" } });
 
@@ -101,6 +103,15 @@ async function main() {
       const recovered = await recoverOrphans();
       if (recovered > 0) {
         log.warn({ recovered }, "worker.orphans_recovered");
+      }
+    }),
+  );
+
+  loops.push(
+    startLoop("workday-simulation-drain", WORKDAY_DRAIN_INTERVAL_MS, async () => {
+      const r = await drainWorkdayOutboxOnce({ log });
+      if (r.claimed > 0) {
+        log.info(r, "worker.workday_drain_pass");
       }
     }),
   );
