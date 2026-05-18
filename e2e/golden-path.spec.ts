@@ -18,7 +18,7 @@ import AxeBuilder from "@axe-core/playwright";
  * Prerequisites:
  *   - apps/api + apps/internal-portal running (webServer block boots them)
  *   - pnpm db:seed:test-users          → recruiter1@kyndryl-poc.test
- *   - pnpm db:seed:demo-candidates     → 3 demo applications visible
+ *   - pnpm db:seed:demo-data           → 5 demo applications + 1 extended offer
  */
 
 const TEST_EMAIL = "recruiter1@kyndryl-poc.test";
@@ -47,13 +47,14 @@ test("clicking a candidate opens the drawer; Esc closes", async ({ page }) => {
   await signIn(page);
 
   // Cards render as <button>s containing the candidate's email. Match
-  // any seeded demo email; if none are present skip the scope.
+  // the .test TLD used by db:seed:demo-data (and the older .com from the
+  // superseded db:seed:demo-candidates, just in case both ran).
   const firstCard = page
     .locator("button")
-    .filter({ hasText: /@example\.com/ })
+    .filter({ hasText: /@example\.(test|com)/ })
     .first();
   const cardCount = await firstCard.count();
-  test.skip(cardCount === 0, "no demo candidates visible — run `pnpm db:seed:demo-candidates`");
+  test.skip(cardCount === 0, "no demo candidates visible — run `pnpm db:seed:demo-data`");
 
   await firstCard.click();
 
