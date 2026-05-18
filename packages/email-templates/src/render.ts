@@ -44,7 +44,7 @@ export async function renderTemplate(
       const props = data as unknown as ApplicationReceivedProps;
       const element = ApplicationReceived(props);
       return {
-        subject: `Application received — ${props.positionTitle}`,
+        subject: `We received your application for ${props.positionTitle}`,
         html: await render(element),
         text: await render(element, { plainText: true }),
       };

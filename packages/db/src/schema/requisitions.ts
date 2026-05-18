@@ -57,18 +57,33 @@ export const requisitions = pgTable(
     postedAt: timestamp("posted_at", { withTimezone: true }),
     expiresAt: timestamp("expires_at", { withTimezone: true }),
     isPublic: boolean("is_public").notNull().default(false),
-    publicSlug: text("public_slug"),
+    // public_slug is the URL-friendly identifier on the candidate apply
+    // page (`/t/<tenant>/apply/<slug>`). CRS-01 promoted it to NOT NULL
+    // + regex CHECK so existing routing logic can stop guarding null
+    // and so the slug is generated at requisition creation time, not
+    // lazily. The DB default is a uuid-keyed fallback so a recruiter
+    // who doesn't pick a human slug still gets a working URL; the UI
+    // will overwrite it on requisition creation when the recruiter
+    // supplies one.
+    publicSlug: text("public_slug")
+      .notNull()
+      .default(sql`'r-' || replace(gen_random_uuid()::text, '-', '')`),
     reasonForHold: text("reason_for_hold"),
     createdBy: uuid("created_by"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [
-    // Public slug unique per tenant when set; collisions are routing bugs.
-    uniqueIndex("idx_requisitions_public_slug")
-      .on(table.tenantId, table.publicSlug)
-      .where(sql`public_slug IS NOT NULL`),
+    // Public slug unique per tenant. CRS-01 dropped the partial-WHERE
+    // clause once the column became NOT NULL — partial index on an
+    // always-true predicate is just a regular unique with extra cost
+    // for the planner to ignore.
+    uniqueIndex("idx_requisitions_public_slug").on(table.tenantId, table.publicSlug),
     unique("uniq_requisitions_tenant_id_id").on(table.tenantId, table.id),
+    check(
+      "requisitions_public_slug_format_check",
+      sql`${table.publicSlug} ~ '^[a-z0-9-]+$' AND char_length(${table.publicSlug}) BETWEEN 3 AND 80`,
+    ),
     // Query path: reqs in a position; reqs in an envelope.
     index("idx_requisitions_position").on(table.tenantId, table.positionId),
     index("idx_requisitions_envelope").on(table.headcountEnvelopeId),

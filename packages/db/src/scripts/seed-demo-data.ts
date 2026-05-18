@@ -751,6 +751,9 @@ async function main() {
   console.log("Candidate E offer-accept URL (single-use, expires in 7 days):");
   console.log(`  ${acceptUrl}`);
   console.log("");
+  console.log("Public apply URL (CRS-01, anyone can submit):");
+  console.log(`  ${PORTAL_BASE}/t/${TENANT_SLUG}/apply/gcc-blr-senior-backend`);
+  console.log("");
   console.log("Login as recruiter1@kyndryl-poc.test / TestPassword123! to walk the lifecycle.");
 }
 

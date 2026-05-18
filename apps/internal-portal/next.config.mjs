@@ -22,6 +22,22 @@ if (process.env.SUPABASE_ANON_KEY && !process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY)
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY;
 }
 
+// CRS-01: default the browser-side tRPC + REST endpoints to the local
+// api (3001). Without this, the TRPCProvider falls back to
+// `${window.location.origin}/trpc` = http://localhost:3002/trpc which
+// returns 404 (the portal has no /trpc handler). The triage page
+// historically worked only because its data fetches go through the
+// in-process server caller, not the client tRPC. The public apply
+// form has no server session so it MUST hit the api over HTTP.
+// Production deploys should set NEXT_PUBLIC_API_BASE_URL +
+// NEXT_PUBLIC_API_BASE explicitly to point at the prod api domain.
+if (!process.env.NEXT_PUBLIC_API_BASE_URL) {
+  process.env.NEXT_PUBLIC_API_BASE_URL = "http://localhost:3001/trpc";
+}
+if (!process.env.NEXT_PUBLIC_API_BASE) {
+  process.env.NEXT_PUBLIC_API_BASE = "http://localhost:3001";
+}
+
 /**
  * Cross-workspace imports (notably from @hireops/api, @hireops/db,
  * @hireops/ui) are TypeScript sources, not built artefacts. Next.js

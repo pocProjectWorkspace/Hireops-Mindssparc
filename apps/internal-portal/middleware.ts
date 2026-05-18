@@ -15,11 +15,11 @@ import { createServerClient, type CookieOptions } from "@supabase/ssr";
  * indirection that hides which environment is running.
  */
 
-const PUBLIC_PATHS = new Set<string>(["/login", "/logout"]);
+const PUBLIC_PATHS = new Set<string>(["/login", "/logout", "/privacy"]);
 
 // Path prefixes that are always public (candidate-side flows). Each
 // entry must end with "/" so a literal segment match doesn't bleed.
-const PUBLIC_PREFIXES = ["/offer/"];
+const PUBLIC_PREFIXES = ["/offer/", "/t/"];
 
 export async function middleware(req: NextRequest) {
   if (PUBLIC_PATHS.has(req.nextUrl.pathname)) {

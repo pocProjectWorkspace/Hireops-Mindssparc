@@ -1,11 +1,24 @@
 import { sql } from "drizzle-orm";
-import { pgTable, uuid, text, jsonb, timestamp, index, pgPolicy } from "drizzle-orm/pg-core";
+import {
+  pgTable,
+  uuid,
+  text,
+  jsonb,
+  timestamp,
+  index,
+  pgPolicy,
+  check,
+} from "drizzle-orm/pg-core";
 
 export const tenants = pgTable(
   "tenants",
   {
     id: uuid("id").primaryKey().defaultRandom(),
-    slug: text("slug").notNull().unique(), // subdomain identifier; e.g., 'kyndryl-poc', 'acme'
+    // Tenant slug doubles as the path segment in candidate-facing URLs
+    // (`/t/<slug>/...`) and the future subdomain identifier. Regex +
+    // length bounds match `business_units.slug` / `requisitions.public_slug`
+    // for one mental model across the codebase. CRS-01 added the CHECK.
+    slug: text("slug").notNull().unique(),
     displayName: text("display_name").notNull(),
     primaryRegion: text("primary_region").notNull(), // 'ap-south-1' for Mumbai prod, 'ap-northeast-1' for Tokyo dev
     status: text("status").notNull(), // 'provisioning' | 'active' | 'suspended' | 'churned' | 'deleting'
@@ -20,6 +33,10 @@ export const tenants = pgTable(
   },
   (table) => [
     index("idx_tenants_status").on(table.status),
+    check(
+      "tenants_slug_format_check",
+      sql`${table.slug} ~ '^[a-z0-9-]+$' AND char_length(${table.slug}) BETWEEN 3 AND 40`,
+    ),
     // Policies — mirror migration 0003_rls_baseline.sql so db:generate stays clean.
     pgPolicy("tenants_self_select", {
       as: "permissive",

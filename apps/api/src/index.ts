@@ -1,6 +1,7 @@
 import "./bootstrap";
 
 import { Hono } from "hono";
+import { cors } from "hono/cors";
 import { serve } from "@hono/node-server";
 import { trpcServer } from "@hono/trpc-server";
 import { sql as poolSql } from "@hireops/db";
@@ -17,6 +18,31 @@ import { baseLog, sentry } from "./lib/observability";
 const app = new Hono<{
   Variables: TenantContextVars & Partial<OptionalAuthVars>;
 }>();
+
+/**
+ * CORS — added by CRS-01 so the public apply form (and the Module 4
+ * candidate offer accept page) can hit the api from the portal's
+ * origin in dev. Dev allow-list = the three local dev ports. Prod
+ * allow-list lives behind CORS_ALLOWED_ORIGINS (comma-separated); if
+ * unset we fall back to the dev list so a misconfigured env can't
+ * lock everyone out. Production deploys SHOULD set this explicitly.
+ */
+const corsOrigins = (process.env.CORS_ALLOWED_ORIGINS ?? "")
+  .split(",")
+  .map((s) => s.trim())
+  .filter(Boolean);
+const defaultDevOrigins = ["http://localhost:3000", "http://localhost:3002", "http://localhost:3003"];
+const allowedOrigins = corsOrigins.length > 0 ? corsOrigins : defaultDevOrigins;
+app.use(
+  "*",
+  cors({
+    origin: allowedOrigins,
+    allowMethods: ["GET", "POST", "OPTIONS"],
+    allowHeaders: ["content-type", "authorization", "x-request-id"],
+    credentials: true,
+    maxAge: 600,
+  }),
+);
 
 // Liveness probes. /health stays for backwards compat; /api/healthz is
 // the documented endpoint going forward. Neither touches the DB —

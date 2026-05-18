@@ -1,0 +1,1 @@
+ALTER TABLE "requisitions" ALTER COLUMN "public_slug" SET DEFAULT 'r-' || replace(gen_random_uuid()::text, '-', '');

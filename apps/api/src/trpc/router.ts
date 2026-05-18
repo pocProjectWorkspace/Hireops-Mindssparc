@@ -26,6 +26,7 @@ import {
   db as poolDb,
   persons,
   candidates,
+  candidateDedupAttempts,
   applications,
   applicationStateTransitions,
   requisitions,
@@ -38,6 +39,8 @@ import { SLA_THRESHOLDS_HOURS } from "../lib/sla-thresholds";
 import {
   submitApplicationInputSchema,
   submitApplicationOutputSchema,
+  resolvePublicRequisitionInputSchema,
+  resolvePublicRequisitionOutputSchema,
   getCandidateByIdInputSchema,
   getCandidateByIdOutputSchema,
   listCandidatesInputSchema,
@@ -125,6 +128,14 @@ function lastCursor<T extends { createdAt: Date }>(rows: T[]): string | null {
   return last ? last.createdAt.toISOString() : null;
 }
 
+/**
+ * Requisition statuses that an unauthenticated apply form may submit
+ * against. Shared by `submitApplication` (rejects 400) and
+ * `resolvePublicRequisition` (returns 404 — keeps slug existence
+ * private from passers-by). Keep this single source of truth.
+ */
+const PUBLIC_APPLY_ACCEPTING_STATUSES = new Set<string>(["approved", "posted"]);
+
 export const appRouter = router({
   // ─────────── public: apply form ───────────
   submitApplication: publicProcedure
@@ -146,9 +157,10 @@ export const appRouter = router({
       }
       // Accepting-applications states — Wave 1 list. Tightening this is a
       // workflow concern; "draft" and "cancelled" obviously reject; the
-      // others are open game for an apply form.
-      const ACCEPTING = new Set(["approved", "posted"]);
-      if (!ACCEPTING.has(req.status)) {
+      // others are open game for an apply form. Shared with the public
+      // resolver below so the page-level 404 and the procedure-level
+      // 400 cannot disagree about which slugs are "live".
+      if (!PUBLIC_APPLY_ACCEPTING_STATUSES.has(req.status)) {
         throw new TRPCError({
           code: "BAD_REQUEST",
           message: `Requisition not accepting applications (status=${req.status})`,
@@ -178,30 +190,124 @@ export const appRouter = router({
             parseStatus = "parse_failed";
           }
 
-          // 3. Dedup person by normalised email within tenant.
+          // 3. Dedup person by normalised email OR phone within tenant.
+          // Two indexed lookups (one per identifier) rather than a single
+          // OR query — the OR-with-limit pattern picks an arbitrary row
+          // when many phone-only matches exist and can miss the
+          // just-created row (no ORDER BY → planner picks any
+          // tuple-order). Two lookups also let us collapse the
+          // "same row matches both" case cleanly: if email and phone
+          // resolve to the same person id, that's the canonical merge
+          // target.
+          //
+          // Preference order:
+          //   (a) email and phone both resolve to the same person →
+          //       silent merge (best-quality match).
+          //   (b) one of the two matches a person → silent merge.
+          //   (c) email matches person A and phone matches person B
+          //       (A != B) → ambiguous collision, create new person
+          //       (ticket: "let the partner dedup audit surface it").
+          //   (d) no matches → create new person.
           const emailNorm = normaliseEmail(input.applicant.email);
           const phoneNorm = normalisePhone(input.applicant.phone);
-          const [existingPerson] = await poolDb
-            .select({ id: persons.id })
+          const [emailMatch] = await poolDb
+            .select({
+              id: persons.id,
+              emailNorm: persons.emailNormalised,
+              phoneNorm: persons.phoneNormalised,
+              linkedinUrl: persons.linkedinUrl,
+            })
             .from(persons)
-            .where(and(eq(persons.tenantId, req.tenantId), eq(persons.emailNormalised, emailNorm)))
+            .where(
+              and(eq(persons.tenantId, req.tenantId), eq(persons.emailNormalised, emailNorm)),
+            )
+            .limit(1);
+          const [phoneMatch] = await poolDb
+            .select({
+              id: persons.id,
+              emailNorm: persons.emailNormalised,
+              phoneNorm: persons.phoneNormalised,
+              linkedinUrl: persons.linkedinUrl,
+            })
+            .from(persons)
+            .where(
+              and(eq(persons.tenantId, req.tenantId), eq(persons.phoneNormalised, phoneNorm)),
+            )
             .limit(1);
 
-          const personId = existingPerson?.id
-            ? existingPerson.id
-            : await poolDb
-                .insert(persons)
-                .values({
-                  tenantId: req.tenantId,
-                  fullName: input.applicant.fullName,
-                  emailPrimary: input.applicant.email,
-                  emailNormalised: emailNorm,
-                  phonePrimary: input.applicant.phone,
-                  phoneNormalised: phoneNorm,
-                  locationCountry: input.applicant.locationCountry ?? null,
-                })
-                .returning({ id: persons.id })
-                .then((rows) => firstOrThrow(rows, "persons insert").id);
+          let personId: string;
+          let dedupDecision: "allow_new" | "link_existing";
+          let dedupReason: string | null = null;
+
+          const sameMatch = emailMatch && phoneMatch && emailMatch.id === phoneMatch.id;
+          const winner = sameMatch ? emailMatch : (emailMatch ?? phoneMatch);
+          const isCollision =
+            !!emailMatch && !!phoneMatch && emailMatch.id !== phoneMatch.id;
+
+          if (winner && !isCollision) {
+            personId = winner.id;
+            dedupDecision = "link_existing";
+            dedupReason = sameMatch
+              ? "email_and_phone_match"
+              : emailMatch
+                ? "email_match"
+                : "phone_match";
+            // Best-effort linkedin enrichment when the existing person
+            // doesn't have one and the applicant supplied one.
+            if (!winner.linkedinUrl && input.applicant.linkedinUrl) {
+              await poolDb
+                .update(persons)
+                .set({ linkedinUrl: input.applicant.linkedinUrl, updatedAt: new Date() })
+                .where(eq(persons.id, personId));
+            }
+          } else {
+            // 0 matches OR 2+ rows where no single row matches both
+            // criteria (collision: email matches one person, phone
+            // matches another). Both branches create a new person; the
+            // collision branch is audited with a distinct reason so
+            // an analyst can find the collisions later.
+            personId = await poolDb
+              .insert(persons)
+              .values({
+                tenantId: req.tenantId,
+                fullName: input.applicant.fullName,
+                emailPrimary: input.applicant.email,
+                emailNormalised: emailNorm,
+                phonePrimary: input.applicant.phone,
+                phoneNormalised: phoneNorm,
+                locationCountry: input.applicant.locationCountry ?? null,
+                linkedinUrl: input.applicant.linkedinUrl ?? null,
+              })
+              .returning({ id: persons.id })
+              .then((rows) => firstOrThrow(rows, "persons insert").id);
+            dedupDecision = "allow_new";
+            dedupReason = isCollision
+              ? "ambiguous_email_phone_collision"
+              : "no_match";
+          }
+
+          // Audit the dedup decision. Fire-and-forget on failure — the
+          // application is the contract, the audit row is observability.
+          try {
+            await poolDb.insert(candidateDedupAttempts).values({
+              tenantId: req.tenantId,
+              submittedEmail: input.applicant.email,
+              submittedPhone: input.applicant.phone,
+              matchedPersonId: dedupDecision === "link_existing" ? personId : null,
+              decision: dedupDecision,
+              decisionReason: dedupReason,
+              submissionMetadata: {
+                source: "public_apply_form",
+                requisitionId: req.id,
+                sourceText: input.applicant.sourceText ?? null,
+              },
+            });
+          } catch (err) {
+            ctx.log.warn(
+              { err, request_id: ctx.requestId, person_id: personId },
+              "submitApplication: dedup attempt insert failed",
+            );
+          }
 
           // 4. Dedup candidate by (tenant_id, person_id).
           const [existingCandidate] = await poolDb
@@ -273,6 +379,7 @@ export const appRouter = router({
                   candidateName: input.applicant.fullName,
                   positionTitle,
                   companyName,
+                  applicationReference: applicationId.slice(0, 8),
                 },
                 dedupKey: `application_received:${applicationId}`,
               });
@@ -291,6 +398,50 @@ export const appRouter = router({
         },
         { tenantIdOverride: req.tenantId },
       );
+    }),
+
+  /**
+   * Resolves (tenantSlug, reqSlug) → the data the public apply page
+   * needs. NOT_FOUND on any of: tenant missing, requisition missing,
+   * tenant-mismatch (req lives under a different tenant), requisition
+   * not in a publishable state. The publishable predicate matches
+   * submitApplication's ACCEPTING set so the apply page and the
+   * mutation agree on whether a slug is "live".
+   */
+  resolvePublicRequisition: publicProcedure
+    .input(resolvePublicRequisitionInputSchema)
+    .output(resolvePublicRequisitionOutputSchema)
+    .query(async ({ input }) => {
+      const [row] = await poolDb
+        .select({
+          tenantId: tenants.id,
+          tenantDisplayName: tenants.displayName,
+          requisitionId: requisitions.id,
+          status: requisitions.status,
+          positionTitle: positions.title,
+        })
+        .from(requisitions)
+        .innerJoin(tenants, eq(tenants.id, requisitions.tenantId))
+        .innerJoin(
+          positions,
+          and(eq(positions.id, requisitions.positionId), eq(positions.tenantId, requisitions.tenantId)),
+        )
+        .where(
+          and(eq(tenants.slug, input.tenantSlug), eq(requisitions.publicSlug, input.reqSlug)),
+        )
+        .limit(1);
+      if (!row) {
+        throw new TRPCError({ code: "NOT_FOUND", message: "Requisition not found" });
+      }
+      if (!PUBLIC_APPLY_ACCEPTING_STATUSES.has(row.status)) {
+        throw new TRPCError({ code: "NOT_FOUND", message: "Requisition not accepting applications" });
+      }
+      return {
+        tenantId: row.tenantId,
+        tenantDisplayName: row.tenantDisplayName,
+        requisitionId: row.requisitionId,
+        positionTitle: row.positionTitle,
+      };
     }),
 
   // ─────────── protected: candidate reads ───────────

@@ -54,6 +54,28 @@ export function createServerTRPCCaller(session: AuthSession): ServerTRPCCaller {
   return appRouter.createCaller(ctx);
 }
 
+/**
+ * Server caller for publicProcedure paths only (CRS-01 apply page).
+ * tenantId / userId / claims are null because the caller hasn't
+ * authenticated. Invoking a protectedProcedure through this caller
+ * throws UNAUTHORIZED — that's the intended contract.
+ */
+export function createPublicServerTRPCCaller(): ServerTRPCCaller {
+  const ctx: HonoTRPCContext = {
+    tenantId: null,
+    userId: null,
+    roles: [],
+    claims: null,
+    db: undefined,
+    sql: poolSql,
+    log: serverLogger,
+    requestId: makeRequestId(),
+    userAgent: null,
+    ipAddress: null,
+  };
+  return appRouter.createCaller(ctx);
+}
+
 function makeRequestId(): string {
   return `ssr-${
     typeof globalThis.crypto?.randomUUID === "function"

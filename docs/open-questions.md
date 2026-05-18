@@ -342,6 +342,152 @@ the next stakeholder demo.
 
 ---
 
+## CRS-01 follow-ups
+
+### 14. Privacy policy real copy (legal review)
+
+**What.** `/privacy` is a stub today
+(`apps/internal-portal/src/app/privacy/page.tsx`). The candidate
+apply form's consent checkbox links to it; the e-sig disclaimer on
+`/offer/[token]` references the same legal posture. Need actual
+DPDPA-compliant copy reviewed by legal.
+
+**Why.** The current placeholder reads "Placeholder copy. The
+production privacy policy for this tenant is pending legal review."
+Fine for a recruiter-team-only POC; unacceptable for any
+candidate-facing launch.
+
+**Trigger.** Before the first external candidate is invited to use
+the apply URL.
+
+**Origin.** CRS-01 scope fence; item #12 above is the related
+e-sig legal review (same surface).
+
+---
+
+### 15. CAPTCHA / rate limit / abuse defences on apply form
+
+**What.** `POST /api/upload/resume` and the `submitApplication` tRPC
+mutation are both unauthenticated. No rate limit, no proof-of-work,
+no CAPTCHA. A bot could spam applications and storage buckets cheaply.
+
+**Why.** POC traffic doesn't need it. Public production deploys need
+at least IP-level rate limiting + a CAPTCHA gate (hCaptcha or
+Turnstile). CRS-01 explicitly punted.
+
+**Trigger.** Wave-1 production deploy with real candidate traffic,
+OR before the apply URL is shared more widely than internal demos.
+
+**Origin.** CRS-01 ticket scope fence.
+
+---
+
+### 16. "How did you hear about us" → verbatim storage
+
+**What.** The apply form's optional "How did you hear about us?" free
+text is heuristically mapped to the `applications.source` enum and
+the verbatim string is stashed in
+`candidate_dedup_attempts.submission_metadata.sourceText`. The CRS-01
+ticket originally asked for verbatim storage but there's no
+dedicated column.
+
+**Fix options.** (a) Add `applications.source_text text NULL`, (b)
+lift the dedup-attempts jsonb storage to applications, or (c)
+accept the heuristic + jsonb stash. Recommend (a) when the
+recruiter detail page lands an "Original source" line; (c) is
+sufficient until then.
+
+**Trigger.** First recruiter complaint that the raw source text
+isn't visible on the candidate detail page.
+
+**Origin.** CRS-01 ticket text vs. schema reality.
+
+---
+
+### 17. Apply form file types — legacy `.doc` + 5 MB cap
+
+**What.** CRS-01 ticket asked for PDF / DOC / DOCX up to 10 MB. The
+existing `POST /api/upload/resume` (HANDOVER reality #35) accepts
+PDF / DOCX only with a 5 MB cap. CRS-01 reused as-is.
+
+**Fix.** Two follow-ups:
+  - Legacy `.doc` (`application/msword`) — add to the MIME allowlist
+    + verify mammoth / textract handles it (likely a small change).
+  - Raise cap to 10 MB if real applicants need it. Most CVs are
+    < 1 MB; image-heavy portfolio decks for designers exceed 5 MB.
+
+**Trigger.** First "my CV won't upload" recruiter complaint, OR
+parser corpus measurement showing >5% rejection on real applicants.
+
+**Origin.** CRS-01 ticket vs. HANDOVER reality #35.
+
+---
+
+### 18. Button primary `bg-brand-500` fails WCAG-AA contrast
+
+**What.** `@hireops/ui` `Button variant="primary"` defaults to
+`bg-brand-500` (#3b82f6) on white. axe measures 3.67:1 contrast,
+below the 4.5:1 normal-text threshold. CRS-01 worked around per-call
+on the apply form's submit button via
+`className="bg-brand-600 hover:bg-brand-700 ..."`. The /triage axe
+scan passes only because no default-state primary buttons are
+visible there.
+
+**Fix.** Change the `primary` variant's default to brand-600
+(5.2:1) with hover at brand-700 (7.4:1). Small visual shift, big
+accessibility win, applies system-wide once.
+
+**Why.** Without the fix, every new candidate-facing or login-
+adjacent surface needs the same per-call override; drift is certain.
+
+**Trigger.** Next design-system sweep, OR when a second consumer
+surface (careers site, partner portal) needs the override.
+
+**Origin.** CRS-01 axe scan on `/t/[tenant]/apply/[req]`.
+
+---
+
+### 19. `candidate-uploads` storage bucket provisioning runbook is missing
+
+**What.** `apps/api`'s `SupabaseStorageClient` writes to the
+`candidate-uploads` bucket. On a fresh dev Supabase project the
+bucket doesn't exist; uploads fail with "Bucket not found".
+HANDOVER §4.5/34 says "documented in CONTRIBUTING.md" but
+CONTRIBUTING.md doesn't actually have the steps today.
+
+**Fix options.** Add a runbook section to CONTRIBUTING.md OR write a
+`pnpm db:provision:bucket` script that creates it idempotently via
+the service role key. Dev escape hatch (`STORAGE_PROVIDER=local`)
+covers testing but production needs the real bucket.
+
+**Trigger.** Next engineer who runs the apply form locally, OR the
+first production deploy.
+
+**Origin.** CRS-01 e2e investigation — caught the missing bucket in
+the dev Supabase project.
+
+---
+
+### 20. CORS allow-list defaults are dev-friendly, not prod-safe
+
+**What.** `apps/api`'s new CORS middleware reads
+`CORS_ALLOWED_ORIGINS` (comma-separated) and falls back to
+`http://localhost:3000`/`3002`/`3003` if unset. The fallback exists
+so a misconfigured local env can't lock everyone out, but it ALSO
+means a production deploy that forgets the env var would silently
+accept localhost-only origins (still secure — no real prod traffic
+matches localhost — but obscure to debug).
+
+**Fix.** Add a startup-time warning if `NODE_ENV=production` and
+`CORS_ALLOWED_ORIGINS` is unset. Or make it fatal in prod. Same
+shape as the FND-15d KMS provider check.
+
+**Trigger.** Pre-production hardening cycle.
+
+**Origin.** CRS-01 CORS middleware added to `apps/api/src/index.ts`.
+
+---
+
 ## Lifecycle
 
 This file lives alongside `HANDOVER.md` as a working index — append

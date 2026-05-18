@@ -17,6 +17,13 @@ export const submitApplicationApplicantSchema = z.object({
   email: z.string().email(),
   phone: z.string().min(3).max(40),
   locationCountry: z.string().length(2).optional(),
+  // CRS-01 added linkedinUrl + sourceText so the public apply form's
+  // optional fields have somewhere to land. linkedinUrl populates
+  // persons.linkedin_url on first contact; sourceText is the verbatim
+  // "How did you hear about us" string the procedure keeps in the dedup
+  // attempt row when it doesn't map cleanly to the source enum.
+  linkedinUrl: z.string().url().max(500).optional(),
+  sourceText: z.string().max(200).optional(),
 });
 
 export const submitApplicationInputSchema = z.object({
@@ -38,6 +45,40 @@ export const submitApplicationOutputSchema = z.object({
 
 export type SubmitApplicationInput = z.infer<typeof submitApplicationInputSchema>;
 export type SubmitApplicationOutput = z.infer<typeof submitApplicationOutputSchema>;
+
+// ─────────────── resolvePublicRequisition (CRS-01) ───────────────
+
+/**
+ * Public query that turns the URL pair (tenantSlug, reqSlug) into the
+ * data the candidate apply page needs to render — requisitionId for
+ * submitApplication, plus the human-readable tenant + role labels.
+ *
+ * NOT_FOUND if either slug doesn't resolve OR the requisition is not in
+ * a publishable state (status ∈ approved | posted). This is the only
+ * 404 path on the public apply route.
+ */
+export const resolvePublicRequisitionInputSchema = z.object({
+  tenantSlug: z
+    .string()
+    .min(3)
+    .max(40)
+    .regex(/^[a-z0-9-]+$/),
+  reqSlug: z
+    .string()
+    .min(3)
+    .max(80)
+    .regex(/^[a-z0-9-]+$/),
+});
+
+export const resolvePublicRequisitionOutputSchema = z.object({
+  tenantId: z.string().uuid(),
+  tenantDisplayName: z.string(),
+  requisitionId: z.string().uuid(),
+  positionTitle: z.string(),
+});
+
+export type ResolvePublicRequisitionInput = z.infer<typeof resolvePublicRequisitionInputSchema>;
+export type ResolvePublicRequisitionOutput = z.infer<typeof resolvePublicRequisitionOutputSchema>;
 
 // ─────────────── getCandidateById ───────────────
 
