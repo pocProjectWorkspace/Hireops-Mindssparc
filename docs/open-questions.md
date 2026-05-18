@@ -20,7 +20,9 @@ the deltas that surfaced *during* shipped work.
 
 **What.** A way to run periodic Postgres-touching jobs from the API
 process (or a dedicated worker), with at-least-once delivery and
-locking. Initial consumers:
+locking. Distinct from the Module 3 outbox drainer pattern — that's a
+polling loop for queue work, not a scheduler for cron-style periodic
+jobs. Initial consumers:
 
 - **audit_logs partition creation** — `audit_logs` is RANGE PARTITIONED
   by `created_at` monthly. Today only the current-month partition
@@ -90,7 +92,7 @@ code against ghost columns.
 
 **Trigger.** Before another engineer touches the partner subsystem, or
 before Module 2 (partner submission flow) lands and the doc gets
-re-read.
+re-read. Cheap enough to do opportunistically before then.
 
 **Origin.** DB-PARTNER-A final report, deviation #6.
 
@@ -159,23 +161,7 @@ comment).
 
 ---
 
-### 6. AI-02-CORPUS — 100-CV parser quality gate (Phase 3 hardening)
-
-**What.** Phase 3 ticket. Build the 100-CV Indian corpus per
-`requirements.md` §5.3 line 193, run the parser end-to-end against it,
-assert the ≥95% accuracy gate on key fields (name / email / phone /
-total_years_experience / education / skills).
-
-**Why.** AI-02 shipped against 4-5 seed CVs — that's a Phase 2
-"parser works" bar, not the contractual quality bar.
-
-**Trigger.** Phase 3 hardening cycle. Not blocking anything in Phase 2.
-
-**Origin.** AI-02 ticket scope fence (out of scope per the ticket).
-
----
-
-### 7. AI-02-TABLES — mammoth table-cell loss
+### 6. AI-02-TABLES — mammoth table-cell loss
 
 **What.** Replace `mammoth.extractRawText()` with
 `mammoth.convertToHtml()` + a structured post-process that walks the
@@ -189,14 +175,14 @@ honest-low confidence (0.62) because there's barely anything to parse.
 **Trigger.** Confidence floor across real candidates dropping further
 than 0.62 (signal: recruiter complaints about excessive "review
 carefully" flags on the candidate detail page); or before the 100-CV
-corpus run (item #6) so the corpus measures the parser-with-fix, not
-the parser-with-known-bug.
+corpus run (AI-02-CORPUS backlog ticket) so the corpus measures the
+parser-with-fix, not the parser-with-known-bug.
 
 **Origin.** AI-02 final report, smoke results table (Variant 6).
 
 ---
 
-### 8. Real-provider smoke for AI-01
+### 7. Real-provider smoke for AI-01
 
 **What.** Run the AI-01 smoke recipe (documented in HANDOVER reality
 #25) against real Anthropic + OpenAI keys, verify
@@ -209,9 +195,10 @@ land — the LocalAIClient suite covers the path, but neither real
 provider has been hit through the production code path on this
 codebase.
 
-**Trigger.** Both `ANTHROPIC_API_KEY` and `OPENAI_API_KEY` available
-in the env. Anthropic key is present (used by AI-02 smoke), OpenAI key
-is the missing piece.
+**Status.** Anthropic-half can run today (key is in .env, used by
+AI-02 smoke). **Blocked on OpenAI key** for the second provider.
+Worth doing the Anthropic-only half now and leaving the OpenAI
+verification annotated as the remaining gap.
 
 **Origin.** AI-01 final report, verification gate 8 (blocked on keys).
 
@@ -219,25 +206,32 @@ is the missing piece.
 
 ## Notifications / email
 
-### 9. Real EmailProvider — SES vs Resend (deferred from Module 3)
+### 8. Real EmailProvider — SES vs Resend (deferred from Module 3)
 
 **What.** Module 3 ships with `EmailProvider` interface + `LocalEmailProvider`
 (writes `dev_email_outbox`) + `RealEmailProviderStub` (throws). Pick a real
 provider, build the concrete client, replace the stub. The factory's
 `EMAIL_PROVIDER=real` branch already routes there — body change only.
 
+Provider recommendation stands: Resend. Sign-up + DNS work
+(SPF/DKIM/DMARC for `notifications@hireops.com`) is the long pole; the
+code swap is ~half a day.
+
 **Why.** Real candidate-facing email needs to leave the network. The stub
 makes the contract obvious (boot succeeds with `EMAIL_PROVIDER=local`;
 fails loudly if anyone flips to `=real` before a provider lands).
 
-**Trigger.** First Wave-1 customer that needs to send real candidate
-emails (likely Kyndryl GCC POC graduation). Or the day a recruiter
-asks "did the candidate get the rejection email?" against a non-local
-env.
+**Trigger.** Before the demo where real candidates actually receive mail.
+First Wave-1 customer that needs to send real candidate emails (likely
+Kyndryl GCC POC graduation). Or the day a recruiter asks "did the
+candidate get the rejection email?" against a non-local env.
 
-**Origin.** Module 3 final report, deviation; `packages/notifications/src/real-stub.ts`.
+**Origin.** Module 3 final report, deviation;
+`packages/notifications/src/real-stub.ts`.
 
-### 10. SLA-imminent scan: 4-hour window is a guess
+---
+
+### 9. SLA-imminent scan: 4-hour window is a guess
 
 **What.** `apps/workers/src/jobs/sla-imminent-scan.ts` flags applications
 that are within `IMMINENT_WINDOW_HOURS = 4` of their stage SLA threshold.
@@ -253,7 +247,9 @@ spammy. Probably 30 days of POC use will surface a calibrated number.
 
 **Origin.** Module 3 — Wave 1 implementation guess.
 
-### 11. Notification "failed" dashboard
+---
+
+### 10. Notification "failed" dashboard
 
 **What.** Rows in `notification_outbox` that hit `attempt_cap` and end
 up `status='failed'` go nowhere obvious today. A small admin view (or a
@@ -265,51 +261,40 @@ silently swallowing failures is bad ops hygiene.
 
 **Trigger.** First production-class deploy (real SES/Resend wired);
 becomes load-bearing once the LocalEmailProvider doesn't catch every
-failure.
+failure. Coupled to item #8.
 
 **Origin.** Module 3 — failed status defined; visibility deferred.
 
-### 12. Module 4 followups
-
-Offer approval routing via DB-APPROVAL framework. Schema ships in Wave 1; rules-engine implementation deferred. Wave 1 demo skips approval entirely — drafted offers go directly to candidate. Concretely needed: the function that takes an offer + matrix and produces a resolved chain. ~2-3 days of focused work. Should ship before Kyndryl signs a contract that promises "no offer goes out without director approval" — likely Phase 3.
-
-Formal e-signature on offer acceptance. Wave 1 uses click-is-acceptance with disclaimer text. Click action records intent, audit log captures the timestamp + IP + user agent. Legally adequate for an internal POC but not for production hiring at scale. Integration with an e-sig provider (Aadhaar eSign for India is the strongest option; DocuSign or Zoho Sign as alternatives) is a separate ticket, ~1-2 weeks depending on provider choice. Worth deciding the provider before Phase 3.
-
-Workday integration failure mode demonstration. Wave 1's simulation worker only shows clean successes. The schema supports failure tracking (failure_count, last_error, retry semantics) but they're never exercised. Real Workday integration (Phase 3) will surface real failures — business-process locks, network timeouts, validation errors. Worth a deliberate "Workday failure scenarios" ticket in Phase 3 that exercises the retry path against the real connector.
-
-SLA threshold extraction to shared package. Currently duplicated between apps/api and apps/workers. Worth extracting to packages/sla-thresholds (or folding into packages/notifications). Before Module 4 uses it as a third consumer. ~30 minutes.
-
-The apply form ticket (CRS-01). Public candidate-facing apply page. Not part of Module 4 per our scoping. ~1 day after Module 4.
-
-AI scoring on application submit (AI-03). The recruiter screen displays AI scores from Module 1b, but nothing generates them. The seed-demo workaround can hand-craft scores in the seed data; the real implementation belongs in its own ticket. ~2 days, uses the parser output + AI client.
-
-SEED-DEMO ticket. Realistic seed data covering varied stages, scores, sources, format types. ~1 day. The handcrafted parser fixtures from AI-02 can be reused.
-
-Real email provider activation. Pick provider (recommendation stands: Resend), sign up, configure DNS (SPF/DKIM/DMARC for the sending domain), swap LocalEmailProvider for ResendEmailProvider. ~half day plus DNS propagation wait. Before the demo.
+---
 
 ## Module 4 (offers + Workday) follow-ups
 
-### 12. Offer approval routing (deferred from Module 4)
+### 11. Offer approval routing (deferred from Module 4)
 
 **What.** Today `extendOffer` sends the offer to the candidate
 directly. No approval gate between "drafted" and "extended". The
 approval framework schema (`approval_matrices`, `approval_chains`,
 `approval_requests`, `approval_decisions`) sits unused for offers.
 
+Concretely needed: the function that takes an offer + matrix and
+produces a resolved chain. ~2-3 days of focused work.
+
 **Why.** Enterprise customers (Kyndryl included) typically want
 HR / finance / hiring-manager sign-off before an offer goes to the
 candidate. Skipping it in Wave 1 is a deliberate Phase-2 simplification
 to keep the demo lifecycle simple; production needs this.
 
-**Trigger.** First Wave-1 customer that pushes back on "offer goes
-straight to candidate without sign-off"; or the engagement where the
-rules engine (the second consumer of `approval_*` tables alongside
-requisition approvals) lands.
+**Trigger.** Before Kyndryl signs a contract that promises "no offer
+goes out without director approval" — likely Phase 3. Or the engagement
+where the rules engine (the second consumer of `approval_*` tables
+alongside requisition approvals) lands.
 
 **Origin.** Module 4 ticket scope fence + decision-locked list item
 #3 ("Offer approval routing deferred").
 
-### 13. Click-is-acceptance disclaimer — verify wording with legal
+---
+
+### 12. Click-is-acceptance disclaimer — verify wording with legal
 
 **What.** The candidate accept page (`/offer/[token]`) renders:
 "By clicking Accept Offer, you formally accept this offer of
@@ -321,13 +306,20 @@ mechanism that turns the click into a binding acceptance. The exact
 wording is product-stub; Indian employment law + Kyndryl India legal
 need to bless it before a real candidate sees it.
 
+Related but separate decision: formal e-signature provider for Phase 3.
+Aadhaar eSign is the strongest option for India; DocuSign or Zoho Sign
+as alternatives. ~1-2 weeks integration depending on provider choice.
+Worth picking the provider before Phase 3 kickoff.
+
 **Trigger.** Before the first real offer goes out via this flow
 (post-POC, pre-production).
 
 **Origin.** Module 4 ticket decision-locked list item #4 + the
 `/offer/[token]` page's amber disclaimer banner.
 
-### 14. Workday simulator always succeeds — failure-mode coverage
+---
+
+### 13. Workday simulator always succeeds — failure-mode coverage
 
 **What.** Wave 1's `drainWorkdayOutboxOnce` deterministically
 "simulates" by sleeping 2-3 s then writing a success response.
@@ -348,6 +340,8 @@ the next stakeholder demo.
 
 **Origin.** Module 4 ticket decision-locked list item #6.
 
+---
+
 ## Lifecycle
 
 This file lives alongside `HANDOVER.md` as a working index — append
@@ -355,3 +349,14 @@ when a follow-up surfaces, strike-through (or move to a "resolved"
 section) when shipped. Don't let it become a dumping ground: if an item
 sits here for a wave without movement, it either belongs in the
 backlog (file a ticket) or it's not real (delete).
+
+### Closed / promoted since last pruning
+
+- **AI-02-CORPUS (100-CV parser quality gate)** — promoted to Phase 3
+  backlog as a named ticket with its own scope. No longer a loose
+  follow-up.
+- **SEED-DEMO** — shipped.
+- **SLA threshold extraction to shared package** — shipped (now in
+  `packages/sla-thresholds`).
+- **CRS-01 (apply form) and AI-03 (real AI scoring)** — these are the
+  next tickets, not follow-ups; removed from this file.
