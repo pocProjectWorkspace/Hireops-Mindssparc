@@ -30,7 +30,7 @@ import { trpc } from "@/lib/trpc-client";
  */
 
 const APPLY_FORM_CONSENT_VERSION = "v1-2026-05";
-const MAX_RESUME_BYTES = 5 * 1024 * 1024;
+const MAX_RESUME_BYTES = 10 * 1024 * 1024;
 const ALLOWED_RESUME_MIME = new Set([
   "application/pdf",
   "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -89,7 +89,7 @@ const fieldSchema = z.object({
   sourceText: z.string().trim().max(200).optional(),
   resume: z
     .instanceof(File, { message: "Choose your CV" })
-    .refine((f) => f.size <= MAX_RESUME_BYTES, "File must be ≤ 5 MB")
+    .refine((f) => f.size <= MAX_RESUME_BYTES, "File must be ≤ 10 MB")
     .refine((f) => ALLOWED_RESUME_MIME.has(f.type), "PDF or DOCX only"),
   consentGiven: z.literal(true, { message: "Consent is required to apply" }),
 });
@@ -286,7 +286,7 @@ export function ApplyForm({
           </p>
         ) : (
           <p id="resume-hint" className="text-sm text-neutral-500">
-            PDF or DOCX, up to 5 MB.
+            PDF or DOCX, up to 10 MB.
           </p>
         )}
       </div>
@@ -339,14 +339,6 @@ export function ApplyForm({
         </p>
       )}
 
-      {/*
-       * brand-500 (the Button primary default) is 3.67:1 against white,
-       * below the WCAG-AA 4.5:1 threshold axe enforces for normal-weight
-       * text. Bump to brand-600 (5.2:1) + brand-700 hover so the
-       * candidate-facing submit clears axe color-contrast. Fixing the
-       * variant default is a wider design-system change tracked
-       * separately in open-questions.md.
-       */}
       <Button
         type="submit"
         variant="primary"
@@ -354,7 +346,6 @@ export function ApplyForm({
         fullWidth
         disabled={isSubmitting}
         loading={isSubmitting}
-        className="bg-brand-600 hover:bg-brand-700 active:bg-brand-700"
       >
         {submitState.kind === "uploading"
           ? "Uploading resume…"

@@ -311,6 +311,22 @@ describe("tenant-context + RLS integration", () => {
   });
 
   it("Test 7: business_units RLS — tenant isolation (DB-01)", async () => {
+    // FLAKE-DIAGNOSED in CRS-01-FOLLOWUP — DO NOT "fix" by rerunning the
+    // seed teardown or by isolating to a fresh DB.
+    //
+    // What's wrong: the assertion `visible.length === 1` was written
+    // against an empty-DB premise. `pnpm db:seed:demo-data` inserts a
+    // 'gcc-blr' BU into the same testTenantId (kyndryl-poc), so after
+    // the demo seed runs there are >=2 BUs visible to the test user and
+    // the test fails. The RLS contract this test is meant to prove —
+    // "the synth tenant's BU is NOT visible" — still holds; only the
+    // absolute count is wrong.
+    //
+    // Correct fix (in a follow-up ticket — see open-questions.md #22):
+    // assert positively on the synth row's absence + the test's
+    // 'bangalore-gcc' row's presence, not on visible.length. Leaving
+    // the assertion untouched here because changing it under the
+    // CRS-01-FOLLOWUP umbrella would mix scopes.
     let cleanupSynthTenant = false;
     try {
       // Defensive pre-cleanup in case a prior run left rows.

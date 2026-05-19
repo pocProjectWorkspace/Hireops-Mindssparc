@@ -18,8 +18,15 @@ export interface ButtonProps extends Omit<ButtonHTMLAttributes<HTMLButtonElement
 }
 
 const variantClasses: Record<ButtonVariant, string> = {
+  // brand-500 (#3b82f6) measures 3.67:1 on white — below the 4.5:1
+  // WCAG-AA threshold for normal-weight text. Lifting the primary CTA
+  // to brand-600 (5.2:1) clears axe. Hover at brand-700 (7.4:1) keeps
+  // the depth cue; active reuses brand-700 because the palette stops
+  // there. brand-500 stays defined in tokens.css for non-text uses
+  // (focus outlines, checked indicators) where the 3:1 graphical
+  // threshold applies.
   primary:
-    "bg-brand-500 text-white hover:bg-brand-600 active:bg-brand-700 " +
+    "bg-brand-600 text-white hover:bg-brand-700 active:bg-brand-700 " +
     "disabled:bg-neutral-300 disabled:text-neutral-500",
   secondary:
     "bg-white text-neutral-700 border border-neutral-300 " +

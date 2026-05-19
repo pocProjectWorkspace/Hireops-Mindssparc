@@ -11,7 +11,7 @@
  *   7.  withAudit writes a row to api_audit_logs with the expected action
  *   8.  Audit insert failure does not break the user-facing response
  *   9.  POST /api/upload/resume accepts a valid PDF buffer
- *  10.  /api/upload/resume rejects > 5MB with 400 file_too_large
+ *  10.  /api/upload/resume rejects > 10MB with 400 file_too_large + accepts 9MB
  *  11.  /api/upload/resume rejects unsupported mime with 400 unsupported_type
  *  12.  End-to-end: upload → submitApplication → person + candidate + application
  *
@@ -389,8 +389,19 @@ describe("API-01 tRPC + REST skeleton", () => {
     await getStorageClient().delete(body.storageKey);
   });
 
-  it("Test 10: /api/upload/resume rejects > 5MB with 400 file_too_large", async () => {
-    const big = Buffer.alloc(6 * 1024 * 1024);
+  it("Test 10: /api/upload/resume — 9MB accepted, 11MB rejected with 400 file_too_large", async () => {
+    // 9 MB: under the 10 MB cap. Must accept.
+    const okBuf = Buffer.alloc(9 * 1024 * 1024);
+    const okForm = new FormData();
+    okForm.append("file", new File([okBuf], "ok.pdf", { type: "application/pdf" }));
+    const okRes = await app.request("/api/upload/resume", { method: "POST", body: okForm });
+    assert.equal(okRes.status, 200);
+    const okBody = (await okRes.json()) as { storageKey: string };
+    assert.ok(okBody.storageKey.startsWith("resumes/"));
+    await getStorageClient().delete(okBody.storageKey);
+
+    // 11 MB: over the 10 MB cap. Must reject with file_too_large.
+    const big = Buffer.alloc(11 * 1024 * 1024);
     const form = new FormData();
     form.append("file", new File([big], "big.pdf", { type: "application/pdf" }));
     const res = await app.request("/api/upload/resume", { method: "POST", body: form });

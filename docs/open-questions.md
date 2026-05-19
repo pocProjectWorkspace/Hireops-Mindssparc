@@ -404,46 +404,24 @@ isn't visible on the candidate detail page.
 
 ---
 
-### 17. Apply form file types — legacy `.doc` + 5 MB cap
+### ~~17. Apply form file types — legacy `.doc` + 5 MB cap~~
 
-**What.** CRS-01 ticket asked for PDF / DOC / DOCX up to 10 MB. The
-existing `POST /api/upload/resume` (HANDOVER reality #35) accepts
-PDF / DOCX only with a 5 MB cap. CRS-01 reused as-is.
-
-**Fix.** Two follow-ups:
-  - Legacy `.doc` (`application/msword`) — add to the MIME allowlist
-    + verify mammoth / textract handles it (likely a small change).
-  - Raise cap to 10 MB if real applicants need it. Most CVs are
-    < 1 MB; image-heavy portfolio decks for designers exceed 5 MB.
-
-**Trigger.** First "my CV won't upload" recruiter complaint, OR
-parser corpus measurement showing >5% rejection on real applicants.
-
-**Origin.** CRS-01 ticket vs. HANDOVER reality #35.
+**Partially resolved by CRS-01-FOLLOWUP.** The 10 MB cap landed
+(HANDOVER reality #35 updated). Legacy `.doc` remains deferred — see
+the new item #21 below for the textract/antiword evaluation, which
+is the actual question.
 
 ---
 
-### 18. Button primary `bg-brand-500` fails WCAG-AA contrast
+### ~~18. Button primary `bg-brand-500` fails WCAG-AA contrast~~
 
-**What.** `@hireops/ui` `Button variant="primary"` defaults to
-`bg-brand-500` (#3b82f6) on white. axe measures 3.67:1 contrast,
-below the 4.5:1 normal-text threshold. CRS-01 worked around per-call
-on the apply form's submit button via
-`className="bg-brand-600 hover:bg-brand-700 ..."`. The /triage axe
-scan passes only because no default-state primary buttons are
-visible there.
-
-**Fix.** Change the `primary` variant's default to brand-600
-(5.2:1) with hover at brand-700 (7.4:1). Small visual shift, big
-accessibility win, applies system-wide once.
-
-**Why.** Without the fix, every new candidate-facing or login-
-adjacent surface needs the same per-call override; drift is certain.
-
-**Trigger.** Next design-system sweep, OR when a second consumer
-surface (careers site, partner portal) needs the override.
-
-**Origin.** CRS-01 axe scan on `/t/[tenant]/apply/[req]`.
+**Resolved by CRS-01-FOLLOWUP.** `Button` primary variant lifted to
+`bg-brand-600` (5.2:1) with hover at `bg-brand-700` (7.4:1) in
+`packages/ui/src/components/Button.tsx`. The per-call workaround on
+the apply form's submit button was removed in the same change. Other
+brand-500 uses (Checkbox/Radio/Switch checked indicators, focus
+outlines) are non-text UI elements that satisfy the WCAG 3:1
+graphical threshold and remain on brand-500.
 
 ---
 
@@ -485,6 +463,81 @@ shape as the FND-15d KMS provider check.
 **Trigger.** Pre-production hardening cycle.
 
 **Origin.** CRS-01 CORS middleware added to `apps/api/src/index.ts`.
+
+---
+
+### 21. Legacy `.doc` support on the upload + parser path
+
+**What.** The apply form accepts PDF + DOCX. Legacy `.doc` (Word
+97-2003 binary) is excluded because mammoth — AI-02's docx extractor
+in `packages/ai-client/src/parsers/extract.ts` — is `.docx`-only.
+Accepting `application/msword` at the upload endpoint without parser
+support would silently parse_failed every `.doc` submission: the
+application row + raw file land, but `parsed_skills` stays null and
+the recruiter sees a candidate detail page with no parsed fields.
+
+**Options.**
+  - **textract + antiword/wv shellouts.** Most common Node path for
+    legacy `.doc`. Requires native binaries in the deployment image,
+    adds a build-time dep, opens a parser-corpus test surface. Real
+    parsing, real cost.
+  - **Pure-JS extractor.** A handful exist (e.g. `word-extractor`)
+    but quality varies; would need its own corpus pass before
+    trusting.
+  - **Accept-and-parse_failed.** Loosen the upload allowlist + let
+    the parser fail cleanly. Candidates aren't rejected outright but
+    the recruiter sees an empty parse. Marginal UX gain over the
+    current "PDF or DOCX only" rejection.
+  - **Stay closed.** Indian candidate corpus still has a long tail
+    of `.doc`, but the share is shrinking. Telling candidates to
+    save-as `.docx` is cheap.
+
+**Trigger.** Parser corpus measurement showing >5% real-applicant
+rejection on `.doc` upload attempts, OR a single high-value
+candidate complaint.
+
+**Origin.** CRS-01-FOLLOWUP — the upload cap bump (5 → 10 MB)
+landed but `.doc` support was deferred at the stop-and-ask gate
+(user picked "defer .doc; bump cap only").
+
+---
+
+### 22. `tenant-context.test.ts` Test 7 asserts absolute BU count, not RLS isolation
+
+**What.** `apps/api/test/tenant-context.test.ts:336` asserts
+`visible.length === 1` after inserting one BU into the test user's
+tenant. The intent is to prove tenant isolation — that the synth
+tenant's BU is NOT visible. The actual assertion (absolute count)
+fails whenever ANY other row exists in the test user's tenant.
+
+**Why it fails today.** `pnpm db:seed:demo-data`
+(`packages/db/src/scripts/seed-demo-data.ts:569-573`) inserts a
+'gcc-blr' BU into the same `kyndryl-poc` tenant the test user
+belongs to. Post-seed there are 2 BUs visible, and the test fails
+with `visible.length=2`. On a fresh DB (no demo seed) the test
+passes. CRS-01's final report wrote this off as "pre-existing — not
+introduced by CRS-01"; that's true but the underlying bug is in the
+test, not the seed.
+
+**Evidence.**
+  - Test asserts `assert.equal(visible.length, 1, ...)` at
+    `tenant-context.test.ts:336`.
+  - Seed inserts `(tenant_id=${kyndryl-poc-id}, slug='gcc-blr')` at
+    `seed-demo-data.ts:571`.
+  - Test passes on a freshly-migrated DB without the demo seed;
+    fails after `pnpm db:seed:demo-data` has run.
+
+**Recommended fix (one sentence).** Replace `visible.length === 1`
+with two positive assertions: `bangalore-gcc` IS in `visible` AND
+the synth `invisible` slug is NOT — proves RLS isolation without
+caring whether the seed has populated other rows in the same tenant.
+
+**Trigger.** Anyone re-running the full api test suite after seeding
+the demo data; flake will keep firing until the assertion is
+rewritten.
+
+**Origin.** CRS-01-FOLLOWUP diagnosis (no code fix in this push —
+fix lives as a follow-up ticket alongside the next clean-up sweep).
 
 ---
 

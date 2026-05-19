@@ -9,8 +9,12 @@
  *     all reads.
  *
  * Validation:
- *   - 5MB cap (real CVs are usually < 1MB; 5MB is generous).
- *   - PDF + DOCX only. Image-only / vision-to-JSON deferred.
+ *   - 10MB cap. Real CVs are usually < 1MB but image-heavy portfolios
+ *     (designer + product roles) routinely exceed 5MB.
+ *   - PDF + DOCX only. Legacy .doc is deferred (open-question #21) —
+ *     mammoth, AI-02's extractor, is .docx-only, so accepting .doc
+ *     here would silently parse_failed every submission. Image-only
+ *     / vision-to-JSON also deferred.
  *
  * Returns { storageKey, sizeBytes, contentType, checksum }. The
  * checksum (sha256 hex) lets downstream dedup spot duplicate resumes
@@ -26,7 +30,7 @@ import type { OptionalAuthVars } from "../middleware/optional-auth";
 import { uploadResumeResponseSchema, type UploadResumeResponse } from "@hireops/api-types";
 import { getStorageClient, StorageError } from "../lib/storage";
 
-const MAX_BYTES = 5 * 1024 * 1024;
+const MAX_BYTES = 10 * 1024 * 1024;
 const ALLOWED_TYPES = new Set([
   "application/pdf",
   "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
