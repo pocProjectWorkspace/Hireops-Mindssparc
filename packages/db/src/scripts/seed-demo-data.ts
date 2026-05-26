@@ -88,20 +88,28 @@ const PERSON_B = "00000000-0000-4000-8000-00000000a502";
 const PERSON_C = "00000000-0000-4000-8000-00000000a503";
 const PERSON_D = "00000000-0000-4000-8000-00000000a504";
 const PERSON_E = "00000000-0000-4000-8000-00000000a505";
+// PERSON_F — AI-03 real-scoring path. Distinct from A-E (those carry
+// `scored_by: "simulated"` as the honesty marker for demo scoring).
+// Candidate F lands as a pending ai_score_outbox row; the apps/workers
+// loop drains it via getAIClient(tenantId) → real Anthropic call when
+// ANTHROPIC_API_KEY is present (LocalAIClient fixture otherwise).
+const PERSON_F = "00000000-0000-4000-8000-00000000a506";
 
 const CAND_A = "00000000-0000-4000-8000-00000000a511";
 const CAND_B = "00000000-0000-4000-8000-00000000a512";
 const CAND_C = "00000000-0000-4000-8000-00000000a513";
 const CAND_D = "00000000-0000-4000-8000-00000000a514";
 const CAND_E = "00000000-0000-4000-8000-00000000a515";
+const CAND_F = "00000000-0000-4000-8000-00000000a516";
 
 const APP_A = "00000000-0000-4000-8000-00000000a521";
 const APP_B = "00000000-0000-4000-8000-00000000a522";
 const APP_C = "00000000-0000-4000-8000-00000000a523";
 const APP_D = "00000000-0000-4000-8000-00000000a524";
 const APP_E = "00000000-0000-4000-8000-00000000a525";
+const APP_F = "00000000-0000-4000-8000-00000000a526";
 
-const APP_IDS = [APP_A, APP_B, APP_C, APP_D, APP_E];
+const APP_IDS = [APP_A, APP_B, APP_C, APP_D, APP_E, APP_F];
 
 const JD_BODY = `# Senior Backend Engineer — GCC Bengaluru
 
@@ -174,6 +182,13 @@ const DEMO_PERSONS = [
     fullName: "Priya Subramanian",
     email: "priya.subramanian@example.test",
     phone: "+919812345605",
+    locationCity: "Bengaluru",
+  },
+  {
+    id: PERSON_F,
+    fullName: "Aarav Iyer",
+    email: "aarav.iyer@example.test",
+    phone: "+919812345606",
     locationCity: "Bengaluru",
   },
 ];
@@ -351,6 +366,96 @@ const DEMO_CANDIDATES: DemoCandidate[] = [
       skills: ["Java", "Spring Boot", "Kafka", "PostgreSQL", "AWS", "Cassandra"],
       notice_period_days: 60,
       parse_metadata: { confidence_score: 0.95, source: "seed-demo-data" },
+    },
+  },
+  // F — AI-03 real-scoring path. The parsedSkills below conforms to
+  // the strict ParserOutput shape from
+  // packages/ai-client/src/parsers/resume-schema.ts (every field A-E
+  // omit because their scores are pre-seeded with scored_by:
+  // "simulated"). The worker's loadContext zod-parses parsed_skills
+  // against parserOutputSchema, so anything outside that shape would
+  // fail terminally; F MUST conform.
+  {
+    candidateId: CAND_F,
+    personId: PERSON_F,
+    source: "career_site",
+    yearsOfExperience: 6,
+    parsedSkills: {
+      personal: {
+        full_name: "Aarav Iyer",
+        email: "aarav.iyer@example.test",
+        phone: "+919812345606",
+        location_city: "Bengaluru",
+        location_country: "IN",
+        linkedin_url: null,
+        github_url: null,
+        portfolio_url: null,
+      },
+      summary:
+        "Backend engineer with six years of experience in high-throughput Java services on AWS and Kafka.",
+      total_years_experience: 6,
+      current_role: {
+        title: "Senior Backend Engineer",
+        company: "Swiggy",
+        start_date: "2022-03",
+        location: "Bengaluru",
+        description:
+          "Owns merchant-payouts pipeline; Kafka + Postgres at 8k tx/sec; on-call rotation lead.",
+      },
+      work_history: [
+        {
+          title: "Senior Backend Engineer",
+          company: "Swiggy",
+          start_date: "2022-03",
+          end_date: null,
+          location: "Bengaluru",
+          description:
+            "Owns merchant-payouts pipeline; Kafka + Postgres at 8k tx/sec; on-call rotation lead.",
+          employment_type: "full_time",
+        },
+        {
+          title: "Software Engineer II",
+          company: "Myntra",
+          start_date: "2019-07",
+          end_date: "2022-02",
+          location: "Bengaluru",
+          description: "Order-orchestration service on Spring Boot + Kafka + PostgreSQL.",
+          employment_type: "full_time",
+        },
+      ],
+      education: [
+        {
+          degree: "B.Tech",
+          field_of_study: "Computer Science",
+          institution: "IIIT Hyderabad",
+          start_year: 2015,
+          end_year: 2019,
+          grade: "8.6 CGPA",
+        },
+      ],
+      skills: {
+        technical: [
+          "Java",
+          "Spring Boot",
+          "Kafka",
+          "PostgreSQL",
+          "AWS",
+          "Redis",
+          "Kubernetes",
+        ],
+        languages: ["English", "Hindi", "Tamil"],
+        certifications: [],
+        domain: ["payments", "e-commerce"],
+      },
+      notice_period_days: 60,
+      expected_compensation: null,
+      parse_metadata: {
+        parser_version: "1.0.0",
+        parsed_at: new Date().toISOString(),
+        confidence_score: 0.92,
+        source_format: "pdf_text",
+        parser_model: "claude-sonnet-4-6",
+      },
     },
   },
 ];
@@ -665,6 +770,9 @@ async function main() {
   // applications, not the other way; we just delete the offer row).
   await poolSql`DELETE FROM public.workday_sync_outbox WHERE subject_application_id = ${APP_E}`;
   await poolSql`DELETE FROM public.offers WHERE id = ${DEMO_OFFER}`;
+  // Clear F's outbox row (AI-03 real-scoring path) — it's pending
+  // until the worker drains it, so a re-seed needs a fresh row.
+  await poolSql`DELETE FROM public.ai_score_outbox WHERE application_id = ${APP_F}`;
   for (const id of APP_IDS) {
     await poolSql`DELETE FROM public.applications WHERE id = ${id}`;
   }
@@ -704,6 +812,49 @@ async function main() {
     }
   }
 
+  // ── 3a. Candidate F — AI-03 real-scoring path ──────────────────
+  //
+  // Inserted outside the DEMO_APPS loop because:
+  //   - aiScore is intentionally NULL (the worker fills it from the
+  //     real provider response, or LocalAIClient fixture in tests).
+  //   - knockout_passed is set to true because the demo requisition
+  //     has no knockouts; in production submitApplication runs
+  //     evaluateKnockouts() and writes the result atomically.
+  //   - An ai_score_outbox row is enqueued so the apps/workers
+  //     process drains it on its next 5s tick. With ANTHROPIC_API_KEY
+  //     present, a real Anthropic call lands and ai_usage_logs
+  //     records tokens + cost; otherwise (NODE_ENV=test or
+  //     AI_CLIENT_MODE=local) the LocalAIClient handles it via the
+  //     bundled fixture corpus.
+  await poolSql.unsafe(`
+    INSERT INTO public.applications
+      (id, tenant_id, candidate_id, requisition_id, source,
+       current_stage, stage_entered_at,
+       ai_score, ai_score_explanation, ai_scored_at,
+       knockout_passed, knockout_failures, knockout_evaluated_at,
+       created_at, updated_at)
+    VALUES ('${APP_F}', '${tid}', '${CAND_F}', '${DEMO_REQ}',
+            'career_site', 'application_received',
+            now() - interval '5 minutes',
+            NULL, NULL, NULL,
+            true, NULL, now() - interval '5 minutes',
+            now() - interval '5 minutes',
+            now() - interval '5 minutes')
+  `);
+  await poolSql`
+    INSERT INTO public.application_state_transitions
+      (tenant_id, application_id, from_stage, to_stage,
+       transitioned_at, actor_membership_id)
+    VALUES (${tid}, ${APP_F}, NULL, 'application_received',
+            now() - interval '5 minutes', ${recruiterId})
+  `;
+  await poolSql`
+    INSERT INTO public.ai_score_outbox
+      (tenant_id, application_id, status, created_at)
+    VALUES (${tid}, ${APP_F}, 'pending', now() - interval '5 minutes')
+    ON CONFLICT (tenant_id, application_id) DO NOTHING
+  `;
+
   // ── 4. Candidate E's extended offer + signed-link token ─────────
   //
   // 7-day window from now. signLink replicates exactly what the
@@ -741,18 +892,24 @@ async function main() {
   // ── 5. summary ──────────────────────────────────────────────────
   const acceptUrl = `${PORTAL_BASE}/offer/${token}`;
   console.log("");
-  console.log(`Seeded ${DEMO_APPS.length} applications under requisition ${DEMO_REQ}`);
+  console.log(`Seeded ${DEMO_APPS.length + 1} applications under requisition ${DEMO_REQ}`);
   console.log("  A. Anika Raghavan      application_received   score=92   2h ago   (MomentumFeed top)");
   console.log("  B. Vikram Joshi        application_received   score=64   6h ago   (MomentumFeed mid)");
   console.log("  C. Sneha Banerjee      application_received   score=88   30h ago  (Hot Zone — SLA breach)");
   console.log("  D. Karthik Mahadevan   recruiter_review       score=81   2d in stage  (drawer demo)");
   console.log("  E. Priya Subramanian   offer_drafted          score=85   offer extended 1h ago");
+  console.log("  F. Aarav Iyer          application_received   score=PENDING   5m ago  (AI-03 real scoring)");
   console.log("");
   console.log("Candidate E offer-accept URL (single-use, expires in 7 days):");
   console.log(`  ${acceptUrl}`);
   console.log("");
   console.log("Public apply URL (CRS-01, anyone can submit):");
   console.log(`  ${PORTAL_BASE}/t/${TENANT_SLUG}/apply/gcc-blr-senior-backend`);
+  console.log("");
+  console.log("Candidate F is pending real AI scoring (ai_score_outbox row).");
+  console.log("Boot apps/workers with ANTHROPIC_API_KEY set to drain via the live");
+  console.log("provider; otherwise the LocalAIClient fixture corpus handles it in");
+  console.log("test mode.");
   console.log("");
   console.log("Login as recruiter1@kyndryl-poc.test / TestPassword123! to walk the lifecycle.");
 }

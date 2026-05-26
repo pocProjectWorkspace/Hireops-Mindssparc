@@ -182,25 +182,31 @@ parser-with-fix, not the parser-with-known-bug.
 
 ---
 
-### 7. Real-provider smoke for AI-01
+### ~~7. Real-provider smoke for AI-01~~ — Anthropic half closed, OpenAI still pending
 
-**What.** Run the AI-01 smoke recipe (documented in HANDOVER reality
-#25) against real Anthropic + OpenAI keys, verify
-`ai_usage_logs` rows with non-zero tokens + cost end-to-end. Smoke
-script itself was deleted before AI-01 commit per the FND-OPS pattern;
-recreate from the recipe when running.
+**Anthropic — CLOSED by AI-03.** The score-application drain calls
+Anthropic through the production code path; the AI-03 real-provider
+smoke ran end-to-end (Tenant kyndryl-poc, candidate F, ai_usage_logs
+row provider=anthropic, model=claude-sonnet-4-6, input_tokens=1371,
+output_tokens=452, cost_micros=10893, latency≈9.4s, ai_score=95,
+ai_score_explanation.scored_by="anthropic"). The standalone AI-01
+`complete()` / `completeStructured()` smoke recipe per HANDOVER #25
+is now redundant for Anthropic — AI-03 exercises both code paths
+plus the structured-output JSON-schema enforcement.
 
-**Why.** Gate 8 of AI-01 was the only verification gate that didn't
-land — the LocalAIClient suite covers the path, but neither real
-provider has been hit through the production code path on this
-codebase.
+**OpenAI — STILL OPEN.** Blocked on the missing OPENAI_API_KEY. The
+OpenAIAIClient code path has zero real-provider coverage on this
+codebase. When the key lands:
+  - Provision `ai_openai` credential for a test tenant via
+    `storeIntegrationCredential`.
+  - Flip the tenant's `tenants.settings.ai_provider` to `'openai'`.
+  - Re-run the AI-03 smoke against candidate F (or any pending
+    `ai_score_outbox` row).
+  - Confirm ai_usage_logs row with provider=openai, model=gpt-5 (or
+    whatever the OpenAIAIClient default is), non-zero tokens + cost.
 
-**Status.** Anthropic-half can run today (key is in .env, used by
-AI-02 smoke). **Blocked on OpenAI key** for the second provider.
-Worth doing the Anthropic-only half now and leaving the OpenAI
-verification annotated as the remaining gap.
-
-**Origin.** AI-01 final report, verification gate 8 (blocked on keys).
+**Origin.** AI-01 final report verification gate 8; AI-03 closed the
+Anthropic half end-to-end.
 
 ---
 
@@ -538,6 +544,89 @@ rewritten.
 
 **Origin.** CRS-01-FOLLOWUP diagnosis (no code fix in this push —
 fix lives as a follow-up ticket alongside the next clean-up sweep).
+
+---
+
+## AI-03 follow-ups
+
+### 23. Re-scoring when jd_skills (or the JD body) changes
+
+**What.** AI-03 is submit-time scoring only. The `ai_score_outbox`
+table enforces compound unique `(tenant_id, application_id)` —
+one scoring attempt per application, ever. If a recruiter edits the
+JD skills or weights after applications have come in, every existing
+candidate's score becomes stale against the new context.
+
+**Why deferred.** CRS-01 / AI-03 scope fence. Wave 1 hands the
+recruiter a "stale score, please re-run" UI affordance is a Phase 3
+concern. The schema today doesn't track "what version of jd_skills
+was the score computed against"; re-scoring needs that lineage to
+avoid silent score regressions.
+
+**Fix sketch.** Add `applications.ai_scored_jd_version_id` (FK to
+`jd_versions`) so the recruiter UI can flag stale scores. Add a
+"rescore" tRPC mutation that enqueues a fresh row to a new
+`ai_score_outbox` partial-unique on `(tenant_id, application_id,
+jd_version_id)`. Worker drains as today, writes the new score with
+the new prompt_version + the new jd_version_id.
+
+**Trigger.** First recruiter complaint that "Anika's score doesn't
+reflect the new skills weight" — likely Phase 2 → Phase 3 hand-off.
+
+**Origin.** AI-03 scope fence (submit-time scoring only).
+
+---
+
+### 24. Momentum Feed NULL-score UI handling
+
+**What.** The recruiter triage page sorts candidates by `ai_score`.
+Candidates whose score is still pending (worker hasn't drained) or
+who were skipped (knockouts failed, parser confidence below floor)
+have `ai_score = NULL`. Today the sort just buries them at the
+bottom of the descending list, with no visual cue distinguishing
+"pending real score" from "skipped — knockouts failed" from
+"skipped — parser confidence too low".
+
+**Fix sketch.** Read `ai_score_explanation.scored_by` to bucket:
+  - `'skipped'` + reason → grey badge "Skipped: knockouts failed"
+    or "Skipped: low parse confidence"
+  - NULL explanation → blue badge "Score pending"
+  - any provider name → render the numeric score as today
+
+**Trigger.** First production-class deploy. Or when a recruiter
+asks "why is candidate X at the bottom with no score".
+
+**Origin.** AI-03 scope fence — Momentum Feed bucketing was
+explicitly punted.
+
+---
+
+### 25. OpenAI real-provider smoke remains pending
+
+**What.** AI-01 verification gate 8 covered both Anthropic and OpenAI
+real-provider smoke. AI-03 closed the Anthropic half; OpenAI is still
+unverified end-to-end (LocalAIClient covers its code path, but the
+OpenAIAIClient against the real OpenAI API has never run on this
+codebase).
+
+**Fix.** Once `OPENAI_API_KEY` is in `.env`:
+  - `storeIntegrationCredential({ integrationType: 'ai_openai', ... })`
+    for a test tenant.
+  - Flip `tenants.settings.ai_provider` to `'openai'`.
+  - Run the AI-03 smoke recipe against a candidate with a pending
+    `ai_score_outbox` row.
+  - Verify `ai_usage_logs.provider = 'openai'`, non-zero tokens +
+    cost, and `applications.ai_score_explanation.scored_by =
+    'openai'`.
+
+**Why.** Cost attribution + provider failover diligence. The OpenAI
+path is one tenant-setting flip away from production on day one;
+zero real-provider coverage is irresponsible.
+
+**Trigger.** OPENAI_API_KEY availability.
+
+**Origin.** AI-01 gate 8 (was open-question #7 prior to AI-03; the
+Anthropic half closed via AI-03, this is the residual).
 
 ---
 

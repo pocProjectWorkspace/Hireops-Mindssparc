@@ -50,6 +50,9 @@ importers:
       '@hireops/ai-client':
         specifier: workspace:*
         version: link:../../packages/ai-client
+      '@hireops/ai-scoring':
+        specifier: workspace:*
+        version: link:../../packages/ai-scoring
       '@hireops/api-types':
         specifier: workspace:*
         version: link:../../packages/api-types
@@ -217,6 +220,12 @@ importers:
 
   apps/workers:
     dependencies:
+      '@hireops/ai-client':
+        specifier: workspace:*
+        version: link:../../packages/ai-client
+      '@hireops/ai-scoring':
+        specifier: workspace:*
+        version: link:../../packages/ai-scoring
       '@hireops/db':
         specifier: workspace:*
         version: link:../../packages/db
@@ -238,6 +247,9 @@ importers:
       postgres:
         specifier: ^3.4.9
         version: 3.4.9
+      zod:
+        specifier: ^4.4.3
+        version: 4.4.3
     devDependencies:
       dotenv:
         specifier: ^17.4.2
@@ -276,6 +288,22 @@ importers:
       '@types/pdf-parse':
         specifier: ^1.1.4
         version: 1.1.5
+
+  packages/ai-scoring:
+    dependencies:
+      '@hireops/ai-client':
+        specifier: workspace:*
+        version: link:../ai-client
+      '@hireops/db':
+        specifier: workspace:*
+        version: link:../db
+      zod:
+        specifier: ^4.4.3
+        version: 4.4.3
+    devDependencies:
+      vitest:
+        specifier: ^4.1.6
+        version: 4.1.6(@opentelemetry/api@1.9.1)(@types/node@22.10.5)(vite@8.0.12(@types/node@22.10.5)(esbuild@0.27.7)(jiti@1.21.7)(tsx@4.21.0))
 
   packages/api-types:
     dependencies:

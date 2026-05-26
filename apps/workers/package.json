@@ -12,13 +12,16 @@
     "start": "tsx src/index.ts"
   },
   "dependencies": {
+    "@hireops/ai-client": "workspace:*",
+    "@hireops/ai-scoring": "workspace:*",
     "@hireops/db": "workspace:*",
     "@hireops/email-templates": "workspace:*",
     "@hireops/notifications": "workspace:*",
     "@hireops/observability": "workspace:*",
     "@hireops/sla-thresholds": "workspace:*",
     "drizzle-orm": "^0.45.2",
-    "postgres": "^3.4.9"
+    "postgres": "^3.4.9",
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "dotenv": "^17.4.2",

@@ -19,6 +19,7 @@
   },
   "dependencies": {
     "@hireops/ai-client": "workspace:*",
+    "@hireops/ai-scoring": "workspace:*",
     "@hireops/api-types": "workspace:*",
     "@hireops/db": "workspace:*",
     "@hireops/notifications": "workspace:*",

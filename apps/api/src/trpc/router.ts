@@ -30,11 +30,14 @@ import {
   applications,
   applicationStateTransitions,
   requisitions,
+  requisitionKnockouts,
   tenantUserMemberships,
   offers,
   workdaySyncOutbox,
+  aiScoreOutbox,
   type ApplicationStage,
 } from "@hireops/db";
+import { evaluateKnockouts, type KnockoutInput } from "@hireops/ai-scoring";
 import { SLA_THRESHOLDS_HOURS } from "../lib/sla-thresholds";
 import {
   submitApplicationInputSchema,
@@ -136,6 +139,16 @@ function lastCursor<T extends { createdAt: Date }>(rows: T[]): string | null {
  */
 const PUBLIC_APPLY_ACCEPTING_STATUSES = new Set<string>(["approved", "posted"]);
 
+/**
+ * Parser confidence (`parse_metadata.confidence_score`) below this
+ * floor skips AI scoring at submit time — the LLM input would be too
+ * unreliable to score against. Logged on the application as
+ * `ai_score_explanation = { scored_by: 'skipped', reason:
+ * 'parser_confidence_below_threshold', confidence: <value> }`. 0.5 is
+ * the AI-03 v1 threshold; tunable here, not per-tenant.
+ */
+const PARSER_CONFIDENCE_SCORING_FLOOR = 0.5;
+
 export const appRouter = router({
   // ─────────── public: apply form ───────────
   submitApplication: publicProcedure
@@ -177,6 +190,7 @@ export const appRouter = router({
           const obj = await storage.get(input.resumeUploadKey);
           let parseStatus: "received" | "parse_failed" = "received";
           let parsedSkills: unknown = null;
+          let parserConfidence: number | null = null;
           let yearsOfExperience: number | null = null;
           try {
             const parsed = await parseResume(obj.buffer, obj.contentType, {
@@ -184,11 +198,44 @@ export const appRouter = router({
             });
             parsedSkills = parsed;
             yearsOfExperience = parsed.total_years_experience;
+            parserConfidence = parsed.parse_metadata.confidence_score;
             if (parsed.parse_metadata.confidence_score === 0) parseStatus = "parse_failed";
           } catch (err) {
             ctx.log.error({ err, request_id: ctx.requestId }, "parseResume threw");
             parseStatus = "parse_failed";
           }
+
+          // 2a. Knockout evaluation (AI-03). Synchronous, deterministic,
+          // no AI call. Skipped at submit time only — recruiter-side
+          // re-evaluation (jd_skills change, recruiter rescoring) is a
+          // separate ticket. Results are written onto the application
+          // row in step 5; we evaluate here so the column values can
+          // land atomically with the insert.
+          const knockoutRows = await poolDb
+            .select({
+              id: requisitionKnockouts.id,
+              type: requisitionKnockouts.type,
+              source: requisitionKnockouts.source,
+              questionText: requisitionKnockouts.questionText,
+              thresholdValue: requisitionKnockouts.thresholdValue,
+            })
+            .from(requisitionKnockouts)
+            .where(
+              and(
+                eq(requisitionKnockouts.tenantId, req.tenantId),
+                eq(requisitionKnockouts.requisitionId, req.id),
+              ),
+            )
+            .orderBy(requisitionKnockouts.orderIndex);
+          const knockoutInputs: KnockoutInput[] = knockoutRows.map((r) => ({
+            id: r.id,
+            type: r.type,
+            source: r.source,
+            questionText: r.questionText,
+            thresholdValue: r.thresholdValue,
+          }));
+          const knockoutEval = evaluateKnockouts(parsedSkills, knockoutInputs);
+          const knockoutEvaluatedAt = new Date();
 
           // 3. Dedup person by normalised email OR phone within tenant.
           // Two indexed lookups (one per identifier) rather than a single
@@ -348,6 +395,32 @@ export const appRouter = router({
             )
             .limit(1);
 
+          // Decide what the application row should carry for the
+          // scoring fields. NULL ai_score + ai_scored_at on a fresh
+          // application — those land later from the worker if scoring
+          // is eligible, or stay NULL forever if scoring is skipped.
+          // ai_score_explanation IS populated synchronously here for
+          // the skipped cases so the recruiter drawer can render the
+          // reason without a second query.
+          let initialAiScoreExplanation: Record<string, unknown> | null = null;
+          let outboxEligible = false;
+          if (knockoutEval.passed === false) {
+            initialAiScoreExplanation = {
+              scored_by: "skipped",
+              reason: "knockouts_failed",
+              skipped_at: knockoutEvaluatedAt.toISOString(),
+            };
+          } else if (parserConfidence !== null && parserConfidence < PARSER_CONFIDENCE_SCORING_FLOOR) {
+            initialAiScoreExplanation = {
+              scored_by: "skipped",
+              reason: "parser_confidence_below_threshold",
+              confidence: parserConfidence,
+              skipped_at: knockoutEvaluatedAt.toISOString(),
+            };
+          } else {
+            outboxEligible = true;
+          }
+
           const wasNewApplication = !existingApp?.id;
           const applicationId = existingApp?.id
             ? existingApp.id
@@ -358,9 +431,33 @@ export const appRouter = router({
                   candidateId,
                   requisitionId: req.id,
                   source: input.source,
+                  knockoutPassed: knockoutEval.passed,
+                  knockoutFailures:
+                    knockoutEval.failures.length > 0 ? knockoutEval.failures : null,
+                  knockoutEvaluatedAt,
+                  aiScoreExplanation: initialAiScoreExplanation,
                 })
                 .returning({ id: applications.id })
                 .then((rows) => firstOrThrow(rows, "applications insert").id);
+
+          // Enqueue the AI scoring outbox row only on first apply +
+          // eligibility (knockouts not failed, parser confidence above
+          // floor). The compound unique on (tenant_id, application_id)
+          // is belt-and-braces — wasNewApplication already guarantees
+          // one enqueue per application.
+          if (wasNewApplication && outboxEligible) {
+            try {
+              await poolDb.insert(aiScoreOutbox).values({
+                tenantId: req.tenantId,
+                applicationId,
+              });
+            } catch (err) {
+              ctx.log.warn(
+                { err, request_id: ctx.requestId, application_id: applicationId },
+                "submitApplication: ai_score_outbox enqueue failed",
+              );
+            }
+          }
 
           // Enqueue the "application received" candidate email only on
           // first apply — re-submits of the same (candidate, req) pair

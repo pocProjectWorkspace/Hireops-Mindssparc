@@ -7,6 +7,7 @@ import { drainOutboxOnce, recoverOrphans } from "./lib/dispatcher";
 import { runSchedulerTick, type ScheduledJob } from "./lib/scheduler";
 import { slaImminentScan } from "./jobs/sla-imminent-scan";
 import { drainWorkdayOutboxOnce } from "./lib/workday-simulation-drain";
+import { drainAiScoreOutboxOnce } from "./lib/ai-score-drain";
 
 /**
  * Worker entrypoint — three concurrent loops:
@@ -28,6 +29,7 @@ const DRAIN_INTERVAL_MS = 5_000;
 const SCHEDULER_INTERVAL_MS = 60_000;
 const ORPHAN_INTERVAL_MS = 5 * 60_000;
 const WORKDAY_DRAIN_INTERVAL_MS = 5_000;
+const AI_SCORE_DRAIN_INTERVAL_MS = 5_000;
 
 const log = createLogger({ base: { service: "workers" } });
 
@@ -112,6 +114,18 @@ async function main() {
       const r = await drainWorkdayOutboxOnce({ log });
       if (r.claimed > 0) {
         log.info(r, "worker.workday_drain_pass");
+      }
+    }),
+  );
+
+  // AI-03 fit-scoring drain. Same SKIP LOCKED + small batch pattern;
+  // each row costs a real Anthropic call so the default batch is
+  // smaller than the notification drain (5 vs 25).
+  loops.push(
+    startLoop("ai-score-drain", AI_SCORE_DRAIN_INTERVAL_MS, async () => {
+      const r = await drainAiScoreOutboxOnce({ log });
+      if (r.claimed > 0) {
+        log.info(r, "worker.ai_score_drain_pass");
       }
     }),
   );

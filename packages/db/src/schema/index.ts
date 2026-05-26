@@ -51,3 +51,4 @@ export * from "./signed-link-uses";
 export * from "./scheduled-job-runs";
 export * from "./offers";
 export * from "./workday-sync-outbox";
+export * from "./ai-score-outbox";
