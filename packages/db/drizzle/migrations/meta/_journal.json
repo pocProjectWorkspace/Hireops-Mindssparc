@@ -260,6 +260,20 @@
       "when": 1779782528043,
       "tag": "0039_ai_score_outbox_force_rls",
       "breakpoints": true
+    },
+    {
+      "idx": 40,
+      "version": "7",
+      "when": 1780017233911,
+      "tag": "0040_familiar_zarda",
+      "breakpoints": true
+    },
+    {
+      "idx": 41,
+      "version": "7",
+      "when": 1780017233912,
+      "tag": "0041_agent_force_rls_and_audit",
+      "breakpoints": true
     }
   ]
 }

@@ -630,6 +630,33 @@ Anthropic half closed via AI-03, this is the residual).
 
 ---
 
+### 26. Worker registry refactor
+
+**What.** AGENT-01a brings the polling-worker total to 6:
+`notification-drain`, `workday-sync-drain`, `ai-score-drain`,
+`dedup-attempt-cleanup`, `agent-run-drain` (AGENT-02+),
+`agent-stale-scan` (AGENT-02+). Each is independently wired in
+`apps/workers/src/index.ts` with hard-coded `intervalMs`, ad-hoc
+graceful-shutdown logic, no shared metrics surface, no shared health
+check.
+
+**Fix.** Refactor to a registry pattern before adding a 7th drain. Each
+worker declares itself with `{ name, drainFn, intervalMs, concurrency,
+healthCheckFn }` and registers into a common runner that handles
+lifecycle, metrics emission, and graceful shutdown. The runner becomes
+the single place to wire Sentry tags, request-id propagation per drain
+tick, and per-worker concurrency caps.
+
+**Why.** Each new drain loop currently copies ~30 lines of timer +
+in-flight-tracking + signal-handling code. Six instances of this is
+fine; seven becomes the trigger for the refactor.
+
+**Trigger.** Adding the 7th polling worker.
+
+**Origin.** AGENT-01b reality #100.
+
+---
+
 ## Lifecycle
 
 This file lives alongside `HANDOVER.md` as a working index — append

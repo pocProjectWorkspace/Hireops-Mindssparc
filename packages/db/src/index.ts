@@ -25,3 +25,6 @@ export type {
   GetCredentialArgs,
   CredentialResult,
 } from "./integration-credentials";
+
+// Agent config zod schemas (AGENT-01a).
+export * from "./zod/agent-configs";
