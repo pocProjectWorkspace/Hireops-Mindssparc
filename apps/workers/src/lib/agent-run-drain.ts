@@ -1,5 +1,5 @@
 /**
- * Drains pending agent_run_outbox rows (AGENT-02).
+ * Drains pending agent_run_outbox rows (AGENT-02, AGENT-03 resume).
  *
  * Mirror of ai-score-drain's SKIP LOCKED batch pattern with the
  * multi-action loop layered on top.
@@ -8,37 +8,48 @@
  *
  *   1. Claim → status='processing', set locked_until = now + 5min,
  *      attempt_count += 1.
- *   2. INSERT agent_runs (status='running', triggered_by='system',
- *      trigger_context = outbox.trigger_context).
+ *   2. AGENT-03 resume probe — does an in-progress agent_runs row
+ *      already exist for this (tenant_id, agent_id) whose
+ *      trigger_context matches? If yes, this is a resume — reuse the
+ *      existing run row and flip it to 'running'. If no, INSERT a fresh
+ *      agent_runs row.
  *   3. Fetch agent_actions ordered by action_order ASC, plus
- *      agent_approval_rules keyed by action_id.
+ *      agent_approval_rules keyed by action_id, plus existing
+ *      agent_run_actions keyed by action_order (the resume map).
  *   4. For each action:
- *        - INSERT agent_run_actions (status='running', input snapshot).
+ *        - If a run_action already exists for (run_id, action_order):
+ *          - 'completed' → carry forward its output to
+ *             previousActionOutputs and skip executor dispatch.
+ *          - 'awaiting_approval' → should not happen on resume because
+ *             approval resolution flips it to 'completed' or 'failed'
+ *             before re-queueing. Treated as failed (defensive).
+ *          - 'failed' → propagate as a terminal failure.
+ *        - Otherwise (no row or 'pending'): INSERT agent_run_actions
+ *          ('running', input snapshot) and dispatch the executor.
  *        - bridgeActionConfig(action.action_type, action.action_config)
  *          → ActionConfigSchema.parse — ZodError is terminal (no retry).
- *        - executor = actionExecutorRegistry[validated.type]; dispatch
- *          with the uniform params. ActionConfigMismatchError is
- *          terminal (no retry; defensive only — DB CHECK + registry
- *          typing make it unreachable in practice).
  *        - If result.requiresApproval: atomic 4-row transition
  *          (insert approval_request + update run_action + update run +
  *          update outbox) via poolSql.begin so callers never see an
  *          inconsistent (outbox running but run awaiting) state. Return
- *          early — AGENT-03 closes the resume loop.
+ *          early — the approval-resolution endpoint re-queues the row.
  *        - Else: mark run_action 'completed', record output, continue.
  *   5. All actions completed → mark run + outbox 'completed'.
  *
- * AGENT-02 stub executors all return requiresApproval: false so the
- * awaiting_approval path exists, is type-checked, and writes the right
- * state if it ever fires — but no test in this ticket exercises a
- * green path through it. AGENT-03 covers that loop end-to-end.
+ * Idempotent re-execution invariant: a re-queued outbox row sees the
+ * same agent_actions in the same order. Completed run_actions are
+ * recognised by (run_id, action_order) and skipped — the executor is
+ * never invoked twice for the same action. Approved-with-edit replaces
+ * agent_run_actions.output before the re-queue, so the worker reads the
+ * edited version when populating previousActionOutputs for downstream
+ * actions.
  *
  * Failure mode (single attempt, no retry — same shape as ZodError
  * terminal in ai-score-drain):
  *   - Any throw inside the per-row work flips outbox → 'failed' with
- *     last_error set, and (if a run row was created) flips that run
- *     → 'failed' with the same error message. attempt_count tracks
- *     retry posture for future use; AGENT-02 doesn't actually retry.
+ *     last_error set, and (if a run row was created OR resumed) flips
+ *     that run → 'failed' with the same error message. attempt_count
+ *     tracks retry posture for future use; we don't actually retry.
  */
 
 import { randomUUID } from "node:crypto";
@@ -160,20 +171,54 @@ async function processOutboxRow(
   log: Logger,
   notifyRunCreated: (runId: string) => void,
 ): Promise<ProcessOutcome> {
-  // INSERT agent_runs.
-  const [runRow] = await poolSql<{ id: string }[]>`
-    INSERT INTO public.agent_runs (
-      tenant_id, agent_id, triggered_by, triggered_at,
-      trigger_context, status
-    ) VALUES (
-      ${outbox.tenant_id}, ${outbox.agent_id}, 'system', now(),
-      ${JSON.stringify(outbox.trigger_context)}::jsonb, 'running'
-    )
-    RETURNING id
+  // AGENT-03 resume probe — does an in-progress run already exist for
+  // this outbox row? Approval-resolution flips the run from
+  // 'awaiting_approval' → 'running' before re-queueing the outbox, so
+  // we look for either status. Match on trigger_context to disambiguate
+  // when an agent has multiple concurrent runs. JSONB equality is fine
+  // here — the trigger_context on agent_runs was written from the same
+  // outbox row's jsonb, so byte-for-byte equality holds.
+  const triggerCtxJson = JSON.stringify(outbox.trigger_context);
+  const existingRuns = await poolSql<{ id: string; cost_micros: string }[]>`
+    SELECT id, cost_micros::text AS cost_micros
+    FROM public.agent_runs
+    WHERE tenant_id = ${outbox.tenant_id}
+      AND agent_id = ${outbox.agent_id}
+      AND status IN ('running', 'awaiting_approval')
+      AND trigger_context = ${triggerCtxJson}::jsonb
+    ORDER BY triggered_at DESC
+    LIMIT 1
   `;
-  if (!runRow) throw new Error("agent_runs insert returned no row");
-  const runId = runRow.id;
-  notifyRunCreated(runId);
+
+  let runId: string;
+  let totalCostMicros: bigint;
+  if (existingRuns.length > 0 && existingRuns[0]) {
+    runId = existingRuns[0].id;
+    totalCostMicros = BigInt(existingRuns[0].cost_micros);
+    // Defensive: ensure the run is in 'running' (approval-resolution
+    // already does this, but a worker that loses + regains a lock would
+    // benefit from idempotent state).
+    await poolSql`
+      UPDATE public.agent_runs SET status = 'running' WHERE id = ${runId}
+    `;
+    notifyRunCreated(runId);
+    log.info({ run_id: runId }, "agent_run.resumed");
+  } else {
+    const [runRow] = await poolSql<{ id: string }[]>`
+      INSERT INTO public.agent_runs (
+        tenant_id, agent_id, triggered_by, triggered_at,
+        trigger_context, status
+      ) VALUES (
+        ${outbox.tenant_id}, ${outbox.agent_id}, 'system', now(),
+        ${triggerCtxJson}::jsonb, 'running'
+      )
+      RETURNING id
+    `;
+    if (!runRow) throw new Error("agent_runs insert returned no row");
+    runId = runRow.id;
+    totalCostMicros = 0n;
+    notifyRunCreated(runId);
+  }
 
   const actions = await poolSql<ActionRow[]>`
     SELECT id, action_order, action_type, action_config
@@ -189,26 +234,85 @@ async function processOutboxRow(
   `;
   const ruleByAction = new Map(rules.map((r) => [r.action_id, r]));
 
+  // AGENT-03 resume map — which run_actions already exist for this run?
+  // Keyed by action_order so the per-action loop can look up by the
+  // position it's iterating. Output is the already-recorded payload
+  // (either the original or the approved-with-edit replacement).
+  interface ExistingRunActionRow {
+    id: string;
+    action_order: number;
+    status: string;
+    output: unknown;
+    error: string | null;
+  }
+  const existingRunActions = await poolSql<ExistingRunActionRow[]>`
+    SELECT id, action_order, status, output, error
+    FROM public.agent_run_actions
+    WHERE tenant_id = ${outbox.tenant_id} AND run_id = ${runId}
+  `;
+  const runActionByOrder = new Map<number, ExistingRunActionRow>(
+    existingRunActions.map((r) => [r.action_order, r]),
+  );
+
   const previousActionOutputs: Record<number, unknown> = {};
-  let totalCostMicros = 0n;
 
   for (const action of actions) {
-    // INSERT agent_run_actions (running).
-    const inputSnapshot = JSON.stringify({
-      config: action.action_config,
-      triggerContext: outbox.trigger_context,
-    });
-    const [runActionRow] = await poolSql<{ id: string }[]>`
-      INSERT INTO public.agent_run_actions (
-        tenant_id, run_id, action_id, action_order, status, started_at, input
-      ) VALUES (
-        ${outbox.tenant_id}, ${runId}, ${action.id}, ${action.action_order},
-        'running', now(), ${inputSnapshot}::jsonb
-      )
-      RETURNING id
-    `;
-    if (!runActionRow) throw new Error("agent_run_actions insert returned no row");
-    const runActionId = runActionRow.id;
+    const existing = runActionByOrder.get(action.action_order);
+
+    if (existing && existing.status === "completed") {
+      // Resume — already done in a prior worker pass (either originally
+      // executed, or approved-with-edit replaced the output). Carry
+      // forward without re-executing.
+      previousActionOutputs[action.action_order] = existing.output;
+      continue;
+    }
+    if (existing && existing.status === "failed") {
+      // A prior pass failed this action — propagate. Should not happen
+      // in practice because failures terminate the outbox row too, but
+      // defensive.
+      throw new Error(
+        `Run-action ${existing.id} previously failed: ${existing.error ?? "unknown"}`,
+      );
+    }
+    if (existing && existing.status === "awaiting_approval") {
+      // Approval-resolution should have flipped this to 'completed' or
+      // 'failed' before re-queueing the outbox. Reaching here means the
+      // resolution path missed an update — treat as terminal so the
+      // run doesn't quietly re-execute the awaiting action.
+      throw new Error(
+        `Run-action ${existing.id} still awaiting_approval after resume — resolution path inconsistent`,
+      );
+    }
+    // existing && existing.status === 'pending' OR no row at all → execute fresh.
+
+    let runActionId: string;
+    if (existing) {
+      // Pending row (e.g. left over from an abandoned attempt). Flip to
+      // running rather than INSERT — keeps the (run_id, action_order)
+      // surface stable for downstream joins.
+      await poolSql`
+        UPDATE public.agent_run_actions
+        SET status = 'running', started_at = now()
+        WHERE id = ${existing.id}
+      `;
+      runActionId = existing.id;
+    } else {
+      const inputSnapshot = JSON.stringify({
+        config: action.action_config,
+        triggerContext: outbox.trigger_context,
+      });
+      const [runActionRow] = await poolSql<{ id: string }[]>`
+        INSERT INTO public.agent_run_actions (
+          tenant_id, run_id, action_id, action_order, status, started_at, input
+        ) VALUES (
+          ${outbox.tenant_id}, ${runId}, ${action.id}, ${action.action_order},
+          'running', now(), ${inputSnapshot}::jsonb
+        )
+        RETURNING id
+      `;
+      if (!runActionRow) throw new Error("agent_run_actions insert returned no row");
+      runActionId = runActionRow.id;
+    }
 
     // Bridge DB column → Zod discriminator. ZodError + ActionConfigMismatchError
     // both bubble up as terminal failures via the outer catch.
@@ -233,8 +337,15 @@ async function processOutboxRow(
 
     totalCostMicros += result.costMicros ?? 0n;
 
-    if (result.requiresApproval === true) {
-      const rule = ruleByAction.get(action.id);
+    // Approval-mode short-circuit: even if the executor wants approval,
+    // a rule of approval_mode='auto' on this action means HR explicitly
+    // configured it to bypass the gate. Three-layer model documented on
+    // the send_message executor.
+    const rule = ruleByAction.get(action.id);
+    const ruleMode = rule?.approval_mode ?? "auto";
+    const gateOpen = result.requiresApproval === true && ruleMode !== "auto";
+
+    if (gateOpen) {
       const approverRole = rule?.approver_role ?? "any_recruiter";
       const outputJson = JSON.stringify(result.output);
       // Atomic 4-row transition. poolSql.begin returns when the BEGIN/COMMIT
@@ -272,15 +383,6 @@ async function processOutboxRow(
           WHERE id = ${outbox.id}
         `;
       });
-
-      // TODO(AGENT-03): approval-resolution endpoint will re-queue this
-      // outbox row by `UPDATE agent_run_outbox SET status='pending'
-      // WHERE id=...`. At that point this worker picks it up again. To
-      // resume correctly, the worker would need to detect that some
-      // actions are already completed and skip them — that resumption
-      // logic is also AGENT-03. AGENT-02 stub executors always set
-      // requiresApproval: false so this branch is type-checked but never
-      // exercised by tests in this ticket.
 
       log.info(
         { run_id: runId, action_order: action.action_order, approver_role: approverRole },

@@ -9,6 +9,11 @@
  *      invoked with a valid config of its type.
  *   4. Each executor throws ActionConfigMismatchError when the config
  *      discriminator doesn't match its own type.
+ *
+ * AGENT-03 note: `send_message` is the one executor that now returns
+ * `requiresApproval: true` (everything else stays autonomous at the
+ * executor layer). `assertStubMarkers` no longer asserts on
+ * requiresApproval; each test asserts the expected value explicitly.
  */
 
 import { describe, expect, it } from "vitest";
@@ -85,7 +90,10 @@ describe("draft_message executor", () => {
 });
 
 describe("send_message executor", () => {
-  it("returns stub output with sent: false", async () => {
+  // AGENT-03 flipped this — send_message now returns
+  // requiresApproval: true so the worker's awaiting_approval branch is
+  // exercised end-to-end via the resolution + resume cycle.
+  it("returns stub output with sent: false + requiresApproval: true", async () => {
     const result = await actionExecutorRegistry.send_message(
       baseParams({
         config: {
@@ -101,6 +109,8 @@ describe("send_message executor", () => {
     expect(out.sent).toBe(false);
     expect(out.channel).toBe("email");
     expect(out.outbox_kind).toBe("agent_followup");
+    expect(out._originally_set_by).toBe("AGENT-02");
+    expect(result.requiresApproval).toBe(true);
   });
 });
 
@@ -118,6 +128,7 @@ describe("propose_calendar_slots executor", () => {
       }),
     );
     assertStubMarkers(result);
+    expect(result.requiresApproval).toBe(false);
     const out = result.output as { proposed_slots: { start: string; end: string }[] };
     expect(out.proposed_slots).toHaveLength(3);
     for (const slot of out.proposed_slots) {
@@ -140,6 +151,7 @@ describe("create_calendar_event executor", () => {
       }),
     );
     assertStubMarkers(result);
+    expect(result.requiresApproval).toBe(false);
     const out = result.output as Record<string, unknown>;
     expect(out.event_id).toBe("stub-evt-r-1");
     expect(out.invitees).toEqual([]);
@@ -158,6 +170,7 @@ describe("update_application_stage executor", () => {
       }),
     );
     assertStubMarkers(result);
+    expect(result.requiresApproval).toBe(false);
     const out = result.output as Record<string, unknown>;
     expect(out.updated).toBe(false);
     expect(out.target_stage).toBe("tech_screen");
@@ -176,6 +189,7 @@ describe("notify_recruiter executor", () => {
       }),
     );
     assertStubMarkers(result);
+    expect(result.requiresApproval).toBe(false);
     const out = result.output as Record<string, unknown>;
     expect(out.channel).toBe("in_portal");
   });
@@ -193,13 +207,13 @@ describe("create_audit_entry executor", () => {
       }),
     );
     assertStubMarkers(result);
+    expect(result.requiresApproval).toBe(false);
     const out = result.output as Record<string, unknown>;
     expect(out.audit_id).toBe("stub-aud-r-1");
   });
 });
 
 function assertStubMarkers(result: ActionResult): void {
-  expect(result.requiresApproval).toBe(false);
   expect(result.costMicros).toBe(0n);
   const out = result.output as Record<string, unknown>;
   expect(out._stub).toBe(true);

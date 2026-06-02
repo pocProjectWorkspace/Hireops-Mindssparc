@@ -1,15 +1,19 @@
 /**
  * AGENT-02 — vertical proof-of-life smoke test.
  *
- * Exercises the full vertical introduced in this ticket:
+ * Exercises the full AGENT-02 vertical:
  *   tRPC createFollowUpAgent
  *   → INSERT agent_run_outbox (manual)
  *   → drainAgentRunOutboxOnce
  *   → bridgeActionConfig → executor dispatch → stub returns
- *   → outbox/run/run_actions all 'completed', _stub/_ticket markers visible.
+ *   → outbox/run/run_actions reach the expected paused state on
+ *     the send_message approval gate.
  *
- * Single test, end-to-end. Diagnoses faster than the granular drain
- * tests because if THIS passes, the full vertical works.
+ * AGENT-03 update: send_message now returns requiresApproval: true, so
+ * after one drain pass the Follow-Up Agent halts at
+ * awaiting_approval (action 1 completed, action 2 paused). The full
+ * approve + resume + completion cycle is exercised by
+ * agent-approval-vertical-smoke.test.ts.
  */
 
 import "../src/bootstrap";
@@ -97,7 +101,7 @@ describe("AGENT-02 — vertical smoke", () => {
     await poolSql.end({ timeout: 2 });
   });
 
-  it("end-to-end: create Follow-Up Agent → enqueue → drain → completed", async () => {
+  it("end-to-end: create Follow-Up Agent → enqueue → drain → paused on send_message approval", async () => {
     // 1. tRPC createFollowUpAgent.
     const createRes = await app.request("/trpc/createFollowUpAgent", {
       method: "POST",
@@ -132,38 +136,48 @@ describe("AGENT-02 — vertical smoke", () => {
     assert.ok(outboxRow);
     const outboxId = outboxRow.id;
 
-    // 3. drainAgentRunOutboxOnce.
+    // 3. drainAgentRunOutboxOnce — Follow-Up Agent's action 2 is
+    //    send_message + human_required, so AGENT-03's executor flip
+    //    halts the run at awaiting_approval after one drain pass.
     const drainResult = await drainAgentRunOutboxOnce({ log: drainLog });
     assert.equal(drainResult.claimed, 1, "drain should pick up the row");
-    assert.equal(drainResult.completed, 1, "drain should complete the run");
+    assert.equal(drainResult.awaiting, 1, "send_message should halt for approval");
+    assert.equal(drainResult.completed, 0);
     assert.equal(drainResult.failed, 0);
 
-    // 4. Assertions on terminal state.
+    // 4. Terminal state after this pass: paused, not completed.
     const [outbox] = await poolSql<{ status: string; completed_at: Date | null }[]>`
       SELECT status, completed_at FROM public.agent_run_outbox WHERE id = ${outboxId}
     `;
-    assert.equal(outbox?.status, "completed");
-    assert.ok(outbox?.completed_at, "outbox.completed_at should be set");
+    assert.equal(outbox?.status, "awaiting_approval");
+    assert.equal(outbox?.completed_at, null);
 
     const [run] = await poolSql<{ status: string; cost_micros: string }[]>`
       SELECT status, cost_micros::text AS cost_micros
       FROM public.agent_runs WHERE agent_id = ${agentId}
     `;
-    assert.equal(run?.status, "completed");
+    assert.equal(run?.status, "awaiting_approval");
     assert.equal(run?.cost_micros, "0", "stub executors charge 0");
 
-    const runActions = await poolSql<{ status: string; output: unknown }[]>`
-      SELECT ra.status, ra.output
+    const runActions = await poolSql<{ status: string; output: unknown; action_order: number }[]>`
+      SELECT ra.status, ra.output, ra.action_order
       FROM public.agent_run_actions ra
       WHERE ra.run_id IN (SELECT id FROM public.agent_runs WHERE agent_id = ${agentId})
       ORDER BY ra.action_order
     `;
     assert.equal(runActions.length, 2, "Follow-Up Agent has 2 actions");
+    assert.equal(runActions[0]?.status, "completed", "draft_message completes autonomously");
+    assert.equal(runActions[1]?.status, "awaiting_approval", "send_message awaits approval");
     for (const ra of runActions) {
-      assert.equal(ra.status, "completed");
       const out = ra.output as Record<string, unknown>;
       assert.equal(out._stub, true, "stub honesty marker present");
       assert.equal(out._ticket, "AGENT-02", "AGENT-02 ticket marker present");
     }
+
+    const approvals = await poolSql<{ status: string }[]>`
+      SELECT status FROM public.agent_approval_requests WHERE agent_id = ${agentId}
+    `;
+    assert.equal(approvals.length, 1, "send_message produced an approval request");
+    assert.equal(approvals[0]?.status, "pending");
   });
 });

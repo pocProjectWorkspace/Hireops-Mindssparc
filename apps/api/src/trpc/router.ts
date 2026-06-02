@@ -39,6 +39,10 @@ import {
   agentTriggers,
   agentActions,
   agentApprovalRules,
+  agentApprovalRequests,
+  agentRuns,
+  agentRunActions,
+  agentRunOutbox,
   type ApplicationStage,
 } from "@hireops/db";
 import { evaluateKnockouts, type KnockoutInput } from "@hireops/ai-scoring";
@@ -78,9 +82,23 @@ import {
   createFollowUpAgentOutputSchema,
   listAgentsInputSchema,
   listAgentsOutputSchema,
+  approveApprovalInputSchema,
+  approveApprovalOutputSchema,
+  approveApprovalWithEditInputSchema,
+  approveApprovalWithEditOutputSchema,
+  rejectApprovalInputSchema,
+  rejectApprovalOutputSchema,
+  snoozeApprovalInputSchema,
+  snoozeApprovalOutputSchema,
+  listPendingApprovalsInputSchema,
+  listPendingApprovalsOutputSchema,
+  getApprovalRequestInputSchema,
+  getApprovalRequestOutputSchema,
   type SubmitApplicationOutput,
   type GetCandidateByIdOutput,
   type AgentListRow,
+  type PendingApprovalItem,
+  type GetApprovalRequestOutput,
 } from "@hireops/api-types";
 import { parseResume } from "@hireops/ai-client";
 import { enqueueNotification, signLink, hashToken } from "@hireops/notifications";
@@ -1503,7 +1521,567 @@ export const appRouter = router({
       }));
       return { agents };
     }),
+
+  // ─────────────────────── approval-resolution (AGENT-03) ───────────────────────
+  //
+  // Four mutation procedures that resolve a pending agent_approval_request:
+  //   approveApproval         — accept the proposed payload as-is
+  //   approveApprovalWithEdit — accept after editing the payload
+  //   rejectApproval          — terminal failure
+  //   snoozeApproval          — defer 24h, keeps status='pending'
+  //
+  // Atomicity: protectedProcedure opens a single withTenantContext tx, so
+  // the 4-row state writes (approval_request + run_action + run + outbox)
+  // either all commit together or all roll back. No poolSql.begin needed
+  // here — db is already the tx-bound Drizzle client.
+  //
+  // Audit: the audit_record_change() trigger fires on the approval_request
+  // UPDATE (see migration 0041 — INSERT OR UPDATE OR DELETE, no WHERE
+  // clause). api_audit_logs (intent-level) is written by withAudit.
+
+  approveApproval: protectedProcedure
+    .input(approveApprovalInputSchema)
+    .output(approveApprovalOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      return withAudit("approve_approval", ctx, input, async () => {
+        const db = requireDb(ctx);
+        const ar = await loadPendingApprovalForResolution(db, input.approvalRequestId);
+        await ensureCanResolveApproval(db, ctx, ar);
+
+        const membershipId = await resolveActorMembership(db, ctx);
+        const now = new Date();
+
+        await db
+          .update(agentApprovalRequests)
+          .set({
+            status: "approved",
+            decidedAt: now,
+            decidedByUserId: membershipId,
+            decisionNotes: input.decisionNotes ?? null,
+          })
+          .where(eq(agentApprovalRequests.id, ar.id));
+
+        // Output unchanged — the worker will read the original draft from
+        // agent_run_actions.output that the awaiting transition recorded.
+        await db
+          .update(agentRunActions)
+          .set({ status: "completed", completedAt: now })
+          .where(eq(agentRunActions.id, ar.runActionId));
+
+        await db.update(agentRuns).set({ status: "running" }).where(eq(agentRuns.id, ar.runId));
+
+        // Re-queue the outbox for the worker. status='pending' brings the
+        // row back into polling rotation; locked_until=NULL is defensive
+        // (the worker uses the OR (locked_until IS NULL OR < now()) clause
+        // anyway, but stale lock state on a re-queued row would surprise).
+        await db
+          .update(agentRunOutbox)
+          .set({ status: "pending", lockedUntil: null })
+          .where(
+            and(
+              eq(agentRunOutbox.tenantId, ar.tenantId),
+              eq(agentRunOutbox.agentId, ar.agentId),
+              eq(agentRunOutbox.status, "awaiting_approval"),
+            ),
+          );
+
+        return { status: "approved" as const, runId: ar.runId };
+      });
+    }),
+
+  approveApprovalWithEdit: protectedProcedure
+    .input(approveApprovalWithEditInputSchema)
+    .output(approveApprovalWithEditOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      return withAudit("approve_approval_with_edit", ctx, input, async () => {
+        const db = requireDb(ctx);
+        const ar = await loadPendingApprovalForResolution(db, input.approvalRequestId);
+        await ensureCanResolveApproval(db, ctx, ar);
+
+        const membershipId = await resolveActorMembership(db, ctx);
+        const now = new Date();
+
+        await db
+          .update(agentApprovalRequests)
+          .set({
+            status: "approved",
+            decidedAt: now,
+            decidedByUserId: membershipId,
+            decisionNotes: input.decisionNotes ?? null,
+            editedPayload: input.editedPayload,
+          })
+          .where(eq(agentApprovalRequests.id, ar.id));
+
+        // Copy edited payload into agent_run_actions.output. On resume,
+        // the worker reads this column directly and skips re-execution.
+        // The original proposed_action_payload stays on the approval
+        // request for the audit triple (proposed + edited + final).
+        await db
+          .update(agentRunActions)
+          .set({ status: "completed", completedAt: now, output: input.editedPayload })
+          .where(eq(agentRunActions.id, ar.runActionId));
+
+        await db.update(agentRuns).set({ status: "running" }).where(eq(agentRuns.id, ar.runId));
+
+        await db
+          .update(agentRunOutbox)
+          .set({ status: "pending", lockedUntil: null })
+          .where(
+            and(
+              eq(agentRunOutbox.tenantId, ar.tenantId),
+              eq(agentRunOutbox.agentId, ar.agentId),
+              eq(agentRunOutbox.status, "awaiting_approval"),
+            ),
+          );
+
+        return { status: "approved" as const, runId: ar.runId };
+      });
+    }),
+
+  rejectApproval: protectedProcedure
+    .input(rejectApprovalInputSchema)
+    .output(rejectApprovalOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      return withAudit("reject_approval", ctx, input, async () => {
+        const db = requireDb(ctx);
+        const ar = await loadPendingApprovalForResolution(db, input.approvalRequestId);
+        await ensureCanResolveApproval(db, ctx, ar);
+
+        const membershipId = await resolveActorMembership(db, ctx);
+        const now = new Date();
+        const errorMsg = `Approval rejected: ${input.decisionNotes}`;
+
+        await db
+          .update(agentApprovalRequests)
+          .set({
+            status: "rejected",
+            decidedAt: now,
+            decidedByUserId: membershipId,
+            decisionNotes: input.decisionNotes,
+          })
+          .where(eq(agentApprovalRequests.id, ar.id));
+
+        // run_action marked failed (not 'skipped' — skipped is for downstream
+        // actions implicitly bypassed; the rejected action itself failed).
+        await db
+          .update(agentRunActions)
+          .set({ status: "failed", completedAt: now, error: errorMsg })
+          .where(eq(agentRunActions.id, ar.runActionId));
+
+        await db
+          .update(agentRuns)
+          .set({
+            status: "rejected",
+            completedAt: now,
+            error: `Approval rejected at action ${ar.actionOrder}`,
+          })
+          .where(eq(agentRuns.id, ar.runId));
+
+        // Outbox terminal-failed. Worker won't re-pick it up (status is
+        // not 'pending'). Run does NOT resume — rejection is terminal.
+        await db
+          .update(agentRunOutbox)
+          .set({
+            status: "failed",
+            completedAt: now,
+            lastError: "Approval rejected",
+          })
+          .where(
+            and(
+              eq(agentRunOutbox.tenantId, ar.tenantId),
+              eq(agentRunOutbox.agentId, ar.agentId),
+              eq(agentRunOutbox.status, "awaiting_approval"),
+            ),
+          );
+
+        return { status: "rejected" as const, runId: ar.runId };
+      });
+    }),
+
+  snoozeApproval: protectedProcedure
+    .input(snoozeApprovalInputSchema)
+    .output(snoozeApprovalOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      return withAudit("snooze_approval", ctx, input, async () => {
+        const db = requireDb(ctx);
+        const ar = await loadPendingApprovalForResolution(db, input.approvalRequestId);
+        // Any authorised recruiter (per approver_role) can snooze. Same
+        // role gate as approve/reject — snoozing past a decision deadline
+        // is still a decision affecting the run.
+        await ensureCanResolveApproval(db, ctx, ar);
+
+        // Snooze sets ttl_at unconditionally — works for both
+        // human_required (the TTL scan clears it without auto-approving)
+        // and human_optional (the TTL scan auto-approves at expiry).
+        // Status stays 'pending'.
+        const snoozedUntil = new Date(Date.now() + 24 * 60 * 60 * 1000);
+
+        await db
+          .update(agentApprovalRequests)
+          .set({ ttlAt: snoozedUntil })
+          .where(eq(agentApprovalRequests.id, ar.id));
+
+        return { status: "pending" as const, snoozedUntil: snoozedUntil.toISOString() };
+      });
+    }),
+
+  // ─────────────────────── approval queue listing (AGENT-03) ───────────────────────
+
+  listPendingApprovals: protectedProcedure
+    .input(listPendingApprovalsInputSchema)
+    .output(listPendingApprovalsOutputSchema)
+    .query(async ({ ctx, input }) => {
+      const db = requireDb(ctx);
+      // Cursor is the proposed_at of the last row from the previous page —
+      // strict-greater-than walks forward, no OFFSET cost. Limit +1 lets
+      // us know whether more rows exist beyond the page.
+      const limit = input.limit;
+      const cursorDate = input.cursor ? new Date(input.cursor) : null;
+
+      const result = await db.execute(dsql`
+        SELECT
+          ar.id::text AS id,
+          ar.run_id::text AS run_id,
+          ar.agent_id::text AS agent_id,
+          aa.name AS agent_name,
+          aa.agent_type AS agent_type,
+          ar.proposed_at,
+          ar.proposed_action_summary,
+          ar.proposed_action_payload,
+          run.trigger_context,
+          ar.approver_role,
+          ar.ttl_at,
+          run.cost_micros::text AS cost_micros
+        FROM public.agent_approval_requests ar
+        JOIN public.automation_agents aa ON aa.id = ar.agent_id AND aa.tenant_id = ar.tenant_id
+        JOIN public.agent_runs run ON run.id = ar.run_id AND run.tenant_id = ar.tenant_id
+        WHERE ar.status = 'pending'
+          ${input.agentId ? dsql`AND ar.agent_id = ${input.agentId}::uuid` : dsql``}
+          ${cursorDate ? dsql`AND ar.proposed_at > ${cursorDate}` : dsql``}
+        ORDER BY ar.proposed_at ASC
+        LIMIT ${limit + 1}
+      `);
+
+      interface Row {
+        id: string;
+        run_id: string;
+        agent_id: string;
+        agent_name: string;
+        agent_type: string;
+        proposed_at: Date | string;
+        proposed_action_summary: string;
+        proposed_action_payload: Record<string, unknown>;
+        trigger_context: Record<string, unknown>;
+        approver_role: string;
+        ttl_at: Date | string | null;
+        cost_micros: string;
+      }
+      const rows = (result as unknown as { rows?: Row[] }).rows ?? (result as unknown as Row[]);
+      const hasMore = rows.length > limit;
+      const pageRows = hasMore ? rows.slice(0, limit) : rows;
+
+      const items: PendingApprovalItem[] = pageRows.map((r) => ({
+        id: r.id,
+        runId: r.run_id,
+        agentId: r.agent_id,
+        agentName: r.agent_name,
+        agentType: r.agent_type,
+        proposedAt: toIsoString(r.proposed_at) ?? new Date(0).toISOString(),
+        proposedActionSummary: r.proposed_action_summary,
+        proposedActionPayload: r.proposed_action_payload,
+        triggerContext: r.trigger_context,
+        approverRole: r.approver_role,
+        snoozedUntil: toIsoString(r.ttl_at),
+        costMicrosSoFar: r.cost_micros,
+      }));
+
+      const lastRow = pageRows[pageRows.length - 1];
+      const nextCursor = hasMore && lastRow ? toIsoString(lastRow.proposed_at) : null;
+
+      return { items, nextCursor };
+    }),
+
+  getApprovalRequest: protectedProcedure
+    .input(getApprovalRequestInputSchema)
+    .output(getApprovalRequestOutputSchema)
+    .query(async ({ ctx, input }) => {
+      const db = requireDb(ctx);
+      // Single query joins everything the detail surface needs — agent,
+      // trigger, the run's action being approved, and the approval_rule
+      // for approval_mode. previousActions are fetched separately.
+      const detailRes = await db.execute(dsql`
+        SELECT
+          ar.id::text AS id,
+          ar.run_id::text AS run_id,
+          ar.agent_id::text AS agent_id,
+          aa.name AS agent_name,
+          aa.agent_type AS agent_type,
+          aa.description AS agent_description,
+          ar.proposed_at,
+          ar.proposed_action_summary,
+          ar.proposed_action_payload,
+          run.trigger_context,
+          ar.approver_role,
+          ar.ttl_at,
+          run.cost_micros::text AS cost_micros,
+          trig.trigger_type,
+          trig.trigger_config,
+          act.action_type,
+          act.action_config,
+          rule.approval_mode,
+          run_act.action_order::int AS action_order
+        FROM public.agent_approval_requests ar
+        JOIN public.automation_agents aa ON aa.id = ar.agent_id AND aa.tenant_id = ar.tenant_id
+        JOIN public.agent_runs run ON run.id = ar.run_id AND run.tenant_id = ar.tenant_id
+        JOIN public.agent_run_actions run_act
+          ON run_act.id = ar.run_action_id AND run_act.tenant_id = ar.tenant_id
+        JOIN public.agent_actions act
+          ON act.id = run_act.action_id AND act.tenant_id = ar.tenant_id
+        LEFT JOIN public.agent_triggers trig
+          ON trig.agent_id = ar.agent_id AND trig.tenant_id = ar.tenant_id
+        LEFT JOIN public.agent_approval_rules rule
+          ON rule.action_id = act.id AND rule.tenant_id = ar.tenant_id
+        WHERE ar.id = ${input.approvalRequestId}::uuid
+        LIMIT 1
+      `);
+
+      interface DetailRow {
+        id: string;
+        run_id: string;
+        agent_id: string;
+        agent_name: string;
+        agent_type: string;
+        agent_description: string | null;
+        proposed_at: Date | string;
+        proposed_action_summary: string;
+        proposed_action_payload: Record<string, unknown>;
+        trigger_context: Record<string, unknown>;
+        approver_role: string;
+        ttl_at: Date | string | null;
+        cost_micros: string;
+        trigger_type: string;
+        trigger_config: Record<string, unknown>;
+        action_type: string;
+        action_config: Record<string, unknown>;
+        approval_mode: "auto" | "human_required" | "human_optional";
+        action_order: number;
+      }
+      const detailRows =
+        (detailRes as unknown as { rows?: DetailRow[] }).rows ??
+        (detailRes as unknown as DetailRow[]);
+      const detail = detailRows[0];
+      if (!detail) {
+        throw new TRPCError({ code: "NOT_FOUND", message: "Approval request not found" });
+      }
+
+      // Previous actions in the same run, ordered by action_order. We include
+      // the request's own run_action too — caller decides whether to render
+      // it as "the pending one" or hide it.
+      const prevRes = await db.execute(dsql`
+        SELECT
+          run_act.action_order::int AS action_order,
+          act.action_type AS action_type,
+          run_act.status,
+          run_act.output,
+          run_act.completed_at
+        FROM public.agent_run_actions run_act
+        JOIN public.agent_actions act
+          ON act.id = run_act.action_id AND act.tenant_id = run_act.tenant_id
+        WHERE run_act.run_id = ${detail.run_id}::uuid
+        ORDER BY run_act.action_order ASC
+      `);
+      interface PrevRow {
+        action_order: number;
+        action_type: string;
+        status: string;
+        output: Record<string, unknown> | null;
+        completed_at: Date | string | null;
+      }
+      const prevRows =
+        (prevRes as unknown as { rows?: PrevRow[] }).rows ?? (prevRes as unknown as PrevRow[]);
+
+      const out: GetApprovalRequestOutput = {
+        id: detail.id,
+        runId: detail.run_id,
+        agentId: detail.agent_id,
+        agentName: detail.agent_name,
+        agentType: detail.agent_type,
+        proposedAt: toIsoString(detail.proposed_at) ?? new Date(0).toISOString(),
+        proposedActionSummary: detail.proposed_action_summary,
+        proposedActionPayload: detail.proposed_action_payload,
+        triggerContext: detail.trigger_context,
+        approverRole: detail.approver_role,
+        snoozedUntil: toIsoString(detail.ttl_at),
+        costMicrosSoFar: detail.cost_micros,
+        agentDescription: detail.agent_description,
+        triggerType: detail.trigger_type,
+        triggerConfig: detail.trigger_config,
+        actionType: detail.action_type,
+        actionConfig: detail.action_config,
+        approvalMode: detail.approval_mode,
+        previousActions: prevRows.map((p) => ({
+          actionOrder: p.action_order,
+          actionType: p.action_type,
+          status: p.status,
+          output: p.output,
+          completedAt: toIsoString(p.completed_at),
+        })),
+      };
+      return out;
+    }),
 });
+
+// ─────────────── AGENT-03 approval-resolution helpers ───────────────
+
+/**
+ * Loaded approval-request shape used by the resolution procedures. Trims
+ * to just the fields the resolution path needs to write the four-row
+ * state transition (no full row clone).
+ */
+interface LoadedApproval {
+  id: string;
+  tenantId: string;
+  agentId: string;
+  runId: string;
+  runActionId: string;
+  actionOrder: number;
+  approverRole: string;
+  approverUserId: string | null;
+}
+
+/**
+ * Loads a pending approval request, joining to agent_run_actions for
+ * action_order (used in rejection error messages) and to
+ * agent_approval_rules for the optional approver_user_id (specific_user
+ * mode). Throws NOT_FOUND if missing or not pending — callers don't
+ * need to second-guess status.
+ */
+async function loadPendingApprovalForResolution(
+  db: NonNullable<HonoTRPCContext["db"]>,
+  approvalRequestId: string,
+): Promise<LoadedApproval> {
+  // approver_user_id is on agent_approval_rules (keyed by action_id),
+  // not on the request itself — join through run_action to find it.
+  const result = await db.execute(dsql`
+    SELECT
+      ar.id::text AS id,
+      ar.tenant_id::text AS tenant_id,
+      ar.agent_id::text AS agent_id,
+      ar.run_id::text AS run_id,
+      ar.run_action_id::text AS run_action_id,
+      ar.approver_role,
+      ar.status,
+      run_act.action_order::int AS action_order,
+      rule.approver_user_id::text AS approver_user_id
+    FROM public.agent_approval_requests ar
+    JOIN public.agent_run_actions run_act
+      ON run_act.id = ar.run_action_id AND run_act.tenant_id = ar.tenant_id
+    LEFT JOIN public.agent_approval_rules rule
+      ON rule.action_id = run_act.action_id AND rule.tenant_id = ar.tenant_id
+    WHERE ar.id = ${approvalRequestId}::uuid
+    LIMIT 1
+  `);
+  interface Row {
+    id: string;
+    tenant_id: string;
+    agent_id: string;
+    run_id: string;
+    run_action_id: string;
+    approver_role: string;
+    status: string;
+    action_order: number;
+    approver_user_id: string | null;
+  }
+  const rows = (result as unknown as { rows?: Row[] }).rows ?? (result as unknown as Row[]);
+  const row = rows[0];
+  if (!row) {
+    throw new TRPCError({ code: "NOT_FOUND", message: "Approval request not found" });
+  }
+  if (row.status !== "pending") {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: `Approval request is ${row.status}, not pending — cannot resolve`,
+    });
+  }
+  return {
+    id: row.id,
+    tenantId: row.tenant_id,
+    agentId: row.agent_id,
+    runId: row.run_id,
+    runActionId: row.run_action_id,
+    actionOrder: row.action_order,
+    approverRole: row.approver_role,
+    approverUserId: row.approver_user_id,
+  };
+}
+
+// Recruiter-tier roles — admin always passes because admin is the
+// super-role across the codebase (see existing FORBIDDEN paths in
+// router that follow the same admin-included pattern).
+const RECRUITER_RESOLVE_ROLES = new Set(["admin", "recruiter", "hr_ops", "people_ops"]);
+const HR_TEAM_RESOLVE_ROLES = new Set(["admin", "hr_ops", "people_ops"]);
+
+/**
+ * Enforces the approver_role gate for an approval-resolution call.
+ *
+ * For AGENT-03, owning_recruiter is treated as any-recruiter — joining
+ * trigger_context → application → assigned_recruiter would couple the
+ * agent layer to the application layer in a way that has no precedent
+ * in this codebase yet. AGENT-04+ tightens this once we have the join
+ * pattern reusable elsewhere.
+ */
+async function ensureCanResolveApproval(
+  db: NonNullable<HonoTRPCContext["db"]>,
+  ctx: HonoTRPCContext,
+  ar: LoadedApproval,
+): Promise<void> {
+  const callerRoles = ctx.roles;
+  switch (ar.approverRole) {
+    case "any_recruiter":
+    case "owning_recruiter": {
+      // TODO(AGENT-04): tighten owning_recruiter via trigger_context →
+      // application.assigned_recruiter join, once that join pattern is
+      // also used elsewhere in the codebase.
+      if (!callerRoles.some((r) => RECRUITER_RESOLVE_ROLES.has(r))) {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: "Recruiter role required to resolve this approval",
+        });
+      }
+      return;
+    }
+    case "hr_team": {
+      if (!callerRoles.some((r) => HR_TEAM_RESOLVE_ROLES.has(r))) {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: "HR team role required to resolve this approval",
+        });
+      }
+      return;
+    }
+    case "specific_user": {
+      // specific_user mode pins to a single membership id (the
+      // approver_user_id column on agent_approval_rules). The caller must
+      // be that user.
+      const callerMembershipId = await resolveActorMembership(db, ctx);
+      if (!callerMembershipId || !ar.approverUserId || callerMembershipId !== ar.approverUserId) {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: "Only the specifically-named approver can resolve this approval",
+        });
+      }
+      return;
+    }
+    default: {
+      // Defensive — DB CHECK constraint restricts the column to the
+      // four documented values, so this branch is unreachable.
+      throw new TRPCError({
+        code: "INTERNAL_SERVER_ERROR",
+        message: `Unknown approver_role ${ar.approverRole}`,
+      });
+    }
+  }
+}
 
 /**
  * Shared core for advance + reject. Reads current_stage, writes the

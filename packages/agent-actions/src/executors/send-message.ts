@@ -9,11 +9,19 @@ import { ActionConfigMismatchError, type ActionExecutor } from "../types";
  * returns sent: false to make it unmistakable that nothing was actually
  * dispatched.
  *
- * Note: `requires_approval` is a config-level flag (HR-set), distinct
- * from the per-action approval_mode in agent_approval_rules. AGENT-02
- * always returns requiresApproval: false regardless — the
- * awaiting_approval path is exercised by AGENT-03 once the resolution
- * endpoint exists.
+ * AGENT-03 flipped `requiresApproval: true` so the awaiting_approval
+ * worker branch + approval-resolution + resume cycle can be exercised
+ * end-to-end. The output is still the AGENT-02 stub shape — the
+ * `_originally_set_by` marker records that the stub itself dates from
+ * AGENT-02 and the approval-requiring flip happened in AGENT-03.
+ *
+ * Note: `requires_approval` in the config is HR-set on agent setup,
+ * distinct from this `requiresApproval: true` on the executor return,
+ * which is the executor-side signal that the action shouldn't proceed
+ * without a resolved agent_approval_request. The per-action
+ * approval_mode (auto / human_required / human_optional) on
+ * agent_approval_rules is yet a third layer — combined, the worker
+ * gates on the rule's mode (`auto` short-circuits the executor signal).
  */
 export const sendMessageExecutor: ActionExecutor = async ({ config }) => {
   if (config.type !== "send_message") {
@@ -23,6 +31,7 @@ export const sendMessageExecutor: ActionExecutor = async ({ config }) => {
     output: {
       _stub: true,
       _ticket: "AGENT-02",
+      _originally_set_by: "AGENT-02",
       channel: config.channel,
       recipient_email: "<stub>",
       outbox_kind: config.outbox_kind,
@@ -30,6 +39,6 @@ export const sendMessageExecutor: ActionExecutor = async ({ config }) => {
       would_send_to: "<stub>",
     },
     costMicros: 0n,
-    requiresApproval: false,
+    requiresApproval: true,
   };
 };

@@ -511,3 +511,141 @@ export const listAgentsOutputSchema = z.object({
 });
 export type ListAgentsInput = z.infer<typeof listAgentsInputSchema>;
 export type ListAgentsOutput = z.infer<typeof listAgentsOutputSchema>;
+
+// ─────────────── approval-resolution (AGENT-03) ───────────────
+
+/**
+ * Approve a pending approval request without payload edits.
+ *
+ * Resume path: the resolution flips agent_run_actions.status='completed'
+ * and re-queues the outbox (status='pending'). The next worker pass
+ * picks it up, sees the completed action, skips re-execution, and
+ * continues with the remaining actions.
+ *
+ * decisionNotes is optional — recruiters often approve silently. The
+ * audit_record_change() trigger captures the full diff regardless.
+ */
+export const approveApprovalInputSchema = z.object({
+  approvalRequestId: z.string().uuid(),
+  decisionNotes: z.string().max(2000).optional(),
+});
+export const approveApprovalOutputSchema = z.object({
+  status: z.literal("approved"),
+  runId: z.string().uuid(),
+});
+export type ApproveApprovalInput = z.infer<typeof approveApprovalInputSchema>;
+export type ApproveApprovalOutput = z.infer<typeof approveApprovalOutputSchema>;
+
+/**
+ * Approve with payload edits — recruiter tweaked the AI's draft before
+ * sending. The edited payload replaces the agent_run_actions.output so
+ * the worker uses the edited version on resume; the original
+ * proposed_action_payload stays on the approval request for audit.
+ *
+ * editedPayload is loosely typed for AGENT-03 (any object). AGENT-04+
+ * will tighten this per-action-type via discriminated union against
+ * the corresponding executor's output schema.
+ */
+export const approveApprovalWithEditInputSchema = z.object({
+  approvalRequestId: z.string().uuid(),
+  editedPayload: z.record(z.string(), z.unknown()),
+  decisionNotes: z.string().max(2000).optional(),
+});
+export const approveApprovalWithEditOutputSchema = z.object({
+  status: z.literal("approved"),
+  runId: z.string().uuid(),
+});
+export type ApproveApprovalWithEditInput = z.infer<typeof approveApprovalWithEditInputSchema>;
+export type ApproveApprovalWithEditOutput = z.infer<typeof approveApprovalWithEditOutputSchema>;
+
+/**
+ * Reject — terminal for the run. The action_action transitions to
+ * 'failed' with the rejection reason recorded, the run transitions to
+ * 'rejected', and the outbox to 'failed'. decisionNotes is required
+ * because a rejection without a stated reason is not a useful audit
+ * record.
+ */
+export const rejectApprovalInputSchema = z.object({
+  approvalRequestId: z.string().uuid(),
+  decisionNotes: z.string().min(1).max(2000),
+});
+export const rejectApprovalOutputSchema = z.object({
+  status: z.literal("rejected"),
+  runId: z.string().uuid(),
+});
+export type RejectApprovalInput = z.infer<typeof rejectApprovalInputSchema>;
+export type RejectApprovalOutput = z.infer<typeof rejectApprovalOutputSchema>;
+
+/**
+ * Snooze — defers the decision by 24h. Status stays 'pending'; only
+ * ttl_at moves. For human_required mode the TTL is just a "show this
+ * back to me later" affordance (the TTL scan clears it without auto-
+ * approving); for human_optional the TTL scan auto-approves at expiry.
+ */
+export const snoozeApprovalInputSchema = z.object({
+  approvalRequestId: z.string().uuid(),
+});
+export const snoozeApprovalOutputSchema = z.object({
+  status: z.literal("pending"),
+  snoozedUntil: z.string(),
+});
+export type SnoozeApprovalInput = z.infer<typeof snoozeApprovalInputSchema>;
+export type SnoozeApprovalOutput = z.infer<typeof snoozeApprovalOutputSchema>;
+
+// ─────────────── approval-queue listing (AGENT-03) ───────────────
+
+/**
+ * Pending-approval queue. Cursor-based pagination on proposed_at to
+ * avoid OFFSET cost as the queue grows. Oldest-first so recruiters see
+ * the longest-waiting requests at the top.
+ */
+export const listPendingApprovalsInputSchema = z.object({
+  agentId: z.string().uuid().optional(),
+  limit: z.number().int().positive().max(100).default(50),
+  cursor: z.string().optional(),
+});
+export const pendingApprovalItemSchema = z.object({
+  id: z.string().uuid(),
+  runId: z.string().uuid(),
+  agentId: z.string().uuid(),
+  agentName: z.string(),
+  agentType: z.string(),
+  proposedAt: z.string(),
+  proposedActionSummary: z.string(),
+  proposedActionPayload: z.record(z.string(), z.unknown()),
+  triggerContext: z.record(z.string(), z.unknown()),
+  approverRole: z.string(),
+  snoozedUntil: z.string().nullable(),
+  costMicrosSoFar: z.string(), // bigint-as-string — JSON can't carry bigint
+});
+export const listPendingApprovalsOutputSchema = z.object({
+  items: z.array(pendingApprovalItemSchema),
+  nextCursor: z.string().nullable(),
+});
+export type ListPendingApprovalsInput = z.infer<typeof listPendingApprovalsInputSchema>;
+export type ListPendingApprovalsOutput = z.infer<typeof listPendingApprovalsOutputSchema>;
+export type PendingApprovalItem = z.infer<typeof pendingApprovalItemSchema>;
+
+export const getApprovalRequestInputSchema = z.object({
+  approvalRequestId: z.string().uuid(),
+});
+export const approvalRequestDetailSchema = pendingApprovalItemSchema.extend({
+  agentDescription: z.string().nullable(),
+  triggerType: z.string(),
+  triggerConfig: z.record(z.string(), z.unknown()),
+  actionType: z.string(),
+  actionConfig: z.record(z.string(), z.unknown()),
+  approvalMode: z.enum(["auto", "human_required", "human_optional"]),
+  previousActions: z.array(
+    z.object({
+      actionOrder: z.number().int(),
+      actionType: z.string(),
+      status: z.string(),
+      output: z.record(z.string(), z.unknown()).nullable(),
+      completedAt: z.string().nullable(),
+    }),
+  ),
+});
+export const getApprovalRequestOutputSchema = approvalRequestDetailSchema;
+export type GetApprovalRequestInput = z.infer<typeof getApprovalRequestInputSchema>;
+export type GetApprovalRequestOutput = z.infer<typeof getApprovalRequestOutputSchema>;

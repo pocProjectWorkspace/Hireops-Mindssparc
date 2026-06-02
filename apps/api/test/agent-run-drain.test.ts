@@ -198,7 +198,11 @@ describe("AGENT-02 — agent_run_outbox drain", () => {
     assert.equal(out.template_prompt_id, "follow_up_v1");
   });
 
-  it("Test 3: multi-action agent executes in action_order; later action sees the earlier output via the worker loop", async () => {
+  it("Test 3: multi-action agent halts at send_message awaiting_approval (AGENT-03 flipped the executor)", async () => {
+    // AGENT-03 flipped send_message to requiresApproval: true. The drain
+    // now executes draft_message → halts at send_message in
+    // awaiting_approval. End-to-end completion via approve + resume is
+    // covered by agent-approval-vertical-smoke.test.ts.
     await seedAgent(A02_AGENT_MULTI, "agent-02-multi", [
       {
         order: 1,
@@ -211,17 +215,32 @@ describe("AGENT-02 — agent_run_outbox drain", () => {
         config: { channel: "email", outbox_kind: "agent_followup", requires_approval: true },
       },
     ]);
+    // The drain reads agent_approval_rules to set approver_role on the
+    // approval_request row. Seed one for send_message.
+    const [sendActionRow] = await poolSql<{ id: string }[]>`
+      SELECT id FROM public.agent_actions
+      WHERE agent_id = ${A02_AGENT_MULTI} AND action_order = 2
+    `;
+    if (!sendActionRow) throw new Error("send action seed missing");
+    await poolSql`
+      INSERT INTO public.agent_approval_rules
+        (tenant_id, agent_id, action_id, approval_mode, approver_role)
+      VALUES (${testTenantId}, ${A02_AGENT_MULTI}, ${sendActionRow.id},
+              'human_required', 'any_recruiter')
+    `;
+
     const outboxId = await enqueueRun(A02_AGENT_MULTI, { application_id: "fake-app-2" });
 
     const r = await drainAgentRunOutboxOnce({ log: drainLog });
     assert.equal(r.claimed, 1);
-    assert.equal(r.completed, 1);
+    assert.equal(r.awaiting, 1, "send_message now halts the run for approval");
+    assert.equal(r.completed, 0);
     assert.equal(r.failed, 0);
 
     const [outbox] = await poolSql<{ status: string }[]>`
       SELECT status FROM public.agent_run_outbox WHERE id = ${outboxId}
     `;
-    assert.equal(outbox?.status, "completed");
+    assert.equal(outbox?.status, "awaiting_approval");
 
     const runActions = await poolSql<
       { action_order: number; action_type: string; status: string; input: unknown }[]
@@ -235,13 +254,22 @@ describe("AGENT-02 — agent_run_outbox drain", () => {
     assert.equal(runActions.length, 2);
     assert.equal(runActions[0]?.status, "completed");
     assert.equal(runActions[0]?.action_type, "draft_message");
-    assert.equal(runActions[1]?.status, "completed");
+    assert.equal(runActions[1]?.status, "awaiting_approval");
     assert.equal(runActions[1]?.action_type, "send_message");
 
     // Both run_actions persist the trigger_context snapshot — same shape as
     // what the executor sees via previousActionOutputs (worker-internal).
     const sendInput = runActions[1]?.input as { triggerContext: { application_id: string } };
     assert.equal(sendInput.triggerContext.application_id, "fake-app-2");
+
+    // The atomic 4-row transition created an approval_request row.
+    const approvals = await poolSql<{ status: string; approver_role: string }[]>`
+      SELECT status, approver_role FROM public.agent_approval_requests
+      WHERE agent_id = ${A02_AGENT_MULTI}
+    `;
+    assert.equal(approvals.length, 1);
+    assert.equal(approvals[0]?.status, "pending");
+    assert.equal(approvals[0]?.approver_role, "any_recruiter");
   });
 
   it("Test 4: invalid action_config jsonb → bridge ZodError → outbox failed, run failed, no retry", async () => {

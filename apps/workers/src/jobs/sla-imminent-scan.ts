@@ -19,6 +19,14 @@ import type { Logger } from "@hireops/observability";
  * Uses poolSql (service_role) for the cross-tenant join; uses poolDb
  * for the enqueue insert. enqueueNotification doesn't require a
  * tenant-bound tx — the row's tenant_id column is the source of truth.
+ *
+ * AGENT-03 piggyback: a second scan in the same 15-min tick handles
+ * agent_approval_requests with expired ttl_at. We piggyback rather
+ * than registering a 7th worker per open-questions #26 (worker
+ * registry refactor pending). Mode dispatch:
+ *   - human_optional → auto-approve, resume run
+ *   - human_required → clear ttl_at, status stays 'pending' (the TTL
+ *     was a "show this back to me" snooze, not an auto-decide)
  */
 
 const IMMINENT_WINDOW_HOURS = 4;
@@ -106,4 +114,131 @@ export async function slaImminentScan(log: Logger): Promise<void> {
     }
   }
   log.info({ scanned: rows.length }, "sla_scan.complete");
+
+  // AGENT-03 — TTL auto-approve scan piggybacked on the same tick.
+  await agentApprovalTtlScan(log);
+}
+
+/**
+ * AGENT-03 TTL scan — find pending approval requests whose ttl_at has
+ * passed, dispatch by the configured approval_mode.
+ *
+ * Cross-tenant by design (service-role poolSql); each request's
+ * tenant_id stays on every write so RLS is irrelevant here. Exported
+ * for direct invocation from tests so the scan can be exercised
+ * without sitting on the 15-min cadence.
+ */
+export async function agentApprovalTtlScan(
+  log: Logger,
+): Promise<{ autoApproved: number; snoozeExpired: number }> {
+  // One query gathers everything dispatch needs — joining to
+  // agent_approval_rules through the run_action gives us the
+  // approval_mode that determines the branch.
+  interface ExpiredApprovalRow {
+    id: string;
+    tenant_id: string;
+    agent_id: string;
+    run_id: string;
+    run_action_id: string;
+    approval_mode: string | null;
+    action_order: number;
+  }
+  const rows = await poolSql<ExpiredApprovalRow[]>`
+    SELECT
+      ar.id::text AS id,
+      ar.tenant_id::text AS tenant_id,
+      ar.agent_id::text AS agent_id,
+      ar.run_id::text AS run_id,
+      ar.run_action_id::text AS run_action_id,
+      rule.approval_mode AS approval_mode,
+      run_act.action_order::int AS action_order
+    FROM public.agent_approval_requests ar
+    JOIN public.agent_run_actions run_act
+      ON run_act.id = ar.run_action_id AND run_act.tenant_id = ar.tenant_id
+    LEFT JOIN public.agent_approval_rules rule
+      ON rule.action_id = run_act.action_id AND rule.tenant_id = ar.tenant_id
+    WHERE ar.status = 'pending'
+      AND ar.ttl_at IS NOT NULL
+      AND ar.ttl_at <= now()
+  `;
+
+  if (rows.length === 0) {
+    log.info("agent_ttl_scan.no_expired");
+    return { autoApproved: 0, snoozeExpired: 0 };
+  }
+
+  let autoApproved = 0;
+  let snoozeExpired = 0;
+
+  for (const row of rows) {
+    try {
+      if (row.approval_mode === "human_optional") {
+        // Auto-approve: same writes as approveApproval, but
+        // decided_by_user_id is NULL (system) and status is
+        // 'auto_approved' to distinguish from explicit human approval.
+        await poolSql.begin(async (tx) => {
+          await tx`
+            UPDATE public.agent_approval_requests
+            SET status = 'auto_approved',
+                decided_at = now(),
+                decided_by_user_id = NULL,
+                decision_notes = 'Auto-approved at TTL expiry'
+            WHERE id = ${row.id}::uuid
+          `;
+          await tx`
+            UPDATE public.agent_run_actions
+            SET status = 'completed', completed_at = now()
+            WHERE id = ${row.run_action_id}::uuid
+          `;
+          await tx`
+            UPDATE public.agent_runs
+            SET status = 'running'
+            WHERE id = ${row.run_id}::uuid
+          `;
+          // Re-queue the outbox row for the worker. We don't have the
+          // outbox_id directly but can match on (tenant_id, agent_id,
+          // status='awaiting_approval') — one in-flight outbox per
+          // (tenant, agent) is enforced de-facto by the run-resume
+          // probe in agent-run-drain.
+          await tx`
+            UPDATE public.agent_run_outbox
+            SET status = 'pending', locked_until = NULL
+            WHERE tenant_id = ${row.tenant_id}::uuid
+              AND agent_id = ${row.agent_id}::uuid
+              AND status = 'awaiting_approval'
+          `;
+        });
+        autoApproved += 1;
+        log.info(
+          { approval_request_id: row.id, run_id: row.run_id, tenant_id: row.tenant_id },
+          "agent_ttl_scan.auto_approved",
+        );
+      } else {
+        // human_required (or unknown — defensive) → TTL was a snooze.
+        // Clear ttl_at, leave status='pending' so it sits in the queue
+        // until a human acts.
+        await poolSql`
+          UPDATE public.agent_approval_requests
+          SET ttl_at = NULL
+          WHERE id = ${row.id}::uuid
+        `;
+        snoozeExpired += 1;
+        log.info(
+          { approval_request_id: row.id, tenant_id: row.tenant_id },
+          "agent_ttl_scan.snooze_expired",
+        );
+      }
+    } catch (err) {
+      // Don't let one bad row break the scan. Log and continue — the
+      // next tick re-tries because the WHERE clause stays true.
+      const msg = err instanceof Error ? err.message : String(err);
+      log.error(
+        { err: msg, approval_request_id: row.id, tenant_id: row.tenant_id },
+        "agent_ttl_scan.row_error",
+      );
+    }
+  }
+
+  log.info({ autoApproved, snoozeExpired, scanned: rows.length }, "agent_ttl_scan.complete");
+  return { autoApproved, snoozeExpired };
 }

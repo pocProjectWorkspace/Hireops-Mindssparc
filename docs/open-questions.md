@@ -683,6 +683,181 @@ type-only declarations from `@hireops/db`.
 
 ---
 
+## AGENT-03 follow-ups
+
+### 28. `tenant-context.test.ts` Test 25 hardcodes the May 2026 partition
+
+**What.** `apps/api/test/tenant-context.test.ts:1147` asserts an audit
+row is reachable through `public.audit_logs_2026_05` directly. The
+hardcoded partition table name only matches "current month" while the
+test environment's clock sits in May 2026. From 2026-06-01 onward,
+audit rows inserted "now" route to `audit_logs_2026_06` and the
+hardcoded `_2026_05` lookup returns zero rows — Test 25 fails on a
+date crossover, not on any code change.
+
+**Same class as #22.** Both are date-bomb assertions that the test
+suite carries through calendar boundaries. The pattern needs the same
+fix shape: assert against a dynamically-computed value, not a frozen
+literal.
+
+**Recommended fix (one sentence).** Replace the hardcoded
+`audit_logs_2026_05` SELECT with one that computes the current-month
+partition name (the test already builds the same string for the
+`tableoid::regclass` assertion above — reuse `expected`). Same shape
+of fix the #22 ticket needs; the partition-name pattern surface is
+small (`audit_logs_YYYY_MM`) and easy to centralise across both tests.
+
+**Trigger.** Anyone running the api test suite after 2026-05-31.
+Already firing as of 2026-06-02.
+
+**Cleanup ticket note.** The partition-name assertions across the
+test suite should compute the current month, not hardcode `_2026_05`,
+or the suite bleeds a new red every month. Worth folding into a
+"date-bomb sweep" cleanup ticket alongside #22.
+
+**Origin.** AGENT-03 verification surfaced this on the 2026-06-02
+test run.
+
+---
+
+### 29. Agent-run resume linkage relies on JSONB equality and a denormalised join
+
+**What.** Two related fragilities in the agent-run-drain resume path,
+both stemming from the same missing piece: there is no FK or pointer
+linking `agent_run_outbox` rows to the `agent_runs` row they spawned.
+Pertinent to all of AGENT-03's resume + TTL surface.
+
+  - **Resume identifies the existing run via `trigger_context` JSONB
+    equality.** The worker probes `agent_runs WHERE (tenant_id,
+    agent_id, status IN ('running', 'awaiting_approval'), trigger_context =
+    $::jsonb)`. Works today because the same `JSON.stringify(outbox.
+    trigger_context)` is written into both `agent_runs.trigger_context`
+    (first pass) and the probe parameter (second pass). Any future
+    change that canonicalises key order or normalises the trigger
+    context shape would silently break resume by missing the existing
+    run.
+  - **TTL auto-approve re-queues the outbox by joining on `(tenant_id,
+    agent_id, status='awaiting_approval')` rather than an `outbox_id`
+    FK on `agent_approval_requests`.** Works today because in practice
+    only one outbox row per `(tenant, agent)` is `awaiting_approval`
+    at a time — enforced de-facto by the resume probe + sequential
+    worker batch + AGENT-02's manual enqueue. The future stage_stale
+    scanner firing concurrent outbox rows for the same agent would
+    let the TTL scan re-queue the wrong one.
+
+**Rhymes with #99.** HANDOVER #99 already records that
+`agent_run_actions.approval_request_id` is a denormalised uuid pointer
+without an FK because Drizzle can't represent the cycle without a
+circular import or a hand-written ALTER. The agent_run_outbox →
+agent_runs linkage is the same problem one level up.
+
+**Recommended shape.** Add `outbox_id` column on `agent_runs` (FK
+back to `agent_run_outbox.id`, compound with tenant_id, nullable for
+the manual-trigger path that doesn't go through the outbox). Resume
+becomes `WHERE outbox_id = $`. TTL re-queue uses the same anchor.
+
+**Why deferred.** Today's correctness is preserved by the
+single-outbox-per-agent invariant the worker already enforces, and the
+schema add is non-trivial (back-fill, FK direction, RLS check). Settle
+the model before the scheduling agent (Wave 1 weeks 3–5) starts
+firing multiple concurrent outbox rows for the same scheduling agent,
+which would load the resume path much harder than Follow-Up does.
+
+**Trigger.** Scheduling agent design starts, OR anyone changes how
+`trigger_context` is constructed (canonicalising, normalising, adding
+versioning).
+
+**Origin.** AGENT-03 implementation surfaced both fragilities; this
+entry consolidates them per chat-Claude's review.
+
+---
+
+### 30. `requiresApproval` on executors may be redundant given the rule layer
+
+**What.** AGENT-03 ships a three-layer approval model:
+  1. The executor's `requiresApproval: true | false` return field
+     (only `send_message` returns `true` today).
+  2. The `agent_approval_rules.approval_mode` column
+     (`auto | human_required | human_optional`).
+  3. The config-level `requires_approval` boolean on send_message's
+     action_config (HR-set, currently unused on the executor read path).
+
+The worker uses both 1 and 2: layer-2 `mode='auto'` short-circuits
+layer-1's `true` (HR override wins). But layer 1 alone can't trigger
+the approval gate — an executor returning `requiresApproval: true`
+with no matching rule (or `mode='auto'`) just proceeds. So the
+executor flag is **never** sufficient on its own — the rule is always
+required to actually engage the gate (it supplies `approver_role`
+too, which the gate can't function without).
+
+**Question.** Should the executor flag exist at all? A two-layer
+model (rule-driven only, no executor signal) would:
+  - Simplify the dispatch path (no flag/rule reconciliation logic).
+  - Push the "needs approval by default" decision out of code and
+    into HR config — arguably the wedge's whole pitch.
+  - Mean every new action type ships with an `approval_mode` decision
+    in agent_approval_rules at create time, not as an executor flag.
+
+Or — keep three layers and document the executor flag as a "needs
+approval if not explicitly overridden" default? That preserves the
+ability for an executor to express "I, the platform, think this
+action probably wants human review" without requiring HR to know to
+configure it.
+
+**Why this matters before AGENT-04.** AGENT-04 ships the remaining
+agent types (Scheduling, Candidate Q&A) plus update/retire/toggle
+procedures. Each new action executor will face the same decision:
+return `requiresApproval: true`, `false`, or remove the field
+entirely. Settling the three-vs-two-layer story before that wave
+saves rework.
+
+**Trigger.** AGENT-04 design.
+
+**Origin.** Chat-Claude review of AGENT-03's audit-gap-close report,
+which made the three-layer model visible enough to question.
+
+---
+
+### 31. `agent_run_actions.output` writes are not audited separately
+
+**What.** AGENT-03's approve-with-edit copies the edited payload from
+`agent_approval_requests.edited_payload` into `agent_run_actions.
+output` so the worker reads the edited version on resume. The
+approval-request UPDATE is captured by the audit trigger (Test 2
+confirms this surfaces in `audit_logs.changed_columns` as
+`edited_payload`, `status`, etc.). But the corresponding
+`agent_run_actions.output` UPDATE is NOT separately audited because
+`agent_run_actions` does not have an audit trigger — it's a Category B
+table (high-volume operational data, intentionally excluded per
+migration 0041's docstring).
+
+**Consequence.** The audit triple's "final used" leg (the value the
+worker actually executed against) is reconstructable only via the
+join `agent_approval_requests.edited_payload` →
+`agent_run_actions.output`. If anything ever updates
+`agent_run_actions.output` outside of this approval-resolution
+pathway, that change leaves no audit trail.
+
+**Why low priority.** Today the only callers that write
+`agent_run_actions.output` are the worker (executor result) and
+`approveApprovalWithEdit` (edit copy). Both have well-defined surfaces
+that an auditor can reason about. The risk only matures if a future
+ticket adds another writer.
+
+**Trigger.** Any future ticket that writes to
+`agent_run_actions.output` from a third caller.
+
+**Resolution shape (when needed).** Either (a) add an audit trigger
+to `agent_run_actions` filtered to `output IS DISTINCT FROM
+OLD.output` to keep volume low, or (b) make the procedure-side write
+also record an explicit `audit_logs` row capturing the output diff.
+(b) is the existing pattern for high-volume tables that need
+narrow-slice auditing.
+
+**Origin.** Chat-Claude review of AGENT-03's audit-gap-close report.
+
+---
+
 ## Lifecycle
 
 This file lives alongside `HANDOVER.md` as a working index — append
