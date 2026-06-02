@@ -458,3 +458,56 @@ export const listWorkdaySyncsOutputSchema = z.object({
 });
 export type ListWorkdaySyncsInput = z.infer<typeof listWorkdaySyncsInputSchema>;
 export type ListWorkdaySyncsOutput = z.infer<typeof listWorkdaySyncsOutputSchema>;
+
+// ─────────────── agents (AGENT-02) ───────────────
+
+/**
+ * Follow-Up Agent curated-defaults form.
+ *
+ * AGENT-02 ships Follow-Up only — Scheduling and Candidate-Q&A land in
+ * AGENT-04+ via their own procedures. The HR-exposed fields are:
+ *   - name, description
+ *   - days_threshold (trigger): when an application has sat in the
+ *     monitored stage for this many days, the run fires
+ *   - stage (trigger): which application stage to monitor
+ *   - tone (draft_message): LLM tone modifier
+ *   - max_tokens (draft_message): per-draft cap; default 200
+ *
+ * The remaining knobs (template_prompt_id, channel, outbox_kind,
+ * approver_role on send_message) are platform-curated defaults applied
+ * inside the procedure; HR doesn't see them.
+ */
+export const createFollowUpAgentInputSchema = z.object({
+  name: z.string().min(1).max(100),
+  description: z.string().max(500).optional(),
+  days_threshold: z.number().int().positive().max(365),
+  stage: z.string().min(1).max(60),
+  tone: z.enum(["formal", "friendly", "neutral"]),
+  max_tokens: z.number().int().positive().max(2000).default(200),
+});
+export const createFollowUpAgentOutputSchema = z.object({
+  agentId: z.string().uuid(),
+});
+export type CreateFollowUpAgentInput = z.infer<typeof createFollowUpAgentInputSchema>;
+export type CreateFollowUpAgentOutput = z.infer<typeof createFollowUpAgentOutputSchema>;
+
+export const listAgentsInputSchema = z.object({}).optional();
+export const agentListRowSchema = z.object({
+  id: z.string().uuid(),
+  agent_type: z.string(),
+  name: z.string(),
+  description: z.string().nullable(),
+  enabled: z.boolean(),
+  version: z.number().int(),
+  created_at: z.string(),
+  retired_at: z.string().nullable(),
+  pending_approval_count: z.number().int(),
+  total_runs: z.number().int(),
+  last_run_at: z.string().nullable(),
+});
+export type AgentListRow = z.infer<typeof agentListRowSchema>;
+export const listAgentsOutputSchema = z.object({
+  agents: z.array(agentListRowSchema),
+});
+export type ListAgentsInput = z.infer<typeof listAgentsInputSchema>;
+export type ListAgentsOutput = z.infer<typeof listAgentsOutputSchema>;

@@ -21,7 +21,7 @@
 
 import { z } from "zod";
 import { TRPCError } from "@trpc/server";
-import { and, desc, eq, lt, sql as dsql } from "drizzle-orm";
+import { and, desc, eq, isNull, lt, sql as dsql } from "drizzle-orm";
 import {
   db as poolDb,
   persons,
@@ -35,6 +35,10 @@ import {
   offers,
   workdaySyncOutbox,
   aiScoreOutbox,
+  automationAgents,
+  agentTriggers,
+  agentActions,
+  agentApprovalRules,
   type ApplicationStage,
 } from "@hireops/db";
 import { evaluateKnockouts, type KnockoutInput } from "@hireops/ai-scoring";
@@ -70,8 +74,13 @@ import {
   listOffersByApplicationOutputSchema,
   listWorkdaySyncsInputSchema,
   listWorkdaySyncsOutputSchema,
+  createFollowUpAgentInputSchema,
+  createFollowUpAgentOutputSchema,
+  listAgentsInputSchema,
+  listAgentsOutputSchema,
   type SubmitApplicationOutput,
   type GetCandidateByIdOutput,
+  type AgentListRow,
 } from "@hireops/api-types";
 import { parseResume } from "@hireops/ai-client";
 import { enqueueNotification, signLink, hashToken } from "@hireops/notifications";
@@ -1266,6 +1275,234 @@ export const appRouter = router({
         nextCursor: hasMore ? lastCursor(out) : null,
       };
     }),
+
+  // ─────────────────────── agents (AGENT-02) ───────────────────────
+  //
+  // Follow-Up Agent CRUD. AGENT-02 ships create + list only; update /
+  // retire / toggle land in AGENT-04. Scheduling + Candidate-Q&A get
+  // their own procedures (also AGENT-04). Flat naming per HANDOVER #31.
+
+  createFollowUpAgent: protectedProcedure
+    .input(createFollowUpAgentInputSchema)
+    .output(createFollowUpAgentOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      return withAudit("create_follow_up_agent", ctx, input, async () => {
+        const db = requireDb(ctx);
+        if (!ctx.tenantId || !ctx.userId) {
+          // protectedProcedure guarantees this, but the types don't narrow.
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: "protected procedure missing tenantId/userId",
+          });
+        }
+        const tenantId = ctx.tenantId;
+
+        // Resolve actor's membership for created_by FK.
+        const [membership] = await db
+          .select({ id: tenantUserMemberships.id })
+          .from(tenantUserMemberships)
+          .where(
+            and(
+              eq(tenantUserMemberships.userId, ctx.userId),
+              eq(tenantUserMemberships.tenantId, tenantId),
+            ),
+          )
+          .limit(1);
+        if (!membership) {
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: "actor membership not resolved",
+          });
+        }
+
+        // All inserts run inside protectedProcedure's tenant-scoped tx —
+        // any throw rolls back the partial agent. Sequential is fine.
+
+        // Pre-check the partial-unique (tenant_id, name) WHERE retired_at
+        // IS NULL constraint with a SELECT. Drizzle's error wrap doesn't
+        // expose the postgres-js .code / .constraint_name reliably, so
+        // catching the 23505 post-hoc is fragile (a separate connection
+        // racing this would still hit the constraint and surface as
+        // INTERNAL — fine for AGENT-02 demo scope). The DB constraint
+        // remains the definitive guarantee; this check buys a clean 400.
+        const [existing] = await db
+          .select({ id: automationAgents.id })
+          .from(automationAgents)
+          .where(
+            and(
+              eq(automationAgents.tenantId, tenantId),
+              eq(automationAgents.name, input.name),
+              isNull(automationAgents.retiredAt),
+            ),
+          )
+          .limit(1);
+        if (existing) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: `An active agent named "${input.name}" already exists`,
+          });
+        }
+
+        const [agentRow] = await db
+          .insert(automationAgents)
+          .values({
+            tenantId,
+            agentType: "follow_up",
+            name: input.name,
+            description: input.description ?? null,
+            enabled: true,
+            version: 1,
+            createdBy: membership.id,
+          })
+          .returning({ id: automationAgents.id });
+        if (!agentRow) {
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: "automation_agents insert returned no row",
+          });
+        }
+        const agentId = agentRow.id;
+
+        // Trigger: stage_stale, days_threshold + stage from input.
+        await db.insert(agentTriggers).values({
+          tenantId,
+          agentId,
+          triggerType: "stage_stale",
+          // jsonb stored WITHOUT the `type` field — column action_type
+          // is the source of truth; bridgeActionConfig prepends type at
+          // read time. Same convention for trigger_config.
+          triggerConfig: {
+            stage: input.stage,
+            days_threshold: input.days_threshold,
+          },
+        });
+
+        // Curated defaults: action 1 drafts, action 2 sends.
+        const [draftAction] = await db
+          .insert(agentActions)
+          .values({
+            tenantId,
+            agentId,
+            actionOrder: 1,
+            actionType: "draft_message",
+            actionConfig: {
+              template_prompt_id: "follow_up_v1",
+              tone: input.tone,
+              max_tokens: input.max_tokens,
+            },
+          })
+          .returning({ id: agentActions.id });
+        const [sendAction] = await db
+          .insert(agentActions)
+          .values({
+            tenantId,
+            agentId,
+            actionOrder: 2,
+            actionType: "send_message",
+            actionConfig: {
+              channel: "email",
+              outbox_kind: "agent_followup",
+              requires_approval: true,
+            },
+          })
+          .returning({ id: agentActions.id });
+        if (!draftAction || !sendAction) {
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: "agent_actions insert returned no row",
+          });
+        }
+
+        // Approval rules — draft autonomous, send human_required by
+        // owning_recruiter. CHECK constraint enforces
+        // (approval_mode='auto') = (approver_role IS NULL).
+        await db.insert(agentApprovalRules).values({
+          tenantId,
+          agentId,
+          actionId: draftAction.id,
+          approvalMode: "auto",
+          approverRole: null,
+        });
+        await db.insert(agentApprovalRules).values({
+          tenantId,
+          agentId,
+          actionId: sendAction.id,
+          approvalMode: "human_required",
+          approverRole: "owning_recruiter",
+        });
+
+        return { agentId };
+      });
+    }),
+
+  listAgents: protectedProcedure
+    .input(listAgentsInputSchema)
+    .output(listAgentsOutputSchema)
+    .query(async ({ ctx }) => {
+      const db = requireDb(ctx);
+      // Join three sources via raw SQL — clean than 3 separate Drizzle
+      // queries stitched in JS. tenant_isolation RLS scopes everything.
+      const result = await db.execute(dsql`
+        SELECT
+          aa.id::text AS id,
+          aa.agent_type,
+          aa.name,
+          aa.description,
+          aa.enabled,
+          aa.version,
+          aa.created_at,
+          aa.retired_at,
+          COALESCE(approval_counts.pending_approval_count, 0)::int AS pending_approval_count,
+          COALESCE(run_counts.total_runs, 0)::int AS total_runs,
+          run_counts.last_run_at
+        FROM public.automation_agents aa
+        LEFT JOIN (
+          SELECT agent_id, COUNT(*)::int AS pending_approval_count
+          FROM public.agent_approval_requests
+          WHERE status = 'pending'
+          GROUP BY agent_id
+        ) AS approval_counts ON approval_counts.agent_id = aa.id
+        LEFT JOIN (
+          SELECT agent_id, COUNT(*)::int AS total_runs, MAX(triggered_at) AS last_run_at
+          FROM public.agent_runs
+          GROUP BY agent_id
+        ) AS run_counts ON run_counts.agent_id = aa.id
+        WHERE aa.retired_at IS NULL
+        ORDER BY aa.created_at DESC
+      `);
+      // Drizzle's db.execute returns a {rows: …} shape under
+      // postgres-js. postgres-js returns timestamp columns as either
+      // Date or string depending on driver mode (HANDOVER #79/#96);
+      // coerce via toIsoString defensively.
+      interface Row {
+        id: string;
+        agent_type: string;
+        name: string;
+        description: string | null;
+        enabled: boolean;
+        version: number;
+        created_at: Date | string;
+        retired_at: Date | string | null;
+        pending_approval_count: number;
+        total_runs: number;
+        last_run_at: Date | string | null;
+      }
+      const rows = (result as unknown as { rows?: Row[] }).rows ?? (result as unknown as Row[]);
+      const agents: AgentListRow[] = rows.map((r) => ({
+        id: r.id,
+        agent_type: r.agent_type,
+        name: r.name,
+        description: r.description,
+        enabled: r.enabled,
+        version: r.version,
+        created_at: toIsoString(r.created_at) ?? new Date(0).toISOString(),
+        retired_at: toIsoString(r.retired_at),
+        pending_approval_count: r.pending_approval_count,
+        total_runs: r.total_runs,
+        last_run_at: toIsoString(r.last_run_at),
+      }));
+      return { agents };
+    }),
 });
 
 /**
@@ -1520,6 +1757,16 @@ async function fetchOfferEmailContext(
     companyName: row.companyName,
     currentStage: row.currentStage,
   };
+}
+
+/**
+ * postgres-js returns timestamp columns as either Date or string
+ * depending on driver mode (HANDOVER #79/#96). Coerce defensively.
+ */
+function toIsoString(val: Date | string | null | undefined): string | null {
+  if (val === null || val === undefined) return null;
+  if (val instanceof Date) return val.toISOString();
+  return new Date(val).toISOString();
 }
 
 /**

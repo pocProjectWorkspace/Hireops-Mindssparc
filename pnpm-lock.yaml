@@ -220,6 +220,9 @@ importers:
 
   apps/workers:
     dependencies:
+      '@hireops/agent-actions':
+        specifier: workspace:*
+        version: link:../../packages/agent-actions
       '@hireops/ai-client':
         specifier: workspace:*
         version: link:../../packages/ai-client
@@ -257,6 +260,19 @@ importers:
       tsx:
         specifier: ^4.21.0
         version: 4.21.0
+
+  packages/agent-actions:
+    dependencies:
+      '@hireops/db':
+        specifier: workspace:*
+        version: link:../db
+      zod:
+        specifier: ^4.4.3
+        version: 4.4.3
+    devDependencies:
+      vitest:
+        specifier: ^4.1.6
+        version: 4.1.6(@opentelemetry/api@1.9.1)(@types/node@22.10.5)(vite@8.0.12(@types/node@22.10.5)(esbuild@0.27.7)(jiti@1.21.7)(tsx@4.21.0))
 
   packages/ai-client:
     dependencies:

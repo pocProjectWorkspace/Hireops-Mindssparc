@@ -12,6 +12,7 @@
     "start": "tsx src/index.ts"
   },
   "dependencies": {
+    "@hireops/agent-actions": "workspace:*",
     "@hireops/ai-client": "workspace:*",
     "@hireops/ai-scoring": "workspace:*",
     "@hireops/db": "workspace:*",

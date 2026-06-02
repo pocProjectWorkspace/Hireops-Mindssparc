@@ -657,6 +657,32 @@ fine; seven becomes the trigger for the refactor.
 
 ---
 
+### 27. `@hireops/db` side-effect-at-import via `./client` re-export
+
+**What.** `@hireops/db`'s main entry `./src/index.ts` re-exports
+`./client`, which reads `process.env.DATABASE_URL` at module load and
+throws if unset. Pure-function consumers (zod schemas, type-only
+imports) inherit this side effect even when they never touch the DB.
+AGENT-02's `packages/agent-actions/src/bridge.ts` works around it by
+deep-importing `@hireops/db/src/zod/agent-configs` — see HANDOVER #101.
+
+**Fix.** Split `@hireops/db` exports into `./client` (side-effectful)
+and `./zod` or `./types` (pure). Either via the package's `exports`
+field or by reorganising the main entry to not pull in `./client` by
+default. Existing consumers keep working via the deep-import escape
+hatch in the meantime.
+
+**Why.** Not urgent — flag for refactor when the next pure-function
+package needs the workaround. Two deep-import workarounds in different
+packages would mean the convention has earned a first-class split.
+
+**Trigger.** Next pure-function package importing zod schemas or
+type-only declarations from `@hireops/db`.
+
+**Origin.** AGENT-02 reality #101.
+
+---
+
 ## Lifecycle
 
 This file lives alongside `HANDOVER.md` as a working index — append

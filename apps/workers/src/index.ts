@@ -8,6 +8,7 @@ import { runSchedulerTick, type ScheduledJob } from "./lib/scheduler";
 import { slaImminentScan } from "./jobs/sla-imminent-scan";
 import { drainWorkdayOutboxOnce } from "./lib/workday-simulation-drain";
 import { drainAiScoreOutboxOnce } from "./lib/ai-score-drain";
+import { drainAgentRunOutboxOnce } from "./lib/agent-run-drain";
 
 /**
  * Worker entrypoint — three concurrent loops:
@@ -30,6 +31,7 @@ const SCHEDULER_INTERVAL_MS = 60_000;
 const ORPHAN_INTERVAL_MS = 5 * 60_000;
 const WORKDAY_DRAIN_INTERVAL_MS = 5_000;
 const AI_SCORE_DRAIN_INTERVAL_MS = 5_000;
+const AGENT_RUN_DRAIN_INTERVAL_MS = 5_000;
 
 const log = createLogger({ base: { service: "workers" } });
 
@@ -126,6 +128,20 @@ async function main() {
       const r = await drainAiScoreOutboxOnce({ log });
       if (r.claimed > 0) {
         log.info(r, "worker.ai_score_drain_pass");
+      }
+    }),
+  );
+
+  // AGENT-02 agent-run drain. Same SKIP LOCKED pattern; default batch of
+  // 1 because each row does N writes (run + run_actions + maybe approval
+  // request) and we'd rather have small fast passes than long lock windows.
+  // Registered here ad-hoc per the existing convention; worker registry
+  // refactor pending per open-questions #26 (triggers at worker #7).
+  loops.push(
+    startLoop("agent-run-drain", AGENT_RUN_DRAIN_INTERVAL_MS, async () => {
+      const r = await drainAgentRunOutboxOnce({ log });
+      if (r.claimed > 0) {
+        log.info(r, "worker.agent_run_drain_pass");
       }
     }),
   );
