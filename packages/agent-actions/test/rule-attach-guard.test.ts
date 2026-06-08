@@ -12,6 +12,12 @@
  *     types whose executor declares requiresApprovalCapable=true.
  *   - Anything else (unknown action type, unknown mode) throws.
  *
+ * AGENT-04b update: propose_calendar_slots + create_calendar_event
+ * flipped from false → true in the capability map. The two named-test
+ * blocks below assert the new behaviour explicitly (was rejected;
+ * now permitted) so any future regression of the flip surfaces here,
+ * not silently in the agent surface.
+ *
  * Pure-function tests, no DB. Mirrors the registry.test.ts pattern.
  */
 
@@ -31,7 +37,9 @@ describe("assertRuleAttachable — auto mode (always permitted)", () => {
 });
 
 describe("assertRuleAttachable — capable actions accept human-gate modes", () => {
-  // Today only send_message is capable.
+  // AGENT-04a shipped with send_message as the only capable type;
+  // AGENT-04b flipped propose_calendar_slots + create_calendar_event
+  // to capable too.
   const capableTypes = Object.entries(actionExecutorCapabilities)
     .filter(([, cap]) => cap.requiresApprovalCapable)
     .map(([type]) => type);
@@ -71,6 +79,51 @@ describe("assertRuleAttachable — non-capable actions reject human-gate modes",
       );
     });
   }
+});
+
+describe("AGENT-04b capability flips — calendar actions now permitted", () => {
+  // Both flipped from false → true in the registry. Behaviour MUST be
+  // "human-gate rules permitted" not "human-gate rules rejected".
+  // These are the load-bearing assertions of the AGENT-04b flip — any
+  // future regression of the flip surfaces here, not silently in the
+  // Scheduling agent surface.
+  it("propose_calendar_slots is requiresApprovalCapable=true (was false pre-AGENT-04b)", () => {
+    expect(actionExecutorCapabilities.propose_calendar_slots.requiresApprovalCapable).toBe(true);
+  });
+
+  it("create_calendar_event is requiresApprovalCapable=true (was false pre-AGENT-04b)", () => {
+    expect(actionExecutorCapabilities.create_calendar_event.requiresApprovalCapable).toBe(true);
+  });
+
+  it("propose_calendar_slots NOW accepts human_required (was rejected pre-AGENT-04b)", () => {
+    expect(() => assertRuleAttachable("propose_calendar_slots", "human_required")).not.toThrow();
+  });
+
+  it("propose_calendar_slots NOW accepts human_optional (was rejected pre-AGENT-04b)", () => {
+    expect(() => assertRuleAttachable("propose_calendar_slots", "human_optional")).not.toThrow();
+  });
+
+  it("create_calendar_event NOW accepts human_required (was rejected pre-AGENT-04b)", () => {
+    expect(() => assertRuleAttachable("create_calendar_event", "human_required")).not.toThrow();
+  });
+
+  it("create_calendar_event NOW accepts human_optional (was rejected pre-AGENT-04b)", () => {
+    expect(() => assertRuleAttachable("create_calendar_event", "human_optional")).not.toThrow();
+  });
+
+  // The non-flipped rows stay rejected — defensive guardrail that the
+  // flip didn't leak across the wider map.
+  it("update_application_stage still rejects human_required (unchanged by AGENT-04b)", () => {
+    expect(() => assertRuleAttachable("update_application_stage", "human_required")).toThrow(
+      IncompatibleApprovalRuleError,
+    );
+  });
+
+  it("notify_recruiter still rejects human_required (unchanged by AGENT-04b)", () => {
+    expect(() => assertRuleAttachable("notify_recruiter", "human_required")).toThrow(
+      IncompatibleApprovalRuleError,
+    );
+  });
 });
 
 describe("assertRuleAttachable — defensive paths", () => {

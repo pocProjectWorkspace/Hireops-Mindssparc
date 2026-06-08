@@ -806,6 +806,68 @@ resolved in AGENT-04a with the capability-declaration model.
 
 ---
 
+### 32. Shared agent-lifecycle helper extraction before AGENT-05
+
+**What.** After AGENT-04b, three near-identical `update*Agent`
+procedures exist in `apps/api/src/trpc/router.ts`:
+
+  - `updateFollowUpAgent` (AGENT-04a)
+  - `updateSchedulingAgent` (AGENT-04b)
+  - `updateCandidateQaAgent` (AGENT-04b)
+
+Each follows the identical lifecycle skeleton:
+  1. Resolve actor membership.
+  2. Load current row + guard (not retired + `agentType` matches).
+  3. Snapshot children (triggers, actions, rules).
+  4. Retire current row (`retired_at = now()`).
+  5. Insert new row at `version + 1` with merged description.
+  6. Copy triggers loop (with type-specific merge clause).
+  7. Copy actions loop (with type-specific merge clause + `actionIdMap`).
+  8. Copy approval rules loop (byte-identical across all three types —
+     same `actionIdMap` rewire, same `assertRuleAttachable` bypass,
+     same comment text).
+
+Steps 1, 2, 4, 5 are essentially identical across types. Step 8 is
+exactly byte-identical. Only steps 3, 6, 7 vary, and only in the
+merge clauses (which type-specific fields get folded into which
+type-specific configs). Same shape applies to the three
+`retire*Agent` and three `toggle*Agent` procedures.
+
+**Why deferred until now.** AGENT-04a's working order locked
+"REPLICATE, do not refactor" so the pattern could be validated
+across three concrete instances before extraction. With three
+shipped instances the pattern is now proven: same retire-and-insert
++ snapshot-then-copy + rules-rewire shape, varying only in the merge
+clauses.
+
+**Why before AGENT-05.** AGENT-05 ships the agent surface UI (8
+routes). The UI's update / retire / toggle calls hit each of the
+three `update*Agent` procedures. If the shared helper lands first,
+AGENT-05's wiring uses one consistent helper signature; if it lands
+after, AGENT-05 builds against three slightly different procedure
+call sites and the extraction risk goes up.
+
+**Recommended shape.** Extract `runVersionedUpdate({
+  agentType,
+  agentId,
+  ctx,
+  mergeTriggerConfig: (prevConfig, input) => mergedConfig,
+  mergeActionConfig: (act, prevConfig, input) => mergedConfig,
+  mergedDescription,
+})` plus `runRetireAgent({ agentType, agentId, ctx })` and
+`runToggleAgent({ agentType, agentId, ctx, enabled })`. The three
+update procedures become ~10 lines each — schema + merge callbacks.
+Retire / toggle become ~3 lines each. Total surface drops from
+~600 lines to ~200.
+
+**Trigger.** Before AGENT-05's update / retire / toggle UI wiring.
+
+**Origin.** AGENT-04b deliberate-non-extraction-during-build per the
+locked "replicate first" rule; with three instances shipped the
+extraction is now mechanical and safe.
+
+---
+
 ### 31. `agent_run_actions.output` writes are not audited separately
 
 **What.** AGENT-03's approve-with-edit copies the edited payload from

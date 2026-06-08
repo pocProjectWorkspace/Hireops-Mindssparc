@@ -86,6 +86,22 @@ import {
   retireFollowUpAgentOutputSchema,
   toggleFollowUpAgentInputSchema,
   toggleFollowUpAgentOutputSchema,
+  createSchedulingAgentInputSchema,
+  createSchedulingAgentOutputSchema,
+  updateSchedulingAgentInputSchema,
+  updateSchedulingAgentOutputSchema,
+  retireSchedulingAgentInputSchema,
+  retireSchedulingAgentOutputSchema,
+  toggleSchedulingAgentInputSchema,
+  toggleSchedulingAgentOutputSchema,
+  createCandidateQaAgentInputSchema,
+  createCandidateQaAgentOutputSchema,
+  updateCandidateQaAgentInputSchema,
+  updateCandidateQaAgentOutputSchema,
+  retireCandidateQaAgentInputSchema,
+  retireCandidateQaAgentOutputSchema,
+  toggleCandidateQaAgentInputSchema,
+  toggleCandidateQaAgentOutputSchema,
   listAgentsInputSchema,
   listAgentsOutputSchema,
   approveApprovalInputSchema,
@@ -1855,6 +1871,899 @@ export const appRouter = router({
         // when state matches, because the audit trigger short-circuits
         // no-op UPDATEs anyway (v_before = v_after RETURN NULL). The
         // explicit early return makes intent clearer.
+        if (current.enabled === input.enabled) {
+          return { agentId: current.id, enabled: current.enabled };
+        }
+
+        await db
+          .update(automationAgents)
+          .set({ enabled: input.enabled, updatedAt: new Date() })
+          .where(eq(automationAgents.id, current.id));
+
+        return { agentId: current.id, enabled: input.enabled };
+      });
+    }),
+
+  // ─────────────────────── Scheduling agent CRUD (AGENT-04b) ───────────────────────
+  //
+  // Replicates the AGENT-04a Follow-Up lifecycle (create / update-versioned /
+  // retire / toggle) for the Scheduling agent type. Versioning model identical
+  // to 04a's locked retire-and-insert + child-copy + action_id rewire pattern;
+  // the only differences are the curated trigger/action subset and the
+  // input-config merge shape. Copies bypass assertRuleAttachable (copy trusts
+  // prior validation — locked decision). Create path runs the guard (the
+  // human_optional rule on propose_calendar_slots is permitted by the
+  // AGENT-04b capability flip; that's the flip paying off end-to-end here).
+  //
+  // listAgents is type-agnostic (no agent_type filter — confirmed via the
+  // existing SELECT at the listAgents procedure above; `WHERE aa.retired_at
+  // IS NULL` is the only filter), so Scheduling agents appear in the list
+  // automatically once their automation_agents row is inserted.
+
+  createSchedulingAgent: protectedProcedure
+    .input(createSchedulingAgentInputSchema)
+    .output(createSchedulingAgentOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      return withAudit("create_scheduling_agent", ctx, input, async () => {
+        const db = requireDb(ctx);
+        if (!ctx.tenantId || !ctx.userId) {
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: "protected procedure missing tenantId/userId",
+          });
+        }
+        const tenantId = ctx.tenantId;
+
+        const [membership] = await db
+          .select({ id: tenantUserMemberships.id })
+          .from(tenantUserMemberships)
+          .where(
+            and(
+              eq(tenantUserMemberships.userId, ctx.userId),
+              eq(tenantUserMemberships.tenantId, tenantId),
+            ),
+          )
+          .limit(1);
+        if (!membership) {
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: "actor membership not resolved",
+          });
+        }
+
+        // #102 retrofit pattern from AGENT-04a — INSERT ... ON CONFLICT
+        // DO NOTHING RETURNING id against the partial-unique active-name
+        // index. Empty result means a concurrent active agent already
+        // holds this name → clean BAD_REQUEST, no SELECT pre-check.
+        const agentInsert = await db
+          .insert(automationAgents)
+          .values({
+            tenantId,
+            agentType: "scheduling",
+            name: input.name,
+            description: input.description ?? null,
+            enabled: true,
+            version: 1,
+            createdBy: membership.id,
+          })
+          .onConflictDoNothing({
+            target: [automationAgents.tenantId, automationAgents.name],
+            where: dsql`retired_at IS NULL`,
+          })
+          .returning({ id: automationAgents.id });
+        if (agentInsert.length === 0) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: `An active agent named "${input.name}" already exists`,
+          });
+        }
+        const agentRow = agentInsert[0];
+        if (!agentRow) {
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: "automation_agents insert returned no row",
+          });
+        }
+        const agentId = agentRow.id;
+
+        // Trigger: stage_entered on `shortlisted` (or the override).
+        // Per the agent-configs Zod discriminator, stage_entered
+        // config is { type, stage }; the `type` field is stored
+        // implicitly via the row's `trigger_type` column.
+        await db.insert(agentTriggers).values({
+          tenantId,
+          agentId,
+          triggerType: "stage_entered",
+          triggerConfig: { stage: input.stage },
+        });
+
+        // Action 1: propose_calendar_slots — config carries HR's panel
+        // + slot-shape knobs. action_order=1 so the create_calendar_event
+        // that follows can reference it via source_action_ref="1".
+        const [proposeAction] = await db
+          .insert(agentActions)
+          .values({
+            tenantId,
+            agentId,
+            actionOrder: 1,
+            actionType: "propose_calendar_slots",
+            actionConfig: {
+              panel_id: input.panel_id,
+              slot_count: input.slot_count,
+              window_days: input.window_days,
+              duration_minutes: input.duration_minutes,
+            },
+          })
+          .returning({ id: agentActions.id });
+        const [bookAction] = await db
+          .insert(agentActions)
+          .values({
+            tenantId,
+            agentId,
+            actionOrder: 2,
+            actionType: "create_calendar_event",
+            actionConfig: {
+              panel_id: input.panel_id,
+              source_action_ref: "1",
+            },
+          })
+          .returning({ id: agentActions.id });
+        if (!proposeAction || !bookAction) {
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: "agent_actions insert returned no row",
+          });
+        }
+
+        // Approval rule for propose_calendar_slots ONLY. The
+        // AGENT-04b capability flip makes propose_calendar_slots
+        // requiresApprovalCapable=true; ensureRuleAttachable accepts
+        // the human_optional rule below where pre-flip it would have
+        // rejected with BAD_REQUEST. create_calendar_event gets NO
+        // rule — the worker drain treats missing-rule as auto-mode
+        // (`rule?.approval_mode ?? "auto"`), so the event books
+        // autonomously once slots are settled. Deliberate omission.
+        ensureRuleAttachable("propose_calendar_slots", "human_optional");
+        await db.insert(agentApprovalRules).values({
+          tenantId,
+          agentId,
+          actionId: proposeAction.id,
+          approvalMode: "human_optional",
+          approverRole: "owning_recruiter",
+        });
+
+        return { agentId };
+      });
+    }),
+
+  updateSchedulingAgent: protectedProcedure
+    .input(updateSchedulingAgentInputSchema)
+    .output(updateSchedulingAgentOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      return withAudit("update_scheduling_agent", ctx, input, async () => {
+        const db = requireDb(ctx);
+        if (!ctx.tenantId || !ctx.userId) {
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: "protected procedure missing tenantId/userId",
+          });
+        }
+        const tenantId = ctx.tenantId;
+
+        const [actor] = await db
+          .select({ id: tenantUserMemberships.id })
+          .from(tenantUserMemberships)
+          .where(
+            and(
+              eq(tenantUserMemberships.userId, ctx.userId),
+              eq(tenantUserMemberships.tenantId, tenantId),
+            ),
+          )
+          .limit(1);
+        if (!actor) {
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: "actor membership not resolved",
+          });
+        }
+
+        const [current] = await db
+          .select()
+          .from(automationAgents)
+          .where(
+            and(
+              eq(automationAgents.id, input.agentId),
+              eq(automationAgents.tenantId, tenantId),
+            ),
+          )
+          .limit(1);
+        if (!current) {
+          throw new TRPCError({ code: "NOT_FOUND", message: "Agent not found" });
+        }
+        if (current.retiredAt !== null) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: "Cannot edit a retired agent — create a new one with the same name",
+          });
+        }
+        if (current.agentType !== "scheduling") {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: `updateSchedulingAgent only edits agents of type 'scheduling' (got '${current.agentType}')`,
+          });
+        }
+
+        const currentTriggers = await db
+          .select()
+          .from(agentTriggers)
+          .where(eq(agentTriggers.agentId, current.id));
+        const currentActions = await db
+          .select()
+          .from(agentActions)
+          .where(eq(agentActions.agentId, current.id))
+          .orderBy(agentActions.actionOrder);
+        const currentRules = await db
+          .select()
+          .from(agentApprovalRules)
+          .where(eq(agentApprovalRules.agentId, current.id));
+
+        // Retire current row FIRST — partial-unique active-name slot
+        // must be freed before the new-version INSERT (same as 04a).
+        const now = new Date();
+        await db
+          .update(automationAgents)
+          .set({ retiredAt: now, updatedAt: now })
+          .where(eq(automationAgents.id, current.id));
+
+        const mergedDescription =
+          input.description === undefined ? current.description : input.description;
+        const [newAgentRow] = await db
+          .insert(automationAgents)
+          .values({
+            tenantId,
+            agentType: "scheduling",
+            name: current.name,
+            description: mergedDescription,
+            enabled: current.enabled,
+            version: current.version + 1,
+            createdBy: actor.id,
+          })
+          .returning({ id: automationAgents.id });
+        if (!newAgentRow) {
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: "automation_agents new-version insert returned no row",
+          });
+        }
+        const newAgentId = newAgentRow.id;
+
+        // 5. Copy triggers. Scheduling has one trigger of type
+        //    stage_entered; merge input.stage into its config.
+        for (const trig of currentTriggers) {
+          const prevConfig = trig.triggerConfig as { stage?: string };
+          const mergedConfig = {
+            stage: input.stage ?? prevConfig.stage,
+          };
+          await db.insert(agentTriggers).values({
+            tenantId,
+            agentId: newAgentId,
+            triggerType: trig.triggerType,
+            triggerConfig: mergedConfig,
+          });
+        }
+
+        // 6. Copy actions. action_id changes per row → actionIdMap
+        //    rewires the rule copies. Merge input deltas into
+        //    propose_calendar_slots (the HR-configurable knobs);
+        //    create_calendar_event picks up panel_id if HR changed
+        //    it, source_action_ref carries forward unchanged.
+        const actionIdMap = new Map<string, string>();
+        for (const act of currentActions) {
+          const prevConfig = act.actionConfig as Record<string, unknown>;
+          let mergedActionConfig: Record<string, unknown> = prevConfig;
+          if (act.actionType === "propose_calendar_slots") {
+            mergedActionConfig = {
+              ...prevConfig,
+              ...(input.panel_id !== undefined ? { panel_id: input.panel_id } : {}),
+              ...(input.slot_count !== undefined ? { slot_count: input.slot_count } : {}),
+              ...(input.window_days !== undefined ? { window_days: input.window_days } : {}),
+              ...(input.duration_minutes !== undefined
+                ? { duration_minutes: input.duration_minutes }
+                : {}),
+            };
+          } else if (act.actionType === "create_calendar_event") {
+            mergedActionConfig = {
+              ...prevConfig,
+              ...(input.panel_id !== undefined ? { panel_id: input.panel_id } : {}),
+            };
+          }
+          const [newAct] = await db
+            .insert(agentActions)
+            .values({
+              tenantId,
+              agentId: newAgentId,
+              actionOrder: act.actionOrder,
+              actionType: act.actionType,
+              actionConfig: mergedActionConfig,
+            })
+            .returning({ id: agentActions.id });
+          if (!newAct) {
+            throw new TRPCError({
+              code: "INTERNAL_SERVER_ERROR",
+              message: "agent_actions copy returned no row",
+            });
+          }
+          actionIdMap.set(act.id, newAct.id);
+        }
+
+        // 7. Copy approval rules. action_id rewires via actionIdMap;
+        //    other fields carry forward verbatim. DOES NOT route
+        //    through assertRuleAttachable — copies trust prior
+        //    validation (locked decision; byte-identical to 04a).
+        for (const rule of currentRules) {
+          const newActionId = actionIdMap.get(rule.actionId);
+          if (!newActionId) {
+            throw new TRPCError({
+              code: "INTERNAL_SERVER_ERROR",
+              message: `approval_rule references action_id ${rule.actionId} not in copy map`,
+            });
+          }
+          await db.insert(agentApprovalRules).values({
+            tenantId,
+            agentId: newAgentId,
+            actionId: newActionId,
+            approvalMode: rule.approvalMode,
+            approverRole: rule.approverRole,
+            approverUserId: rule.approverUserId,
+            conditions: rule.conditions,
+          });
+        }
+
+        return {
+          agentId: newAgentId,
+          previousAgentId: current.id,
+          version: current.version + 1,
+        };
+      });
+    }),
+
+  retireSchedulingAgent: protectedProcedure
+    .input(retireSchedulingAgentInputSchema)
+    .output(retireSchedulingAgentOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      return withAudit("retire_scheduling_agent", ctx, input, async () => {
+        const db = requireDb(ctx);
+        if (!ctx.tenantId) {
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: "protected procedure missing tenantId",
+          });
+        }
+        const tenantId = ctx.tenantId;
+
+        const [current] = await db
+          .select({
+            id: automationAgents.id,
+            retiredAt: automationAgents.retiredAt,
+            agentType: automationAgents.agentType,
+          })
+          .from(automationAgents)
+          .where(
+            and(
+              eq(automationAgents.id, input.agentId),
+              eq(automationAgents.tenantId, tenantId),
+            ),
+          )
+          .limit(1);
+        if (!current) {
+          throw new TRPCError({ code: "NOT_FOUND", message: "Agent not found" });
+        }
+        if (current.retiredAt !== null) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "Agent is already retired" });
+        }
+        if (current.agentType !== "scheduling") {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: `retireSchedulingAgent only retires agents of type 'scheduling' (got '${current.agentType}')`,
+          });
+        }
+
+        const now = new Date();
+        await db
+          .update(automationAgents)
+          .set({ retiredAt: now, updatedAt: now })
+          .where(eq(automationAgents.id, current.id));
+
+        return { agentId: current.id, retiredAt: now.toISOString() };
+      });
+    }),
+
+  toggleSchedulingAgent: protectedProcedure
+    .input(toggleSchedulingAgentInputSchema)
+    .output(toggleSchedulingAgentOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      return withAudit("toggle_scheduling_agent", ctx, input, async () => {
+        const db = requireDb(ctx);
+        if (!ctx.tenantId) {
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: "protected procedure missing tenantId",
+          });
+        }
+        const tenantId = ctx.tenantId;
+
+        const [current] = await db
+          .select({
+            id: automationAgents.id,
+            enabled: automationAgents.enabled,
+            retiredAt: automationAgents.retiredAt,
+            agentType: automationAgents.agentType,
+          })
+          .from(automationAgents)
+          .where(
+            and(
+              eq(automationAgents.id, input.agentId),
+              eq(automationAgents.tenantId, tenantId),
+            ),
+          )
+          .limit(1);
+        if (!current) {
+          throw new TRPCError({ code: "NOT_FOUND", message: "Agent not found" });
+        }
+        if (current.retiredAt !== null) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "Cannot toggle a retired agent" });
+        }
+        if (current.agentType !== "scheduling") {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: `toggleSchedulingAgent only toggles agents of type 'scheduling' (got '${current.agentType}')`,
+          });
+        }
+
+        if (current.enabled === input.enabled) {
+          return { agentId: current.id, enabled: current.enabled };
+        }
+
+        await db
+          .update(automationAgents)
+          .set({ enabled: input.enabled, updatedAt: new Date() })
+          .where(eq(automationAgents.id, current.id));
+
+        return { agentId: current.id, enabled: input.enabled };
+      });
+    }),
+
+  // ─────────────────────── Candidate Q&A agent CRUD (AGENT-04b) ───────────────────────
+  //
+  // Mirrors the confirmed Scheduling template structurally. No
+  // capability-map changes — both action types (draft_message,
+  // send_message) already carry their AGENT-04a / AGENT-03
+  // capability declarations. The create-path guard accepts the
+  // human_required rule on send_message because send_message is
+  // requiresApprovalCapable=true (set in AGENT-03 when the executor
+  // was flipped for the approval cycle).
+  //
+  // Trigger shape differs from the other types: message_received's
+  // config is fully locked at AGENT-01a (`channel='email'`,
+  // `from='candidate'` are both literal-typed in
+  // MessageReceivedTriggerConfigSchema), so the updateCandidateQaAgent
+  // triggers loop carries the trigger config forward verbatim — there
+  // are no HR-overridable trigger fields to merge from input. The
+  // empty-merge clause keeps structural symmetry with the other
+  // update procedures.
+
+  createCandidateQaAgent: protectedProcedure
+    .input(createCandidateQaAgentInputSchema)
+    .output(createCandidateQaAgentOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      return withAudit("create_candidate_qa_agent", ctx, input, async () => {
+        const db = requireDb(ctx);
+        if (!ctx.tenantId || !ctx.userId) {
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: "protected procedure missing tenantId/userId",
+          });
+        }
+        const tenantId = ctx.tenantId;
+
+        const [membership] = await db
+          .select({ id: tenantUserMemberships.id })
+          .from(tenantUserMemberships)
+          .where(
+            and(
+              eq(tenantUserMemberships.userId, ctx.userId),
+              eq(tenantUserMemberships.tenantId, tenantId),
+            ),
+          )
+          .limit(1);
+        if (!membership) {
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: "actor membership not resolved",
+          });
+        }
+
+        // #102 retrofit pattern from AGENT-04a — INSERT ... ON CONFLICT
+        // DO NOTHING RETURNING id, empty-result → BAD_REQUEST.
+        const agentInsert = await db
+          .insert(automationAgents)
+          .values({
+            tenantId,
+            agentType: "candidate_qa",
+            name: input.name,
+            description: input.description ?? null,
+            enabled: true,
+            version: 1,
+            createdBy: membership.id,
+          })
+          .onConflictDoNothing({
+            target: [automationAgents.tenantId, automationAgents.name],
+            where: dsql`retired_at IS NULL`,
+          })
+          .returning({ id: automationAgents.id });
+        if (agentInsert.length === 0) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: `An active agent named "${input.name}" already exists`,
+          });
+        }
+        const agentRow = agentInsert[0];
+        if (!agentRow) {
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: "automation_agents insert returned no row",
+          });
+        }
+        const agentId = agentRow.id;
+
+        // Trigger: message_received. AGENT-01a locks channel='email'
+        // and from='candidate' as Zod literals; later tickets relax to
+        // other channels and senders.
+        await db.insert(agentTriggers).values({
+          tenantId,
+          agentId,
+          triggerType: "message_received",
+          triggerConfig: { channel: "email", from: "candidate" },
+        });
+
+        // Action 1: draft_message — HR's tone + max_tokens knobs;
+        // curated template_prompt_id = "candidate_qa_v1".
+        const [draftAction] = await db
+          .insert(agentActions)
+          .values({
+            tenantId,
+            agentId,
+            actionOrder: 1,
+            actionType: "draft_message",
+            actionConfig: {
+              template_prompt_id: "candidate_qa_v1",
+              tone: input.tone,
+              max_tokens: input.max_tokens,
+            },
+          })
+          .returning({ id: agentActions.id });
+        // Action 2: send_message — curated channel/outbox_kind defaults.
+        // requires_approval flag stays in the config (HR-visible field
+        // per the schema's ConfigSchema), even though the runtime gate
+        // is owned by the approval_rule below.
+        const [sendAction] = await db
+          .insert(agentActions)
+          .values({
+            tenantId,
+            agentId,
+            actionOrder: 2,
+            actionType: "send_message",
+            actionConfig: {
+              channel: "email",
+              outbox_kind: "candidate_qa_reply",
+              requires_approval: true,
+            },
+          })
+          .returning({ id: agentActions.id });
+        if (!draftAction || !sendAction) {
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: "agent_actions insert returned no row",
+          });
+        }
+
+        // Approval rule on send_message ONLY. draft_message has no
+        // rule (worker treats missing-rule as auto-mode). send_message
+        // is requiresApprovalCapable=true since AGENT-03's executor
+        // flip; the guard accepts the human_required attachment here.
+        // The pattern is symmetric with the Follow-Up agent's send
+        // rule (same approver_role convention).
+        ensureRuleAttachable("send_message", "human_required");
+        await db.insert(agentApprovalRules).values({
+          tenantId,
+          agentId,
+          actionId: sendAction.id,
+          approvalMode: "human_required",
+          approverRole: "owning_recruiter",
+        });
+
+        return { agentId };
+      });
+    }),
+
+  updateCandidateQaAgent: protectedProcedure
+    .input(updateCandidateQaAgentInputSchema)
+    .output(updateCandidateQaAgentOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      return withAudit("update_candidate_qa_agent", ctx, input, async () => {
+        const db = requireDb(ctx);
+        if (!ctx.tenantId || !ctx.userId) {
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: "protected procedure missing tenantId/userId",
+          });
+        }
+        const tenantId = ctx.tenantId;
+
+        const [actor] = await db
+          .select({ id: tenantUserMemberships.id })
+          .from(tenantUserMemberships)
+          .where(
+            and(
+              eq(tenantUserMemberships.userId, ctx.userId),
+              eq(tenantUserMemberships.tenantId, tenantId),
+            ),
+          )
+          .limit(1);
+        if (!actor) {
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: "actor membership not resolved",
+          });
+        }
+
+        const [current] = await db
+          .select()
+          .from(automationAgents)
+          .where(
+            and(
+              eq(automationAgents.id, input.agentId),
+              eq(automationAgents.tenantId, tenantId),
+            ),
+          )
+          .limit(1);
+        if (!current) {
+          throw new TRPCError({ code: "NOT_FOUND", message: "Agent not found" });
+        }
+        if (current.retiredAt !== null) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: "Cannot edit a retired agent — create a new one with the same name",
+          });
+        }
+        if (current.agentType !== "candidate_qa") {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: `updateCandidateQaAgent only edits agents of type 'candidate_qa' (got '${current.agentType}')`,
+          });
+        }
+
+        const currentTriggers = await db
+          .select()
+          .from(agentTriggers)
+          .where(eq(agentTriggers.agentId, current.id));
+        const currentActions = await db
+          .select()
+          .from(agentActions)
+          .where(eq(agentActions.agentId, current.id))
+          .orderBy(agentActions.actionOrder);
+        const currentRules = await db
+          .select()
+          .from(agentApprovalRules)
+          .where(eq(agentApprovalRules.agentId, current.id));
+
+        // Retire current row FIRST — free the partial-unique active-
+        // name slot before the new-version INSERT (locked 04a order).
+        const now = new Date();
+        await db
+          .update(automationAgents)
+          .set({ retiredAt: now, updatedAt: now })
+          .where(eq(automationAgents.id, current.id));
+
+        const mergedDescription =
+          input.description === undefined ? current.description : input.description;
+        const [newAgentRow] = await db
+          .insert(automationAgents)
+          .values({
+            tenantId,
+            agentType: "candidate_qa",
+            name: current.name,
+            description: mergedDescription,
+            enabled: current.enabled,
+            version: current.version + 1,
+            createdBy: actor.id,
+          })
+          .returning({ id: automationAgents.id });
+        if (!newAgentRow) {
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: "automation_agents new-version insert returned no row",
+          });
+        }
+        const newAgentId = newAgentRow.id;
+
+        // 5. Copy triggers. Candidate Q&A's message_received trigger
+        //    has no HR-overridable fields (channel + from are literal-
+        //    typed in MessageReceivedTriggerConfigSchema), so the
+        //    config carries forward verbatim. The empty-merge clause
+        //    preserves the structural pattern of the other update
+        //    procedures (Follow-Up merges stage/days_threshold;
+        //    Scheduling merges stage; Candidate Q&A merges nothing).
+        for (const trig of currentTriggers) {
+          const prevConfig = trig.triggerConfig as Record<string, unknown>;
+          const mergedConfig = prevConfig;
+          await db.insert(agentTriggers).values({
+            tenantId,
+            agentId: newAgentId,
+            triggerType: trig.triggerType,
+            triggerConfig: mergedConfig,
+          });
+        }
+
+        // 6. Copy actions. action_id changes per row → actionIdMap
+        //    rewires the rule copies. Merge input deltas into
+        //    draft_message's tone/max_tokens (the HR-configurable
+        //    knobs); send_message carries forward unchanged.
+        const actionIdMap = new Map<string, string>();
+        for (const act of currentActions) {
+          const prevConfig = act.actionConfig as Record<string, unknown>;
+          let mergedActionConfig: Record<string, unknown> = prevConfig;
+          if (act.actionType === "draft_message") {
+            mergedActionConfig = {
+              ...prevConfig,
+              ...(input.tone !== undefined ? { tone: input.tone } : {}),
+              ...(input.max_tokens !== undefined ? { max_tokens: input.max_tokens } : {}),
+            };
+          }
+          const [newAct] = await db
+            .insert(agentActions)
+            .values({
+              tenantId,
+              agentId: newAgentId,
+              actionOrder: act.actionOrder,
+              actionType: act.actionType,
+              actionConfig: mergedActionConfig,
+            })
+            .returning({ id: agentActions.id });
+          if (!newAct) {
+            throw new TRPCError({
+              code: "INTERNAL_SERVER_ERROR",
+              message: "agent_actions copy returned no row",
+            });
+          }
+          actionIdMap.set(act.id, newAct.id);
+        }
+
+        // 7. Copy approval rules. action_id rewires via actionIdMap;
+        //    other fields carry forward verbatim. DOES NOT route
+        //    through assertRuleAttachable — copies trust prior
+        //    validation (locked decision; byte-identical to 04a /
+        //    Scheduling).
+        for (const rule of currentRules) {
+          const newActionId = actionIdMap.get(rule.actionId);
+          if (!newActionId) {
+            throw new TRPCError({
+              code: "INTERNAL_SERVER_ERROR",
+              message: `approval_rule references action_id ${rule.actionId} not in copy map`,
+            });
+          }
+          await db.insert(agentApprovalRules).values({
+            tenantId,
+            agentId: newAgentId,
+            actionId: newActionId,
+            approvalMode: rule.approvalMode,
+            approverRole: rule.approverRole,
+            approverUserId: rule.approverUserId,
+            conditions: rule.conditions,
+          });
+        }
+
+        return {
+          agentId: newAgentId,
+          previousAgentId: current.id,
+          version: current.version + 1,
+        };
+      });
+    }),
+
+  retireCandidateQaAgent: protectedProcedure
+    .input(retireCandidateQaAgentInputSchema)
+    .output(retireCandidateQaAgentOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      return withAudit("retire_candidate_qa_agent", ctx, input, async () => {
+        const db = requireDb(ctx);
+        if (!ctx.tenantId) {
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: "protected procedure missing tenantId",
+          });
+        }
+        const tenantId = ctx.tenantId;
+
+        const [current] = await db
+          .select({
+            id: automationAgents.id,
+            retiredAt: automationAgents.retiredAt,
+            agentType: automationAgents.agentType,
+          })
+          .from(automationAgents)
+          .where(
+            and(
+              eq(automationAgents.id, input.agentId),
+              eq(automationAgents.tenantId, tenantId),
+            ),
+          )
+          .limit(1);
+        if (!current) {
+          throw new TRPCError({ code: "NOT_FOUND", message: "Agent not found" });
+        }
+        if (current.retiredAt !== null) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "Agent is already retired" });
+        }
+        if (current.agentType !== "candidate_qa") {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: `retireCandidateQaAgent only retires agents of type 'candidate_qa' (got '${current.agentType}')`,
+          });
+        }
+
+        const now = new Date();
+        await db
+          .update(automationAgents)
+          .set({ retiredAt: now, updatedAt: now })
+          .where(eq(automationAgents.id, current.id));
+
+        return { agentId: current.id, retiredAt: now.toISOString() };
+      });
+    }),
+
+  toggleCandidateQaAgent: protectedProcedure
+    .input(toggleCandidateQaAgentInputSchema)
+    .output(toggleCandidateQaAgentOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      return withAudit("toggle_candidate_qa_agent", ctx, input, async () => {
+        const db = requireDb(ctx);
+        if (!ctx.tenantId) {
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: "protected procedure missing tenantId",
+          });
+        }
+        const tenantId = ctx.tenantId;
+
+        const [current] = await db
+          .select({
+            id: automationAgents.id,
+            enabled: automationAgents.enabled,
+            retiredAt: automationAgents.retiredAt,
+            agentType: automationAgents.agentType,
+          })
+          .from(automationAgents)
+          .where(
+            and(
+              eq(automationAgents.id, input.agentId),
+              eq(automationAgents.tenantId, tenantId),
+            ),
+          )
+          .limit(1);
+        if (!current) {
+          throw new TRPCError({ code: "NOT_FOUND", message: "Agent not found" });
+        }
+        if (current.retiredAt !== null) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "Cannot toggle a retired agent" });
+        }
+        if (current.agentType !== "candidate_qa") {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: `toggleCandidateQaAgent only toggles agents of type 'candidate_qa' (got '${current.agentType}')`,
+          });
+        }
+
         if (current.enabled === input.enabled) {
           return { agentId: current.id, enabled: current.enabled };
         }

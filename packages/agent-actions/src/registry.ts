@@ -47,27 +47,39 @@ export const actionExecutorRegistry: Record<ActionConfig["type"], ActionExecutor
  *     paradigmatic "I should let a human see this before it goes"
  *     action and is the one AGENT-03 flipped to exercise the gate
  *     end-to-end.
+ *   - propose_calendar_slots: CAPABLE (AGENT-04b flip). The slots a
+ *     Scheduling agent proposes are surfaced to the candidate; gating
+ *     them is a coherent product choice and a Scheduling agent's HR
+ *     configuration is the natural place for that gate. Stays
+ *     attachable on `auto` if HR wants the agent to propose autonomously.
+ *   - create_calendar_event: CAPABLE (AGENT-04b flip). Creating an event
+ *     fires invites to candidates and panel members; same gate-point
+ *     logic as send_message — the action has a real-world side effect
+ *     visible outside the platform.
  *   - everything else: not capable. Their executors never return
  *     `requiresApproval: true`; attaching a human-gate rule would
  *     produce a silent never-firing gate. Specific reasons:
  *       - draft_message: drafting is pure compute; the gate point is
  *         on the send_message that follows.
- *       - propose_calendar_slots / create_calendar_event: capability
- *         decision deferred to the scheduling-agent ticket; revisit
- *         when scheduling lands.
  *       - update_application_stage / notify_recruiter /
  *         create_audit_entry: internal-only writes; gate point lives
  *         on whichever externally-visible action precedes them.
  *
+ * Capability is permissive: capable=true ALLOWS gating, doesn't force
+ * it (auto mode stays valid). capable=false forecloses gating
+ * entirely (assertRuleAttachable rejects human_required/optional rules
+ * at attach time).
+ *
  * Changing a row from `false` to `true` is a real product decision
  * and warrants a HANDOVER entry (the gate appearing in HR's approval
- * queue changes their workflow).
+ * queue changes their workflow). The two AGENT-04b flips above are
+ * logged as HANDOVER #108.
  */
 export const actionExecutorCapabilities: Record<ActionConfig["type"], ActionExecutorCapability> = {
   draft_message: { requiresApprovalCapable: false },
   send_message: { requiresApprovalCapable: true },
-  propose_calendar_slots: { requiresApprovalCapable: false },
-  create_calendar_event: { requiresApprovalCapable: false },
+  propose_calendar_slots: { requiresApprovalCapable: true },
+  create_calendar_event: { requiresApprovalCapable: true },
   update_application_stage: { requiresApprovalCapable: false },
   notify_recruiter: { requiresApprovalCapable: false },
   create_audit_entry: { requiresApprovalCapable: false },

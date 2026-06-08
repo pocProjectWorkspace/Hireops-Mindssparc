@@ -491,6 +491,174 @@ export const createFollowUpAgentOutputSchema = z.object({
 export type CreateFollowUpAgentInput = z.infer<typeof createFollowUpAgentInputSchema>;
 export type CreateFollowUpAgentOutput = z.infer<typeof createFollowUpAgentOutputSchema>;
 
+// ─────────────── Scheduling agent CRUD (AGENT-04b) ───────────────
+
+/**
+ * createSchedulingAgent — Scheduling-type analogue of
+ * createFollowUpAgent. Curated default subset for the Scheduling agent
+ * type (the DB does not constrain trigger/action types per agent_type;
+ * curation lives here per AGENT-04a's locked decision):
+ *
+ *   Trigger:  stage_entered on `shortlisted` (recruiter-cleared,
+ *             interview-ready). HR can override via input.stage.
+ *   Action 1: propose_calendar_slots — queries the panel calendar
+ *             integration for free slots within the window.
+ *   Action 2: create_calendar_event — books a slot the recruiter
+ *             approved + the candidate confirmed.
+ *
+ *   Approval rules:
+ *     - propose_calendar_slots → human_optional, owning_recruiter.
+ *       The AGENT-04b capability flip on propose_calendar_slots is
+ *       what makes this gate attachable; without the flip the
+ *       rule-attachment guard would reject the human_optional mode.
+ *       The recruiter can review slots before the candidate sees
+ *       them; auto-proceeds at TTL.
+ *     - create_calendar_event → NO default rule. The worker treats
+ *       missing-rule as auto-mode (drain's
+ *       `rule?.approval_mode ?? "auto"`); the event books once the
+ *       slots are settled. Deliberate omission, not oversight.
+ */
+export const createSchedulingAgentInputSchema = z.object({
+  name: z.string().min(1).max(100),
+  description: z.string().max(500).optional(),
+  stage: z.string().min(1).max(60).default("shortlisted"),
+  panel_id: z.string().min(1).max(100),
+  slot_count: z.number().int().positive().max(20).default(3),
+  window_days: z.number().int().positive().max(60).default(7),
+  duration_minutes: z.number().int().positive().max(480).default(45),
+});
+export const createSchedulingAgentOutputSchema = z.object({
+  agentId: z.string().uuid(),
+});
+export type CreateSchedulingAgentInput = z.infer<typeof createSchedulingAgentInputSchema>;
+export type CreateSchedulingAgentOutput = z.infer<typeof createSchedulingAgentOutputSchema>;
+
+/**
+ * updateSchedulingAgent — versioned edit (retire + insert new row +
+ * copy children) per AGENT-04a's locked model. Name is NOT editable
+ * to preserve the name-anchored lineage proxy (HANDOVER #105). Every
+ * other field is optional; omitted fields carry forward.
+ */
+export const updateSchedulingAgentInputSchema = z.object({
+  agentId: z.string().uuid(),
+  description: z.string().max(500).nullable().optional(),
+  stage: z.string().min(1).max(60).optional(),
+  panel_id: z.string().min(1).max(100).optional(),
+  slot_count: z.number().int().positive().max(20).optional(),
+  window_days: z.number().int().positive().max(60).optional(),
+  duration_minutes: z.number().int().positive().max(480).optional(),
+});
+export const updateSchedulingAgentOutputSchema = z.object({
+  agentId: z.string().uuid(),
+  previousAgentId: z.string().uuid(),
+  version: z.number().int(),
+});
+export type UpdateSchedulingAgentInput = z.infer<typeof updateSchedulingAgentInputSchema>;
+export type UpdateSchedulingAgentOutput = z.infer<typeof updateSchedulingAgentOutputSchema>;
+
+export const retireSchedulingAgentInputSchema = z.object({
+  agentId: z.string().uuid(),
+});
+export const retireSchedulingAgentOutputSchema = z.object({
+  agentId: z.string().uuid(),
+  retiredAt: z.string(),
+});
+export type RetireSchedulingAgentInput = z.infer<typeof retireSchedulingAgentInputSchema>;
+export type RetireSchedulingAgentOutput = z.infer<typeof retireSchedulingAgentOutputSchema>;
+
+export const toggleSchedulingAgentInputSchema = z.object({
+  agentId: z.string().uuid(),
+  enabled: z.boolean(),
+});
+export const toggleSchedulingAgentOutputSchema = z.object({
+  agentId: z.string().uuid(),
+  enabled: z.boolean(),
+});
+export type ToggleSchedulingAgentInput = z.infer<typeof toggleSchedulingAgentInputSchema>;
+export type ToggleSchedulingAgentOutput = z.infer<typeof toggleSchedulingAgentOutputSchema>;
+
+// ─────────────── Candidate Q&A agent CRUD (AGENT-04b) ───────────────
+
+/**
+ * createCandidateQaAgent — Candidate-Q&A-type analogue of
+ * createFollowUpAgent + createSchedulingAgent. Curated default subset:
+ *
+ *   Trigger:  message_received with { channel: "email",
+ *             from: "candidate" } — both fields are locked literals at
+ *             AGENT-01a (no HR knobs on the trigger itself).
+ *   Action 1: draft_message — LLM drafts a reply. HR knobs: tone +
+ *             max_tokens (same convention as Follow-Up); curated
+ *             template_prompt_id = "candidate_qa_v1".
+ *   Action 2: send_message — emails the draft to the candidate.
+ *             Curated defaults: channel="email",
+ *             outbox_kind="candidate_qa_reply", requires_approval=true.
+ *
+ *   Approval rules:
+ *     - draft_message → NO rule. Drafting is internal compute; the
+ *       worker treats missing-rule as auto-mode. Pattern-symmetric
+ *       with Scheduling's create_calendar_event omission.
+ *     - send_message → human_required, owning_recruiter. An
+ *       unreviewed auto-generated reply to a candidate is the
+ *       highest-risk autonomous action in the surface (externally
+ *       visible, unrecoverable). send_message is already capable=true
+ *       (AGENT-03 flip); the create-path guard accepts this.
+ *
+ * No capability-map changes — both action types already have their
+ * capabilities declared from earlier tickets.
+ */
+export const createCandidateQaAgentInputSchema = z.object({
+  name: z.string().min(1).max(100),
+  description: z.string().max(500).optional(),
+  tone: z.enum(["formal", "friendly", "neutral"]).default("friendly"),
+  max_tokens: z.number().int().positive().max(2000).default(200),
+});
+export const createCandidateQaAgentOutputSchema = z.object({
+  agentId: z.string().uuid(),
+});
+export type CreateCandidateQaAgentInput = z.infer<typeof createCandidateQaAgentInputSchema>;
+export type CreateCandidateQaAgentOutput = z.infer<typeof createCandidateQaAgentOutputSchema>;
+
+/**
+ * updateCandidateQaAgent — versioned edit (retire + insert new row +
+ * copy children) per AGENT-04a's locked model. Name is NOT editable
+ * to preserve the name-anchored lineage proxy (HANDOVER #105). Every
+ * other field is optional; omitted fields carry forward.
+ */
+export const updateCandidateQaAgentInputSchema = z.object({
+  agentId: z.string().uuid(),
+  description: z.string().max(500).nullable().optional(),
+  tone: z.enum(["formal", "friendly", "neutral"]).optional(),
+  max_tokens: z.number().int().positive().max(2000).optional(),
+});
+export const updateCandidateQaAgentOutputSchema = z.object({
+  agentId: z.string().uuid(),
+  previousAgentId: z.string().uuid(),
+  version: z.number().int(),
+});
+export type UpdateCandidateQaAgentInput = z.infer<typeof updateCandidateQaAgentInputSchema>;
+export type UpdateCandidateQaAgentOutput = z.infer<typeof updateCandidateQaAgentOutputSchema>;
+
+export const retireCandidateQaAgentInputSchema = z.object({
+  agentId: z.string().uuid(),
+});
+export const retireCandidateQaAgentOutputSchema = z.object({
+  agentId: z.string().uuid(),
+  retiredAt: z.string(),
+});
+export type RetireCandidateQaAgentInput = z.infer<typeof retireCandidateQaAgentInputSchema>;
+export type RetireCandidateQaAgentOutput = z.infer<typeof retireCandidateQaAgentOutputSchema>;
+
+export const toggleCandidateQaAgentInputSchema = z.object({
+  agentId: z.string().uuid(),
+  enabled: z.boolean(),
+});
+export const toggleCandidateQaAgentOutputSchema = z.object({
+  agentId: z.string().uuid(),
+  enabled: z.boolean(),
+});
+export type ToggleCandidateQaAgentInput = z.infer<typeof toggleCandidateQaAgentInputSchema>;
+export type ToggleCandidateQaAgentOutput = z.infer<typeof toggleCandidateQaAgentOutputSchema>;
+
 // ─────────────── update / retire / toggle (AGENT-04a) ───────────────
 
 /**
