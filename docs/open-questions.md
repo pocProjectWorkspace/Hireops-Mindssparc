@@ -772,49 +772,37 @@ entry consolidates them per chat-Claude's review.
 
 ---
 
-### 30. `requiresApproval` on executors may be redundant given the rule layer
+### ~~30. `requiresApproval` on executors may be redundant given the rule layer~~ — RESOLVED in AGENT-04a
 
-**What.** AGENT-03 ships a three-layer approval model:
-  1. The executor's `requiresApproval: true | false` return field
-     (only `send_message` returns `true` today).
-  2. The `agent_approval_rules.approval_mode` column
-     (`auto | human_required | human_optional`).
-  3. The config-level `requires_approval` boolean on send_message's
-     action_config (HR-set, currently unused on the executor read path).
+**Resolution (locked AGENT-04a).** The executor's `requiresApproval`
+field is a STATIC CAPABILITY DECLARATION — "can this action type ever
+require approval?" — not a runtime gate. The runtime gating decision
+is owned entirely by the approval rule (mode auto / human_required /
+human_optional). Executors declare capability; rules decide behaviour.
 
-The worker uses both 1 and 2: layer-2 `mode='auto'` short-circuits
-layer-1's `true` (HR override wins). But layer 1 alone can't trigger
-the approval gate — an executor returning `requiresApproval: true`
-with no matching rule (or `mode='auto'`) just proceeds. So the
-executor flag is **never** sufficient on its own — the rule is always
-required to actually engage the gate (it supplies `approver_role`
-too, which the gate can't function without).
+The static capability lives in `actionExecutorCapabilities` in
+`packages/agent-actions/src/registry.ts` as a per-action-type
+`{ requiresApprovalCapable: boolean }` map. `assertRuleAttachable`
+(also in registry.ts) is the validator every rule write must call:
+human-gate rules (`human_required` / `human_optional`) are only valid
+when the action's capability is `true`. Auto mode is unconditional
+(a no-op gate on a non-capable action is harmless). Wrapped at the
+tRPC layer as `ensureRuleAttachable` which maps the
+`IncompatibleApprovalRuleError` to a `BAD_REQUEST`.
 
-**Question.** Should the executor flag exist at all? A two-layer
-model (rule-driven only, no executor signal) would:
-  - Simplify the dispatch path (no flag/rule reconciliation logic).
-  - Push the "needs approval by default" decision out of code and
-    into HR config — arguably the wedge's whole pitch.
-  - Mean every new action type ships with an `approval_mode` decision
-    in agent_approval_rules at create time, not as an executor flag.
+Today's assignments: `send_message: { requiresApprovalCapable: true }`,
+all six other action types `false`. Calendar action capabilities
+revisit when the scheduling-agent ticket lands.
 
-Or — keep three layers and document the executor flag as a "needs
-approval if not explicitly overridden" default? That preserves the
-ability for an executor to express "I, the platform, think this
-action probably wants human review" without requiring HR to know to
-configure it.
+The original config-level `requires_approval` boolean on
+send_message's `action_config` is HR-set but currently unused on the
+executor read path — kept in the schema for AGENT-04b+ when it gets
+either wired or pruned.
 
-**Why this matters before AGENT-04.** AGENT-04 ships the remaining
-agent types (Scheduling, Candidate Q&A) plus update/retire/toggle
-procedures. Each new action executor will face the same decision:
-return `requiresApproval: true`, `false`, or remove the field
-entirely. Settling the three-vs-two-layer story before that wave
-saves rework.
+**Trigger.** Done.
 
-**Trigger.** AGENT-04 design.
-
-**Origin.** Chat-Claude review of AGENT-03's audit-gap-close report,
-which made the three-layer model visible enough to question.
+**Origin.** Chat-Claude review of AGENT-03's audit-gap-close report;
+resolved in AGENT-04a with the capability-declaration model.
 
 ---
 
@@ -876,3 +864,6 @@ backlog (file a ticket) or it's not real (delete).
   `packages/sla-thresholds`).
 - **CRS-01 (apply form) and AI-03 (real AI scoring)** — these are the
   next tickets, not follow-ups; removed from this file.
+- **#30 (`requiresApproval` three-vs-two-layer)** — resolved in
+  AGENT-04a with the capability-declaration model. `assertRuleAttachable`
+  + `actionExecutorCapabilities` enforce the rule-attachment validity.

@@ -21,7 +21,7 @@
 
 import { z } from "zod";
 import { TRPCError } from "@trpc/server";
-import { and, desc, eq, isNull, lt, sql as dsql } from "drizzle-orm";
+import { and, desc, eq, lt, sql as dsql } from "drizzle-orm";
 import {
   db as poolDb,
   persons,
@@ -80,6 +80,12 @@ import {
   listWorkdaySyncsOutputSchema,
   createFollowUpAgentInputSchema,
   createFollowUpAgentOutputSchema,
+  updateFollowUpAgentInputSchema,
+  updateFollowUpAgentOutputSchema,
+  retireFollowUpAgentInputSchema,
+  retireFollowUpAgentOutputSchema,
+  toggleFollowUpAgentInputSchema,
+  toggleFollowUpAgentOutputSchema,
   listAgentsInputSchema,
   listAgentsOutputSchema,
   approveApprovalInputSchema,
@@ -102,6 +108,7 @@ import {
 } from "@hireops/api-types";
 import { parseResume } from "@hireops/ai-client";
 import { enqueueNotification, signLink, hashToken } from "@hireops/notifications";
+import { assertRuleAttachable, IncompatibleApprovalRuleError } from "@hireops/agent-actions";
 import { router, publicProcedure, protectedProcedure, type HonoTRPCContext } from "./trpc-core";
 import { withAudit } from "./with-audit";
 import { getStorageClient } from "../lib/storage";
@@ -1336,32 +1343,13 @@ export const appRouter = router({
         // All inserts run inside protectedProcedure's tenant-scoped tx —
         // any throw rolls back the partial agent. Sequential is fine.
 
-        // Pre-check the partial-unique (tenant_id, name) WHERE retired_at
-        // IS NULL constraint with a SELECT. Drizzle's error wrap doesn't
-        // expose the postgres-js .code / .constraint_name reliably, so
-        // catching the 23505 post-hoc is fragile (a separate connection
-        // racing this would still hit the constraint and surface as
-        // INTERNAL — fine for AGENT-02 demo scope). The DB constraint
-        // remains the definitive guarantee; this check buys a clean 400.
-        const [existing] = await db
-          .select({ id: automationAgents.id })
-          .from(automationAgents)
-          .where(
-            and(
-              eq(automationAgents.tenantId, tenantId),
-              eq(automationAgents.name, input.name),
-              isNull(automationAgents.retiredAt),
-            ),
-          )
-          .limit(1);
-        if (existing) {
-          throw new TRPCError({
-            code: "BAD_REQUEST",
-            message: `An active agent named "${input.name}" already exists`,
-          });
-        }
-
-        const [agentRow] = await db
+        // AGENT-04a #102 retrofit: INSERT ... ON CONFLICT DO NOTHING
+        // RETURNING id, infer against the partial-unique index
+        // `(tenant_id, name) WHERE retired_at IS NULL`. Empty result
+        // means a concurrent active agent already holds this name —
+        // map to BAD_REQUEST. This replaces the prior SELECT-pre-check
+        // which had a race window (HANDOVER #102 canonical pattern).
+        const agentInsert = await db
           .insert(automationAgents)
           .values({
             tenantId,
@@ -1372,7 +1360,22 @@ export const appRouter = router({
             version: 1,
             createdBy: membership.id,
           })
+          .onConflictDoNothing({
+            target: [automationAgents.tenantId, automationAgents.name],
+            // Drizzle 0.45's `where` here is the partial-index inference
+            // clause (matches the partial UNIQUE INDEX predicate
+            // `WHERE retired_at IS NULL`). Renamed to `targetWhere` in
+            // newer Drizzle versions.
+            where: dsql`retired_at IS NULL`,
+          })
           .returning({ id: automationAgents.id });
+        if (agentInsert.length === 0) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: `An active agent named "${input.name}" already exists`,
+          });
+        }
+        const agentRow = agentInsert[0];
         if (!agentRow) {
           throw new TRPCError({
             code: "INTERNAL_SERVER_ERROR",
@@ -1433,7 +1436,13 @@ export const appRouter = router({
 
         // Approval rules — draft autonomous, send human_required by
         // owning_recruiter. CHECK constraint enforces
-        // (approval_mode='auto') = (approver_role IS NULL).
+        // (approval_mode='auto') = (approver_role IS NULL). #30 guard
+        // (assertRuleAttachable) rejects misconfigurations where a
+        // human-gate rule is attached to an action whose executor
+        // declares requiresApprovalCapable=false. Today's hard-coded
+        // pairings are both valid; the guard is wired so future
+        // procedures (updateFollowUpAgent, etc.) inherit the check.
+        ensureRuleAttachable("draft_message", "auto");
         await db.insert(agentApprovalRules).values({
           tenantId,
           agentId,
@@ -1441,6 +1450,7 @@ export const appRouter = router({
           approvalMode: "auto",
           approverRole: null,
         });
+        ensureRuleAttachable("send_message", "human_required");
         await db.insert(agentApprovalRules).values({
           tenantId,
           agentId,
@@ -1520,6 +1530,342 @@ export const appRouter = router({
         last_run_at: toIsoString(r.last_run_at),
       }));
       return { agents };
+    }),
+
+  // ─────────────────────── update / retire / toggle (AGENT-04a) ───────────────────────
+  //
+  // Versioning model (locked): edit = retire current row (retired_at =
+  // now()) + insert a new row as the next version + copy
+  // triggers/actions/approval_rules to the new row (new ids, FK'd to
+  // the new agent). Historical agent_runs / agent_run_actions stay
+  // frozen against the retired row via their existing agent_id FK.
+  //
+  // The copy path trusts prior validation — copied approval_rules do
+  // NOT route through assertRuleAttachable. The guard is for new
+  // attachments only. If a future change to actionExecutorCapabilities
+  // flips a row from `true` to `false`, the historical rules attached
+  // when the row was `true` keep working but no NEW rules of the same
+  // shape can be attached. That's the intentional shape.
+  //
+  // Lineage is name-anchored: "all versions of this agent" is the
+  // query `WHERE tenant_id = ? AND name = ?` (active + retired). No
+  // version-group / parent_id column today (see HANDOVER note for
+  // AGENT-04a). Names are NOT editable in this surface — making them
+  // editable later requires revisiting the lineage proxy.
+
+  updateFollowUpAgent: protectedProcedure
+    .input(updateFollowUpAgentInputSchema)
+    .output(updateFollowUpAgentOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      return withAudit("update_follow_up_agent", ctx, input, async () => {
+        const db = requireDb(ctx);
+        if (!ctx.tenantId || !ctx.userId) {
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: "protected procedure missing tenantId/userId",
+          });
+        }
+        const tenantId = ctx.tenantId;
+
+        // Resolve actor's membership for the new row's created_by FK.
+        // The edit's author replaces the prior version's author on the
+        // new row — "who created this version" semantics.
+        const [actor] = await db
+          .select({ id: tenantUserMemberships.id })
+          .from(tenantUserMemberships)
+          .where(
+            and(
+              eq(tenantUserMemberships.userId, ctx.userId),
+              eq(tenantUserMemberships.tenantId, tenantId),
+            ),
+          )
+          .limit(1);
+        if (!actor) {
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: "actor membership not resolved",
+          });
+        }
+
+        // 1. Load the current active row. updateFollowUpAgent only
+        //    operates on active versions — retired rows are immutable.
+        const [current] = await db
+          .select()
+          .from(automationAgents)
+          .where(
+            and(
+              eq(automationAgents.id, input.agentId),
+              eq(automationAgents.tenantId, tenantId),
+            ),
+          )
+          .limit(1);
+        if (!current) {
+          throw new TRPCError({ code: "NOT_FOUND", message: "Agent not found" });
+        }
+        if (current.retiredAt !== null) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: "Cannot edit a retired agent — create a new one with the same name",
+          });
+        }
+        if (current.agentType !== "follow_up") {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: `updateFollowUpAgent only edits agents of type 'follow_up' (got '${current.agentType}')`,
+          });
+        }
+
+        // 2. Load children for the copy. Ordered for determinism on
+        //    the action copies (the rewire map depends on stable order).
+        const currentTriggers = await db
+          .select()
+          .from(agentTriggers)
+          .where(eq(agentTriggers.agentId, current.id));
+        const currentActions = await db
+          .select()
+          .from(agentActions)
+          .where(eq(agentActions.agentId, current.id))
+          .orderBy(agentActions.actionOrder);
+        const currentRules = await db
+          .select()
+          .from(agentApprovalRules)
+          .where(eq(agentApprovalRules.agentId, current.id));
+
+        // 3. Retire the old row FIRST. The partial-unique index on
+        //    `(tenant_id, name) WHERE retired_at IS NULL` blocks
+        //    inserting the new row with the same name until the old
+        //    row's slot is freed. Order matters; all inside the
+        //    protectedProcedure tx so atomic.
+        const now = new Date();
+        await db
+          .update(automationAgents)
+          .set({ retiredAt: now, updatedAt: now })
+          .where(eq(automationAgents.id, current.id));
+
+        // 4. Insert the new row at version + 1. Same name, same
+        //    agent_type, current user as created_by, merged
+        //    description from input (input.description=undefined →
+        //    carry forward; input.description=null → explicit clear).
+        const mergedDescription =
+          input.description === undefined ? current.description : input.description;
+        const [newAgentRow] = await db
+          .insert(automationAgents)
+          .values({
+            tenantId,
+            agentType: "follow_up",
+            name: current.name,
+            description: mergedDescription,
+            enabled: current.enabled,
+            version: current.version + 1,
+            createdBy: actor.id,
+          })
+          .returning({ id: automationAgents.id });
+        if (!newAgentRow) {
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: "automation_agents new-version insert returned no row",
+          });
+        }
+        const newAgentId = newAgentRow.id;
+
+        // 5. Copy triggers. Follow-Up Agent has exactly one trigger of
+        //    type stage_stale; merge input overrides into its config.
+        for (const trig of currentTriggers) {
+          const prevConfig = trig.triggerConfig as { stage?: string; days_threshold?: number };
+          const mergedConfig = {
+            stage: input.stage ?? prevConfig.stage,
+            days_threshold: input.days_threshold ?? prevConfig.days_threshold,
+          };
+          await db.insert(agentTriggers).values({
+            tenantId,
+            agentId: newAgentId,
+            triggerType: trig.triggerType,
+            triggerConfig: mergedConfig,
+          });
+        }
+
+        // 6. Copy actions. action_id changes per row → keep a map
+        //    from old id → new id so the rule copies can rewire. Merge
+        //    input.tone / input.max_tokens into the draft_message
+        //    action's config; other action types carry forward
+        //    unchanged.
+        const actionIdMap = new Map<string, string>();
+        for (const act of currentActions) {
+          const prevConfig = act.actionConfig as Record<string, unknown>;
+          let mergedActionConfig: Record<string, unknown> = prevConfig;
+          if (act.actionType === "draft_message") {
+            mergedActionConfig = {
+              ...prevConfig,
+              ...(input.tone !== undefined ? { tone: input.tone } : {}),
+              ...(input.max_tokens !== undefined ? { max_tokens: input.max_tokens } : {}),
+            };
+          }
+          const [newAct] = await db
+            .insert(agentActions)
+            .values({
+              tenantId,
+              agentId: newAgentId,
+              actionOrder: act.actionOrder,
+              actionType: act.actionType,
+              actionConfig: mergedActionConfig,
+            })
+            .returning({ id: agentActions.id });
+          if (!newAct) {
+            throw new TRPCError({
+              code: "INTERNAL_SERVER_ERROR",
+              message: "agent_actions copy returned no row",
+            });
+          }
+          actionIdMap.set(act.id, newAct.id);
+        }
+
+        // 7. Copy approval rules. action_id rewires via actionIdMap;
+        //    other fields carry forward verbatim. DOES NOT route
+        //    through assertRuleAttachable — copies trust prior
+        //    validation (locked decision).
+        for (const rule of currentRules) {
+          const newActionId = actionIdMap.get(rule.actionId);
+          if (!newActionId) {
+            throw new TRPCError({
+              code: "INTERNAL_SERVER_ERROR",
+              message: `approval_rule references action_id ${rule.actionId} not in copy map`,
+            });
+          }
+          await db.insert(agentApprovalRules).values({
+            tenantId,
+            agentId: newAgentId,
+            actionId: newActionId,
+            approvalMode: rule.approvalMode,
+            approverRole: rule.approverRole,
+            approverUserId: rule.approverUserId,
+            conditions: rule.conditions,
+          });
+        }
+
+        return {
+          agentId: newAgentId,
+          previousAgentId: current.id,
+          version: current.version + 1,
+        };
+      });
+    }),
+
+  retireFollowUpAgent: protectedProcedure
+    .input(retireFollowUpAgentInputSchema)
+    .output(retireFollowUpAgentOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      return withAudit("retire_follow_up_agent", ctx, input, async () => {
+        const db = requireDb(ctx);
+        if (!ctx.tenantId) {
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: "protected procedure missing tenantId",
+          });
+        }
+        const tenantId = ctx.tenantId;
+
+        const [current] = await db
+          .select({
+            id: automationAgents.id,
+            retiredAt: automationAgents.retiredAt,
+            agentType: automationAgents.agentType,
+          })
+          .from(automationAgents)
+          .where(
+            and(
+              eq(automationAgents.id, input.agentId),
+              eq(automationAgents.tenantId, tenantId),
+            ),
+          )
+          .limit(1);
+        if (!current) {
+          throw new TRPCError({ code: "NOT_FOUND", message: "Agent not found" });
+        }
+        if (current.retiredAt !== null) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: "Agent is already retired",
+          });
+        }
+        if (current.agentType !== "follow_up") {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: `retireFollowUpAgent only retires agents of type 'follow_up' (got '${current.agentType}')`,
+          });
+        }
+
+        const now = new Date();
+        await db
+          .update(automationAgents)
+          .set({ retiredAt: now, updatedAt: now })
+          .where(eq(automationAgents.id, current.id));
+
+        return { agentId: current.id, retiredAt: now.toISOString() };
+      });
+    }),
+
+  toggleFollowUpAgent: protectedProcedure
+    .input(toggleFollowUpAgentInputSchema)
+    .output(toggleFollowUpAgentOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      return withAudit("toggle_follow_up_agent", ctx, input, async () => {
+        const db = requireDb(ctx);
+        if (!ctx.tenantId) {
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: "protected procedure missing tenantId",
+          });
+        }
+        const tenantId = ctx.tenantId;
+
+        const [current] = await db
+          .select({
+            id: automationAgents.id,
+            enabled: automationAgents.enabled,
+            retiredAt: automationAgents.retiredAt,
+            agentType: automationAgents.agentType,
+          })
+          .from(automationAgents)
+          .where(
+            and(
+              eq(automationAgents.id, input.agentId),
+              eq(automationAgents.tenantId, tenantId),
+            ),
+          )
+          .limit(1);
+        if (!current) {
+          throw new TRPCError({ code: "NOT_FOUND", message: "Agent not found" });
+        }
+        if (current.retiredAt !== null) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: "Cannot toggle a retired agent",
+          });
+        }
+        if (current.agentType !== "follow_up") {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: `toggleFollowUpAgent only toggles agents of type 'follow_up' (got '${current.agentType}')`,
+          });
+        }
+
+        // No-op if already in the requested state — still write so
+        // updated_at moves and the audit trail records the request,
+        // even when state doesn't change. Actually: skip the write
+        // when state matches, because the audit trigger short-circuits
+        // no-op UPDATEs anyway (v_before = v_after RETURN NULL). The
+        // explicit early return makes intent clearer.
+        if (current.enabled === input.enabled) {
+          return { agentId: current.id, enabled: current.enabled };
+        }
+
+        await db
+          .update(automationAgents)
+          .set({ enabled: input.enabled, updatedAt: new Date() })
+          .where(eq(automationAgents.id, current.id));
+
+        return { agentId: current.id, enabled: input.enabled };
+      });
     }),
 
   // ─────────────────────── approval-resolution (AGENT-03) ───────────────────────
@@ -1930,6 +2276,33 @@ export const appRouter = router({
       return out;
     }),
 });
+
+// ─────────────── AGENT-04a #30 rule-attachment guard ───────────────
+
+/**
+ * tRPC-side wrapper around `assertRuleAttachable` from
+ * @hireops/agent-actions. The underlying assert throws
+ * IncompatibleApprovalRuleError on misconfiguration; this wrapper maps
+ * that to a `BAD_REQUEST` tRPC error so callers see a clean 400
+ * instead of an INTERNAL_SERVER_ERROR. Anything else (genuine bugs)
+ * propagates unchanged.
+ *
+ * Used by every router procedure that inserts/updates
+ * agent_approval_rules. The guard is correct-by-attachment-point: if
+ * a future procedure forgets to call it, the misconfiguration would
+ * land in the DB and produce a silent never-firing gate. Treat it as
+ * mandatory for any rule write.
+ */
+function ensureRuleAttachable(actionType: string, approvalMode: string): void {
+  try {
+    assertRuleAttachable(actionType, approvalMode);
+  } catch (err) {
+    if (err instanceof IncompatibleApprovalRuleError) {
+      throw new TRPCError({ code: "BAD_REQUEST", message: err.message });
+    }
+    throw err;
+  }
+}
 
 // ─────────────── AGENT-03 approval-resolution helpers ───────────────
 

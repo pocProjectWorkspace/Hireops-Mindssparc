@@ -3,25 +3,30 @@ import { ActionConfigMismatchError, type ActionExecutor } from "../types";
 /**
  * send_message — STUB.
  *
- * Real implementation (AGENT-04+) will INSERT into notification_outbox
+ * Real implementation (AGENT-04b+) will INSERT into notification_outbox
  * with the channel + outbox_kind discriminator + the draft body pulled
  * from the previous draft_message action's output. AGENT-02 stub
  * returns sent: false to make it unmistakable that nothing was actually
  * dispatched.
  *
- * AGENT-03 flipped `requiresApproval: true` so the awaiting_approval
- * worker branch + approval-resolution + resume cycle can be exercised
- * end-to-end. The output is still the AGENT-02 stub shape — the
- * `_originally_set_by` marker records that the stub itself dates from
- * AGENT-02 and the approval-requiring flip happened in AGENT-03.
+ * Approval-gate semantics (resolved AGENT-04a, open-question #30):
+ *   1. `requiresApproval: true` on this return is the PER-INVOCATION
+ *      signal that this particular execution wants to gate. It is the
+ *      executor saying "if the rule permits it, please pause here".
+ *   2. The STATIC declaration that send_message can ever return that
+ *      signal lives in `actionExecutorCapabilities` in ../registry.ts
+ *      as `{ requiresApprovalCapable: true }`. That capability is what
+ *      the rule-attachment validator (`assertRuleAttachable`) gates on
+ *      — attaching a human-gate rule to an action whose capability is
+ *      `false` is rejected as misconfiguration.
+ *   3. The RUNTIME decision is owned by the approval rule, not by this
+ *      executor. The worker bypasses `requiresApproval` entirely when
+ *      the rule's mode is 'auto'; only modes 'human_required' /
+ *      'human_optional' consult the executor's return.
  *
- * Note: `requires_approval` in the config is HR-set on agent setup,
- * distinct from this `requiresApproval: true` on the executor return,
- * which is the executor-side signal that the action shouldn't proceed
- * without a resolved agent_approval_request. The per-action
- * approval_mode (auto / human_required / human_optional) on
- * agent_approval_rules is yet a third layer — combined, the worker
- * gates on the rule's mode (`auto` short-circuits the executor signal).
+ * The `_originally_set_by: 'AGENT-02'` marker records the stub's
+ * provenance so a future grep / DB query can distinguish "stub from
+ * AGENT-02 era" from "real send_message executor (AGENT-04b+)".
  */
 export const sendMessageExecutor: ActionExecutor = async ({ config }) => {
   if (config.type !== "send_message") {

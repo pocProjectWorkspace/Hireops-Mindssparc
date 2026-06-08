@@ -15,9 +15,16 @@ export {
   type ActionExecutor,
   type ActionExecutorParams,
   type ActionResult,
+  type ActionExecutorCapability,
   ActionConfigMismatchError,
 } from "./types";
 
-export { actionExecutorRegistry, type ActionTypeKey } from "./registry";
+export {
+  actionExecutorRegistry,
+  actionExecutorCapabilities,
+  assertRuleAttachable,
+  IncompatibleApprovalRuleError,
+  type ActionTypeKey,
+} from "./registry";
 
 export { bridgeActionConfig } from "./bridge";

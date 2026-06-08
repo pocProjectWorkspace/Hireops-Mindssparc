@@ -1,0 +1,106 @@
+/**
+ * AGENT-04a — #30 close: rule-attachment guard.
+ *
+ * `assertRuleAttachable(actionType, approvalMode)` is the validator
+ * called at every point where an agent_approval_rules row is
+ * created or updated. It enforces the capability-declaration model
+ * resolved in open-question #30:
+ *
+ *   - Auto mode is always permitted (a no-op gate on a non-capable
+ *     action is harmless).
+ *   - human_required / human_optional are only permitted on action
+ *     types whose executor declares requiresApprovalCapable=true.
+ *   - Anything else (unknown action type, unknown mode) throws.
+ *
+ * Pure-function tests, no DB. Mirrors the registry.test.ts pattern.
+ */
+
+import { describe, expect, it } from "vitest";
+import {
+  actionExecutorCapabilities,
+  assertRuleAttachable,
+  IncompatibleApprovalRuleError,
+} from "../src/index";
+
+describe("assertRuleAttachable — auto mode (always permitted)", () => {
+  for (const actionType of Object.keys(actionExecutorCapabilities)) {
+    it(`permits auto on ${actionType} regardless of capability`, () => {
+      expect(() => assertRuleAttachable(actionType, "auto")).not.toThrow();
+    });
+  }
+});
+
+describe("assertRuleAttachable — capable actions accept human-gate modes", () => {
+  // Today only send_message is capable.
+  const capableTypes = Object.entries(actionExecutorCapabilities)
+    .filter(([, cap]) => cap.requiresApprovalCapable)
+    .map(([type]) => type);
+
+  it("at least one action type is capable (sanity check on the registry)", () => {
+    expect(capableTypes.length).toBeGreaterThan(0);
+  });
+
+  for (const actionType of capableTypes) {
+    it(`permits human_required on ${actionType}`, () => {
+      expect(() => assertRuleAttachable(actionType, "human_required")).not.toThrow();
+    });
+    it(`permits human_optional on ${actionType}`, () => {
+      expect(() => assertRuleAttachable(actionType, "human_optional")).not.toThrow();
+    });
+  }
+});
+
+describe("assertRuleAttachable — non-capable actions reject human-gate modes", () => {
+  const incapableTypes = Object.entries(actionExecutorCapabilities)
+    .filter(([, cap]) => !cap.requiresApprovalCapable)
+    .map(([type]) => type);
+
+  it("at least one action type is not capable (sanity check)", () => {
+    expect(incapableTypes.length).toBeGreaterThan(0);
+  });
+
+  for (const actionType of incapableTypes) {
+    it(`rejects human_required on ${actionType}`, () => {
+      expect(() => assertRuleAttachable(actionType, "human_required")).toThrow(
+        IncompatibleApprovalRuleError,
+      );
+    });
+    it(`rejects human_optional on ${actionType}`, () => {
+      expect(() => assertRuleAttachable(actionType, "human_optional")).toThrow(
+        IncompatibleApprovalRuleError,
+      );
+    });
+  }
+});
+
+describe("assertRuleAttachable — defensive paths", () => {
+  it("throws IncompatibleApprovalRuleError on unknown action type with a human-gate mode", () => {
+    expect(() => assertRuleAttachable("definitely_not_a_real_action", "human_required")).toThrow(
+      IncompatibleApprovalRuleError,
+    );
+  });
+
+  it("permits auto on unknown action type (auto is unconditional)", () => {
+    // Defensible because the DB CHECK constraint catches unknown
+    // action types upstream; auto on an unknown type can't fire a
+    // gate so isn't a misconfiguration the guard needs to surface.
+    expect(() => assertRuleAttachable("definitely_not_a_real_action", "auto")).not.toThrow();
+  });
+
+  it("throws on an unknown approval mode regardless of action type", () => {
+    expect(() => assertRuleAttachable("send_message", "approval_via_committee")).toThrow(
+      IncompatibleApprovalRuleError,
+    );
+  });
+
+  it("error message names both the action type and the mode for diagnosability", () => {
+    try {
+      assertRuleAttachable("draft_message", "human_required");
+      expect.fail("expected throw");
+    } catch (err) {
+      expect(err).toBeInstanceOf(IncompatibleApprovalRuleError);
+      expect((err as Error).message).toContain("draft_message");
+      expect((err as Error).message).toContain("human_required");
+    }
+  });
+});

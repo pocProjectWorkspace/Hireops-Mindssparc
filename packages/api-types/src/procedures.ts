@@ -491,6 +491,74 @@ export const createFollowUpAgentOutputSchema = z.object({
 export type CreateFollowUpAgentInput = z.infer<typeof createFollowUpAgentInputSchema>;
 export type CreateFollowUpAgentOutput = z.infer<typeof createFollowUpAgentOutputSchema>;
 
+// ─────────────── update / retire / toggle (AGENT-04a) ───────────────
+
+/**
+ * updateFollowUpAgent — edits a Follow-Up Agent following the
+ * retire-and-insert versioning model. The current row gets
+ * `retired_at = now()` and a new row is inserted at `version + 1`
+ * with the same name (the partial-unique active-name slot is freed by
+ * the retire); all triggers / actions / approval-rules are copied to
+ * the new row, with action_id rewiring on the rule copies.
+ *
+ * Name is intentionally NOT in the input — the name-anchored lineage
+ * (open-questions HANDOVER note) assumes name stability across
+ * versions. Making names editable is an AGENT-04b+ revisit.
+ *
+ * Every input field is optional; omitted fields carry forward from
+ * the existing row / children.
+ */
+export const updateFollowUpAgentInputSchema = z.object({
+  agentId: z.string().uuid(),
+  description: z.string().max(500).nullable().optional(),
+  days_threshold: z.number().int().positive().max(365).optional(),
+  stage: z.string().min(1).max(60).optional(),
+  tone: z.enum(["formal", "friendly", "neutral"]).optional(),
+  max_tokens: z.number().int().positive().max(2000).optional(),
+});
+export const updateFollowUpAgentOutputSchema = z.object({
+  /** Id of the NEW version row (now the active agent). */
+  agentId: z.string().uuid(),
+  /** Id of the retired previous version. */
+  previousAgentId: z.string().uuid(),
+  /** Version number of the new row (= previous + 1). */
+  version: z.number().int(),
+});
+export type UpdateFollowUpAgentInput = z.infer<typeof updateFollowUpAgentInputSchema>;
+export type UpdateFollowUpAgentOutput = z.infer<typeof updateFollowUpAgentOutputSchema>;
+
+/**
+ * retireFollowUpAgent — sets `retired_at = now()` on the active
+ * version. Non-destructive. Frees the active-name slot for a fresh
+ * agent with the same name. No new row created.
+ */
+export const retireFollowUpAgentInputSchema = z.object({
+  agentId: z.string().uuid(),
+});
+export const retireFollowUpAgentOutputSchema = z.object({
+  agentId: z.string().uuid(),
+  retiredAt: z.string(),
+});
+export type RetireFollowUpAgentInput = z.infer<typeof retireFollowUpAgentInputSchema>;
+export type RetireFollowUpAgentOutput = z.infer<typeof retireFollowUpAgentOutputSchema>;
+
+/**
+ * toggleFollowUpAgent — flips the `enabled` boolean. Disabled agents
+ * stay in listAgents (recruiter can see they're paused) but the
+ * worker's trigger scan respects `enabled = true` so disabled agents
+ * don't fire. No version row created — toggle is not a versioned edit.
+ */
+export const toggleFollowUpAgentInputSchema = z.object({
+  agentId: z.string().uuid(),
+  enabled: z.boolean(),
+});
+export const toggleFollowUpAgentOutputSchema = z.object({
+  agentId: z.string().uuid(),
+  enabled: z.boolean(),
+});
+export type ToggleFollowUpAgentInput = z.infer<typeof toggleFollowUpAgentInputSchema>;
+export type ToggleFollowUpAgentOutput = z.infer<typeof toggleFollowUpAgentOutputSchema>;
+
 export const listAgentsInputSchema = z.object({}).optional();
 export const agentListRowSchema = z.object({
   id: z.string().uuid(),
