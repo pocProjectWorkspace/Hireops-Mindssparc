@@ -94,7 +94,7 @@ describe("ai-client (AI-01)", () => {
   afterAll(async () => {
     await cleanupAITenants();
     if (fixtureDir) await rm(fixtureDir, { recursive: true, force: true });
-    await poolSql.end({ timeout: 2 });
+    await poolSql.end({ timeout: 10 });
   });
 
   it("Test 1: LocalAIClient.complete returns fixture text + usage logged", async () => {

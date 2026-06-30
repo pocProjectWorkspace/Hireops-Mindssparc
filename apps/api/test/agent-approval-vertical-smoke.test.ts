@@ -312,7 +312,7 @@ describe("AGENT-03 — approval cycle vertical smoke", () => {
       await cleanupAgentByName(n);
     }
     await cleanupAgentById(A03_RESUME_AGENT);
-    await poolSql.end({ timeout: 2 });
+    await poolSql.end({ timeout: 10 });
   });
 
   it("Test 1: approve (no edit) — drain → pause → approve → drain → completed", async () => {

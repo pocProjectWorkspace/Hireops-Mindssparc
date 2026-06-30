@@ -216,7 +216,7 @@ describe("API-01 tRPC + REST skeleton", () => {
     await poolSql`DELETE FROM public.business_units WHERE tenant_id = ${API_TENANT}`;
     await poolSql`DELETE FROM public.tenants WHERE id = ${API_TENANT}`;
     resetStorageClient();
-    await poolSql.end({ timeout: 2 });
+    await poolSql.end({ timeout: 10 });
   });
 
   it("Test 1: GET /api/healthz returns expected shape", async () => {

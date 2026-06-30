@@ -1299,7 +1299,7 @@ describe("DB-03 persons / candidates / applications", () => {
     await poolSql`DELETE FROM public.tenants WHERE id = ${DB03_SYNTH_TENANT_ID}`;
 
     // Drain the pool so the next file (db-approval) gets fresh connections.
-    await poolSql.end({ timeout: 5 });
+    await poolSql.end({ timeout: 10 });
   });
 
   it("Test 26: DB-03 tenant isolation across persons/candidates/applications/transitions", async () => {

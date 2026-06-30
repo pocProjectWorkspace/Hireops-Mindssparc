@@ -198,7 +198,7 @@ describe("DB-PARTNER-A (8 partner tables)", () => {
   afterAll(async () => {
     await cleanupTenant(PA_TENANT);
     await cleanupTenant(PA_TENANT_B);
-    await poolSql.end({ timeout: 2 });
+    await poolSql.end({ timeout: 10 });
   });
 
   it("Test 1: tenant isolation — caller's tenant cannot see PA_TENANT's partner rows", async () => {

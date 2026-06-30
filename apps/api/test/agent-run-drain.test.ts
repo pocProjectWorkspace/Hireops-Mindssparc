@@ -144,7 +144,7 @@ describe("AGENT-02 — agent_run_outbox drain", () => {
     for (const id of [A02_AGENT_SINGLE, A02_AGENT_MULTI, A02_AGENT_BAD, A02_AGENT_MISMATCH]) {
       await cleanupAgent(id);
     }
-    await poolSql.end({ timeout: 2 });
+    await poolSql.end({ timeout: 10 });
   });
 
   it("Test 1: drain returns all-zero when no pending outbox rows", async () => {

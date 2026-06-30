@@ -244,7 +244,7 @@ describe("AI-03 — knockout eval + scoring outbox + worker drain", () => {
       }
     }
     resetStorageClient();
-    await poolSql.end({ timeout: 2 });
+    await poolSql.end({ timeout: 10 });
   });
 
   it("Test 1: knockouts pass + confidence above floor → outbox enqueued, explanation null", async () => {

@@ -70,17 +70,22 @@ All `pnpm typecheck && pnpm lint && pnpm build` passing. Each app/package has on
 
 ### 2.4 Git history
 
+Last ten commits (current HEAD = `76c6f87`, sequential ff-merges to `main`):
+
 ```
-957e093 docs: apply Tier 1 + Tier 2 refinements to requirements.md
-1a50be7 docs: apply ADR-002 implications across schema and backlog
-e8faf20 docs: add Multi-Tenancy ADR (ADR-002)
-16041c0 docs: reframe HireOps as multi-tenant SaaS with Kyndryl as first POC customer
-a900d3a docs: add competitive landscape and design benchmarks
-6de3cb1 docs: resolve contradictions and gaps from internal review pass
-2dfd17c chore: initial repository scaffold
+76c6f87 feat(agents): AGENT-04b Scheduling + Candidate Q&A CRUD on the 04a pattern
+db5f758 feat(agents): AGENT-04a Follow-Up update/retire/toggle + #30 close + #102 retrofit
+50c95ad feat(agents): AGENT-03 approval-resolution + worker resume + TTL auto-approve
+b98e229 feat(agents): AGENT-02 action executor package + drain worker + tRPC
+2fa6768 feat(agents): add automation_agents domain schema + FORCE RLS + audit triggers
+082a222 docs(poc): add strategy, build plan, demo scope, onboarding, prototype rewrite
+a78cc71 docs(audit): completion audit + prototype reconciliation
+e309910 feat(ai-03): real AI scoring on application submit — knockouts + Anthropic
+c080b40 chore(crs-01): pre-push cleanups — 10MB upload cap, Button brand-600, Module 4 re-smoke, Test 7 flake diagnosis
+0eb00f0 feat(crs-01): public candidate apply form at /t/[tenant]/apply/[req]
 ```
 
-Clean linear history. Every commit is a coherent unit.
+For the full timeline pre-AGENT-02 (FND-15 series, DB-01 through DB-PARTNER-A, Module 1–4, CRS-01, AI-03), see `git log --oneline`. The "Codebase realities" entries in §4 (#1 onwards) annotate non-obvious findings discovered ticket-by-ticket. Clean linear history; every commit is a coherent unit.
 
 ---
 
@@ -385,11 +390,17 @@ The repo has the scaffold and the design docs. **No product code exists.** No da
 
 106. **Drizzle 0.45's `onConflictDoNothing` partial-index inference uses `where`, not `targetWhere`.** AGENT-04a's #102 retrofit for `createFollowUpAgent` uses `INSERT ... ON CONFLICT DO NOTHING RETURNING id` against the partial-unique index `(tenant_id, name) WHERE retired_at IS NULL`. Drizzle's API takes the predicate that matches the partial index via the `where:` field — `targetWhere:` is the newer-version name and is not yet in 0.45. The Drizzle types only expose `{ target, where }` on this version; reach for raw `poolSql\`INSERT ... ON CONFLICT ... DO NOTHING\`` if a future call needs both a target-WHERE *and* an update-WHERE on the same conflict (which Drizzle 0.45 can't express).
 
-107. **Vitest full-suite api:test stalls on the Supabase transaction pooler (port 6543) when 17+ test files each instantiate their own `postgres()` client.** Symptom: tests hit `write CONNECTION_CLOSED aws-1-ap-northeast-1.pooler.supabase.com:6543`, single assertions block for 900–2000s, files time out with mass `skipped`. Targeted runs of 5–6 files pass cleanly; full-suite runs fail intermittently with different files affected each run. **Workaround for verification:** `DATABASE_URL=$DIRECT_URL pnpm api:test ...` overrides the pooler with direct/session-mode (port 5432) and runs clean — dotenv defaults to `override: false` so the shell-level override survives the bootstrap's `loadDotenv` call. **Root cause** is pgBouncer transaction-mode pool reservations not releasing cleanly across vitest's `forks` pool with per-file `postgres()` instantiation + `poolSql.end({ timeout: 2 })` teardown. **Proper fix** lives in a future ticket (open-questions): either (a) route api:test at DIRECT_URL by default, or (b) vitest `globalSetup` to share a single `postgres()` instance across files. Treat the workaround as the path for verification runs until then.
+107. **Vitest full-suite api:test stalls on the Supabase transaction pooler (port 6543) when 17+ test files each instantiate their own `postgres()` client.** Symptom: tests hit `write CONNECTION_CLOSED aws-1-ap-northeast-1.pooler.supabase.com:6543`, single assertions block for 900–2000s, files time out with mass `skipped`. Targeted runs of 5–6 files pass cleanly; full-suite runs fail intermittently with different files affected each run. **Workaround for verification (HISTORICAL — see #109):** `DATABASE_URL=$DIRECT_URL pnpm api:test ...` overrides the pooler with direct/session-mode (port 5432) and runs clean — dotenv defaults to `override: false` so the shell-level override survives the bootstrap's `loadDotenv` call. **Root cause** is pgBouncer transaction-mode pool reservations not releasing cleanly across vitest's `forks` pool with per-file `postgres()` instantiation + `poolSql.end({ timeout: 2 })` teardown. **CORRECTION (TEST-INFRA-01):** the "DIRECT_URL bypasses the pooler" framing in this entry is wrong — DIRECT_URL goes through the SAME Supavisor pooler in session mode, not a poolerless direct connection. See #109 for the topology correction. The workaround changes the failure shape but doesn't escape the project cap, which is why subsequent back-to-back runs still cascade on either port. Final resolution lives in TEST-INFRA-01 (local gate via `pnpm test:gate`) + TEST-INFRA-02 stub (open-question #34) for the deferred container path.
 
 **Codebase realities introduced by AGENT-04b:**
 
 108. **`propose_calendar_slots` and `create_calendar_event` flipped to `requiresApprovalCapable: true` in `actionExecutorCapabilities`.** Both were `false` through AGENT-03 / AGENT-04a (calendar mechanics weren't in scope; capability decision was deliberately deferred to the scheduling-agent ticket). AGENT-04b flips them. Rationale: `propose_calendar_slots`'s output is the set of slots a candidate sees in a self-scheduling surface — gate-able by HR's call; `create_calendar_event` fires invites to candidates and panel members — same external-side-effect logic as `send_message`. Capability is permissive (`true` ALLOWS gating, doesn't force it; `auto` mode stays valid). Per the existing capability-map convention (registry.ts doc-block, AGENT-04a #30), any `false`→`true` flip is a product decision worth a HANDOVER note because the gate appearing in HR's approval queue changes their workflow. The Scheduling agent's curated defaults attach `human_required` rules to both, exercising the flip end-to-end. Existing dynamic loops in `packages/agent-actions/test/rule-attach-guard.test.ts` pick up the new capable types automatically; an AGENT-04b-named `describe` block adds explicit before/after-flip assertions so a future regression of the flip surfaces in the guard test, not silently in the agent surface.
+
+**Codebase realities introduced by TEST-INFRA-01:**
+
+109. **`DIRECT_URL` IS THE SUPAVISOR POOLER in session mode on port 5432, NOT a poolerless direct connection.** Both `DATABASE_URL` (`:6543`, transaction mode) and `DIRECT_URL` (`:5432`, session mode) point at the SAME Supavisor host (`aws-1-ap-northeast-1.pooler.supabase.com`). The only true poolerless path is `db.<project-ref>.supabase.co:5432`, which is **IPv6-only on the current Supabase tier** and is NOT in `.env`. This false premise — "DIRECT_URL is direct" — cost half a session of TEST-INFRA-01 diagnosis, because every "use DIRECT_URL to bypass the pooler" experiment was actually still going through the same project-level connection cap, just in session mode. Implication: switching between 6543 and 5432 changes the failure shape (`CONNECTION_CLOSED` ↔ `CONNECT_TIMEOUT`) but does NOT escape the project cap. If you ever read code or docs that imply DIRECT_URL is "the unpooled fallback", treat that as historical mythology and verify the URL host. The real poolerless URL requires an IPv6 add-on (Supabase's paid tier feature) AND a `.env` addition; until then there is no poolerless test path.
+
+110. **API tests round-trip to cloud Supabase Auth for every JWT — there is no local JWT minting.** `apps/api/test/*.test.ts` files all use the same `getTestJwt()` helper: `createClient(SUPABASE_URL, SUPABASE_ANON_KEY).auth.signInWithPassword({ email, password })`. That hits cloud Supabase Auth's REST endpoint, returns a real ES256-signed JWT. The api server verifies via `createRemoteJWKSet(<supabase-url>/auth/v1/.well-known/jwks.json)`. The JWT's `tid` claim is set by the cloud's `custom_access_token_hook` reading from the **cloud DB's `tenant_user_memberships`** at signin time. Consequence for any future "fully local test DB" work (TEST-INFRA-02): the local DB must seed `tenants` + `tenant_user_memberships` rows with the EXACT SAME UUIDs that cloud Supabase Auth's JWT claims point at — otherwise tenant-scoped queries return empty and RLS rejects. The reference is `packages/db/src/scripts/seed-test-users.ts`'s mapping. Going local-JWT (a parallel signing key + a `NODE_ENV=test` JWKS swap) is bigger surface and out of scope for test infra; Path-A (seed local tenancy to match cloud JWT) is the documented approach.
 
 ---
 
@@ -487,15 +498,32 @@ For high-risk edits (renames, refactors, anything touching ownership rules or sc
 
 ## 7. Where we are right now
 
-**Most recent state (commit 957e093):**
-- Tier 1 + Tier 2 requirements refinements landed cleanly
-- 18 edits applied across `requirements.md`
-- 14 personas now documented (13 tenant-facing + 1 platform admin out-of-scope)
-- Notification matrix added
-- Lifecycle diagram split (Pre-Hire / Hire as separate stages)
-- Testability thresholds added throughout
+**Current state (HEAD = `76c6f87`, after the AGENT-04b + TEST-INFRA-01 push):**
 
-**Next two pieces of work, in priority order:**
+The Wave 1 critical path through the agent surface has shipped end-to-end. Six tickets in sequence built the wedge:
+
+- **AGENT-01a / AGENT-01b (commit `2fa6768`)** — 9 new domain tables for the agent surface (`automation_agents`, `agent_triggers`, `agent_actions`, `agent_approval_rules`, `agent_runs`, `agent_run_actions`, `agent_approval_requests`, `agent_run_outbox`, `candidate_inbound_messages`) with FORCE RLS and audit triggers on the five Category A tables. Migrations `0040` + `0041`.
+- **AGENT-02 (commit `b98e229`)** — `@hireops/agent-actions` package with seven stub action executors, the `agent-run-drain` worker, and minimal tRPC (`createFollowUpAgent`, `listAgents`). The executor + worker spine.
+- **AGENT-03 (commit `50c95ad`)** — approval-resolution tRPC (`approveApproval`, `approveApprovalWithEdit`, `rejectApproval`, `snoozeApproval`), pending-approval listing procedures, worker resume logic with idempotent re-execution, TTL auto-approve piggybacked on `sla-imminent-scan`. The pause/approve/resume cycle works end-to-end.
+- **AGENT-04a (commit `db5f758`)** — Follow-Up agent update/retire/toggle on the locked retire-and-insert versioning model, the `#30` capability-declaration model with `assertRuleAttachable` guard, `#102` retrofit on `createFollowUpAgent` (`INSERT ... ON CONFLICT DO NOTHING RETURNING id`). The CRUD pattern locked.
+- **AGENT-04b (commit `76c6f87`)** — Scheduling + Candidate Q&A agent CRUD replicating the 04a pattern, capability flips on `propose_calendar_slots` + `create_calendar_event`. Three agent types now have full CRUD + lifecycle.
+- **TEST-INFRA-01 (about to commit, in working tree)** — test reliability resolution: `pnpm test:gate` as the local pre-commit gate (~11min, 91 tests, reliable), CI workflow split into PR-blocking `test-gate` + post-merge `test-full` tripwire. DIRECT_URL=pooler topology corrected (HANDOVER #109). The full local back-to-back path abandoned pending Docker install (TEST-INFRA-02 deferred).
+
+**What the wedge looks like end-to-end after this push:** HR can configure three agent types via tRPC (create / update with versioning / retire / toggle), the worker drains agent runs, paused actions queue for human approval, recruiters approve/edit/reject/snooze, the worker resumes idempotently, TTL auto-approves where configured, full audit triple preserved on every decision. All proven by 91 targeted tests + an additional ~90 tests across the broader agent + supporting surface.
+
+**Restart point when resuming:**
+
+The next ticket in the agent-surface sequence (AGENT-05) is the **agent surface UI** — 8 routes in `apps/internal-portal` per the handover §4's "Major work yet to be written" list (agent list, agent detail, agent edit/new flows, admin approvals queue, recruiter-scoped triage approval badge, audit list, AI cost dashboard). Before AGENT-05's update/retire/toggle UI work hits the surface, the **shared-lifecycle-helper extraction** (open-question #32) is the pre-AGENT-05 housekeeping — three near-identical `update*Agent` procedures should collapse to one helper with type-specific merge callbacks. That refactor is mechanical now that the pattern is proven across three instances; it's the right cleanup before the UI wires three more call sites against the same shape.
+
+Other pre-AGENT-05 sequencing decisions worth confirming:
+- Whether to install Docker locally and tackle TEST-INFRA-02 (the full-local container path) before AGENT-05, so the UI work has a fast fully-local gate. Currently blocked only on the Docker install.
+- Whether the four locked-but-out-of-scope tickets — Kyndryl admin spec, Workday field-mapping, tenant-onboarding wizard, Tier 3 requirements cleanup — should slip further or get a slot.
+
+Historical phasing context — preserved below in §7.1–§7.3 — was written when the design system spec was the immediate-next target. That ordering was superseded by the agent-surface workstream once the wedge case became clear; the design system tokens have been quietly accreting via the internal-portal screens as they ship. Treat §7.1–§7.3 as a record of how we got here, not active direction.
+
+---
+
+**Historical phasing context (pre-agent-surface workstream):**
 
 ### 7.1 Wave 1 execution plan (recommended next)
 

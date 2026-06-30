@@ -252,7 +252,7 @@ describe("DB-APPROVAL integration", () => {
     await poolSql`DELETE FROM public.tenants WHERE id = ${DBAP_SYNTH_TENANT_ID}`;
 
     // Drain the pool.
-    await poolSql.end({ timeout: 5 });
+    await poolSql.end({ timeout: 10 });
   });
 
   it("Test 1: tenant isolation across matrices/chains/requests/decisions", async () => {

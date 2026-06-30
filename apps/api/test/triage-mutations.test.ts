@@ -178,7 +178,7 @@ describe("Module 1b — triage mutations + listCandidates extensions", () => {
 
   afterAll(async () => {
     await cleanup();
-    await poolSql.end({ timeout: 2 });
+    await poolSql.end({ timeout: 10 });
   });
 
   it("Test 1: advanceApplication moves stage + writes transition row", async () => {

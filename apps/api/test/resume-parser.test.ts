@@ -175,7 +175,7 @@ describe("resume parser (AI-02)", () => {
     await poolSql`DELETE FROM public.ai_usage_logs WHERE tenant_id = ${TENANT}`;
     await poolSql`DELETE FROM public.tenants WHERE id = ${TENANT}`;
     if (fixtureDir) await rm(fixtureDir, { recursive: true, force: true });
-    await poolSql.end({ timeout: 2 });
+    await poolSql.end({ timeout: 10 });
   });
 
   it("Test 1: parserOutputSchema accepts a fully-populated valid output", () => {

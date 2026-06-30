@@ -1,12 +1,19 @@
 name: ci
 
 # Runs all the gates we run locally:
-#   typecheck, lint, format:check, build (no DB) — in parallel
-#   api:test, db:lint:rls (need DB)             — serialised via concurrency group
+#   typecheck, lint, format:check, build (no DB) — in parallel, on every push + PR
+#   test-gate (targeted, ~11min)                 — on PR only; the blocking gate
+#   test-full (full api:test, ~45min)            — on push to main only; post-merge signal
+#   db:lint:rls                                  — on PR + push to main
 #
-# Solo-engineer scope today; multi-engineer headroom is the parallel
-# job split + the concurrency group that keeps DB-touching jobs from
-# stepping on each other when several PRs land at once.
+# DB-touching jobs are gated by job-level `if:` filters so they fire only on
+# PR + push-to-main, never on bursty per-branch pushes. The bursty trigger
+# (`push: branches: ["**"]`) was the most-likely cause of the cumulative
+# back-to-back-pooler-cascade pattern that TEST-INFRA-01 diagnosed —
+# multiple feature-branch pushes in a window queue serially via the ci-db
+# concurrency group and behave like back-to-back local runs. Per-branch
+# pushes still run the non-DB jobs (lint / typecheck / build / format)
+# because those don't touch the pooler.
 
 on:
   push:
@@ -81,13 +88,47 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm build
 
-  test:
-    name: api:test
+  test-gate:
+    name: test:gate (PR blocking gate)
     runs-on: ubuntu-latest
-    # Serialise DB-touching jobs across all CI runs in this repo. Two
-    # pushes in quick succession queue rather than collide on shared
-    # fixtures (the db02b4 leftover incident the FND-TEST work was
-    # written to prevent locally still applies on shared CI).
+    # On pull_request only. Runs the targeted set: the agent surface +
+    # @hireops/agent-actions pure-function tests. ~11min total, reliable
+    # under the DB_POOL_MAX=3 cap. Per TEST-INFRA-01, this is what
+    # actually gates merge — the full suite moves to test-full on
+    # push-to-main.
+    if: github.event_name == 'pull_request'
+    concurrency:
+      group: ci-db
+      cancel-in-progress: false
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      DIRECT_URL: ${{ secrets.DIRECT_URL }}
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+      SUPABASE_KEK_SECRET: ${{ secrets.SUPABASE_KEK_SECRET }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm test:gate
+
+  test-full:
+    name: api:test (full, post-merge)
+    runs-on: ubuntu-latest
+    # On push to main only. Full suite (~45min on cloud Supabase under
+    # DB_POOL_MAX=3); not blocking PRs because it's slow + occasionally
+    # cascades on the shared Supavisor pooler (TEST-INFRA-01). Treat as
+    # a tripwire on main rather than a gate — a red here is signal to
+    # investigate the merged change against the full suite, not a
+    # rollback trigger by itself.
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     concurrency:
       group: ci-db
       cancel-in-progress: false
@@ -113,6 +154,10 @@ jobs:
   lint-rls:
     name: db:lint:rls
     runs-on: ubuntu-latest
+    # DB-touching, so gated to PR + push-to-main only (mirrors the
+    # test-gate / test-full triggers). Don't run on bursty per-branch
+    # pushes — would compete with the test jobs on the shared pooler.
+    if: github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
     concurrency:
       group: ci-db
       cancel-in-progress: false

@@ -131,7 +131,7 @@ describe("AGENT-02 — tRPC createFollowUpAgent + listAgents", () => {
       await deleteAgentsByName(n);
     }
     await cleanupSynthTenant();
-    await poolSql.end({ timeout: 2 });
+    await poolSql.end({ timeout: 10 });
   });
 
   it("Test 1: createFollowUpAgent happy path — 1 agent + 1 trigger + 2 actions + 2 approval rules", async () => {

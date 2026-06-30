@@ -193,7 +193,7 @@ describe("AGENT-03 — TTL scan", () => {
   afterAll(async () => {
     await cleanupAgent(A03T_OPTIONAL_AGENT);
     await cleanupAgent(A03T_REQUIRED_AGENT);
-    await poolSql.end({ timeout: 2 });
+    await poolSql.end({ timeout: 10 });
   });
 
   it("human_optional past ttl_at → auto-approved + outbox re-queued; human_required past ttl_at → ttl_at cleared, status pending", async () => {

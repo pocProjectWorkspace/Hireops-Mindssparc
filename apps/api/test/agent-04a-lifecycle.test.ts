@@ -167,7 +167,7 @@ describe("AGENT-04a — Follow-Up agent update / retire / toggle lifecycle", () 
     for (const n of [NAME_UPDATE, NAME_RETIRE, NAME_TOGGLE, NAME_DUP, NAME_MULTIEDIT]) {
       await deleteAllAgentsByName(n);
     }
-    await poolSql.end({ timeout: 2 });
+    await poolSql.end({ timeout: 10 });
   });
 
   it("Test 1: update creates a new version, retires the old, copies children, and old children + frozen runs survive", async () => {

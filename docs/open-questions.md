@@ -868,6 +868,148 @@ extraction is now mechanical and safe.
 
 ---
 
+## TEST-INFRA-01 follow-ups
+
+### ~~33. Full `pnpm api:test` is unreliable as a local commit gate~~ — RESOLVED in TEST-INFRA-01
+
+**Root cause (proven across four diagnostic walls in one session).**
+The api test suite uses `pool: "forks"` + `fileParallelism: false`,
+giving 19 separate Node child processes that each instantiate their
+own module-level `postgres()` client at default `max: 10`. Worst-case
+that's up to 190 connection-establishment attempts across a full run
+against a shared Supavisor project with a ~60-slot project cap.
+
+`DIRECT_URL` is **not** a poolerless escape: both `DATABASE_URL`
+(`:6543`, transaction mode) and `DIRECT_URL` (`:5432`, session mode)
+point at the SAME Supavisor host
+(`aws-1-ap-northeast-1.pooler.supabase.com`). The only true
+poolerless path is `db.<project-ref>.supabase.co:5432`, which is
+**IPv6-only on the current Supabase tier** and not in `.env`.
+
+The failure shape is reliably observed as: under cumulative
+back-to-back load, one DB-heavy test file times out mid-fixture,
+downstream tests in that file see corrupted shared `beforeAll` state
+and fast-fail in milliseconds, the cascade saturates further pool
+slots, and subsequent files mass-skip at `hookTimeout: 60_000`
+firing on their own `beforeAll` connection attempt.
+
+**What was tried, what each told us.**
+
+  - **Layer 1: cap pool + extend teardown.** `DB_POOL_MAX=3` env-driven
+    cap in `packages/db/src/client.ts` (prod default unchanged when
+    unset); `poolSql.end({ timeout: 10 })` uniform across all 19 test
+    files to await Supavisor's goodbye-handshake instead of force-
+    terminating. Run A: 183 tests, only the 2 date-bombs (#22 + #28)
+    red, 45min wall. Run B back-to-back: cascade returned (14 files
+    failed, 98 skipped). **Layer 1 helps but is not sufficient.**
+
+  - **Option D: switch tests to the IPv6 poolerless direct URL.**
+    Added `TEST_DATABASE_URL` to `.env` pointing at
+    `db.<ref>.supabase.co:5432` (true direct host, IPv6 only).
+    Modified `client.ts` to prefer it under `NODE_ENV=test`. Run A:
+    same 2 date-bombs red, 34min. Run B back-to-back: **harder
+    failure** — 17 files failed, 65 skipped, 4h 42min wall-clock
+    (3.5× slower than Layer 1's cascade). The direct path terminates
+    at Postgres's own `max_connections` on the tier, which is
+    tighter than Supavisor's project cap. D fails the gate; reverted.
+
+  - **Option C: local `supabase/postgres` container via testcontainers.**
+    C1 investigation completed: image ships the auth schema +
+    `auth.jwt()` + the 3 Supabase roles (no shim SQL needed); the
+    existing `migrate.ts` runner can apply all 39 migrations against
+    the container unchanged; the auth seam needs Path-A tenant-
+    seeding (cloud Supabase still issues JWTs, container DB must seed
+    the same tenant UUID the cloud's `custom_access_token_hook`
+    stamps into the JWT). **Blocked on Docker install on the dev
+    machine — deferred to TEST-INFRA-02 (see #34).**
+
+**Resolution (locked TEST-INFRA-01).**
+
+  - **Local pre-commit gate** is `pnpm test:gate` — the targeted
+    set (agent surface files + `@hireops/agent-actions`), runs in
+    ~11 min reliably. This is the documented gate.
+  - **CI workflow** (`.github/workflows/ci.yml`) now splits the
+    DB-touching jobs by event type:
+      - PR → `test-gate` job (targeted, blocking gate).
+      - push to main → `test-full` job (full `pnpm api:test`,
+        post-merge tripwire, not blocking).
+      - DB-touching jobs gated by job-level `if:` filters so they
+        fire on PR + push-to-main only — bursty per-branch pushes
+        no longer hit the DB. Non-DB jobs (typecheck / lint / format
+        / build) keep their broader trigger.
+      - `ci-db` concurrency group + `cancel-in-progress: false`
+        retained — serialisation is still correct now that the
+        bursty trigger that made it risky is gone.
+  - **Full local back-to-back is abandoned.** The cumulative-load
+    pattern can't be escaped without Docker (TEST-INFRA-02).
+  - Layer 1 changes (`DB_POOL_MAX=3`, 10s teardown timeouts,
+    `client.ts` TEST_DATABASE_URL hook) kept — they help in CI and
+    are the seam for the future container path.
+
+**Trigger.** Done.
+
+**Origin.** TEST-INFRA-01.
+
+---
+
+### 34. TEST-INFRA-02 — local `supabase/postgres` container via testcontainers (fully-local fast gate)
+
+**What.** A vitest `globalSetup` that spins up a local
+`supabase/postgres` Docker container, applies the 39 migrations via
+the existing `migrate.ts` against it, seeds the test tenant +
+membership rows that match cloud Supabase Auth's JWT claims (Path-A
+from C1(A)), and writes the container URL into `TEST_DATABASE_URL`
+so `client.ts`'s existing hook routes the suite to it.
+
+**Why this works.** `supabase/postgres` ships the `auth` schema +
+`auth.users` + `auth.jwt()` + the three Supabase roles
+(`authenticated`, `anon`, `supabase_auth_admin`) so the 39
+migrations apply unchanged. No vanilla-postgres shim SQL. The
+existing `drizzle migrate()` call in `packages/db/src/migrate.ts`
+already walks the unified 39-file journal (companions + drizzle-
+generated, indistinguishable to the runner) — point it at the
+container URL and the schema is identical to Supabase.
+
+**Why deferred.** Blocked on Docker install on the dev machine
+(Docker Desktop / Colima / OrbStack — any reasonable on macOS).
+
+**Path-A auth-seam handling (already understood).** Tests use real
+cloud Supabase Auth for JWT issuance + JWKS verify (no local
+minting); cloud's `custom_access_token_hook` reads from cloud's
+`tenant_user_memberships` and stamps a `tid` claim into the JWT. For
+container-DB tests, globalSetup must `INSERT INTO tenants` +
+`tenant_user_memberships` using the **exact same UUIDs** that
+match the cloud test user's claims, otherwise tenant-scoped queries
+return empty / RLS rejects. The existing
+`packages/db/src/scripts/seed-test-users.ts` is the reference; the
+container's seed step runs the same shape with `TEST_DATABASE_URL`
+as the target instead of cloud `DATABASE_URL`.
+
+**Recommended shape.**
+
+  - Add `testcontainers` (npm) to apps/api devDependencies.
+  - `apps/api/test/setup/global.ts`: start `supabase/postgres:<tag
+    matching cloud version>`, run migrations, run a seed-test-users
+    equivalent against the container, set `TEST_DATABASE_URL` in
+    `process.env`, return a teardown that stops the container.
+  - Wire via `vitest.config.ts` `globalSetup: ["test/setup/global.ts"]`.
+  - Container image-tag pinned to whatever the cloud project runs
+    (`SELECT version()` against cloud to confirm).
+  - The same container approach upgrades CI: replace the
+    `test-full` job's cloud DB target with a `services: postgres:`
+    block running the same image. Do both under this ticket so the
+    local gate and the CI full-suite share one implementation.
+
+**Trigger.** Docker installed on the dev machine. Or when a future
+ticket re-encounters the connection-saturation problem in a context
+that can't be worked around with `test:gate`.
+
+**Origin.** TEST-INFRA-01 deferred fallback. C1 groundwork captured
+above; this ticket inherits the locked decisions (`supabase/postgres`
+image, `testcontainers` for lifecycle, Path-A tenant-seeding).
+
+---
+
 ### 31. `agent_run_actions.output` writes are not audited separately
 
 **What.** AGENT-03's approve-with-edit copies the edited payload from
@@ -929,3 +1071,8 @@ backlog (file a ticket) or it's not real (delete).
 - **#30 (`requiresApproval` three-vs-two-layer)** — resolved in
   AGENT-04a with the capability-declaration model. `assertRuleAttachable`
   + `actionExecutorCapabilities` enforce the rule-attachment validity.
+- **#33 (full `pnpm api:test` unreliability)** — resolved in
+  TEST-INFRA-01 with `pnpm test:gate` as the local pre-commit gate
+  + CI workflow split into `test-gate` (PR, blocking) and `test-full`
+  (push-to-main, post-merge tripwire). Local container fallback
+  (Option C) deferred to TEST-INFRA-02 (#34) pending Docker install.

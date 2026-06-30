@@ -205,7 +205,7 @@ describe("Module 3 — notifications + signed-link + workers", () => {
 
   afterAll(async () => {
     await cleanup();
-    await poolSql.end({ timeout: 2 });
+    await poolSql.end({ timeout: 10 });
   });
 
   // ─────────── signed-link primitive ───────────

@@ -206,7 +206,7 @@ describe("CRS-01 public apply form", () => {
       }
     }
     resetStorageClient();
-    await poolSql.end({ timeout: 2 });
+    await poolSql.end({ timeout: 10 });
   });
 
   it("Test 1: resolvePublicRequisition success returns the resolved shape", async () => {

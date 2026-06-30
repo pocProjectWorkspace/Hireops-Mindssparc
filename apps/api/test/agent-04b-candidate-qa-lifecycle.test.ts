@@ -148,7 +148,7 @@ describe("AGENT-04b — Candidate Q&A agent create / update / retire / toggle li
     for (const n of [NAME_CREATE, NAME_UPDATE, NAME_RETIRE, NAME_TOGGLE, NAME_DUP, NAME_MULTIEDIT]) {
       await deleteAllAgentsByName(n);
     }
-    await poolSql.end({ timeout: 2 });
+    await poolSql.end({ timeout: 10 });
   });
 
   it("Test 1: createCandidateQaAgent happy path — 1 agent + 1 trigger + 2 actions + 1 approval rule (guard accepts human_required on send_message)", async () => {

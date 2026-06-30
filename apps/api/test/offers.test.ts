@@ -219,7 +219,7 @@ describe("Module 4 — offers + Workday simulation", () => {
 
   afterAll(async () => {
     await cleanup();
-    await poolSql.end({ timeout: 2 });
+    await poolSql.end({ timeout: 10 });
   });
 
   // ─────────── draft / extend / cancel ───────────

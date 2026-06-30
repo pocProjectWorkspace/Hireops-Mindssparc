@@ -98,7 +98,7 @@ describe("AGENT-02 — vertical smoke", () => {
 
   afterAll(async () => {
     await cleanupSmoke();
-    await poolSql.end({ timeout: 2 });
+    await poolSql.end({ timeout: 10 });
   });
 
   it("end-to-end: create Follow-Up Agent → enqueue → drain → paused on send_message approval", async () => {
