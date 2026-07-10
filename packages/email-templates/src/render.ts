@@ -28,6 +28,19 @@ import { AgentMessage, type AgentMessageProps } from "./templates/agent-message"
  *
  * Subject lines are owned by the registry, not the caller — keeps
  * copy editable in one place.
+ *
+ * REQUIRED for every new template `.tsx`: start the file with the pragma
+ *   /** @jsxRuntime automatic @jsxImportSource react *\/
+ * The worker consumes these files' SOURCE through `tsx`, which applies a
+ * tsconfig's `jsx` setting only to files inside that tsconfig's `include`
+ * scope and falls back to the CLASSIC `React.createElement` transform for
+ * everything else — including this cross-package directory. Classic emit
+ * needs a `React` global that isn't there, so the render throws
+ * "React is not defined" at runtime (dev/demo email send), invisible to
+ * typecheck. The per-file pragma forces the automatic runtime regardless
+ * of who transforms the file; `react/jsx-runtime` resolves via this
+ * package's own `react` dependency. Omit it and the template compiles but
+ * fails the moment the worker tries to send it.
  */
 
 export interface RenderedTemplate {
