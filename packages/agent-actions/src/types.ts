@@ -1,6 +1,88 @@
 import type { ActionConfig } from "@hireops/db";
 
 /**
+ * Snapshot of the application an agent run is about, assembled by the
+ * worker and handed to executors that need candidate/req context.
+ *
+ * Flattened deliberately: executors compose prompt text from these
+ * fields and must not need a second query. `daysInStage` is computed
+ * worker-side from stage_entered_at so the prompt registry stays free
+ * of date arithmetic.
+ */
+export interface ApplicationContext {
+  applicationId: string;
+  candidateId: string;
+  candidateName: string;
+  candidateEmail: string;
+  positionTitle: string;
+  companyName: string;
+  stage: string;
+  daysInStage: number;
+  /** jd_versions.summary — null when the JD has no summary written yet. */
+  jdSummary: string | null;
+}
+
+export interface AIDraftRequest {
+  system: string;
+  prompt: string;
+  maxTokens: number;
+  /** ai_usage_logs.feature discriminator, e.g. "agent_draft_message". */
+  feature: string;
+}
+
+export interface AIDraftResult {
+  text: string;
+  costMicros: bigint;
+}
+
+export interface EnqueueEmailRequest {
+  recipientEmail: string;
+  recipientCandidateId: string | null;
+  templateKey: string;
+  templateData: Record<string, unknown>;
+  subject: string | null;
+  /**
+   * Idempotency key. `notification_outbox` carries a partial UNIQUE on
+   * (tenant_id, dedup_key); a duplicate enqueue raises 23505 which the
+   * worker-side implementation swallows as "already queued". This is
+   * what makes a retried drain pass safe for effectful executors.
+   */
+  dedupKey: string | null;
+}
+
+/**
+ * Ports the worker injects into executors.
+ *
+ * Why injection rather than importing `@hireops/db` / `@hireops/ai-client`
+ * directly: `@hireops/db`'s `./client` re-export runs a
+ * `DATABASE_URL`-at-import check (HANDOVER #101, open-question #27), and
+ * `@hireops/ai-client` transitively imports it. `packages/agent-actions`
+ * deep-imports only `@hireops/db/src/zod/*` precisely to stay a pure,
+ * DB-free, unit-testable package. Threading behaviour through ports
+ * preserves that, and matches the pluggable-factory idiom already used
+ * for KMS / Storage / Email / AIClient.
+ *
+ * Stub executors ignore `deps` entirely.
+ */
+export interface ExecutorDeps {
+  loadApplicationContext(tenantId: string, applicationId: string): Promise<ApplicationContext>;
+  draftWithAI(tenantId: string, req: AIDraftRequest): Promise<AIDraftResult>;
+  enqueueEmail(tenantId: string, req: EnqueueEmailRequest): Promise<{ outboxId: string }>;
+}
+
+/**
+ * Thrown when an executor needs a field the trigger context didn't
+ * carry (e.g. `application_id` on a stage_stale run). Terminal — a
+ * malformed trigger context will not fix itself on retry.
+ */
+export class MissingTriggerContextError extends Error {
+  constructor(executor: string, field: string) {
+    super(`${executor} executor requires triggerContext.${field}`);
+    this.name = "MissingTriggerContextError";
+  }
+}
+
+/**
  * Parameters passed to every action executor.
  *
  * `config` is the discriminated-union ActionConfig from
@@ -25,6 +107,8 @@ export interface ActionExecutorParams {
   config: ActionConfig;
   triggerContext: Record<string, unknown>;
   previousActionOutputs: Record<number, unknown>;
+  /** Injected ports — see ExecutorDeps. Stub executors ignore this. */
+  deps: ExecutorDeps;
 }
 
 /**

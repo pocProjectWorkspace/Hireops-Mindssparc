@@ -4,7 +4,36 @@
 
 **How to use:** Paste this entire document as the first message in a new conversation. Then the user will tell Claude what they want to do next. Claude reads this, internalises it, then engages.
 
-**Last updated:** 9 May 2026, after the Tier 1+2 requirements refinement (commit 957e093).
+**Last updated:** 10 July 2026, after the week-7 audit of the codebase against `docs/new-set/build-plan-13week.md` (HEAD `df69a75`).
+
+---
+
+## 0. Current position — read this before §1
+
+**The active plan is `docs/new-set/build-plan-13week.md`, not the 24-week/3-wave structure described in §1 and §3.6 below.** The wave framing is retained here because the architectural decisions it produced are still binding, but the *schedule* it implies is dead. Where the two conflict, the 13-week plan wins.
+
+**Demo:** Kyndryl, week of 24–30 August 2026. Script is `docs/new-set/demo-scope-v2.md`.
+
+**As of 10 July 2026 we are in week 7 of 13** — the plan's own contingency checkpoint (§2, rule 1).
+
+What the plan expected by end of week 7 vs what exists:
+
+| Plan | Status |
+|---|---|
+| Weeks 1–2: admin agent surface — schema, CRUD, workflow UI, approval queue UI, audit view, cost dashboard | schema + CRUD **done**; **all four UI surfaces absent** |
+| Weeks 3–5: interview scheduling agent — Google + Microsoft calendar OAuth, availability, self-scheduling page, invites | **not started.** No OAuth dependency exists in the repo |
+| Weeks 6–7: follow-ups agent — stale-stage trigger, Anthropic draft generation, approval-queue integration, send via outbox | **in progress (this is the current ticket)** |
+| Production-readiness: staging deploy, Resend live w/ DKIM, `pii_access_log`, delete empty apps, nav audit | **none done.** `privacy` page is the only shipped item |
+
+**The load-bearing fact:** the agent control plane is real (schema, RLS, CRUD, approval resolution, drain workers, TTL auto-approve, run resume) but **all seven action executors in `packages/agent-actions/src/executors/` return `_stub: true`.** `draft_message` never calls Anthropic; `send_message` returns `sent: false`; `propose_calendar_slots` fabricates slots from `Date.now()`. The agents are configurable and approvable but cannot yet *do* anything. No portal code imports `listAgents` or `listPendingApprovals`.
+
+**Week-7 contingency decision (taken 10 July 2026):** the build went wide (CRUD for three agent types) rather than deep (one agent end-to-end). Per contingency rule 1, **scheduling and candidate Q&A are cut from the demo and become onboarding scope**; the follow-ups agent is taken end-to-end — real `draft_message`, real `send_message`, plus `/admin/workflows`, the approval queue, and the audit + cost views. Follow-ups is the only wedge agent whose real implementation needs no calendar OAuth, which is what makes it reachable solo in the remaining ~6.5 weeks. `demo-scope-v2.md` Act 2 steps 8–14 must be rewritten against this narrower scope.
+
+**Rule 2 fuse:** if the demo won't be ready for 24–30 August, Rajesh and Lakshmi must be told by **week 9 (~24 July 2026)**, not later.
+
+Not yet built despite appearing in `demo-scope-v2.md` narration: Resend email (the provider stub throws), `pii_access_log` (docs-only, zero source files), the three empty `export {}` apps (`candidate-portal`, `careers-site`, `partner-portal`) are still in the monorepo, and `docs/poc/build-log.md` (the mandated weekly retro) was never created.
+
+Schema-only, no wiring: `candidate_inbound_messages` (migration `0040`, carries `resend_message_id`) — prep for the Q&A agent that is now cut.
 
 ---
 
@@ -70,9 +99,10 @@ All `pnpm typecheck && pnpm lint && pnpm build` passing. Each app/package has on
 
 ### 2.4 Git history
 
-Last ten commits (current HEAD = `76c6f87`, sequential ff-merges to `main`):
+Last ten commits (current HEAD = `df69a75`, sequential ff-merges to `main`):
 
 ```
+df69a75 chore(test-infra): TEST-INFRA-01 — reliable commit gate via targeted run + CI split
 76c6f87 feat(agents): AGENT-04b Scheduling + Candidate Q&A CRUD on the 04a pattern
 db5f758 feat(agents): AGENT-04a Follow-Up update/retire/toggle + #30 close + #102 retrofit
 50c95ad feat(agents): AGENT-03 approval-resolution + worker resume + TTL auto-approve
@@ -131,7 +161,10 @@ For the full timeline pre-AGENT-02 (FND-15 series, DB-01 through DB-PARTNER-A, M
 - **Career site framework:** Next.js SSR
 - **Mobile strategy:** PWA-quality responsive web (no native app for POC)
 
-### 3.6 Wave structure (24 weeks total)
+### 3.6 Wave structure (24 weeks total) — SCHEDULE SUPERSEDED, see §0
+
+> The wave *scope* below still describes what each stage of the product must eventually cover. The *timeline* was replaced by `docs/new-set/build-plan-13week.md` (13 weeks to a Kyndryl demo, then an onboarding window). Don't plan against the week numbers here.
+
 - **Wave 1 (weeks 1-11)** — End-to-end thin slice on synthetic tenant. 10 hires of which 6 via partner. Real Workday, real BGV, 3 friendly empanelled vendors.
 - **Wave 2 (weeks 12-18)** — Volume & polish. 50 hires/month stress test. 10-15 active partners. Bulk operations, AI scoring + bias shield real, WhatsApp/SMS, job-board posting, reporting suite.
 - **Wave 3 (weeks 19-24)** — Production readiness. 300 hires/month sustained for 1 month. 10-15 empanelled vendors active (full 20-30 panel ramps over Q2 post-POC). Pen test, DPDPA audit, DR drills.
@@ -175,7 +208,7 @@ These can be batched into a "Tier 3 cleanup" prompt later if the user wants. Or 
 
 - **Design system spec** — was the user's original next-step ambition before the multi-tenancy rabbit hole. Now genuinely safe to write because the product is stable. Would cover: tokens, components, AI-component catalogue (AI-suggested-input, AI-score-with-explanation, AI-thinking, AI-error, AI-override), density grid (3 levels), data-table pattern, India-defaults (₹/IST/dd-mm-yyyy/Hindi-capable), WCAG 2.1 AA, multi-persona shared shell. Anchored to competitive-landscape benchmarks. Probably 700-1,000 lines.
 
-- **Phasing analysis (Wave 1 execution plan)** — given the user's team is "Claude Code as the team" (not human engineers), what runs sequentially vs in parallel changes meaningfully. Sequential tracks: multi-tenancy structural prep (FND-15a/b/c) → schema → RLS → API → first vertical slice. Parallel-able: careers site, candidate portal flows (after API auth), internal portal pages, AI client setup, design system. Should be a structured doc at `/docs/internal/wave-1-execution-plan.md`. Written by Claude in chat, not Claude Code, because phasing is judgement.
+- ~~**Phasing analysis (Wave 1 execution plan)**~~ — **written**, at `docs/wave-1-execution-plan.md`. Superseded for scheduling purposes by `docs/new-set/build-plan-13week.md`.
 
 - **Kyndryl admin spec** — deferred when partner-wireflows scope was narrowed to two surfaces. Covers Kyndryl-side panel dashboard, dispute resolution, partner detail tabs, audit views. Real work, but unblockable until design system is locked.
 
@@ -183,13 +216,21 @@ These can be batched into a "Tier 3 cleanup" prompt later if the user wants. Or 
 
 - **Tenant-onboarding wizard spec** — the multi-tenancy ADR specifies the 8-step flow but doesn't draw the screens. Comparable in scope to `partner-wireflows.md`. Probably needed before the design system can address tenant admin surfaces.
 
-### 4.4 Build hasn't started
+### 4.4 Build state
 
-The repo has the scaffold and the design docs. **No product code exists.** No database migrations have been run. No tests have been written. No CI is configured beyond the lint/typecheck/build basics. Every "Wave 1" task in `wave-1-backlog.md` is in the not-started state.
+> This section previously read "Build hasn't started. No product code exists." That was true in May 2026 and is now badly wrong — it survived unedited for two months of shipping. Corrected 10 July 2026.
 
-> Caveat: §4.5 below is the only exception — the FND-15a/b/c foundations have shipped, ahead of the rest of Wave 1. Everything outside the FND-15 series is still in the not-started state.
+Product code exists across four apps (`api`, `workers`, `internal-portal`, plus the three empty `export {}` stubs pending deletion) and eleven packages. 41 migrations applied. ~130 API Vitest cases. CI runs typecheck / lint / format / build in parallel and `api:test` / `db:lint:rls` serialised (see reality #19); `pnpm test:gate` is the local commit gate (TEST-INFRA-01).
 
-### 4.5 Foundations progress (FND-15 series)
+Shipped end-to-end: apply → resume parse → AI score → recruiter triage → offer draft/extend/accept → simulated Workday hire. That is Acts 1 and 3 of `demo-scope-v2.md`.
+
+Not shipped: Act 2 — the wedge. See §0 for the precise gap and the week-7 contingency decision.
+
+`wave-1-backlog.md` is no longer an accurate tracker; sequencing now lives in `docs/new-set/build-plan-13week.md`.
+
+### 4.5 Ticket log (FND-15 series onward)
+
+> This is the de facto changelog. Entries accumulate per shipped ticket; the numbered "codebase realities" that follow annotate non-obvious findings.
 
 - **FND-15a — DONE** (commits `8e87ba8`, `156d8c7`, `c1b7f6e`)
   Drizzle ORM + dual Supabase connections (transaction pooler for runtime, session pooler for migrations). `tenants` + `tenant_encryption_keys` tables. Migration 0000.
@@ -401,6 +442,25 @@ The repo has the scaffold and the design docs. **No product code exists.** No da
 109. **`DIRECT_URL` IS THE SUPAVISOR POOLER in session mode on port 5432, NOT a poolerless direct connection.** Both `DATABASE_URL` (`:6543`, transaction mode) and `DIRECT_URL` (`:5432`, session mode) point at the SAME Supavisor host (`aws-1-ap-northeast-1.pooler.supabase.com`). The only true poolerless path is `db.<project-ref>.supabase.co:5432`, which is **IPv6-only on the current Supabase tier** and is NOT in `.env`. This false premise — "DIRECT_URL is direct" — cost half a session of TEST-INFRA-01 diagnosis, because every "use DIRECT_URL to bypass the pooler" experiment was actually still going through the same project-level connection cap, just in session mode. Implication: switching between 6543 and 5432 changes the failure shape (`CONNECTION_CLOSED` ↔ `CONNECT_TIMEOUT`) but does NOT escape the project cap. If you ever read code or docs that imply DIRECT_URL is "the unpooled fallback", treat that as historical mythology and verify the URL host. The real poolerless URL requires an IPv6 add-on (Supabase's paid tier feature) AND a `.env` addition; until then there is no poolerless test path.
 
 110. **API tests round-trip to cloud Supabase Auth for every JWT — there is no local JWT minting.** `apps/api/test/*.test.ts` files all use the same `getTestJwt()` helper: `createClient(SUPABASE_URL, SUPABASE_ANON_KEY).auth.signInWithPassword({ email, password })`. That hits cloud Supabase Auth's REST endpoint, returns a real ES256-signed JWT. The api server verifies via `createRemoteJWKSet(<supabase-url>/auth/v1/.well-known/jwks.json)`. The JWT's `tid` claim is set by the cloud's `custom_access_token_hook` reading from the **cloud DB's `tenant_user_memberships`** at signin time. Consequence for any future "fully local test DB" work (TEST-INFRA-02): the local DB must seed `tenants` + `tenant_user_memberships` rows with the EXACT SAME UUIDs that cloud Supabase Auth's JWT claims point at — otherwise tenant-scoped queries return empty and RLS rejects. The reference is `packages/db/src/scripts/seed-test-users.ts`'s mapping. Going local-JWT (a parallel signing key + a `NODE_ENV=test` JWKS swap) is bigger surface and out of scope for test infra; Path-A (seed local tenancy to match cloud JWT) is the documented approach.
+
+---
+
+### 4.6 FOLLOWUP-01 — first real wedge agent (10 July 2026, this session)
+
+The follow-ups agent taken from configurable-but-inert to actually working, per the week-7 contingency decision in §0. Two of the seven action executors in `packages/agent-actions/src/executors/` are now REAL; the other five remain AGENT-02 stubs (the calendar pair is deferred to onboarding).
+
+- **`draft_message`** calls the tenant's LLM via `@hireops/ai-client` against a prompt from the new code-based prompt registry (`packages/agent-actions/src/prompts.ts`, `follow_up_v1`, versioned `followup-v1`). Returns the draft as the approval payload.
+- **`send_message`** enqueues the approved draft into `notification_outbox` (outbox-first, never inline — HANDOVER #62), idempotent on the run-action id. New `candidate.agent_message` email template (`@hireops/email-templates`) wraps the model body in tenant branding and escapes it.
+- Executors stay DB-free: behaviour is injected as `ExecutorDeps` ports (`loadApplicationContext` / `draftWithAI` / `enqueueEmail`), implemented in `apps/workers/src/lib/agent-executor-deps.ts` and faked in tests. Preserves the pure-package property from reality #101.
+- **The gate moved from `send_message` to `draft_message`** — see reality #111, the load-bearing correctness fix.
+- Still NOT built (all deferred, tracked in §0): the `/admin/workflows` UI, the approval-queue UI, the audit + cost views, Resend email delivery (provider still throws), and the `stage_stale` scanner that would fire these runs in production (tests hand-feed the outbox row). The agent works end-to-end in the DB + worker; a human cannot yet see or drive it in a browser.
+- Also fixed in passing: migration `0042` — `audit_logs` had no partition past 2026-06, so every audited mutation had been failing since 2026-07-01 (reality #112).
+
+**Codebase realities introduced by FOLLOWUP-01:**
+
+111. **The approval gate belongs on the PURE action, not the effectful one.** The drain (`agent-run-drain.ts`) executes an action and only THEN evaluates the approval gate, and on resume it treats an already-`completed` run-action as done and carries its output forward WITHOUT re-executing (`approveApprovalWithEdit` even documents "the worker reads this column directly and skips re-execution"). That ordering is only safe when the gated action has no side effects. Through AGENT-04b the curated Follow-Up agent gated `send_message` — which was harmless only because the executor was a stub returning `sent: false`. The moment `send_message` became real, that placement would have enqueued the email BEFORE the human approved (execute-then-gate), or — if the enqueue were deferred — never sent it after approval (resume skips re-execution). FOLLOWUP-01 moved the gate onto `draft_message`: the recruiter approves/edits the pure draft, and `send_message` (now `auto`) executes for the first time on resume, reading the approved-or-edited `draft_text` from `previousActionOutputs`. `draft_message`'s capability flipped `false`→`true` and `send_message` stayed `true` (an operator can still attach a gate if they understand the ordering, and existing agents keep validating), but the curated agent pins `send_message` to `auto`. The regression guard lives in `agent-vertical-smoke.test.ts` and `agent-approval-vertical-smoke.test.ts` Test 3: assert nothing reaches the outbox while the draft is still awaiting approval. If a future agent needs to gate an action that has no preceding draft (e.g. `create_calendar_event`), the drain needs a proper plan()/commit() split — see the design note the user chose against in this session.
+
+112. **`audit_logs` monthly partitions must be pre-created or every audited write fails.** Migration 0012 created only `2026_05` + `2026_06` with a note that "DB-AUDIT-RETENTION will own ongoing rotation." That ticket was never written and there is no DEFAULT partition (deliberately — a default would convert a loud failure into silent misfiling). So from 2026-07-01 every INSERT into `audit_logs` raised `no partition of relation "audit_logs" found for row`, and because `audit_record_change()` fires inside the caller's transaction, EVERY audited mutation (create agent, resolve approval, submit application, draft offer) failed outright. Found 10 July 2026 when agent tests failed on an unrelated code path. Migration `0042` adds partitions through 2027-06. **This recurs on 2027-07-01 unless automated rotation ships** — a scheduled worker job that pre-creates next-next month and drops past-retention partitions. Tracked in open-questions.md. Mirror the per-partition `FORCE ROW LEVEL SECURITY` from 0013 for any new partition; `lint-rls.ts` skips partition children so it will not catch a missing FORCE.
 
 ---
 

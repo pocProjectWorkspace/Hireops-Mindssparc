@@ -1,18 +1,28 @@
 /**
  * AGENT-02 — vertical proof-of-life smoke test.
  *
- * Exercises the full AGENT-02 vertical:
+ * Exercises the full vertical:
  *   tRPC createFollowUpAgent
  *   → INSERT agent_run_outbox (manual)
  *   → drainAgentRunOutboxOnce
- *   → bridgeActionConfig → executor dispatch → stub returns
+ *   → bridgeActionConfig → executor dispatch
  *   → outbox/run/run_actions reach the expected paused state on
- *     the send_message approval gate.
+ *     the draft_message approval gate.
  *
- * AGENT-03 update: send_message now returns requiresApproval: true, so
- * after one drain pass the Follow-Up Agent halts at
- * awaiting_approval (action 1 completed, action 2 paused). The full
- * approve + resume + completion cycle is exercised by
+ * FOLLOWUP-01 update: the gate moved from send_message to
+ * draft_message. The drain executes an action and only THEN evaluates
+ * the gate, resuming afterwards without re-executing — so the gated
+ * action must be the PURE one. After one drain pass the Follow-Up Agent
+ * now halts ON action 1 (draft_message, awaiting_approval); action 2
+ * (send_message) has not executed and has no run_action row yet.
+ *
+ * The assertion that no email was enqueued before approval is the
+ * regression guard: under the old placement, send_message ran to
+ * completion and only then paused for a human, which — once the executor
+ * became real — would have put the message in the outbox before anyone
+ * approved it.
+ *
+ * The full approve + resume + completion cycle is exercised by
  * agent-approval-vertical-smoke.test.ts.
  */
 
@@ -25,6 +35,7 @@ import { decodeJwt } from "jose";
 import { app } from "../src/index.js";
 import { sql as poolSql } from "@hireops/db";
 import { drainAgentRunOutboxOnce } from "../../../apps/workers/src/lib/agent-run-drain.js";
+import { fakeExecutorDeps } from "./agent-executor-fakes.js";
 import { createLogger } from "@hireops/observability";
 
 const TEST_EMAIL = "test-fnd15b@hireops-dev.local";
@@ -40,6 +51,12 @@ const SMOKE_AGENT_NAME = "agent-02-vertical-smoke";
 let jwt: string;
 let testTenantId: string;
 const drainLog = createLogger({ base: { service: "agent-02-smoke" } });
+
+// FOLLOWUP-01: draft_message + send_message are real executors now.
+// These tests cover the DRAIN, not the executors, so the ports are faked
+// -- no LLM call, no applications row, no notification_outbox write.
+// Executor behaviour lives in packages/agent-actions unit tests.
+const execDeps = fakeExecutorDeps();
 
 interface TRPCSuccess<T> { result: { data: T } }
 interface TRPCErr { error: { data: { code: string } } }
@@ -101,7 +118,7 @@ describe("AGENT-02 — vertical smoke", () => {
     await poolSql.end({ timeout: 10 });
   });
 
-  it("end-to-end: create Follow-Up Agent → enqueue → drain → paused on send_message approval", async () => {
+  it("end-to-end: create Follow-Up Agent → enqueue → drain → paused on draft_message approval", async () => {
     // 1. tRPC createFollowUpAgent.
     const createRes = await app.request("/trpc/createFollowUpAgent", {
       method: "POST",
@@ -136,12 +153,12 @@ describe("AGENT-02 — vertical smoke", () => {
     assert.ok(outboxRow);
     const outboxId = outboxRow.id;
 
-    // 3. drainAgentRunOutboxOnce — Follow-Up Agent's action 2 is
-    //    send_message + human_required, so AGENT-03's executor flip
-    //    halts the run at awaiting_approval after one drain pass.
-    const drainResult = await drainAgentRunOutboxOnce({ log: drainLog });
+    // 3. drainAgentRunOutboxOnce — Follow-Up Agent's action 1 is
+    //    draft_message + human_required (FOLLOWUP-01), so the run halts
+    //    at awaiting_approval on the FIRST action after one drain pass.
+    const drainResult = await drainAgentRunOutboxOnce({ log: drainLog, deps: execDeps });
     assert.equal(drainResult.claimed, 1, "drain should pick up the row");
-    assert.equal(drainResult.awaiting, 1, "send_message should halt for approval");
+    assert.equal(drainResult.awaiting, 1, "draft_message should halt for approval");
     assert.equal(drainResult.completed, 0);
     assert.equal(drainResult.failed, 0);
 
@@ -157,7 +174,7 @@ describe("AGENT-02 — vertical smoke", () => {
       FROM public.agent_runs WHERE agent_id = ${agentId}
     `;
     assert.equal(run?.status, "awaiting_approval");
-    assert.equal(run?.cost_micros, "0", "stub executors charge 0");
+    assert.equal(run?.cost_micros, "500", "draft_message rolls the LLM cost onto the run");
 
     const runActions = await poolSql<{ status: string; output: unknown; action_order: number }[]>`
       SELECT ra.status, ra.output, ra.action_order
@@ -165,19 +182,32 @@ describe("AGENT-02 — vertical smoke", () => {
       WHERE ra.run_id IN (SELECT id FROM public.agent_runs WHERE agent_id = ${agentId})
       ORDER BY ra.action_order
     `;
-    assert.equal(runActions.length, 2, "Follow-Up Agent has 2 actions");
-    assert.equal(runActions[0]?.status, "completed", "draft_message completes autonomously");
-    assert.equal(runActions[1]?.status, "awaiting_approval", "send_message awaits approval");
-    for (const ra of runActions) {
-      const out = ra.output as Record<string, unknown>;
-      assert.equal(out._stub, true, "stub honesty marker present");
-      assert.equal(out._ticket, "AGENT-02", "AGENT-02 ticket marker present");
-    }
+    // The drain returns at the gate, so action 2 never gets a row on
+    // this pass — send_message executes for the first time on resume.
+    assert.equal(runActions.length, 1, "only draft_message has run");
+    assert.equal(runActions[0]?.action_order, 1);
+    assert.equal(runActions[0]?.status, "awaiting_approval", "draft_message awaits approval");
+
+    const draftOutput = runActions[0]?.output as Record<string, unknown>;
+    assert.equal(
+      draftOutput.draft_text,
+      "Fake drafted follow-up body.",
+      "the approval payload IS the draft the recruiter reviews",
+    );
+    assert.equal(draftOutput.candidate_email, "candidate@example.test");
 
     const approvals = await poolSql<{ status: string }[]>`
       SELECT status FROM public.agent_approval_requests WHERE agent_id = ${agentId}
     `;
-    assert.equal(approvals.length, 1, "send_message produced an approval request");
+    assert.equal(approvals.length, 1, "draft_message produced an approval request");
     assert.equal(approvals[0]?.status, "pending");
+
+    // The regression guard. Nothing may reach the notification outbox
+    // before a human has approved the draft.
+    assert.equal(
+      execDeps.enqueued.length,
+      0,
+      "no email may be enqueued while the draft is still awaiting approval",
+    );
   });
 });

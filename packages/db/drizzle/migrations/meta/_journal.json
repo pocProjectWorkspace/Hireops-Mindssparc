@@ -274,6 +274,13 @@
       "when": 1780017233912,
       "tag": "0041_agent_force_rls_and_audit",
       "breakpoints": true
+    },
+    {
+      "idx": 42,
+      "version": "7",
+      "when": 1783699200000,
+      "tag": "0042_audit_logs_partitions_2026_07_to_2027_06",
+      "breakpoints": true
     }
   ]
 }

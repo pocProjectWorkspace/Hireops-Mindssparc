@@ -55,12 +55,24 @@
 import { randomUUID } from "node:crypto";
 import { sql as poolSql, type ActionConfig } from "@hireops/db";
 import type { Logger } from "@hireops/observability";
-import { actionExecutorRegistry, bridgeActionConfig } from "@hireops/agent-actions";
+import {
+  actionExecutorRegistry,
+  bridgeActionConfig,
+  type ExecutorDeps,
+} from "@hireops/agent-actions";
+import { createExecutorDeps } from "./agent-executor-deps";
 
 export interface AgentDrainOpts {
   batchSize?: number;
   workerId?: string;
   log: Logger;
+  /**
+   * Ports handed to executors (DB reads, LLM calls, outbox enqueue).
+   * Defaults to the real service_role-backed implementations; tests
+   * inject fakes so `@hireops/agent-actions` stays unit-testable and CI
+   * never burns tokens.
+   */
+  deps?: ExecutorDeps;
 }
 
 interface ClaimedOutbox {
@@ -98,6 +110,7 @@ export async function drainAgentRunOutboxOnce(opts: AgentDrainOpts): Promise<{
   const batchSize = opts.batchSize ?? DEFAULT_BATCH;
   const workerId = opts.workerId ?? `agent-run-${randomUUID().slice(0, 8)}`;
   const log = opts.log;
+  const deps = opts.deps ?? createExecutorDeps();
 
   const rows = await poolSql<ClaimedOutbox[]>`
     UPDATE public.agent_run_outbox
@@ -134,7 +147,7 @@ export async function drainAgentRunOutboxOnce(opts: AgentDrainOpts): Promise<{
 
     let createdRunId: string | null = null;
     try {
-      const outcome = await processOutboxRow(outbox, child, (id) => {
+      const outcome = await processOutboxRow(outbox, child, deps, (id) => {
         createdRunId = id;
       });
       if (outcome.terminal === "completed") completed += 1;
@@ -169,6 +182,7 @@ interface ProcessOutcome {
 async function processOutboxRow(
   outbox: ClaimedOutbox,
   log: Logger,
+  deps: ExecutorDeps,
   notifyRunCreated: (runId: string) => void,
 ): Promise<ProcessOutcome> {
   // AGENT-03 resume probe — does an in-progress run already exist for
@@ -333,6 +347,7 @@ async function processOutboxRow(
       config: validated,
       triggerContext: outbox.trigger_context,
       previousActionOutputs,
+      deps,
     });
 
     totalCostMicros += result.costMicros ?? 0n;

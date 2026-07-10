@@ -43,10 +43,23 @@ export const actionExecutorRegistry: Record<ActionConfig["type"], ActionExecutor
  * compile error, not a silent omission.
  *
  * Today's capability assignments:
- *   - send_message: capable. Sending external comms is the
- *     paradigmatic "I should let a human see this before it goes"
- *     action and is the one AGENT-03 flipped to exercise the gate
- *     end-to-end.
+ *   - draft_message: CAPABLE (FOLLOWUP-01 flip; was false). The drain
+ *     executes an action and THEN evaluates the gate, and on approval
+ *     resumes without re-executing. That ordering is only sound for a
+ *     PURE action. draft_message computes text and writes nothing but
+ *     ai_usage_logs, so it is the correct gate point: the recruiter
+ *     approves (or edits) the draft, and the effectful send_message
+ *     that follows has not run yet. See the doc-block on
+ *     ./executors/draft-message.ts. Logged as HANDOVER #111.
+ *   - send_message: capable, but no longer the curated gate point.
+ *     Sending external comms reads like the paradigmatic "let a human
+ *     see this first" action, and AGENT-03 flipped it for that reason —
+ *     but gating it meant the email was enqueued BEFORE the approval
+ *     was granted (the executor runs, then the gate opens). The
+ *     capability stays `true` so an operator who understands the
+ *     execute-then-gate ordering can still attach a rule, and so
+ *     existing agents keep validating; the curated Follow-Up agent now
+ *     pins this action to 'auto' and gates the draft instead.
  *   - propose_calendar_slots: CAPABLE (AGENT-04b flip). The slots a
  *     Scheduling agent proposes are surfaced to the candidate; gating
  *     them is a coherent product choice and a Scheduling agent's HR
@@ -59,8 +72,6 @@ export const actionExecutorRegistry: Record<ActionConfig["type"], ActionExecutor
  *   - everything else: not capable. Their executors never return
  *     `requiresApproval: true`; attaching a human-gate rule would
  *     produce a silent never-firing gate. Specific reasons:
- *       - draft_message: drafting is pure compute; the gate point is
- *         on the send_message that follows.
  *       - update_application_stage / notify_recruiter /
  *         create_audit_entry: internal-only writes; gate point lives
  *         on whichever externally-visible action precedes them.
@@ -76,7 +87,7 @@ export const actionExecutorRegistry: Record<ActionConfig["type"], ActionExecutor
  * logged as HANDOVER #108.
  */
 export const actionExecutorCapabilities: Record<ActionConfig["type"], ActionExecutorCapability> = {
-  draft_message: { requiresApprovalCapable: false },
+  draft_message: { requiresApprovalCapable: true },
   send_message: { requiresApprovalCapable: true },
   propose_calendar_slots: { requiresApprovalCapable: true },
   create_calendar_event: { requiresApprovalCapable: true },

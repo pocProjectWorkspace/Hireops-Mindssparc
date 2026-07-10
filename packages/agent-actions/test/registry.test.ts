@@ -1,19 +1,24 @@
 /**
- * Registry smoke + per-executor stub-shape tests for @hireops/agent-actions.
+ * Registry smoke + per-executor shape tests for @hireops/agent-actions.
  *
- * Pure-function tests, no DB. Verifies:
+ * Pure-function tests, no DB, no network, no LLM tokens — behaviour that
+ * would otherwise need those arrives through the injected ExecutorDeps
+ * fakes in ./fakes.ts.
+ *
+ * Verifies:
  *   1. All 7 expected action types are registered.
  *   2. Each entry is a function.
- *   3. Each executor returns the documented stub output shape with the
- *      `_stub: true` + `_ticket: 'AGENT-02'` honesty markers when
- *      invoked with a valid config of its type.
+ *   3. The 5 still-stubbed executors return the documented stub output
+ *      shape with the `_stub: true` + `_ticket: 'AGENT-02'` markers.
  *   4. Each executor throws ActionConfigMismatchError when the config
  *      discriminator doesn't match its own type.
  *
- * AGENT-03 note: `send_message` is the one executor that now returns
- * `requiresApproval: true` (everything else stays autonomous at the
- * executor layer). `assertStubMarkers` no longer asserts on
- * requiresApproval; each test asserts the expected value explicitly.
+ * FOLLOWUP-01 note: `draft_message` and `send_message` are REAL and so
+ * carry no stub markers — their behaviour lives in
+ * ./follow-up-executors.test.ts. `draft_message` is now the executor
+ * that returns `requiresApproval: true`; the gate moved off
+ * `send_message` because the drain executes-then-gates and a gated send
+ * would have enqueued the email before the human approved it.
  */
 
 import { describe, expect, it } from "vitest";
@@ -23,6 +28,7 @@ import {
   type ActionExecutorParams,
   type ActionResult,
 } from "../src/index";
+import { makeFakeDeps } from "./fakes";
 
 const EXPECTED_TYPES = [
   "draft_message",
@@ -42,6 +48,7 @@ function baseParams(overrides: { config: ActionExecutorParams["config"] }): Acti
     agentId: "a-1",
     triggerContext: { application_id: "fake" },
     previousActionOutputs: {},
+    deps: makeFakeDeps(),
     ...overrides,
   };
 }
@@ -60,25 +67,12 @@ describe("actionExecutorRegistry", () => {
   });
 });
 
+// draft_message / send_message behaviour lives in
+// ./follow-up-executors.test.ts — they are real as of FOLLOWUP-01 and
+// carry no stub markers. Only their config-mismatch guards belong here,
+// alongside the other five.
+
 describe("draft_message executor", () => {
-  it("returns stub output with honesty markers + echoed config fields", async () => {
-    const params = baseParams({
-      config: {
-        type: "draft_message",
-        template_prompt_id: "follow_up_v1",
-        tone: "friendly",
-        max_tokens: 200,
-      },
-    });
-    const result = await actionExecutorRegistry.draft_message(params);
-    assertStubMarkers(result);
-    const out = result.output as Record<string, unknown>;
-    expect(out.template_prompt_id).toBe("follow_up_v1");
-    expect(out.tone).toBe("friendly");
-    expect(out.max_tokens).toBe(200);
-    expect(typeof out.draft_text).toBe("string");
-    expect(result.requiresApproval).toBe(false);
-  });
   it("throws ActionConfigMismatchError on wrong config type", async () => {
     const wrong = baseParams({
       config: { type: "manual" } as unknown as ActionExecutorParams["config"],
@@ -90,27 +84,13 @@ describe("draft_message executor", () => {
 });
 
 describe("send_message executor", () => {
-  // AGENT-03 flipped this — send_message now returns
-  // requiresApproval: true so the worker's awaiting_approval branch is
-  // exercised end-to-end via the resolution + resume cycle.
-  it("returns stub output with sent: false + requiresApproval: true", async () => {
-    const result = await actionExecutorRegistry.send_message(
-      baseParams({
-        config: {
-          type: "send_message",
-          channel: "email",
-          outbox_kind: "agent_followup",
-          requires_approval: true,
-        },
-      }),
+  it("throws ActionConfigMismatchError on wrong config type", async () => {
+    const wrong = baseParams({
+      config: { type: "manual" } as unknown as ActionExecutorParams["config"],
+    });
+    await expect(actionExecutorRegistry.send_message(wrong)).rejects.toBeInstanceOf(
+      ActionConfigMismatchError,
     );
-    assertStubMarkers(result);
-    const out = result.output as Record<string, unknown>;
-    expect(out.sent).toBe(false);
-    expect(out.channel).toBe("email");
-    expect(out.outbox_kind).toBe("agent_followup");
-    expect(out._originally_set_by).toBe("AGENT-02");
-    expect(result.requiresApproval).toBe(true);
   });
 });
 

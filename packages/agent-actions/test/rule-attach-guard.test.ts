@@ -147,12 +147,15 @@ describe("assertRuleAttachable — defensive paths", () => {
   });
 
   it("error message names both the action type and the mode for diagnosability", () => {
+    // Was draft_message until FOLLOWUP-01 flipped it to capable (the gate
+    // moved onto the draft). notify_recruiter is an internal-only write
+    // and remains a genuine never-gate action.
     try {
-      assertRuleAttachable("draft_message", "human_required");
+      assertRuleAttachable("notify_recruiter", "human_required");
       expect.fail("expected throw");
     } catch (err) {
       expect(err).toBeInstanceOf(IncompatibleApprovalRuleError);
-      expect((err as Error).message).toContain("draft_message");
+      expect((err as Error).message).toContain("notify_recruiter");
       expect((err as Error).message).toContain("human_required");
     }
   });

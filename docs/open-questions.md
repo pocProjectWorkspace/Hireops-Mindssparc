@@ -1050,6 +1050,45 @@ narrow-slice auditing.
 
 ---
 
+### 35. `audit_logs` partition rotation is manual and recurs annually
+
+**Status:** OPEN — urgent-adjacent. Migration `0042` (FOLLOWUP-01) bought
+runway through **2027-06-30**; after that every audited write fails again.
+
+**What happened.** Migration 0012 pre-created only two `audit_logs`
+partitions (`2026_05`, `2026_06`) with a note that "DB-AUDIT-RETENTION
+will own ongoing partition rotation." That ticket was never written.
+There is no DEFAULT partition (deliberate — see below), so from
+2026-07-01 every INSERT raised `no partition of relation "audit_logs"
+found for row`. Because `audit_record_change()` fires inside the caller's
+transaction, this failed EVERY audited mutation platform-wide (create
+agent, resolve approval, submit application, draft offer) for anyone
+running against the dev DB. Found 2026-07-10 when the agent test suite
+failed on an unrelated path. `0042` adds twelve months of partitions.
+
+**Why no DEFAULT partition.** A catch-all would turn this hard failure
+into a silent one — rows misfile into the default and the gap goes
+unnoticed until someone queries by month — and it makes every future
+`ATTACH PARTITION` scan the default for conflicting rows. Loud failure
+was the right call; the bug is the absence of a rotator, not the absence
+of a default.
+
+**The durable fix.** A scheduled worker job (the worker already runs six
+polling loops — HANDOVER #100) that monthly (a) creates next-next
+month's partition with `FORCE ROW LEVEL SECURITY` mirroring 0013, and
+(b) drops partitions older than the DPDPA retention window. This is
+small and belongs to the same DB-AUDIT-RETENTION scope 0012 named.
+Until it ships, someone must hand-write a partition migration before
+each June expiry. **Do not add a DEFAULT partition as a shortcut.**
+
+**Watch:** `lint-rls.ts` skips partition children, so a partition created
+without FORCE RLS will NOT be caught by the linter — the rotator must set
+it explicitly.
+
+**Origin.** FOLLOWUP-01 build session, 2026-07-10.
+
+---
+
 ## Lifecycle
 
 This file lives alongside `HANDOVER.md` as a working index — append

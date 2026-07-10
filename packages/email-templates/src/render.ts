@@ -18,6 +18,7 @@ import {
   OfferDeclinedRecruiter,
   type OfferDeclinedRecruiterProps,
 } from "./templates/offer-declined-recruiter";
+import { AgentMessage, type AgentMessageProps } from "./templates/agent-message";
 
 /**
  * Template registry — single switch the worker calls to turn a
@@ -63,6 +64,24 @@ export async function renderTemplate(
       const element = OfferExtended(props);
       return {
         subject: `Your offer of employment — ${props.positionTitle} at ${props.companyName}`,
+        html: await render(element),
+        text: await render(element, { plainText: true }),
+      };
+    }
+    case "candidate.agent_message": {
+      // The only template whose subject is caller-owned: the body is an
+      // agent draft that a recruiter approved, and the subject was
+      // approved alongside it. Fall back to the registry-style subject
+      // if templateData somehow lacks one, so a missing field degrades
+      // to a sane email rather than an empty subject line.
+      const props = data as unknown as AgentMessageProps & { subject?: unknown };
+      const element = AgentMessage(props);
+      const approvedSubject =
+        typeof props.subject === "string" && props.subject.trim().length > 0
+          ? props.subject
+          : `Update on your application — ${props.positionTitle}`;
+      return {
+        subject: approvedSubject,
         html: await render(element),
         text: await render(element, { plainText: true }),
       };

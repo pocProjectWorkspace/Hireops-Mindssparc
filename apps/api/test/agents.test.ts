@@ -201,10 +201,14 @@ describe("AGENT-02 — tRPC createFollowUpAgent + listAgents", () => {
     assert.equal(rules.length, 2);
     const draftRule = rules.find((r) => r.action_id === actionIds[0]!.id);
     const sendRule = rules.find((r) => r.action_id === actionIds[1]!.id);
-    assert.equal(draftRule?.approval_mode, "auto");
-    assert.equal(draftRule?.approver_role, null);
-    assert.equal(sendRule?.approval_mode, "human_required");
-    assert.equal(sendRule?.approver_role, "owning_recruiter");
+    // FOLLOWUP-01 swapped these. The gate sits on the PURE action
+    // (draft_message) because the drain executes-then-gates and skips
+    // re-execution on resume — gating the effectful send_message would
+    // have enqueued the email before the recruiter ever saw the draft.
+    assert.equal(draftRule?.approval_mode, "human_required");
+    assert.equal(draftRule?.approver_role, "owning_recruiter");
+    assert.equal(sendRule?.approval_mode, "auto");
+    assert.equal(sendRule?.approver_role, null);
   });
 
   it("Test 2: createFollowUpAgent rejects duplicate active name with BAD_REQUEST", async () => {

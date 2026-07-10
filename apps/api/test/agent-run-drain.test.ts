@@ -30,6 +30,7 @@ import { createClient } from "@supabase/supabase-js";
 import { decodeJwt } from "jose";
 import { sql as poolSql } from "@hireops/db";
 import { drainAgentRunOutboxOnce } from "../../../apps/workers/src/lib/agent-run-drain.js";
+import { fakeExecutorDeps } from "./agent-executor-fakes.js";
 import { createLogger } from "@hireops/observability";
 
 const TEST_EMAIL = "test-fnd15b@hireops-dev.local";
@@ -50,6 +51,12 @@ let testTenantId: string;
 let testMembershipId: string;
 
 const drainLog = createLogger({ base: { service: "agent-02-test" } });
+
+// FOLLOWUP-01: draft_message + send_message are real executors now.
+// These tests cover the DRAIN, not the executors, so the ports are faked
+// -- no LLM call, no applications row, no notification_outbox write.
+// Executor behaviour lives in packages/agent-actions unit tests.
+const execDeps = fakeExecutorDeps();
 
 async function getTestJwt(): Promise<string> {
   const supabase = createClient(SUPABASE_URL!, SUPABASE_ANON_KEY!);
@@ -150,14 +157,18 @@ describe("AGENT-02 — agent_run_outbox drain", () => {
   it("Test 1: drain returns all-zero when no pending outbox rows", async () => {
     // Wipe any stragglers from other tests.
     await poolSql`DELETE FROM public.agent_run_outbox WHERE tenant_id = ${testTenantId} AND status != 'completed'`;
-    const r = await drainAgentRunOutboxOnce({ log: drainLog });
+    const r = await drainAgentRunOutboxOnce({ log: drainLog, deps: execDeps });
     assert.equal(r.claimed, 0);
     assert.equal(r.completed, 0);
     assert.equal(r.awaiting, 0);
     assert.equal(r.failed, 0);
   });
 
-  it("Test 2: single-action agent completes end-to-end with stub markers + cost_micros=0", async () => {
+  it("Test 2: single-action agent completes end-to-end and rolls up the draft's cost", async () => {
+    // No approval rule is seeded, so the drain defaults this action to
+    // mode 'auto' and bypasses draft_message's requiresApproval signal —
+    // an autonomous drafting agent. Capability permits gating; it does
+    // not force it.
     await seedAgent(A02_AGENT_SINGLE, "agent-02-single", [
       {
         order: 1,
@@ -167,7 +178,7 @@ describe("AGENT-02 — agent_run_outbox drain", () => {
     ]);
     const outboxId = await enqueueRun(A02_AGENT_SINGLE, { application_id: "fake-app-1" });
 
-    const r = await drainAgentRunOutboxOnce({ log: drainLog });
+    const r = await drainAgentRunOutboxOnce({ log: drainLog, deps: execDeps });
     assert.equal(r.claimed, 1);
     assert.equal(r.completed, 1);
     assert.equal(r.awaiting, 0);
@@ -183,7 +194,7 @@ describe("AGENT-02 — agent_run_outbox drain", () => {
       SELECT status, cost_micros::text AS cost_micros FROM public.agent_runs WHERE agent_id = ${A02_AGENT_SINGLE}
     `;
     assert.equal(run?.status, "completed");
-    assert.equal(run?.cost_micros, "0");
+    assert.equal(run?.cost_micros, "500", "the fake LLM's costMicros rolls onto the run");
 
     const runActions = await poolSql<{ status: string; output: unknown }[]>`
       SELECT status, output FROM public.agent_run_actions
@@ -193,16 +204,18 @@ describe("AGENT-02 — agent_run_outbox drain", () => {
     assert.equal(runActions.length, 1);
     assert.equal(runActions[0]?.status, "completed");
     const out = runActions[0]?.output as Record<string, unknown>;
-    assert.equal(out._stub, true);
-    assert.equal(out._ticket, "AGENT-02");
+    assert.equal(out.draft_text, "Fake drafted follow-up body.");
     assert.equal(out.template_prompt_id, "follow_up_v1");
+    assert.equal(out.prompt_version, "followup-v1");
   });
 
-  it("Test 3: multi-action agent halts at send_message awaiting_approval (AGENT-03 flipped the executor)", async () => {
-    // AGENT-03 flipped send_message to requiresApproval: true. The drain
-    // now executes draft_message → halts at send_message in
-    // awaiting_approval. End-to-end completion via approve + resume is
-    // covered by agent-approval-vertical-smoke.test.ts.
+  it("Test 3: multi-action agent halts at draft_message awaiting_approval (FOLLOWUP-01 moved the gate)", async () => {
+    // FOLLOWUP-01 moved the gate off send_message onto the pure
+    // draft_message. The drain executes-then-gates and skips
+    // re-execution on resume, so the gated action must be the one with
+    // no side effects. The run halts on action 1; action 2 has not run
+    // and has no run_action row yet. End-to-end completion via approve +
+    // resume is covered by agent-approval-vertical-smoke.test.ts.
     await seedAgent(A02_AGENT_MULTI, "agent-02-multi", [
       {
         order: 1,
@@ -212,28 +225,28 @@ describe("AGENT-02 — agent_run_outbox drain", () => {
       {
         order: 2,
         type: "send_message",
-        config: { channel: "email", outbox_kind: "agent_followup", requires_approval: true },
+        config: { channel: "email", outbox_kind: "agent_followup", requires_approval: false },
       },
     ]);
     // The drain reads agent_approval_rules to set approver_role on the
-    // approval_request row. Seed one for send_message.
-    const [sendActionRow] = await poolSql<{ id: string }[]>`
+    // approval_request row. The gate is on draft_message now.
+    const [draftActionRow] = await poolSql<{ id: string }[]>`
       SELECT id FROM public.agent_actions
-      WHERE agent_id = ${A02_AGENT_MULTI} AND action_order = 2
+      WHERE agent_id = ${A02_AGENT_MULTI} AND action_order = 1
     `;
-    if (!sendActionRow) throw new Error("send action seed missing");
+    if (!draftActionRow) throw new Error("draft action seed missing");
     await poolSql`
       INSERT INTO public.agent_approval_rules
         (tenant_id, agent_id, action_id, approval_mode, approver_role)
-      VALUES (${testTenantId}, ${A02_AGENT_MULTI}, ${sendActionRow.id},
+      VALUES (${testTenantId}, ${A02_AGENT_MULTI}, ${draftActionRow.id},
               'human_required', 'any_recruiter')
     `;
 
     const outboxId = await enqueueRun(A02_AGENT_MULTI, { application_id: "fake-app-2" });
 
-    const r = await drainAgentRunOutboxOnce({ log: drainLog });
+    const r = await drainAgentRunOutboxOnce({ log: drainLog, deps: execDeps });
     assert.equal(r.claimed, 1);
-    assert.equal(r.awaiting, 1, "send_message now halts the run for approval");
+    assert.equal(r.awaiting, 1, "draft_message now halts the run for approval");
     assert.equal(r.completed, 0);
     assert.equal(r.failed, 0);
 
@@ -251,16 +264,21 @@ describe("AGENT-02 — agent_run_outbox drain", () => {
       WHERE ar.run_id IN (SELECT id FROM public.agent_runs WHERE agent_id = ${A02_AGENT_MULTI})
       ORDER BY ar.action_order
     `;
-    assert.equal(runActions.length, 2);
-    assert.equal(runActions[0]?.status, "completed");
+    // Only draft_message has a row — the drain returned at the gate
+    // before send_message ever dispatched.
+    assert.equal(runActions.length, 1);
+    assert.equal(runActions[0]?.status, "awaiting_approval");
     assert.equal(runActions[0]?.action_type, "draft_message");
-    assert.equal(runActions[1]?.status, "awaiting_approval");
-    assert.equal(runActions[1]?.action_type, "send_message");
 
-    // Both run_actions persist the trigger_context snapshot — same shape as
-    // what the executor sees via previousActionOutputs (worker-internal).
-    const sendInput = runActions[1]?.input as { triggerContext: { application_id: string } };
-    assert.equal(sendInput.triggerContext.application_id, "fake-app-2");
+    // Nothing was enqueued to the outbox — the send is downstream of the
+    // gate and has not run. No prior test in this file reaches send_message,
+    // so the shared fake's count is 0 here.
+    assert.equal(execDeps.enqueued.length, 0, "no email enqueued before approval");
+
+    // The run_action persists the trigger_context snapshot — same shape
+    // as what the executor sees via previousActionOutputs.
+    const draftInput = runActions[0]?.input as { triggerContext: { application_id: string } };
+    assert.equal(draftInput.triggerContext.application_id, "fake-app-2");
 
     // The atomic 4-row transition created an approval_request row.
     const approvals = await poolSql<{ status: string; approver_role: string }[]>`
@@ -283,7 +301,7 @@ describe("AGENT-02 — agent_run_outbox drain", () => {
     ]);
     const outboxId = await enqueueRun(A02_AGENT_BAD, { application_id: "fake-app-3" });
 
-    const r = await drainAgentRunOutboxOnce({ log: drainLog });
+    const r = await drainAgentRunOutboxOnce({ log: drainLog, deps: execDeps });
     assert.equal(r.claimed, 1);
     assert.equal(r.completed, 0);
     assert.equal(r.failed, 1);
@@ -315,7 +333,7 @@ describe("AGENT-02 — agent_run_outbox drain", () => {
     ]);
     const outboxId = await enqueueRun(A02_AGENT_MISMATCH, { application_id: "fake-app-4" });
 
-    const r = await drainAgentRunOutboxOnce({ log: drainLog });
+    const r = await drainAgentRunOutboxOnce({ log: drainLog, deps: execDeps });
     assert.equal(r.failed, 1);
 
     const [outbox] = await poolSql<{ status: string }[]>`

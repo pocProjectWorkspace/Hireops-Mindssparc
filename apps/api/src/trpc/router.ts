@@ -1439,7 +1439,8 @@ export const appRouter = router({
             actionConfig: {
               channel: "email",
               outbox_kind: "agent_followup",
-              requires_approval: true,
+              // False since FOLLOWUP-01 — the gate lives on draft_message.
+              requires_approval: false,
             },
           })
           .returning({ id: agentActions.id });
@@ -1450,29 +1451,36 @@ export const appRouter = router({
           });
         }
 
-        // Approval rules — draft autonomous, send human_required by
-        // owning_recruiter. CHECK constraint enforces
-        // (approval_mode='auto') = (approver_role IS NULL). #30 guard
-        // (assertRuleAttachable) rejects misconfigurations where a
-        // human-gate rule is attached to an action whose executor
-        // declares requiresApprovalCapable=false. Today's hard-coded
-        // pairings are both valid; the guard is wired so future
-        // procedures (updateFollowUpAgent, etc.) inherit the check.
-        ensureRuleAttachable("draft_message", "auto");
+        // Approval rules — the recruiter approves the DRAFT, and the send
+        // that follows is autonomous. FOLLOWUP-01 swapped this: the gate
+        // used to sit on send_message, but the drain executes an action
+        // and only THEN evaluates the gate, resuming without re-executing
+        // once approved. A gated send would therefore have enqueued the
+        // email before the human ever saw it. draft_message is pure, so
+        // gating it is sound: on approval the recruiter's edited text
+        // lands in agent_run_actions.output and send_message — which has
+        // not run yet — reads it on resume.
+        //
+        // CHECK constraint enforces (approval_mode='auto') = (approver_role
+        // IS NULL). The #30 guard (assertRuleAttachable) rejects attaching
+        // a human gate to an action whose executor declares
+        // requiresApprovalCapable=false; draft_message was flipped to
+        // capable in the same ticket.
+        ensureRuleAttachable("draft_message", "human_required");
         await db.insert(agentApprovalRules).values({
           tenantId,
           agentId,
           actionId: draftAction.id,
-          approvalMode: "auto",
-          approverRole: null,
+          approvalMode: "human_required",
+          approverRole: "owning_recruiter",
         });
-        ensureRuleAttachable("send_message", "human_required");
+        ensureRuleAttachable("send_message", "auto");
         await db.insert(agentApprovalRules).values({
           tenantId,
           agentId,
           actionId: sendAction.id,
-          approvalMode: "human_required",
-          approverRole: "owning_recruiter",
+          approvalMode: "auto",
+          approverRole: null,
         });
 
         return { agentId };

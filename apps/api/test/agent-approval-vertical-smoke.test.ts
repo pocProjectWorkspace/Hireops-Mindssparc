@@ -1,29 +1,38 @@
 /**
  * AGENT-03 — vertical smoke for the approval cycle.
  *
+ * FOLLOWUP-01 note: the curated Follow-Up Agent now gates action 1
+ * (draft_message, the pure action) rather than action 2 (send_message,
+ * the effectful one) — the drain executes-then-gates and resumes without
+ * re-executing, so a gated send would have enqueued the email before the
+ * human approved. Tests 1/2/3/5 use the curated agent and therefore now
+ * pause on action 1. Test 4 hand-seeds its own 3-action layout to
+ * exercise the resume mechanics and keeps its gate on the middle action.
+ * The executors are faked (execDeps) so these tests stay about the drain.
+ *
  * Five tests exercise the full pause + resolve + resume loop end-to-end:
  *
  *   1. Approve (no edit):
- *      create Follow-Up Agent → enqueue → drain (halts at send_message)
- *      → approveApproval → drain again → outbox+run completed,
- *      run_actions[1].output is the original AGENT-02 stub.
+ *      create Follow-Up Agent → enqueue → drain (halts at draft_message)
+ *      → approveApproval → drain again → outbox+run completed. Action 1
+ *      output is the draft; action 2 (send_message) then runs for the
+ *      first time on resume and reports sent: true.
  *
  *   2. Approve-with-edit:
- *      same setup, approveApprovalWithEdit replaces the output payload.
- *      After resume, run_actions[1].output matches the edited shape and
- *      the agent_approval_requests row carries both proposed_action_payload
- *      (original) AND edited_payload (the edit).
+ *      same setup, approveApprovalWithEdit replaces the DRAFT payload.
+ *      After resume, action 1 output matches the edited draft, action 2
+ *      sends the edited body, and the agent_approval_requests row carries
+ *      both proposed_action_payload (original) AND edited_payload.
  *
  *   3. Reject:
- *      same setup, rejectApproval terminates the run. Outbox=failed,
- *      run=rejected, run_actions[1]=failed. Drain again picks no work
- *      because outbox.status is not 'pending'.
+ *      same setup, rejectApproval terminates the run at action 1.
+ *      Outbox=failed, run=rejected, run_actions[0]=failed, and no email
+ *      was ever enqueued. Drain again picks no work.
  *
  *   4. Three-action worker resume (Step 4 of the AGENT-03 prompt):
- *      [A, B (requires_approval), C]. Drain → A completed,
- *      B awaiting_approval, C not yet executed. Approve B. Drain again
- *      → A skipped (already completed), B skipped (already completed),
- *      C executed. Run completes.
+ *      [A, B (gated), C]. Drain → A completed, B awaiting_approval,
+ *      C not yet executed. Approve B. Drain again → A skipped, B skipped
+ *      (completed via approval), C executed. Run completes.
  *
  *   5. Snooze:
  *      same setup, snoozeApproval bumps ttl_at by 24h. Status stays
@@ -51,6 +60,7 @@ import { decodeJwt } from "jose";
 import { app } from "../src/index.js";
 import { sql as poolSql } from "@hireops/db";
 import { drainAgentRunOutboxOnce } from "../../../apps/workers/src/lib/agent-run-drain.js";
+import { fakeExecutorDeps } from "./agent-executor-fakes.js";
 import { createLogger } from "@hireops/observability";
 
 const TEST_EMAIL = "test-fnd15b@hireops-dev.local";
@@ -75,6 +85,12 @@ let testTenantId: string;
 let testMembershipId: string;
 let testAuthUserId: string;
 const drainLog = createLogger({ base: { service: "agent-03-smoke" } });
+
+// FOLLOWUP-01: draft_message + send_message are real executors now.
+// These tests cover the DRAIN, not the executors, so the ports are faked
+// -- no LLM call, no applications row, no notification_outbox write.
+// Executor behaviour lives in packages/agent-actions unit tests.
+const execDeps = fakeExecutorDeps();
 
 /**
  * Audit-row assertion shared across the resolution tests. The
@@ -316,13 +332,14 @@ describe("AGENT-03 — approval cycle vertical smoke", () => {
   });
 
   it("Test 1: approve (no edit) — drain → pause → approve → drain → completed", async () => {
+    execDeps.enqueued.length = 0; // shared fake; isolate this test's count
     const agentId = await createFollowUpAgent(NAME_APPROVE);
     const outboxId = await enqueueOutbox(agentId, { application_id: "approve-fake-app" });
 
-    // First drain — halts at send_message.
-    let r = await drainAgentRunOutboxOnce({ log: drainLog });
+    // First drain — halts at draft_message (the gated action).
+    let r = await drainAgentRunOutboxOnce({ log: drainLog, deps: execDeps });
     assert.equal(r.claimed, 1);
-    assert.equal(r.awaiting, 1, "send_message gate fires");
+    assert.equal(r.awaiting, 1, "draft_message gate fires");
 
     const approvalId = await pendingApprovalIdFor(agentId);
 
@@ -371,7 +388,7 @@ describe("AGENT-03 — approval cycle vertical smoke", () => {
     assert.equal(approvalRow?.decision_notes, "Looks good");
 
     // Second drain — resumes, completes.
-    r = await drainAgentRunOutboxOnce({ log: drainLog });
+    r = await drainAgentRunOutboxOnce({ log: drainLog, deps: execDeps });
     assert.equal(r.claimed, 1, "resume picks up the re-queued row");
     assert.equal(r.completed, 1);
     assert.equal(r.failed, 0);
@@ -394,27 +411,42 @@ describe("AGENT-03 — approval cycle vertical smoke", () => {
     `;
     assert.equal(runActions.length, 2);
     for (const ra of runActions) assert.equal(ra.status, "completed");
-    // Action 2's output is the original stub — no edit applied.
+    // Action 1 was the approved draft; action 2 (send_message) executed
+    // for the first time on resume and really enqueued the message.
+    const draftOut = runActions[0]?.output as Record<string, unknown>;
+    assert.equal(draftOut.draft_text, "Fake drafted follow-up body.");
     const sendOut = runActions[1]?.output as Record<string, unknown>;
-    assert.equal(sendOut._originally_set_by, "AGENT-02");
-    assert.equal(sendOut.sent, false);
+    assert.equal(sendOut.sent, true, "send runs post-approval and reports sent");
+    assert.ok(sendOut.notification_outbox_id, "send enqueued a notification row");
+
+    // The email was enqueued exactly once, and only after approval.
+    assert.equal(execDeps.enqueued.length, 1, "one email, sent after the human approved");
   });
 
-  it("Test 2: approve with edit — edited payload replaces run_action.output on resume", async () => {
+  it("Test 2: approve with edit — edited draft replaces run_action.output and is what gets sent", async () => {
+    execDeps.enqueued.length = 0; // shared fake; isolate this test's count
     const agentId = await createFollowUpAgent(NAME_APPROVE_EDIT);
     await enqueueOutbox(agentId, { application_id: "edit-fake-app" });
-    await drainAgentRunOutboxOnce({ log: drainLog });
+    await drainAgentRunOutboxOnce({ log: drainLog, deps: execDeps });
     const approvalId = await pendingApprovalIdFor(agentId);
 
+    // The gated action is draft_message now, so the recruiter edits the
+    // DRAFT. The edit must carry the full draft output shape because it
+    // replaces agent_run_actions.output wholesale, and send_message reads
+    // that shape on resume. This is the crux: the candidate receives the
+    // recruiter's words, not the model's.
     const editedPayload = {
-      _stub: true,
-      _ticket: "AGENT-02",
       _edited_by_recruiter: true,
-      channel: "email",
-      recipient_email: "edited@example.com",
-      outbox_kind: "agent_followup",
-      sent: false,
-      would_send_to: "edited-target",
+      draft_text: "Recruiter-rewritten follow-up. Warmer than the model's.",
+      subject: "A quick note about your application",
+      candidate_email: "candidate@example.test",
+      candidate_id: "fake-candidate",
+      candidate_name: "Test Candidate",
+      position_title: "Senior Backend Engineer",
+      company_name: "Kyndryl GCC",
+      template_prompt_id: "follow_up_v1",
+      prompt_version: "followup-v1",
+      tone: "friendly",
     };
     await cleanupAuditLogsByEntity(approvalId);
 
@@ -454,9 +486,9 @@ describe("AGENT-03 — approval cycle vertical smoke", () => {
     `;
     assert.equal(ar?.status, "approved");
     assert.equal(
-      (ar?.proposed_action_payload as Record<string, unknown>)._originally_set_by,
-      "AGENT-02",
-      "proposed_action_payload preserves the original stub",
+      (ar?.proposed_action_payload as Record<string, unknown>).draft_text,
+      "Fake drafted follow-up body.",
+      "proposed_action_payload preserves the model's original draft",
     );
     assert.equal(
       (ar?.edited_payload as Record<string, unknown>)._edited_by_recruiter,
@@ -464,33 +496,43 @@ describe("AGENT-03 — approval cycle vertical smoke", () => {
       "edited_payload carries the edit",
     );
 
-    // Pre-resume — agent_run_actions.output already updated to edited.
+    // Pre-resume — the gated action (1) already updated to the edited draft.
     const [raMid] = await poolSql<{ output: Record<string, unknown> }[]>`
       SELECT output FROM public.agent_run_actions
       WHERE run_id IN (SELECT id FROM public.agent_runs WHERE agent_id = ${agentId})
-        AND action_order = 2
+        AND action_order = 1
     `;
     assert.equal(raMid?.output._edited_by_recruiter, true);
 
-    // Resume drain; output stays edited (worker reads existing, doesn't
-    // overwrite).
-    const r = await drainAgentRunOutboxOnce({ log: drainLog });
+    // Resume drain — action 1 stays edited (worker reads existing, doesn't
+    // overwrite), action 2 executes and sends the edited body.
+    const r = await drainAgentRunOutboxOnce({ log: drainLog, deps: execDeps });
     assert.equal(r.completed, 1);
 
     const [raFinal] = await poolSql<{ output: Record<string, unknown>; status: string }[]>`
       SELECT output, status FROM public.agent_run_actions
       WHERE run_id IN (SELECT id FROM public.agent_runs WHERE agent_id = ${agentId})
-        AND action_order = 2
+        AND action_order = 1
     `;
     assert.equal(raFinal?.status, "completed");
     assert.equal(raFinal?.output._edited_by_recruiter, true, "edit persists after resume");
-    assert.equal(raFinal?.output.recipient_email, "edited@example.com");
+
+    // The message actually sent carries the recruiter's text, not the
+    // model's — this is the whole point of gating the draft.
+    assert.equal(execDeps.enqueued.length, 1);
+    const [sendOut] = await poolSql<{ output: Record<string, unknown> }[]>`
+      SELECT output FROM public.agent_run_actions
+      WHERE run_id IN (SELECT id FROM public.agent_runs WHERE agent_id = ${agentId})
+        AND action_order = 2
+    `;
+    assert.equal(sendOut?.output.sent, true);
   });
 
   it("Test 3: reject — run terminates, outbox failed, drain picks no work", async () => {
+    execDeps.enqueued.length = 0; // shared fake; isolate this test's count
     const agentId = await createFollowUpAgent(NAME_REJECT);
     const outboxId = await enqueueOutbox(agentId, { application_id: "reject-fake-app" });
-    await drainAgentRunOutboxOnce({ log: drainLog });
+    await drainAgentRunOutboxOnce({ log: drainLog, deps: execDeps });
     const approvalId = await pendingApprovalIdFor(agentId);
 
     await cleanupAuditLogsByEntity(approvalId);
@@ -527,18 +569,28 @@ describe("AGENT-03 — approval cycle vertical smoke", () => {
     assert.equal(run?.status, "rejected");
     assert.ok(run?.error?.includes("Approval rejected at action"));
 
-    const [ra2] = await poolSql<{ status: string; error: string | null }[]>`
+    // The gated action is action 1 (draft) now; rejection fails it, and
+    // action 2 (send) never got a row — nothing was sent.
+    const [ra1] = await poolSql<{ status: string; error: string | null }[]>`
       SELECT status, error FROM public.agent_run_actions
+      WHERE run_id IN (SELECT id FROM public.agent_runs WHERE agent_id = ${agentId})
+        AND action_order = 1
+    `;
+    assert.equal(ra1?.status, "failed");
+    assert.ok(ra1?.error?.includes("Tone is off for this candidate"));
+
+    const sendRows = await poolSql<{ id: string }[]>`
+      SELECT id FROM public.agent_run_actions
       WHERE run_id IN (SELECT id FROM public.agent_runs WHERE agent_id = ${agentId})
         AND action_order = 2
     `;
-    assert.equal(ra2?.status, "failed");
-    assert.ok(ra2?.error?.includes("Tone is off for this candidate"));
+    assert.equal(sendRows.length, 0, "send_message never ran");
+    assert.equal(execDeps.enqueued.length, 0, "a rejected follow-up sends nothing");
 
     // Another drain pass — outbox is not 'pending' so claim count is 0.
     // But we need to clear any other tenant outbox rows that might be
     // pending from concurrent tests; assert no row for THIS outboxId moved.
-    await drainAgentRunOutboxOnce({ log: drainLog });
+    await drainAgentRunOutboxOnce({ log: drainLog, deps: execDeps });
     const [outboxAfter] = await poolSql<{ status: string }[]>`
       SELECT status FROM public.agent_run_outbox WHERE id = ${outboxId}
     `;
@@ -547,9 +599,13 @@ describe("AGENT-03 — approval cycle vertical smoke", () => {
 
   it("Test 4: three-action worker resume — A completed, B paused, C executed only after approve", async () => {
     // Create a 3-action agent directly via SQL — createFollowUpAgent
-    // only ships a 2-action layout. Action B = send_message so we get
-    // the approval gate; A + C are draft_message so they autonomously
-    // pass.
+    // only ships a 2-action layout. Action B = send_message carries the
+    // gate; A + C are draft_message and pass autonomously. This is a
+    // MECHANICAL fixture for the resume path (A skipped, B completed via
+    // approval, C executed fresh) — it deliberately gates the middle
+    // action regardless of type. The curated Follow-Up Agent gates the
+    // pure draft instead (FOLLOWUP-01); that placement correctness is
+    // covered by tests 1–3, not here.
     await poolSql`
       INSERT INTO public.automation_agents
         (id, tenant_id, agent_type, name, description, enabled, version, created_by)
@@ -597,7 +653,7 @@ describe("AGENT-03 — approval cycle vertical smoke", () => {
     await enqueueOutbox(A03_RESUME_AGENT, { application_id: "resume-three" });
 
     // First drain — A completes, B halts, C untouched.
-    let r = await drainAgentRunOutboxOnce({ log: drainLog });
+    let r = await drainAgentRunOutboxOnce({ log: drainLog, deps: execDeps });
     assert.equal(r.awaiting, 1, "B awaits approval");
     let runActions = await poolSql<{ action_order: number; status: string }[]>`
       SELECT action_order, status FROM public.agent_run_actions
@@ -627,7 +683,7 @@ describe("AGENT-03 — approval cycle vertical smoke", () => {
 
     // Second drain — A skipped (already completed), B skipped (already
     // completed via approval), C executed fresh.
-    r = await drainAgentRunOutboxOnce({ log: drainLog });
+    r = await drainAgentRunOutboxOnce({ log: drainLog, deps: execDeps });
     assert.equal(r.claimed, 1, "resume picks up the re-queued outbox");
     assert.equal(r.completed, 1, "resume completes the remaining work");
 
@@ -657,10 +713,10 @@ describe("AGENT-03 — approval cycle vertical smoke", () => {
   it("Test 5: snooze — ttl_at bumped 24h, status stays pending, one audit row", async () => {
     const agentId = await createFollowUpAgent(NAME_SNOOZE);
     const outboxId = await enqueueOutbox(agentId, { application_id: "snooze-fake-app" });
-    await drainAgentRunOutboxOnce({ log: drainLog });
+    await drainAgentRunOutboxOnce({ log: drainLog, deps: execDeps });
     const approvalId = await pendingApprovalIdFor(agentId);
 
-    // ttl_at is NULL before snooze (Follow-Up Agent's send_message rule
+    // ttl_at is NULL before snooze (Follow-Up Agent's draft_message rule
     // is human_required, no TTL by default).
     const [beforeRow] = await poolSql<{ ttl_at: Date | string | null }[]>`
       SELECT ttl_at FROM public.agent_approval_requests WHERE id = ${approvalId}

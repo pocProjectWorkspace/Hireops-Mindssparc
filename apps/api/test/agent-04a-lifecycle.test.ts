@@ -322,13 +322,21 @@ describe("AGENT-04a — Follow-Up agent update / retire / toggle lifecycle", () 
     for (const r of v2Rules) {
       assert.ok(v2ActionIds.has(r.action_id), "rule.action_id rewired to v2 action");
     }
-    // Approval modes preserved.
-    const sendRule = v2Rules.find((r) => r.approval_mode === "human_required");
-    const autoRule = v2Rules.find((r) => r.approval_mode === "auto");
-    assert.ok(sendRule, "send_message rule copied with human_required");
-    assert.equal(sendRule?.approver_role, "owning_recruiter");
-    assert.ok(autoRule, "draft_message rule copied with auto");
-    assert.equal(autoRule?.approver_role, null);
+    // Approval modes preserved, and preserved against the right ACTION.
+    // Correlating by action_id rather than by mode is what makes this
+    // test able to see the FOLLOWUP-01 swap: the gate belongs on the
+    // pure draft_message, and the effectful send_message runs auto.
+    // Matching on mode alone would pass under either placement.
+    const draftActionId = v2Actions[0]!.id;
+    const sendActionId = v2Actions[1]!.id;
+    const draftRule = v2Rules.find((r) => r.action_id === draftActionId);
+    const sendRule = v2Rules.find((r) => r.action_id === sendActionId);
+    assert.ok(draftRule, "draft_message rule copied");
+    assert.equal(draftRule?.approval_mode, "human_required");
+    assert.equal(draftRule?.approver_role, "owning_recruiter");
+    assert.ok(sendRule, "send_message rule copied");
+    assert.equal(sendRule?.approval_mode, "auto");
+    assert.equal(sendRule?.approver_role, null);
 
     // 6. Frozen agent_run still points at v1AgentId — historical
     //    runs are not migrated to the new version.
