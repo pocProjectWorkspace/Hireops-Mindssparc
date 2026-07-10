@@ -28,7 +28,11 @@ export interface AgentMessageProps {
  * HTML-injection path from model output into a candidate's inbox.
  */
 export function AgentMessage({ candidateName, positionTitle, companyName, body }: AgentMessageProps) {
-  const paragraphs = body
+  // Defensive: a candidate-facing send must never crash on a missing or
+  // non-string body. Coerce, then fall back to a plain greeting so the
+  // email still goes out (the worker marks the row sent, not failed).
+  const safeBody = typeof body === "string" ? body : "";
+  const paragraphs = safeBody
     .split(/\n\s*\n/)
     .map((p) => p.trim())
     .filter((p) => p.length > 0);

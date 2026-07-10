@@ -39,6 +39,14 @@ describe("candidate.agent_message", () => {
     expect(r.text).toContain("recruiting team");
   });
 
+  it("degrades gracefully when the body is missing instead of crashing the send", async () => {
+    const { body: _omit, ...noBody } = baseData;
+    const r = await renderTemplate("candidate.agent_message", noBody);
+    // Must not throw; still produces a usable email addressed to the candidate.
+    expect(r.html).toContain("Anika");
+    expect(r.text).toContain("recruiting team");
+  });
+
   it("escapes HTML in the body instead of injecting it", async () => {
     const r = await renderTemplate("candidate.agent_message", {
       ...baseData,
