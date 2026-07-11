@@ -104,6 +104,8 @@ import {
   toggleCandidateQaAgentOutputSchema,
   listAgentsInputSchema,
   listAgentsOutputSchema,
+  getAgentDetailInputSchema,
+  getAgentDetailOutputSchema,
   approveApprovalInputSchema,
   approveApprovalOutputSchema,
   approveApprovalWithEditInputSchema,
@@ -1554,6 +1556,143 @@ export const appRouter = router({
         last_run_at: toIsoString(r.last_run_at),
       }));
       return { agents };
+    }),
+
+  // ─────────────────────── getAgentDetail (ADMIN-01) ───────────────────────
+  //
+  // The admin drill-in read for /admin/workflows. Reads only — no
+  // withAudit (matches listAgents; the DB-AUDIT trigger already captures
+  // row changes and reads make none). Every select is scoped by
+  // ctx.tenantId (same explicit filter toggleFollowUpAgent uses) on top
+  // of the tenant_isolation RLS the protectedProcedure tx applies. The
+  // agent row is NOT filtered on retired_at — a just-retired agent is
+  // still viewable, with its retired_at surfaced. A missing agent (or one
+  // in another tenant) is NOT_FOUND.
+  getAgentDetail: protectedProcedure
+    .input(getAgentDetailInputSchema)
+    .output(getAgentDetailOutputSchema)
+    .query(async ({ ctx, input }) => {
+      const db = requireDb(ctx);
+      if (!ctx.tenantId) {
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: "protected procedure missing tenantId",
+        });
+      }
+      const tenantId = ctx.tenantId;
+
+      const [agent] = await db
+        .select({
+          id: automationAgents.id,
+          agentType: automationAgents.agentType,
+          name: automationAgents.name,
+          description: automationAgents.description,
+          enabled: automationAgents.enabled,
+          version: automationAgents.version,
+          createdAt: automationAgents.createdAt,
+          retiredAt: automationAgents.retiredAt,
+        })
+        .from(automationAgents)
+        .where(
+          and(eq(automationAgents.id, input.agentId), eq(automationAgents.tenantId, tenantId)),
+        )
+        .limit(1);
+      if (!agent) {
+        throw new TRPCError({ code: "NOT_FOUND", message: "Agent not found" });
+      }
+
+      const triggerRows = await db
+        .select({
+          id: agentTriggers.id,
+          triggerType: agentTriggers.triggerType,
+          triggerConfig: agentTriggers.triggerConfig,
+        })
+        .from(agentTriggers)
+        .where(
+          and(eq(agentTriggers.agentId, input.agentId), eq(agentTriggers.tenantId, tenantId)),
+        );
+
+      const actionRows = await db
+        .select({
+          id: agentActions.id,
+          actionOrder: agentActions.actionOrder,
+          actionType: agentActions.actionType,
+          actionConfig: agentActions.actionConfig,
+        })
+        .from(agentActions)
+        .where(and(eq(agentActions.agentId, input.agentId), eq(agentActions.tenantId, tenantId)))
+        .orderBy(agentActions.actionOrder);
+
+      const ruleRows = await db
+        .select({
+          id: agentApprovalRules.id,
+          actionId: agentApprovalRules.actionId,
+          approvalMode: agentApprovalRules.approvalMode,
+          approverRole: agentApprovalRules.approverRole,
+          approverUserId: agentApprovalRules.approverUserId,
+          conditions: agentApprovalRules.conditions,
+        })
+        .from(agentApprovalRules)
+        .where(
+          and(
+            eq(agentApprovalRules.agentId, input.agentId),
+            eq(agentApprovalRules.tenantId, tenantId),
+          ),
+        );
+
+      const runRows = await db
+        .select({
+          id: agentRuns.id,
+          triggeredBy: agentRuns.triggeredBy,
+          triggeredAt: agentRuns.triggeredAt,
+          status: agentRuns.status,
+          completedAt: agentRuns.completedAt,
+          error: agentRuns.error,
+        })
+        .from(agentRuns)
+        .where(and(eq(agentRuns.agentId, input.agentId), eq(agentRuns.tenantId, tenantId)))
+        .orderBy(desc(agentRuns.triggeredAt))
+        .limit(20);
+
+      return {
+        agent: {
+          id: agent.id,
+          agent_type: agent.agentType,
+          name: agent.name,
+          description: agent.description,
+          enabled: agent.enabled,
+          version: agent.version,
+          created_at: toIsoString(agent.createdAt) ?? new Date(0).toISOString(),
+          retired_at: toIsoString(agent.retiredAt),
+        },
+        triggers: triggerRows.map((t) => ({
+          id: t.id,
+          trigger_type: t.triggerType,
+          trigger_config: t.triggerConfig,
+        })),
+        actions: actionRows.map((a) => ({
+          id: a.id,
+          action_order: a.actionOrder,
+          action_type: a.actionType,
+          action_config: a.actionConfig,
+        })),
+        approvalRules: ruleRows.map((r) => ({
+          id: r.id,
+          action_id: r.actionId,
+          approval_mode: r.approvalMode,
+          approver_role: r.approverRole,
+          approver_user_id: r.approverUserId,
+          conditions: r.conditions,
+        })),
+        recentRuns: runRows.map((run) => ({
+          id: run.id,
+          triggered_by: run.triggeredBy,
+          triggered_at: toIsoString(run.triggeredAt) ?? new Date(0).toISOString(),
+          status: run.status,
+          completed_at: toIsoString(run.completedAt),
+          error: run.error,
+        })),
+      };
     }),
 
   // ─────────────────────── update / retire / toggle (AGENT-04a) ───────────────────────

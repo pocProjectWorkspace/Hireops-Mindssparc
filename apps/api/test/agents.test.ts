@@ -16,6 +16,14 @@
  *      fresh agent).
  *   5. listAgents tenant isolation: an agent inserted into a synthetic
  *      tenant via service_role is NOT visible to the test user.
+ *
+ * ADMIN-01 adds getAgentDetail coverage (3 cases):
+ *   6. getAgentDetail round-trip for a created follow-up agent — agent
+ *      header fields, triggers, ordered actions, approvalRules all
+ *      present + correctly shaped; recentRuns empty for a fresh agent.
+ *   7. getAgentDetail NOT_FOUND for a random uuid.
+ *   8. getAgentDetail tenant isolation — an agent in a synthetic other
+ *      tenant reads as NOT_FOUND from the test user's context.
  */
 
 import "../src/bootstrap";
@@ -41,11 +49,20 @@ const A02T_SYNTH_MEMBERSHIP = "00000000-0000-4000-8000-00000a02e002";
 const A02T_SYNTH_AUTH_USER = "00000000-0000-4000-8000-00000a02e003";
 const A02T_SYNTH_AGENT = "00000000-0000-4000-8000-00000a02e004";
 
+// ADMIN-01 getAgentDetail fixtures (separate ids so the isolation test
+// doesn't depend on Test 5's synth-tenant rows still existing).
+const AD01_SYNTH_TENANT = "00000000-0000-4000-8000-0000ad01e001";
+const AD01_SYNTH_MEMBERSHIP = "00000000-0000-4000-8000-0000ad01e002";
+const AD01_SYNTH_AGENT = "00000000-0000-4000-8000-0000ad01e003";
+const AD01_MISSING_AGENT = "00000000-0000-4000-8000-0000ad01ffff";
+
 const NAME_HAPPY = "agent-02-test-happy";
 const NAME_UNIQUE = "agent-02-test-unique-collide";
 const NAME_RETIRED = "agent-02-test-retire-reuse";
 const NAME_LIST = "agent-02-test-list";
 const NAME_SYNTH = "agent-02-test-synth-invisible";
+const NAME_DETAIL = "admin-01-test-detail";
+const NAME_AD01_SYNTH = "admin-01-test-synth-invisible";
 
 let jwt: string;
 let testTenantId: string;
@@ -114,23 +131,50 @@ async function cleanupSynthTenant(): Promise<void> {
   await poolSql`DELETE FROM public.tenants WHERE id = ${A02T_SYNTH_TENANT}`;
 }
 
+async function cleanupAd01Synth(): Promise<void> {
+  await poolSql`DELETE FROM public.agent_approval_rules WHERE agent_id = ${AD01_SYNTH_AGENT}`;
+  await poolSql`DELETE FROM public.agent_actions WHERE agent_id = ${AD01_SYNTH_AGENT}`;
+  await poolSql`DELETE FROM public.agent_triggers WHERE agent_id = ${AD01_SYNTH_AGENT}`;
+  await poolSql`DELETE FROM public.automation_agents WHERE id = ${AD01_SYNTH_AGENT}`;
+  await poolSql`DELETE FROM public.tenant_user_memberships WHERE id = ${AD01_SYNTH_MEMBERSHIP}`;
+  await poolSql`DELETE FROM public.tenants WHERE id = ${AD01_SYNTH_TENANT}`;
+}
+
 describe("AGENT-02 — tRPC createFollowUpAgent + listAgents", () => {
   beforeAll(async () => {
     jwt = await getTestJwt();
     const claims = decodeJwt(jwt);
     testTenantId = (claims as { tid?: string }).tid as string;
     // Defensive pre-cleanup.
-    for (const n of [NAME_HAPPY, NAME_UNIQUE, NAME_RETIRED, NAME_LIST, NAME_SYNTH]) {
+    for (const n of [
+      NAME_HAPPY,
+      NAME_UNIQUE,
+      NAME_RETIRED,
+      NAME_LIST,
+      NAME_SYNTH,
+      NAME_DETAIL,
+      NAME_AD01_SYNTH,
+    ]) {
       await deleteAgentsByName(n);
     }
     await cleanupSynthTenant();
+    await cleanupAd01Synth();
   });
 
   afterAll(async () => {
-    for (const n of [NAME_HAPPY, NAME_UNIQUE, NAME_RETIRED, NAME_LIST, NAME_SYNTH]) {
+    for (const n of [
+      NAME_HAPPY,
+      NAME_UNIQUE,
+      NAME_RETIRED,
+      NAME_LIST,
+      NAME_SYNTH,
+      NAME_DETAIL,
+      NAME_AD01_SYNTH,
+    ]) {
       await deleteAgentsByName(n);
     }
     await cleanupSynthTenant();
+    await cleanupAd01Synth();
     await poolSql.end({ timeout: 10 });
   });
 
@@ -337,5 +381,123 @@ describe("AGENT-02 — tRPC createFollowUpAgent + listAgents", () => {
       undefined,
       `synth name should not appear either`,
     );
+  });
+
+  it("Test 6: getAgentDetail round-trips a created follow-up agent (agent + triggers + actions + rules; empty runs)", async () => {
+    const created = await trpcMutation<{ agentId: string }>("createFollowUpAgent", {
+      name: NAME_DETAIL,
+      description: "Detail round-trip agent",
+      days_threshold: 6,
+      stage: "tech_screen",
+      tone: "friendly",
+      max_tokens: 200,
+    });
+    assert.ok(!isErr(created), `create should succeed: ${JSON.stringify(created)}`);
+    const createdId = created.result.data.agentId;
+
+    const detail = await trpcQuery<{
+      agent: {
+        id: string;
+        agent_type: string;
+        name: string;
+        description: string | null;
+        enabled: boolean;
+        version: number;
+        created_at: string;
+        retired_at: string | null;
+      };
+      triggers: Array<{ id: string; trigger_type: string; trigger_config: { stage?: string } }>;
+      actions: Array<{
+        id: string;
+        action_order: number;
+        action_type: string;
+        action_config: Record<string, unknown>;
+      }>;
+      approvalRules: Array<{
+        id: string;
+        action_id: string;
+        approval_mode: string;
+        approver_role: string | null;
+      }>;
+      recentRuns: Array<{ id: string; status: string }>;
+    }>("getAgentDetail", { agentId: createdId });
+    assert.ok(!isErr(detail), `query should succeed: ${JSON.stringify(detail)}`);
+    const d = detail.result.data;
+
+    // Agent header.
+    assert.equal(d.agent.id, createdId);
+    assert.equal(d.agent.agent_type, "follow_up");
+    assert.equal(d.agent.name, NAME_DETAIL);
+    assert.equal(d.agent.enabled, true);
+    assert.equal(d.agent.version, 1);
+    assert.equal(d.agent.retired_at, null);
+    assert.ok(typeof d.agent.created_at === "string" && d.agent.created_at.length > 0);
+
+    // Trigger — one stage_stale trigger with the curated config.
+    assert.equal(d.triggers.length, 1);
+    assert.equal(d.triggers[0]?.trigger_type, "stage_stale");
+    assert.equal(d.triggers[0]?.trigger_config.stage, "tech_screen");
+
+    // Actions — draft then send, ordered by action_order.
+    assert.equal(d.actions.length, 2);
+    assert.equal(d.actions[0]?.action_type, "draft_message");
+    assert.equal(d.actions[1]?.action_type, "send_message");
+    assert.ok(
+      (d.actions[0]?.action_order ?? Number.MAX_SAFE_INTEGER) <
+        (d.actions[1]?.action_order ?? Number.MIN_SAFE_INTEGER),
+      "actions must be ordered by action_order",
+    );
+
+    // Approval rules — two, each attached to one of the returned actions.
+    assert.equal(d.approvalRules.length, 2);
+    const actionIds = new Set(d.actions.map((a) => a.id));
+    for (const r of d.approvalRules) {
+      assert.ok(
+        actionIds.has(r.action_id),
+        `approval rule action_id ${r.action_id} must reference a returned action`,
+      );
+      assert.ok(typeof r.approval_mode === "string" && r.approval_mode.length > 0);
+    }
+
+    // Fresh agent → no run history yet.
+    assert.equal(d.recentRuns.length, 0);
+  });
+
+  it("Test 7: getAgentDetail returns NOT_FOUND for a random uuid", async () => {
+    const res = await trpcQuery("getAgentDetail", { agentId: AD01_MISSING_AGENT });
+    assert.ok(isErr(res), `query should fail: ${JSON.stringify(res)}`);
+    assert.equal(res.error.data.code, "NOT_FOUND");
+  });
+
+  it("Test 8: getAgentDetail tenant-isolates — an agent in another tenant reads as NOT_FOUND", async () => {
+    const claims = decodeJwt(jwt);
+    const realUserId = claims.sub as string;
+    await poolSql`
+      INSERT INTO public.tenants (id, slug, display_name, primary_region, status)
+      VALUES (${AD01_SYNTH_TENANT}, ${`ad01-synth-${AD01_SYNTH_TENANT.slice(-6)}`},
+              'ADMIN-01 Synth', 'ap-northeast-1', 'active')
+      ON CONFLICT (id) DO NOTHING
+    `;
+    await poolSql`
+      INSERT INTO public.tenant_user_memberships
+        (id, tenant_id, user_id, roles, status)
+      VALUES (${AD01_SYNTH_MEMBERSHIP}, ${AD01_SYNTH_TENANT}, ${realUserId},
+              ARRAY['admin']::tenant_role[], 'active')
+      ON CONFLICT (id) DO NOTHING
+    `;
+    await poolSql`
+      INSERT INTO public.automation_agents
+        (id, tenant_id, agent_type, name, description, enabled, version, created_by)
+      VALUES (${AD01_SYNTH_AGENT}, ${AD01_SYNTH_TENANT}, 'follow_up',
+              ${NAME_AD01_SYNTH}, 'cross-tenant hidden', true, 1, ${AD01_SYNTH_MEMBERSHIP})
+      ON CONFLICT (id) DO NOTHING
+    `;
+
+    // The test user's JWT is scoped to testTenant; the synth agent lives
+    // in AD01_SYNTH_TENANT. RLS + the explicit tenant filter must hide it,
+    // and getAgentDetail surfaces that as NOT_FOUND (never a leak).
+    const res = await trpcQuery("getAgentDetail", { agentId: AD01_SYNTH_AGENT });
+    assert.ok(isErr(res), `cross-tenant read should fail: ${JSON.stringify(res)}`);
+    assert.equal(res.error.data.code, "NOT_FOUND");
   });
 });

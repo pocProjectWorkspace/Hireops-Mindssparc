@@ -885,3 +885,92 @@ export const approvalRequestDetailSchema = pendingApprovalItemSchema.extend({
 export const getApprovalRequestOutputSchema = approvalRequestDetailSchema;
 export type GetApprovalRequestInput = z.infer<typeof getApprovalRequestInputSchema>;
 export type GetApprovalRequestOutput = z.infer<typeof getApprovalRequestOutputSchema>;
+
+// ─────────────── getAgentDetail (ADMIN-01) ───────────────
+
+/**
+ * getAgentDetail — the admin drill-in read behind /admin/workflows.
+ *
+ * listAgents carries the per-agent roll-up (counts + last run) for the
+ * list view; this carries the full definition HR configured plus a
+ * bounded run history for one agent:
+ *   - agent:         the automation_agents row header fields.
+ *   - triggers:      what fires the agent (trigger_config is jsonb,
+ *                    passed through verbatim — shape is discriminated by
+ *                    trigger_type and rendered client-side).
+ *   - actions:       the ordered action pipeline (action_order asc).
+ *   - approvalRules: the per-action gate (mode + approver), keyed back
+ *                    to actions via action_id.
+ *   - recentRuns:    the last 20 agent_runs, triggered_at desc.
+ *
+ * Retired agents ARE returned (retired_at is surfaced, not filtered) —
+ * the detail view can be reached for a just-retired row. NOT_FOUND fires
+ * only when no agent matches the id within the caller's tenant, which is
+ * also the cross-tenant isolation contract (another tenant's agent reads
+ * as absent, never leaked).
+ *
+ * jsonb columns (trigger_config, action_config, conditions) are typed as
+ * `unknown` passthroughs — the same convention candidateRowSchema uses
+ * for parsed_skills — so the read contract doesn't couple to each
+ * action/trigger type's config shape.
+ */
+export const getAgentDetailInputSchema = z.object({
+  agentId: z.string().uuid(),
+});
+
+export const agentDetailAgentSchema = z.object({
+  id: z.string().uuid(),
+  agent_type: z.string(),
+  name: z.string(),
+  description: z.string().nullable(),
+  enabled: z.boolean(),
+  version: z.number().int(),
+  created_at: z.string(),
+  retired_at: z.string().nullable(),
+});
+export type AgentDetailAgent = z.infer<typeof agentDetailAgentSchema>;
+
+export const agentDetailTriggerSchema = z.object({
+  id: z.string().uuid(),
+  trigger_type: z.string(),
+  trigger_config: z.unknown(),
+});
+export type AgentDetailTrigger = z.infer<typeof agentDetailTriggerSchema>;
+
+export const agentDetailActionSchema = z.object({
+  id: z.string().uuid(),
+  action_order: z.number().int(),
+  action_type: z.string(),
+  action_config: z.unknown(),
+});
+export type AgentDetailAction = z.infer<typeof agentDetailActionSchema>;
+
+export const agentDetailApprovalRuleSchema = z.object({
+  id: z.string().uuid(),
+  action_id: z.string().uuid(),
+  approval_mode: z.string(),
+  approver_role: z.string().nullable(),
+  approver_user_id: z.string().uuid().nullable(),
+  conditions: z.unknown(),
+});
+export type AgentDetailApprovalRule = z.infer<typeof agentDetailApprovalRuleSchema>;
+
+export const agentDetailRunSchema = z.object({
+  id: z.string().uuid(),
+  triggered_by: z.string(),
+  triggered_at: z.string(),
+  status: z.string(),
+  completed_at: z.string().nullable(),
+  error: z.string().nullable(),
+});
+export type AgentDetailRun = z.infer<typeof agentDetailRunSchema>;
+
+export const getAgentDetailOutputSchema = z.object({
+  agent: agentDetailAgentSchema,
+  triggers: z.array(agentDetailTriggerSchema),
+  actions: z.array(agentDetailActionSchema),
+  approvalRules: z.array(agentDetailApprovalRuleSchema),
+  recentRuns: z.array(agentDetailRunSchema),
+});
+export type GetAgentDetailInput = z.infer<typeof getAgentDetailInputSchema>;
+export type GetAgentDetailOutput = z.infer<typeof getAgentDetailOutputSchema>;
