@@ -10,11 +10,13 @@
 
 ## 0. Current position — read this before §1
 
+**➡ For the whole-platform status, demo-critical work, and full-build roadmap, read `docs/PLATFORM-BUILD-STATUS.md` first.** That is the master build-driving handoff (created 11 July 2026). This section is the short version; that doc is the map. This HANDOVER remains the ticket-level changelog + codebase realities (#1–112).
+
 **The active plan is `docs/new-set/build-plan-13week.md`, not the 24-week/3-wave structure described in §1 and §3.6 below.** The wave framing is retained here because the architectural decisions it produced are still binding, but the *schedule* it implies is dead. Where the two conflict, the 13-week plan wins.
 
 **Demo:** Kyndryl, week of 24–30 August 2026. Script is `docs/new-set/demo-scope-v2.md`.
 
-**As of 10 July 2026 we are in week 7 of 13** — the plan's own contingency checkpoint (§2, rule 1).
+**As of 11 July 2026 we are in week 7 of 13** — the plan's own contingency checkpoint (§2, rule 1). The follow-ups agent now works end-to-end and the **approval queue UI (`/approvals`) has shipped** (branch `feat/followup-01-real-executors`). Still absent: `/admin/workflows`, the audit list view, and the cost dashboard.
 
 What the plan expected by end of week 7 vs what exists:
 
