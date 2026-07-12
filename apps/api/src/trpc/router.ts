@@ -21,7 +21,7 @@
 
 import { z } from "zod";
 import { TRPCError } from "@trpc/server";
-import { and, desc, eq, lt, sql as dsql } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, lt, lte, sql as dsql } from "drizzle-orm";
 import {
   db as poolDb,
   persons,
@@ -43,6 +43,7 @@ import {
   agentRuns,
   agentRunActions,
   agentRunOutbox,
+  auditLogs,
   type ApplicationStage,
 } from "@hireops/db";
 import { evaluateKnockouts, type KnockoutInput } from "@hireops/ai-scoring";
@@ -106,6 +107,8 @@ import {
   listAgentsOutputSchema,
   getAgentDetailInputSchema,
   getAgentDetailOutputSchema,
+  listAuditEventsInputSchema,
+  listAuditEventsOutputSchema,
   approveApprovalInputSchema,
   approveApprovalOutputSchema,
   approveApprovalWithEditInputSchema,
@@ -121,6 +124,7 @@ import {
   type SubmitApplicationOutput,
   type GetCandidateByIdOutput,
   type AgentListRow,
+  type AuditEventRow,
   type PendingApprovalItem,
   type GetApprovalRequestOutput,
 } from "@hireops/api-types";
@@ -181,6 +185,33 @@ function firstOrThrow<T>(rows: T[], label: string): T {
 function lastCursor<T extends { createdAt: Date }>(rows: T[]): string | null {
   const last = rows[rows.length - 1];
   return last ? last.createdAt.toISOString() : null;
+}
+
+/**
+ * Composite keyset cursor for the audit list (ADMIN-02). Encodes the
+ * (created_at, id) of the last row of a page so the next page walks
+ * strictly past it under ORDER BY created_at DESC, id DESC. base64url so
+ * the opaque token survives a query-string round-trip. decode tolerates a
+ * malformed/absent token by returning null (paging restarts).
+ */
+function encodeAuditCursor(createdAt: Date | string, id: string): string {
+  const iso = toIsoString(createdAt) ?? new Date(0).toISOString();
+  return Buffer.from(`${iso}|${id}`, "utf8").toString("base64url");
+}
+function decodeAuditCursor(cursor: string | undefined): { createdAt: Date; id: string } | null {
+  if (!cursor) return null;
+  try {
+    const raw = Buffer.from(cursor, "base64url").toString("utf8");
+    const sep = raw.lastIndexOf("|");
+    if (sep === -1) return null;
+    const iso = raw.slice(0, sep);
+    const id = raw.slice(sep + 1);
+    const createdAt = new Date(iso);
+    if (Number.isNaN(createdAt.getTime()) || !id) return null;
+    return { createdAt, id };
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -1693,6 +1724,105 @@ export const appRouter = router({
           error: run.error,
         })),
       };
+    }),
+
+  // ─────────────────────── listAuditEvents (ADMIN-02) ───────────────────────
+  //
+  // The admin audit-trail read for /admin/audit — "every agent action,
+  // logged" (demo Act 3, step 15). Reads only — no withAudit (matches
+  // listAgents; the DB-AUDIT trigger captures row changes and reads make
+  // none, and this reads the audit log itself). Every predicate is ANDed
+  // with an explicit eq(tenantId, ctx.tenantId) on top of the RLS the
+  // protectedProcedure tx applies. Ordered created_at DESC, id DESC and
+  // keyset-paginated on that composite so rows sharing a timestamp within
+  // one transaction still page deterministically. audit_logs is monthly
+  // RANGE-partitioned by created_at, but a plain tenant-scoped SELECT needs
+  // no partition-aware handling.
+  listAuditEvents: protectedProcedure
+    .input(listAuditEventsInputSchema)
+    .output(listAuditEventsOutputSchema)
+    .query(async ({ ctx, input }) => {
+      const db = requireDb(ctx);
+      if (!ctx.tenantId) {
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: "protected procedure missing tenantId",
+        });
+      }
+      const tenantId = ctx.tenantId;
+      const limit = input.limit;
+      const decoded = decodeAuditCursor(input.cursor);
+
+      const conditions = [eq(auditLogs.tenantId, tenantId)];
+      if (input.entityTypes && input.entityTypes.length > 0) {
+        conditions.push(inArray(auditLogs.entityType, input.entityTypes));
+      }
+      if (input.action) {
+        conditions.push(eq(auditLogs.action, input.action));
+      }
+      if (input.entityId) {
+        conditions.push(eq(auditLogs.entityId, input.entityId));
+      }
+      if (input.from) {
+        conditions.push(gte(auditLogs.createdAt, new Date(input.from)));
+      }
+      if (input.to) {
+        conditions.push(lte(auditLogs.createdAt, new Date(input.to)));
+      }
+      if (decoded) {
+        // Keyset row-value comparison: (created_at, id) < (cursor.created_at,
+        // cursor.id) is exactly the "strictly past the last row" predicate for
+        // ORDER BY created_at DESC, id DESC. Casts pin the param types so
+        // Postgres picks timestamptz/uuid operators.
+        conditions.push(
+          // ISO string, not the Date — raw sql params bypass Drizzle's column
+          // mapping and postgres.js can't serialize a Date as a text param.
+          dsql`(${auditLogs.createdAt}, ${auditLogs.id}) < (${decoded.createdAt.toISOString()}::timestamptz, ${decoded.id}::uuid)`,
+        );
+      }
+
+      const rows = await db
+        .select({
+          id: auditLogs.id,
+          entityType: auditLogs.entityType,
+          entityId: auditLogs.entityId,
+          action: auditLogs.action,
+          actorUserId: auditLogs.actorUserId,
+          actorMembershipId: auditLogs.actorMembershipId,
+          requestId: auditLogs.requestId,
+          source: auditLogs.source,
+          changedColumns: auditLogs.changedColumns,
+          beforeData: auditLogs.beforeData,
+          afterData: auditLogs.afterData,
+          createdAt: auditLogs.createdAt,
+        })
+        .from(auditLogs)
+        .where(and(...conditions))
+        .orderBy(desc(auditLogs.createdAt), desc(auditLogs.id))
+        .limit(limit + 1);
+
+      const hasMore = rows.length > limit;
+      const pageRows = hasMore ? rows.slice(0, limit) : rows;
+      const items: AuditEventRow[] = pageRows.map((r) => ({
+        id: r.id,
+        entity_type: r.entityType,
+        entity_id: r.entityId,
+        action: r.action,
+        actor_user_id: r.actorUserId,
+        actor_membership_id: r.actorMembershipId,
+        request_id: r.requestId,
+        source: r.source,
+        changed_columns: r.changedColumns ?? null,
+        before_data: r.beforeData ?? null,
+        after_data: r.afterData ?? null,
+        created_at: toIsoString(r.createdAt) ?? new Date(0).toISOString(),
+      }));
+
+      const lastRow = pageRows[pageRows.length - 1];
+      const nextCursor =
+        hasMore && lastRow ? encodeAuditCursor(lastRow.createdAt, lastRow.id) : null;
+
+      return { items, nextCursor };
     }),
 
   // ─────────────────────── update / retire / toggle (AGENT-04a) ───────────────────────

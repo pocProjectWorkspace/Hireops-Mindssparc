@@ -56,6 +56,13 @@ const AD01_SYNTH_MEMBERSHIP = "00000000-0000-4000-8000-0000ad01e002";
 const AD01_SYNTH_AGENT = "00000000-0000-4000-8000-0000ad01e003";
 const AD01_MISSING_AGENT = "00000000-0000-4000-8000-0000ad01ffff";
 
+// ADMIN-02 listAuditEvents fixtures.
+const AD02_SYNTH_TENANT = "00000000-0000-4000-8000-0000ad02e001";
+const AD02_SYNTH_ENTITY = "00000000-0000-4000-8000-0000ad02e0ff";
+
+const NAME_AUDIT_INSERT = "admin-02-test-audit-insert";
+const NAME_AUDIT_TOGGLE = "admin-02-test-audit-toggle";
+
 const NAME_HAPPY = "agent-02-test-happy";
 const NAME_UNIQUE = "agent-02-test-unique-collide";
 const NAME_RETIRED = "agent-02-test-retire-reuse";
@@ -140,6 +147,10 @@ async function cleanupAd01Synth(): Promise<void> {
   await poolSql`DELETE FROM public.tenants WHERE id = ${AD01_SYNTH_TENANT}`;
 }
 
+async function cleanupAd02Synth(): Promise<void> {
+  await poolSql`DELETE FROM public.audit_logs WHERE tenant_id = ${AD02_SYNTH_TENANT}`;
+}
+
 describe("AGENT-02 — tRPC createFollowUpAgent + listAgents", () => {
   beforeAll(async () => {
     jwt = await getTestJwt();
@@ -154,11 +165,14 @@ describe("AGENT-02 — tRPC createFollowUpAgent + listAgents", () => {
       NAME_SYNTH,
       NAME_DETAIL,
       NAME_AD01_SYNTH,
+      NAME_AUDIT_INSERT,
+      NAME_AUDIT_TOGGLE,
     ]) {
       await deleteAgentsByName(n);
     }
     await cleanupSynthTenant();
     await cleanupAd01Synth();
+    await cleanupAd02Synth();
   });
 
   afterAll(async () => {
@@ -170,11 +184,14 @@ describe("AGENT-02 — tRPC createFollowUpAgent + listAgents", () => {
       NAME_SYNTH,
       NAME_DETAIL,
       NAME_AD01_SYNTH,
+      NAME_AUDIT_INSERT,
+      NAME_AUDIT_TOGGLE,
     ]) {
       await deleteAgentsByName(n);
     }
     await cleanupSynthTenant();
     await cleanupAd01Synth();
+    await cleanupAd02Synth();
     await poolSql.end({ timeout: 10 });
   });
 
@@ -499,5 +516,148 @@ describe("AGENT-02 — tRPC createFollowUpAgent + listAgents", () => {
     const res = await trpcQuery("getAgentDetail", { agentId: AD01_SYNTH_AGENT });
     assert.ok(isErr(res), `cross-tenant read should fail: ${JSON.stringify(res)}`);
     assert.equal(res.error.data.code, "NOT_FOUND");
+  });
+
+  // ─────────────────────── ADMIN-02 — listAuditEvents ───────────────────────
+
+  interface AuditRow {
+    id: string;
+    entity_type: string;
+    entity_id: string;
+    action: string;
+    actor_user_id: string | null;
+    actor_membership_id: string | null;
+    request_id: string | null;
+    source: string;
+    changed_columns: string[] | null;
+    before_data: unknown;
+    after_data: unknown;
+    created_at: string;
+  }
+  interface AuditPage {
+    items: AuditRow[];
+    nextCursor: string | null;
+  }
+
+  it("Test 9: listAuditEvents surfaces the automation_agents insert row for a freshly created agent with after_data", async () => {
+    const created = await trpcMutation<{ agentId: string }>("createFollowUpAgent", {
+      name: NAME_AUDIT_INSERT,
+      days_threshold: 5,
+      stage: "tech_screen",
+      tone: "neutral",
+      max_tokens: 200,
+    });
+    assert.ok(!isErr(created), `create should succeed: ${JSON.stringify(created)}`);
+    const agentId = created.result.data.agentId;
+
+    const res = await trpcQuery<AuditPage>("listAuditEvents", {
+      entityTypes: ["automation_agents"],
+    });
+    assert.ok(!isErr(res), `query should succeed: ${JSON.stringify(res)}`);
+    for (const row of res.result.data.items) {
+      assert.equal(
+        row.entity_type,
+        "automation_agents",
+        "entityTypes filter must narrow to automation_agents only",
+      );
+    }
+    const insertRow = res.result.data.items.find(
+      (r) => r.entity_id === agentId && r.action === "insert",
+    );
+    assert.ok(insertRow, "insert audit row for the new agent should be present");
+    assert.ok(insertRow.after_data, "after_data should be populated on an insert row");
+    assert.equal(
+      (insertRow.after_data as { name?: string }).name,
+      NAME_AUDIT_INSERT,
+      "after_data should carry the inserted row snapshot",
+    );
+  });
+
+  it("Test 10: listAuditEvents action + entityId filters narrow to the toggle update", async () => {
+    const created = await trpcMutation<{ agentId: string }>("createFollowUpAgent", {
+      name: NAME_AUDIT_TOGGLE,
+      days_threshold: 5,
+      stage: "tech_screen",
+      tone: "neutral",
+      max_tokens: 200,
+    });
+    assert.ok(!isErr(created), `create should succeed: ${JSON.stringify(created)}`);
+    const agentId = created.result.data.agentId;
+
+    // Toggle enabled false → in-place UPDATE → an 'update' audit row.
+    const toggled = await trpcMutation("toggleFollowUpAgent", {
+      agentId,
+      enabled: false,
+    });
+    assert.ok(!isErr(toggled), `toggle should succeed: ${JSON.stringify(toggled)}`);
+
+    const res = await trpcQuery<AuditPage>("listAuditEvents", {
+      action: "update",
+      entityId: agentId,
+    });
+    assert.ok(!isErr(res), `query should succeed: ${JSON.stringify(res)}`);
+    const items = res.result.data.items;
+    assert.ok(items.length >= 1, "at least one update row for the toggled agent");
+    for (const row of items) {
+      assert.equal(row.action, "update", "action filter must narrow to updates");
+      assert.equal(row.entity_id, agentId, "entityId filter must narrow to the toggled agent");
+    }
+    const enabledUpdate = items.find((r) => (r.changed_columns ?? []).includes("enabled"));
+    assert.ok(enabledUpdate, "the enabled toggle should appear in changed_columns");
+    assert.equal(
+      (enabledUpdate.after_data as { enabled?: boolean }).enabled,
+      false,
+      "after_data should reflect the toggled-off state",
+    );
+  });
+
+  it("Test 11: listAuditEvents tenant-isolates — an audit row in another tenant is invisible", async () => {
+    // Insert an audit row directly into a synthetic tenant via service_role.
+    // audit_logs has no FK to tenants, so no tenant/membership seed needed;
+    // RLS (tenant_id = current_tenant_id()) must hide it from the test user.
+    await poolSql`
+      INSERT INTO public.audit_logs (tenant_id, entity_type, entity_id, action, after_data)
+      VALUES (${AD02_SYNTH_TENANT}, 'automation_agents', ${AD02_SYNTH_ENTITY}, 'insert',
+              ${JSON.stringify({ name: "cross-tenant-hidden" })}::jsonb)
+    `;
+
+    const res = await trpcQuery<AuditPage>("listAuditEvents", {
+      entityId: AD02_SYNTH_ENTITY,
+    });
+    assert.ok(!isErr(res), `query should succeed: ${JSON.stringify(res)}`);
+    assert.equal(
+      res.result.data.items.length,
+      0,
+      "synthetic-tenant audit row must be invisible to the test tenant",
+    );
+  });
+
+  it("Test 12: listAuditEvents cursor pages distinct rows in descending order", async () => {
+    // The suite has generated plenty of automation_agents audit rows by now.
+    const page1 = await trpcQuery<AuditPage>("listAuditEvents", {
+      entityTypes: ["automation_agents"],
+      limit: 1,
+    });
+    assert.ok(!isErr(page1), `page 1 should succeed: ${JSON.stringify(page1)}`);
+    assert.equal(page1.result.data.items.length, 1, "page 1 returns exactly one row");
+    assert.ok(page1.result.data.nextCursor, "page 1 should carry a nextCursor");
+    const row1 = page1.result.data.items[0]!;
+
+    const page2 = await trpcQuery<AuditPage>("listAuditEvents", {
+      entityTypes: ["automation_agents"],
+      limit: 1,
+      cursor: page1.result.data.nextCursor,
+    });
+    assert.ok(!isErr(page2), `page 2 should succeed: ${JSON.stringify(page2)}`);
+    assert.equal(page2.result.data.items.length, 1, "page 2 returns exactly one row");
+    const row2 = page2.result.data.items[0]!;
+
+    assert.notEqual(row1.id, row2.id, "page 2 must be a distinct row from page 1");
+    // Descending by (created_at, id): row1 sorts at or after row2.
+    assert.ok(
+      row1.created_at > row2.created_at ||
+        (row1.created_at === row2.created_at && row1.id > row2.id),
+      `rows must descend: ${row1.created_at}/${row1.id} then ${row2.created_at}/${row2.id}`,
+    );
   });
 });

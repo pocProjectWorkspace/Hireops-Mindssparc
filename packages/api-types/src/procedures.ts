@@ -748,6 +748,52 @@ export const listAgentsOutputSchema = z.object({
 export type ListAgentsInput = z.infer<typeof listAgentsInputSchema>;
 export type ListAgentsOutput = z.infer<typeof listAgentsOutputSchema>;
 
+// ─────────────── audit-events listing (ADMIN-02) ───────────────
+
+/**
+ * Admin audit-trail read over `audit_logs` — "every agent action, logged"
+ * (demo Act 3, step 15). Newest-first, filterable, keyset-paginated on the
+ * composite (created_at, id): audit rows written inside one transaction
+ * share a created_at, so the id tiebreak keeps paging deterministic.
+ *
+ * `audit_logs` is the polymorphic row-change log written by the
+ * audit_record_change() trigger — entity_type is the source table name,
+ * action is the pgEnum insert/update/delete, before_data/after_data carry
+ * the row diff and changed_columns names the touched columns. Reads never
+ * audit, so the procedure carries no withAudit.
+ */
+export const listAuditEventsInputSchema = z.object({
+  entityTypes: z.array(z.string().min(1).max(63)).max(20).optional(),
+  action: z.enum(["insert", "update", "delete"]).optional(),
+  entityId: z.string().uuid().optional(),
+  from: z.string().datetime().optional(),
+  to: z.string().datetime().optional(),
+  limit: z.number().int().positive().max(100).default(50),
+  cursor: z.string().optional(),
+});
+export const auditEventRowSchema = z.object({
+  id: z.string().uuid(),
+  entity_type: z.string(),
+  entity_id: z.string().uuid(),
+  action: z.enum(["insert", "update", "delete"]),
+  actor_user_id: z.string().uuid().nullable(),
+  actor_membership_id: z.string().uuid().nullable(),
+  request_id: z.string().nullable(),
+  source: z.string(),
+  changed_columns: z.array(z.string()).nullable(),
+  // jsonb row snapshots — arbitrary shape; passthrough as unknown.
+  before_data: z.unknown().nullable(),
+  after_data: z.unknown().nullable(),
+  created_at: z.string(),
+});
+export const listAuditEventsOutputSchema = z.object({
+  items: z.array(auditEventRowSchema),
+  nextCursor: z.string().nullable(),
+});
+export type ListAuditEventsInput = z.infer<typeof listAuditEventsInputSchema>;
+export type ListAuditEventsOutput = z.infer<typeof listAuditEventsOutputSchema>;
+export type AuditEventRow = z.infer<typeof auditEventRowSchema>;
+
 // ─────────────── approval-resolution (AGENT-03) ───────────────
 
 /**
