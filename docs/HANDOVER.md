@@ -464,6 +464,27 @@ The follow-ups agent taken from configurable-but-inert to actually working, per 
 
 112. **`audit_logs` monthly partitions must be pre-created or every audited write fails.** Migration 0012 created only `2026_05` + `2026_06` with a note that "DB-AUDIT-RETENTION will own ongoing rotation." That ticket was never written and there is no DEFAULT partition (deliberately — a default would convert a loud failure into silent misfiling). So from 2026-07-01 every INSERT into `audit_logs` raised `no partition of relation "audit_logs" found for row`, and because `audit_record_change()` fires inside the caller's transaction, EVERY audited mutation (create agent, resolve approval, submit application, draft offer) failed outright. Found 10 July 2026 when agent tests failed on an unrelated code path. Migration `0042` adds partitions through 2027-06. **This recurs on 2027-07-01 unless automated rotation ships** — a scheduled worker job that pre-creates next-next month and drops past-retention partitions. Tracked in open-questions.md. Mirror the per-partition `FORCE ROW LEVEL SECURITY` from 0013 for any new partition; `lint-rls.ts` skips partition children so it will not catch a missing FORCE.
 
+### 4.7 The fast-track sprint (11–12 July 2026) — ADMIN-01 → CI fix, ff-merged to main
+
+Ten tickets in two days under a new working model: Fable (orchestrator, main session) scopes tickets and commits; an Opus executor subagent codes each one; pushes stay human-only. Per-ticket detail lives in the commit messages (the de-facto changelog for this sprint) and `PLATFORM-BUILD-STATUS.md` §4/§8; only the load-bearing realities are recorded here:
+
+- **ADMIN-01/02/03** (`2255707`/`9ce008f`/`1c940d7`) — the three admin surfaces (`/admin/workflows` + `getAgentDetail`, `/admin/audit` + keyset-paginated `listAuditEvents`, `/admin/costs` + `getAiUsageSummary`).
+- **WORKER-01** (`1e65496`) — `stage_stale` scanner (15-min scheduled job, SQL-level one-shot dedup per (agent, application)).
+- **SEED-01** (`0751e01`) — one idempotent seed provisions the whole Act-2 wedge (agent + Rohan's pending approval + Meera as live-fire target). **Runbook rule: re-seed after ANY test:gate or CI run — both consume seeded state.**
+- **HYGIENE-01** (`ed04eff`) — stub apps deleted (19→16 turbo tasks), shared `PortalHeader`, zero-404 link audit.
+- **ROBUST-01** (`d7d70af`) — drain duplicate-skip + scan-test hygiene + stage-enum validation.
+- **PII-01** (`afa7197`) — `pii_access_log` (migrations 0043/0044) wired at getCandidateById + getIntegrationCredential.
+- **RESEND-01** (`6222e6e`) — real Resend provider, fetch-based, live send is 3 env vars post-DNS.
+- **STAGING-PREP-01** (`cc2a152`) — Dockerfiles/fly.toml/runbook; images built AND booted locally.
+- **CI fix** (`9f00545`) — prettier drift (the local gate never ran format:check) + the six repo secrets set.
+
+113. **Raw `dsql` fragments can't serialize JS Dates.** Drizzle's column mapping doesn't apply inside raw `sql` templates — postgres.js throws `argument must be of type string or Buffer` at Bind. Always `.toISOString()` (with an explicit `::timestamptz` cast) when interpolating dates into raw fragments. Caught by ADMIN-02's cursor-pagination test; re-warned into every subsequent aggregate ticket.
+114. **`current_stage` is an enum; agent stage configs weren't validated.** The original hand-made demo agent watched `tech_screen` — not an `application_stage` label — and could never fire; every test fixture had the same drift. `createFollowUpAgent`/`update` now enforce `applicationStageSchema` (ROBUST-01). Comparing `enum_col = 'invalid_text'` THROWS in Postgres; the scanner compares `current_stage::text` so a bad config matches zero rows instead of erroring every tick.
+115. **A pending outbox row byte-matching an `awaiting_approval` run is a duplicate, not a resume.** Genuine resumes are always `running` at the drain's probe (approval-resolution flips the run before re-queueing). The drain now terminates such duplicates (`completed` + `duplicate_of` marker on `last_error`, which nothing reads) instead of failing the paused run — previously a scanner re-enqueue after a gate wipe could destroy the seeded demo approval (ROBUST-01).
+116. **The portal is NOT a thin client.** `trpc-server.ts` runs api procedures in-process via `appRouter.createCaller` against the pooled client — so any portal deployment (Vercel) needs the api's server secrets (`DATABASE_URL`, `SUPABASE_KEK_SECRET`, `SIGNED_LINK_SECRET`, service-role key), not just `NEXT_PUBLIC_*`. Bannered in `docs/new-set/staging-runbook.md`.
+117. **Docker images run from TS source under tsx.** `pnpm --legacy deploy --prod=false` prunes the workspace per app (`--legacy` required on pnpm 10+, `--prod=false` because tsx is a devDep); CMD invokes `node_modules/.bin/tsx` directly (`pnpm start` cold-starts a corepack download). Trim path: move tsx to dependencies + `--prod`.
+118. **CI now has the dev-DB secrets and runs the full api suite on push** — CI runs therefore consume seeded demo state (see the SEED-01 rule above), and a local gate must not overlap a live CI run (`gh run list --status in_progress`) — same pooler, DB_POOL_MAX=3.
+
 ---
 
 ## 5. How the user works
