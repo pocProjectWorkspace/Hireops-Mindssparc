@@ -794,6 +794,77 @@ export type ListAuditEventsInput = z.infer<typeof listAuditEventsInputSchema>;
 export type ListAuditEventsOutput = z.infer<typeof listAuditEventsOutputSchema>;
 export type AuditEventRow = z.infer<typeof auditEventRowSchema>;
 
+// ─────────────── AI cost dashboard (ADMIN-03) ───────────────
+
+/**
+ * Admin AI-cost rollup for /admin/costs — "every Anthropic call logged
+ * with tokens and cost, per feature, per model; procurement gets a real
+ * TCO number" (demo Act 3, step 16).
+ *
+ * Aggregates ai_usage_logs (the per-tenant LLM call ledger) into totals +
+ * per-feature + per-model + per-day rollups. `from`/`to` bound the window on
+ * created_at; both optional — omitted means all time. Reads only, so no
+ * withAudit (ai_usage_logs carries no audit trigger and this only reads it).
+ *
+ * cost_micros is a bigint sum (USD micros, 1 USD = 1,000,000 micros — see
+ * packages/ai-client/src/pricing.ts) and crosses the wire as a decimal
+ * string: JSON can't carry a bigint, matching costMicrosSoFar in
+ * pendingApprovalItemSchema. The client formats micros → USD for display.
+ * byFeature / byModel are ordered by cost descending; byDay is the last 14
+ * days within range, ascending.
+ */
+export const getAiUsageSummaryInputSchema = z.object({
+  from: z.string().datetime().optional(),
+  to: z.string().datetime().optional(),
+});
+
+export const aiUsageTotalsSchema = z.object({
+  calls: z.number().int(),
+  input_tokens: z.number().int(),
+  output_tokens: z.number().int(),
+  cost_micros: z.string(), // bigint-as-string — JSON can't carry bigint
+  failures: z.number().int(),
+  avg_latency_ms: z.number().int(),
+});
+
+export const aiUsageByFeatureSchema = z.object({
+  feature: z.string(),
+  calls: z.number().int(),
+  input_tokens: z.number().int(),
+  output_tokens: z.number().int(),
+  cost_micros: z.string(),
+  failures: z.number().int(),
+});
+
+export const aiUsageByModelSchema = z.object({
+  provider: z.string(),
+  model: z.string(),
+  calls: z.number().int(),
+  input_tokens: z.number().int(),
+  output_tokens: z.number().int(),
+  cost_micros: z.string(),
+  failures: z.number().int(),
+});
+
+export const aiUsageByDaySchema = z.object({
+  day: z.string(), // YYYY-MM-DD
+  calls: z.number().int(),
+  cost_micros: z.string(),
+});
+
+export const getAiUsageSummaryOutputSchema = z.object({
+  totals: aiUsageTotalsSchema,
+  byFeature: z.array(aiUsageByFeatureSchema),
+  byModel: z.array(aiUsageByModelSchema),
+  byDay: z.array(aiUsageByDaySchema),
+});
+export type GetAiUsageSummaryInput = z.infer<typeof getAiUsageSummaryInputSchema>;
+export type GetAiUsageSummaryOutput = z.infer<typeof getAiUsageSummaryOutputSchema>;
+export type AiUsageTotals = z.infer<typeof aiUsageTotalsSchema>;
+export type AiUsageByFeature = z.infer<typeof aiUsageByFeatureSchema>;
+export type AiUsageByModel = z.infer<typeof aiUsageByModelSchema>;
+export type AiUsageByDay = z.infer<typeof aiUsageByDaySchema>;
+
 // ─────────────── approval-resolution (AGENT-03) ───────────────
 
 /**

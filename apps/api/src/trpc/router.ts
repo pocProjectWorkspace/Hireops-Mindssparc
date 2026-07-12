@@ -109,6 +109,8 @@ import {
   getAgentDetailOutputSchema,
   listAuditEventsInputSchema,
   listAuditEventsOutputSchema,
+  getAiUsageSummaryInputSchema,
+  getAiUsageSummaryOutputSchema,
   approveApprovalInputSchema,
   approveApprovalOutputSchema,
   approveApprovalWithEditInputSchema,
@@ -1823,6 +1825,165 @@ export const appRouter = router({
         hasMore && lastRow ? encodeAuditCursor(lastRow.createdAt, lastRow.id) : null;
 
       return { items, nextCursor };
+    }),
+
+  // ─────────────────────── getAiUsageSummary (ADMIN-03) ───────────────────────
+  //
+  // Admin AI-cost rollup for /admin/costs — "every Anthropic call logged with
+  // tokens and cost, per feature, per model; procurement gets a real TCO
+  // number" (demo Act 3, step 16). Reads only — no withAudit (ai_usage_logs
+  // carries no audit trigger and this only reads it), matching listAgents /
+  // listAuditEvents. Four grouped aggregates over ai_usage_logs; each is
+  // explicitly ANDed with tenant_id = ctx.tenantId on top of the
+  // tenant_isolation RLS the protectedProcedure tx applies. cost_micros is a
+  // bigint — summed as ::text so it crosses the wire as a decimal string
+  // (JSON can't carry a bigint). from/to bound created_at as ISO strings
+  // interpolated with ::timestamptz casts — never a JS Date, which
+  // postgres.js can't serialize as a raw text param (learned in ADMIN-02).
+  getAiUsageSummary: protectedProcedure
+    .input(getAiUsageSummaryInputSchema)
+    .output(getAiUsageSummaryOutputSchema)
+    .query(async ({ ctx, input }) => {
+      const db = requireDb(ctx);
+      if (!ctx.tenantId) {
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: "protected procedure missing tenantId",
+        });
+      }
+      const tenantId = ctx.tenantId;
+      const fromClause = input.from ? dsql`AND created_at >= ${input.from}::timestamptz` : dsql``;
+      const toClause = input.to ? dsql`AND created_at <= ${input.to}::timestamptz` : dsql``;
+
+      const totalsRes = await db.execute(dsql`
+        SELECT
+          COUNT(*)::int AS calls,
+          COALESCE(SUM(input_tokens), 0)::int AS input_tokens,
+          COALESCE(SUM(output_tokens), 0)::int AS output_tokens,
+          COALESCE(SUM(cost_micros), 0)::text AS cost_micros,
+          COUNT(*) FILTER (WHERE NOT succeeded)::int AS failures,
+          COALESCE(ROUND(AVG(latency_ms)), 0)::int AS avg_latency_ms
+        FROM public.ai_usage_logs
+        WHERE tenant_id = ${tenantId}::uuid ${fromClause} ${toClause}
+      `);
+
+      const featureRes = await db.execute(dsql`
+        SELECT
+          feature,
+          COUNT(*)::int AS calls,
+          COALESCE(SUM(input_tokens), 0)::int AS input_tokens,
+          COALESCE(SUM(output_tokens), 0)::int AS output_tokens,
+          COALESCE(SUM(cost_micros), 0)::text AS cost_micros,
+          COUNT(*) FILTER (WHERE NOT succeeded)::int AS failures
+        FROM public.ai_usage_logs
+        WHERE tenant_id = ${tenantId}::uuid ${fromClause} ${toClause}
+        GROUP BY feature
+        ORDER BY SUM(cost_micros) DESC, feature ASC
+      `);
+
+      const modelRes = await db.execute(dsql`
+        SELECT
+          provider,
+          model,
+          COUNT(*)::int AS calls,
+          COALESCE(SUM(input_tokens), 0)::int AS input_tokens,
+          COALESCE(SUM(output_tokens), 0)::int AS output_tokens,
+          COALESCE(SUM(cost_micros), 0)::text AS cost_micros,
+          COUNT(*) FILTER (WHERE NOT succeeded)::int AS failures
+        FROM public.ai_usage_logs
+        WHERE tenant_id = ${tenantId}::uuid ${fromClause} ${toClause}
+        GROUP BY provider, model
+        ORDER BY SUM(cost_micros) DESC, provider ASC, model ASC
+      `);
+
+      // Last 14 days within range — the range filter ANDed with a fixed
+      // 14-day floor, one row per calendar day (session tz), ascending.
+      const dayRes = await db.execute(dsql`
+        SELECT
+          to_char(date_trunc('day', created_at), 'YYYY-MM-DD') AS day,
+          COUNT(*)::int AS calls,
+          COALESCE(SUM(cost_micros), 0)::text AS cost_micros
+        FROM public.ai_usage_logs
+        WHERE tenant_id = ${tenantId}::uuid ${fromClause} ${toClause}
+          AND created_at >= (now() - interval '14 days')
+        GROUP BY date_trunc('day', created_at)
+        ORDER BY date_trunc('day', created_at) ASC
+      `);
+
+      // Drizzle's db.execute returns a {rows: …} shape under postgres-js;
+      // fall back to the array form defensively (matches listAgents).
+      const asRows = <T>(res: unknown): T[] =>
+        (res as { rows?: T[] }).rows ?? (res as T[]);
+
+      interface TotalsRow {
+        calls: number;
+        input_tokens: number;
+        output_tokens: number;
+        cost_micros: string;
+        failures: number;
+        avg_latency_ms: number;
+      }
+      interface FeatureRow {
+        feature: string;
+        calls: number;
+        input_tokens: number;
+        output_tokens: number;
+        cost_micros: string;
+        failures: number;
+      }
+      interface ModelRow extends FeatureRow {
+        provider: string;
+        model: string;
+      }
+      interface DayRow {
+        day: string;
+        calls: number;
+        cost_micros: string;
+      }
+
+      // COUNT(*) always yields exactly one totals row (zeros on an empty
+      // table); the fallback is belt-and-braces.
+      const t = asRows<TotalsRow>(totalsRes)[0] ?? {
+        calls: 0,
+        input_tokens: 0,
+        output_tokens: 0,
+        cost_micros: "0",
+        failures: 0,
+        avg_latency_ms: 0,
+      };
+
+      return {
+        totals: {
+          calls: t.calls,
+          input_tokens: t.input_tokens,
+          output_tokens: t.output_tokens,
+          cost_micros: t.cost_micros,
+          failures: t.failures,
+          avg_latency_ms: t.avg_latency_ms,
+        },
+        byFeature: asRows<FeatureRow>(featureRes).map((r) => ({
+          feature: r.feature,
+          calls: r.calls,
+          input_tokens: r.input_tokens,
+          output_tokens: r.output_tokens,
+          cost_micros: r.cost_micros,
+          failures: r.failures,
+        })),
+        byModel: asRows<ModelRow>(modelRes).map((r) => ({
+          provider: r.provider,
+          model: r.model,
+          calls: r.calls,
+          input_tokens: r.input_tokens,
+          output_tokens: r.output_tokens,
+          cost_micros: r.cost_micros,
+          failures: r.failures,
+        })),
+        byDay: asRows<DayRow>(dayRes).map((r) => ({
+          day: r.day,
+          calls: r.calls,
+          cost_micros: r.cost_micros,
+        })),
+      };
     }),
 
   // ─────────────────────── update / retire / toggle (AGENT-04a) ───────────────────────

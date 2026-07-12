@@ -60,6 +60,23 @@ const AD01_MISSING_AGENT = "00000000-0000-4000-8000-0000ad01ffff";
 const AD02_SYNTH_TENANT = "00000000-0000-4000-8000-0000ad02e001";
 const AD02_SYNTH_ENTITY = "00000000-0000-4000-8000-0000ad02e0ff";
 
+// ADMIN-03 getAiUsageSummary fixtures. Rows land on a fixed historical day
+// (2020-06-01) so the tenant's real ai_usage_logs are excluded by the
+// from/to window the tests pass — the tenant already carries live rows we
+// can't assert exact totals against. All rows carry an 'AD03-' request_id
+// prefix for cleanup. ai_usage_logs has an FK to tenants, so the isolation
+// row needs a real synth tenant (unlike audit_logs in ADMIN-02).
+const AD03_SYNTH_TENANT = "00000000-0000-4000-8000-0000ad03e001";
+const AD03_SYNTH_MEMBERSHIP = "00000000-0000-4000-8000-0000ad03e002";
+const AD03_PROVIDER = "ad03-test";
+const AD03_MODEL = "ad03-test-model";
+const AD03_FEATURE_A = "ad03_test_feature_a"; // 2 rows, both succeeded
+const AD03_FEATURE_B = "ad03_test_feature_b"; // 1 row, a failure
+const AD03_FEATURE_OUT = "ad03_test_feature_out"; // out-of-window row
+const AD03_FEATURE_SYNTH = "ad03_test_feature_synth"; // cross-tenant row
+const AD03_WINDOW_FROM = "2020-06-01T00:00:00Z";
+const AD03_WINDOW_TO = "2020-06-01T23:59:59Z";
+
 const NAME_AUDIT_INSERT = "admin-02-test-audit-insert";
 const NAME_AUDIT_TOGGLE = "admin-02-test-audit-toggle";
 
@@ -151,6 +168,54 @@ async function cleanupAd02Synth(): Promise<void> {
   await poolSql`DELETE FROM public.audit_logs WHERE tenant_id = ${AD02_SYNTH_TENANT}`;
 }
 
+async function cleanupAd03Usage(): Promise<void> {
+  // All fixture rows (both tenants) carry the AD03- request_id prefix.
+  await poolSql`DELETE FROM public.ai_usage_logs WHERE request_id LIKE 'AD03-%'`;
+  await poolSql`DELETE FROM public.tenant_user_memberships WHERE id = ${AD03_SYNTH_MEMBERSHIP}`;
+  await poolSql`DELETE FROM public.tenants WHERE id = ${AD03_SYNTH_TENANT}`;
+}
+
+async function insertAd03Fixtures(tenantId: string, synthUserId: string): Promise<void> {
+  // Synth tenant + membership for the cross-tenant isolation row (ai_usage_logs
+  // FKs tenant_id → tenants). Reuse the test user's auth id for the membership
+  // FK — we can't fabricate an auth.users row (same trick as Test 5).
+  await poolSql`
+    INSERT INTO public.tenants (id, slug, display_name, primary_region, status)
+    VALUES (${AD03_SYNTH_TENANT}, ${`ad03e-synth-${AD03_SYNTH_TENANT.slice(-6)}`},
+            'ADMIN-03 Synth', 'ap-northeast-1', 'active')
+  `;
+  await poolSql`
+    INSERT INTO public.tenant_user_memberships (id, tenant_id, user_id, roles, status)
+    VALUES (${AD03_SYNTH_MEMBERSHIP}, ${AD03_SYNTH_TENANT}, ${synthUserId},
+            ARRAY['admin']::tenant_role[], 'active')
+  `;
+  // Three in-window rows for the test tenant (two features, one failure) +
+  // one out-of-window row (2020-06-10) to exercise the `to` bound.
+  await poolSql`
+    INSERT INTO public.ai_usage_logs
+      (tenant_id, provider, model, feature, input_tokens, output_tokens,
+       cost_micros, latency_ms, request_id, succeeded, error_code, created_at)
+    VALUES
+      (${tenantId}, ${AD03_PROVIDER}, ${AD03_MODEL}, ${AD03_FEATURE_A}, 100, 50,
+       1000, 200, 'AD03-a1', true, NULL, '2020-06-01T10:00:00Z'),
+      (${tenantId}, ${AD03_PROVIDER}, ${AD03_MODEL}, ${AD03_FEATURE_A}, 200, 80,
+       2000, 400, 'AD03-a2', true, NULL, '2020-06-01T11:00:00Z'),
+      (${tenantId}, ${AD03_PROVIDER}, ${AD03_MODEL}, ${AD03_FEATURE_B}, 50, 10,
+       500, 600, 'AD03-b1', false, 'test_err', '2020-06-01T12:00:00Z'),
+      (${tenantId}, ${AD03_PROVIDER}, ${AD03_MODEL}, ${AD03_FEATURE_OUT}, 999, 999,
+       9999, 999, 'AD03-out', true, NULL, '2020-06-10T10:00:00Z')
+  `;
+  // Cross-tenant row in the same window — must be invisible to the rollup.
+  await poolSql`
+    INSERT INTO public.ai_usage_logs
+      (tenant_id, provider, model, feature, input_tokens, output_tokens,
+       cost_micros, latency_ms, request_id, succeeded, created_at)
+    VALUES
+      (${AD03_SYNTH_TENANT}, ${AD03_PROVIDER}, ${AD03_MODEL}, ${AD03_FEATURE_SYNTH},
+       500, 500, 5000, 100, 'AD03-synth', true, '2020-06-01T10:30:00Z')
+  `;
+}
+
 describe("AGENT-02 — tRPC createFollowUpAgent + listAgents", () => {
   beforeAll(async () => {
     jwt = await getTestJwt();
@@ -173,6 +238,8 @@ describe("AGENT-02 — tRPC createFollowUpAgent + listAgents", () => {
     await cleanupSynthTenant();
     await cleanupAd01Synth();
     await cleanupAd02Synth();
+    await cleanupAd03Usage();
+    await insertAd03Fixtures(testTenantId, claims.sub as string);
   });
 
   afterAll(async () => {
@@ -192,6 +259,7 @@ describe("AGENT-02 — tRPC createFollowUpAgent + listAgents", () => {
     await cleanupSynthTenant();
     await cleanupAd01Synth();
     await cleanupAd02Synth();
+    await cleanupAd03Usage();
     await poolSql.end({ timeout: 10 });
   });
 
@@ -659,5 +727,126 @@ describe("AGENT-02 — tRPC createFollowUpAgent + listAgents", () => {
         (row1.created_at === row2.created_at && row1.id > row2.id),
       `rows must descend: ${row1.created_at}/${row1.id} then ${row2.created_at}/${row2.id}`,
     );
+  });
+
+  // ─────────────────────── ADMIN-03 — getAiUsageSummary ───────────────────────
+
+  interface UsageSummary {
+    totals: {
+      calls: number;
+      input_tokens: number;
+      output_tokens: number;
+      cost_micros: string;
+      failures: number;
+      avg_latency_ms: number;
+    };
+    byFeature: Array<{
+      feature: string;
+      calls: number;
+      input_tokens: number;
+      output_tokens: number;
+      cost_micros: string;
+      failures: number;
+    }>;
+    byModel: Array<{
+      provider: string;
+      model: string;
+      calls: number;
+      input_tokens: number;
+      output_tokens: number;
+      cost_micros: string;
+      failures: number;
+    }>;
+    byDay: Array<{ day: string; calls: number; cost_micros: string }>;
+  }
+
+  it("Test 13: getAiUsageSummary rolls up totals / byFeature / byModel with bigint cost as a string", async () => {
+    // Window bounds the three in-range fixture rows (2020-06-01), isolating
+    // them from the tenant's live usage.
+    const res = await trpcQuery<UsageSummary>("getAiUsageSummary", {
+      from: AD03_WINDOW_FROM,
+      to: AD03_WINDOW_TO,
+    });
+    assert.ok(!isErr(res), `query should succeed: ${JSON.stringify(res)}`);
+    const { totals, byFeature, byModel } = res.result.data;
+
+    // 3 rows: A(in100/out50/cost1000) + A(in200/out80/cost2000) + B(in50/out10/cost500,fail).
+    assert.equal(totals.calls, 3, "3 in-window rows");
+    assert.equal(totals.input_tokens, 350, "input tokens sum");
+    assert.equal(totals.output_tokens, 140, "output tokens sum");
+    assert.equal(totals.cost_micros, "3500", "cost_micros summed as a string");
+    assert.equal(typeof totals.cost_micros, "string", "cost_micros must be a string on the wire");
+    assert.equal(totals.failures, 1, "one failure");
+    assert.equal(totals.avg_latency_ms, 400, "avg latency = round((200+400+600)/3)");
+
+    // byFeature ordered by cost desc: A (3000) before B (500).
+    const featA = byFeature.find((f) => f.feature === AD03_FEATURE_A);
+    const featB = byFeature.find((f) => f.feature === AD03_FEATURE_B);
+    assert.ok(featA, "feature A present");
+    assert.ok(featB, "feature B present");
+    assert.equal(featA.calls, 2, "feature A: 2 calls");
+    assert.equal(featA.cost_micros, "3000", "feature A: cost 3000");
+    assert.equal(featA.input_tokens, 300, "feature A: input 300");
+    assert.equal(featA.output_tokens, 130, "feature A: output 130");
+    assert.equal(featA.failures, 0, "feature A: no failures");
+    assert.equal(featB.cost_micros, "500", "feature B: cost 500");
+    assert.equal(featB.failures, 1, "feature B: one failure");
+    const idxA = byFeature.findIndex((f) => f.feature === AD03_FEATURE_A);
+    const idxB = byFeature.findIndex((f) => f.feature === AD03_FEATURE_B);
+    assert.ok(idxA < idxB, "byFeature ordered by cost desc (A before B)");
+    // The out-of-window feature must not appear.
+    assert.equal(
+      byFeature.find((f) => f.feature === AD03_FEATURE_OUT),
+      undefined,
+      "out-of-window row excluded by the `to` bound",
+    );
+
+    // byModel: the single fixture model aggregates all three rows.
+    const model = byModel.find((m) => m.model === AD03_MODEL && m.provider === AD03_PROVIDER);
+    assert.ok(model, "fixture model present");
+    assert.equal(model.calls, 3, "model: 3 calls");
+    assert.equal(model.cost_micros, "3500", "model: cost 3500");
+    assert.equal(model.input_tokens, 350, "model: input 350");
+    assert.equal(model.output_tokens, 140, "model: output 140");
+    assert.equal(model.failures, 1, "model: one failure");
+  });
+
+  it("Test 14: getAiUsageSummary tenant-isolates — a cross-tenant usage row is invisible", async () => {
+    const res = await trpcQuery<UsageSummary>("getAiUsageSummary", {
+      from: AD03_WINDOW_FROM,
+      to: AD03_WINDOW_TO,
+    });
+    assert.ok(!isErr(res), `query should succeed: ${JSON.stringify(res)}`);
+    const { totals, byFeature } = res.result.data;
+    // The synth-tenant row (cost 5000, feature AD03_FEATURE_SYNTH) sits in the
+    // same window; RLS + the explicit tenant filter must exclude it.
+    assert.equal(totals.calls, 3, "cross-tenant row must not inflate the count");
+    assert.equal(totals.cost_micros, "3500", "cross-tenant cost must not be summed in");
+    assert.equal(
+      byFeature.find((f) => f.feature === AD03_FEATURE_SYNTH),
+      undefined,
+      "cross-tenant feature must be invisible",
+    );
+  });
+
+  it("Test 15: getAiUsageSummary from/to narrows the window (out-of-range rows excluded)", async () => {
+    // A window that starts after all fixture rows → zero fixture usage. The
+    // tenant's real usage is 2026-dated, also outside this 2020 window.
+    const res = await trpcQuery<UsageSummary>("getAiUsageSummary", {
+      from: "2020-06-20T00:00:00Z",
+      to: "2020-06-21T00:00:00Z",
+    });
+    assert.ok(!isErr(res), `query should succeed: ${JSON.stringify(res)}`);
+    const { totals, byFeature } = res.result.data;
+    assert.equal(totals.calls, 0, "no rows in the empty window");
+    assert.equal(totals.cost_micros, "0", "empty window → zero cost as a string");
+    assert.equal(totals.avg_latency_ms, 0, "empty window → zero avg latency");
+    for (const feat of [AD03_FEATURE_A, AD03_FEATURE_B, AD03_FEATURE_OUT]) {
+      assert.equal(
+        byFeature.find((f) => f.feature === feat),
+        undefined,
+        `${feat} must be excluded from the empty window`,
+      );
+    }
   });
 });
