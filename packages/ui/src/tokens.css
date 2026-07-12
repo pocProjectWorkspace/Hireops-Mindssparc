@@ -55,7 +55,11 @@
   --color-status-error-700: #b91c1c;
 
   --color-status-info-50: #eff6ff;
+  --color-status-info-100: #dbeafe;
+  --color-status-info-200: #bfdbfe;
+  --color-status-info-400: #60a5fa;
   --color-status-info-500: #3b82f6;
+  --color-status-info-800: #1e40af;
 
   /* Partner portal accent — navigation chrome only */
   --color-partner-accent-50: #fff7ed;

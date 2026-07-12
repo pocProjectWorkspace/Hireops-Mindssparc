@@ -54,6 +54,18 @@ const config: Config = {
           500: "var(--color-status-error-500)",
           700: "var(--color-status-error-700)",
         },
+        // status-info was referenced by five admin surfaces but never
+        // mapped here — the classes silently compiled to nothing
+        // (invisible cost bars / untinted tiles). Steps mirror the
+        // blue ramp the 50/500 tokens already sat on.
+        "status-info": {
+          50: "var(--color-status-info-50)",
+          100: "var(--color-status-info-100)",
+          200: "var(--color-status-info-200)",
+          400: "var(--color-status-info-400)",
+          500: "var(--color-status-info-500)",
+          800: "var(--color-status-info-800)",
+        },
       },
       fontFamily: {
         ui: "var(--font-family-ui)",
