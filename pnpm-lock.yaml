@@ -109,10 +109,6 @@ importers:
         specifier: ^4.1.6
         version: 4.1.6(@opentelemetry/api@1.9.1)(@types/node@22.10.5)(vite@8.0.12(@types/node@22.10.5)(esbuild@0.27.7)(jiti@1.21.7)(tsx@4.21.0))
 
-  apps/candidate-portal: {}
-
-  apps/careers-site: {}
-
   apps/internal-portal:
     dependencies:
       '@hireops/api':
@@ -218,8 +214,6 @@ importers:
       vitest:
         specifier: ^4.1.6
         version: 4.1.6(@opentelemetry/api@1.9.1)(@types/node@22.10.5)(vite@8.0.12(@types/node@22.10.5)(esbuild@0.27.7)(jiti@1.21.7)(tsx@4.21.0))
-
-  apps/partner-portal: {}
 
   apps/workers:
     dependencies:

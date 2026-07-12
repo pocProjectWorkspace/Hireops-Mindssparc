@@ -1,5 +1,6 @@
 import { requireAuth } from "@/lib/auth";
 import { createServerTRPCCaller } from "@/lib/trpc-server";
+import { PortalHeader } from "@/components/nav/PortalHeader";
 import { ApprovalQueue } from "@/components/approvals/ApprovalQueue";
 
 export const dynamic = "force-dynamic"; // Auth-gated + reads live queue state.
@@ -24,17 +25,11 @@ export default async function ApprovalsPage() {
 
   return (
     <main className="flex h-screen flex-col">
-      <header className="flex items-center justify-between border-b border-neutral-200 bg-white px-6 py-4">
-        <div className="flex items-center gap-4">
-          <h1 className="text-2xl font-semibold text-neutral-900">Approvals</h1>
-          <a href="/triage" className="text-sm text-neutral-500 underline hover:text-neutral-900">
-            Triage
-          </a>
-        </div>
-        <a href="/logout" className="text-sm text-neutral-600 underline hover:text-neutral-900">
-          Sign out
-        </a>
-      </header>
+      <PortalHeader
+        title="Approvals"
+        isAdmin={session.roles.includes("admin")}
+        active="approvals"
+      />
       <ApprovalQueue initial={initial} />
     </main>
   );

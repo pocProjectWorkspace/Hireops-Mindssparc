@@ -16,9 +16,15 @@
  */
 
 import { requireAdmin } from "@/lib/auth";
+import { PortalHeader } from "@/components/nav/PortalHeader";
 import { IntegrationsClient } from "./IntegrationsClient";
 
 export default async function IntegrationsPage() {
   await requireAdmin();
-  return <IntegrationsClient />;
+  return (
+    <div className="flex min-h-screen flex-col">
+      <PortalHeader title="Integration Health" isAdmin active="integrations" />
+      <IntegrationsClient />
+    </div>
+  );
 }

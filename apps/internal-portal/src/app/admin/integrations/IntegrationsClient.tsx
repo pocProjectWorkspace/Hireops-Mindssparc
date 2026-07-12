@@ -30,7 +30,6 @@ export function IntegrationsClient() {
         notes field saying so.
       </div>
 
-      <h1 className="mb-1 text-2xl font-semibold text-neutral-900">Integration Health</h1>
       <p className="mb-6 text-sm text-neutral-600">
         Outbound sync events to external systems. Currently only Workday Hire is wired.
       </p>

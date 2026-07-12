@@ -1,5 +1,6 @@
 import { requireAuth } from "@/lib/auth";
 import { createServerTRPCCaller } from "@/lib/trpc-server";
+import { PortalHeader } from "@/components/nav/PortalHeader";
 import { UndoToastProvider } from "@/components/triage/UndoToastProvider";
 import { FilterChipsBar } from "@/components/triage/FilterChipsBar";
 import { HotZone } from "@/components/triage/HotZone";
@@ -45,20 +46,11 @@ export default async function TriagePage() {
   return (
     <UndoToastProvider>
       <main className="flex h-screen flex-col">
-        <header className="flex items-center justify-between border-b border-neutral-200 bg-white px-6 py-4">
-          <div className="flex items-center gap-4">
-            <h1 className="text-2xl font-semibold text-neutral-900">Triage</h1>
-            <a
-              href="/approvals"
-              className="text-sm text-neutral-500 underline hover:text-neutral-900"
-            >
-              Approvals
-            </a>
-          </div>
-          <a href="/logout" className="text-sm text-neutral-600 underline hover:text-neutral-900">
-            Sign out
-          </a>
-        </header>
+        <PortalHeader
+          title="Triage"
+          isAdmin={session.roles.includes("admin")}
+          active="triage"
+        />
         <FilterChipsBar />
         <HotZone initial={breaches} />
         <MomentumFeed initial={momentum} />
