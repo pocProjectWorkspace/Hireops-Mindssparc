@@ -86,6 +86,8 @@ const NAME_RETIRED = "agent-02-test-retire-reuse";
 const NAME_LIST = "agent-02-test-list";
 const NAME_SYNTH = "agent-02-test-synth-invisible";
 const NAME_DETAIL = "admin-01-test-detail";
+// ROBUST-01 Fix 3 — stage enum validation.
+const NAME_STAGE_VAL = "robust-01-test-stage-validation";
 const NAME_AD01_SYNTH = "admin-01-test-synth-invisible";
 
 let jwt: string;
@@ -232,6 +234,7 @@ describe("AGENT-02 — tRPC createFollowUpAgent + listAgents", () => {
       NAME_AD01_SYNTH,
       NAME_AUDIT_INSERT,
       NAME_AUDIT_TOGGLE,
+      NAME_STAGE_VAL,
     ]) {
       await deleteAgentsByName(n);
     }
@@ -253,6 +256,7 @@ describe("AGENT-02 — tRPC createFollowUpAgent + listAgents", () => {
       NAME_AD01_SYNTH,
       NAME_AUDIT_INSERT,
       NAME_AUDIT_TOGGLE,
+      NAME_STAGE_VAL,
     ]) {
       await deleteAgentsByName(n);
     }
@@ -268,7 +272,7 @@ describe("AGENT-02 — tRPC createFollowUpAgent + listAgents", () => {
       name: NAME_HAPPY,
       description: "Test agent",
       days_threshold: 5,
-      stage: "tech_screen",
+      stage: "tech_interview",
       tone: "friendly",
       max_tokens: 200,
     });
@@ -294,7 +298,7 @@ describe("AGENT-02 — tRPC createFollowUpAgent + listAgents", () => {
     `;
     assert.equal(triggers.length, 1);
     assert.equal(triggers[0]?.trigger_type, "stage_stale");
-    assert.equal(triggers[0]?.trigger_config.stage, "tech_screen");
+    assert.equal(triggers[0]?.trigger_config.stage, "tech_interview");
     assert.equal(triggers[0]?.trigger_config.days_threshold, 5);
 
     // 2 actions, ordered, with curated defaults.
@@ -344,7 +348,7 @@ describe("AGENT-02 — tRPC createFollowUpAgent + listAgents", () => {
     const first = await trpcMutation<{ agentId: string }>("createFollowUpAgent", {
       name: NAME_UNIQUE,
       days_threshold: 5,
-      stage: "tech_screen",
+      stage: "tech_interview",
       tone: "neutral",
       max_tokens: 200,
     });
@@ -353,7 +357,7 @@ describe("AGENT-02 — tRPC createFollowUpAgent + listAgents", () => {
     const second = await trpcMutation("createFollowUpAgent", {
       name: NAME_UNIQUE,
       days_threshold: 5,
-      stage: "tech_screen",
+      stage: "tech_interview",
       tone: "neutral",
       max_tokens: 200,
     });
@@ -361,11 +365,49 @@ describe("AGENT-02 — tRPC createFollowUpAgent + listAgents", () => {
     assert.equal(second.error.data.code, "BAD_REQUEST");
   });
 
+  it("Test 2b: createFollowUpAgent rejects an invalid stage label, accepts a valid one (ROBUST-01 Fix 3)", async () => {
+    // 'tech_screen' is not an application_stage enum label — the exact
+    // drift that let the old hand-made agent watch a nonexistent stage.
+    // The stage field is now constrained to applicationStageSchema, so
+    // this fails at zod input validation with BAD_REQUEST before any row
+    // is written.
+    const invalid = await trpcMutation("createFollowUpAgent", {
+      name: NAME_STAGE_VAL,
+      days_threshold: 5,
+      stage: "tech_screen",
+      tone: "friendly",
+      max_tokens: 200,
+    });
+    assert.ok(isErr(invalid), `invalid stage should be rejected: ${JSON.stringify(invalid)}`);
+    assert.equal(invalid.error.data.code, "BAD_REQUEST");
+
+    // No agent row was created by the rejected call.
+    const [afterInvalid] = await poolSql<{ n: number }[]>`
+      SELECT count(*)::int AS n FROM public.automation_agents WHERE name = ${NAME_STAGE_VAL}
+    `;
+    assert.equal(afterInvalid?.n, 0, "rejected input wrote no automation_agents row");
+
+    // A valid enum label ('tech_interview') is accepted.
+    const valid = await trpcMutation<{ agentId: string }>("createFollowUpAgent", {
+      name: NAME_STAGE_VAL,
+      days_threshold: 5,
+      stage: "tech_interview",
+      tone: "friendly",
+      max_tokens: 200,
+    });
+    assert.ok(!isErr(valid), `valid stage should succeed: ${JSON.stringify(valid)}`);
+    const [trigger] = await poolSql<{ trigger_config: { stage: string } }[]>`
+      SELECT trigger_config FROM public.agent_triggers
+      WHERE agent_id = ${valid.result.data.agentId}
+    `;
+    assert.equal(trigger?.trigger_config.stage, "tech_interview");
+  });
+
   it("Test 3: name re-use after retire — partial-unique index `(tenant_id, name) WHERE retired_at IS NULL` lifts after retire", async () => {
     const first = await trpcMutation<{ agentId: string }>("createFollowUpAgent", {
       name: NAME_RETIRED,
       days_threshold: 5,
-      stage: "tech_screen",
+      stage: "tech_interview",
       tone: "formal",
       max_tokens: 200,
     });
@@ -381,7 +423,7 @@ describe("AGENT-02 — tRPC createFollowUpAgent + listAgents", () => {
     const second = await trpcMutation<{ agentId: string }>("createFollowUpAgent", {
       name: NAME_RETIRED,
       days_threshold: 5,
-      stage: "tech_screen",
+      stage: "tech_interview",
       tone: "formal",
       max_tokens: 200,
     });
@@ -393,7 +435,7 @@ describe("AGENT-02 — tRPC createFollowUpAgent + listAgents", () => {
     const created = await trpcMutation<{ agentId: string }>("createFollowUpAgent", {
       name: NAME_LIST,
       days_threshold: 7,
-      stage: "tech_screen",
+      stage: "tech_interview",
       tone: "neutral",
       max_tokens: 200,
     });
@@ -473,7 +515,7 @@ describe("AGENT-02 — tRPC createFollowUpAgent + listAgents", () => {
       name: NAME_DETAIL,
       description: "Detail round-trip agent",
       days_threshold: 6,
-      stage: "tech_screen",
+      stage: "tech_interview",
       tone: "friendly",
       max_tokens: 200,
     });
@@ -521,7 +563,7 @@ describe("AGENT-02 — tRPC createFollowUpAgent + listAgents", () => {
     // Trigger — one stage_stale trigger with the curated config.
     assert.equal(d.triggers.length, 1);
     assert.equal(d.triggers[0]?.trigger_type, "stage_stale");
-    assert.equal(d.triggers[0]?.trigger_config.stage, "tech_screen");
+    assert.equal(d.triggers[0]?.trigger_config.stage, "tech_interview");
 
     // Actions — draft then send, ordered by action_order.
     assert.equal(d.actions.length, 2);
@@ -611,7 +653,7 @@ describe("AGENT-02 — tRPC createFollowUpAgent + listAgents", () => {
     const created = await trpcMutation<{ agentId: string }>("createFollowUpAgent", {
       name: NAME_AUDIT_INSERT,
       days_threshold: 5,
-      stage: "tech_screen",
+      stage: "tech_interview",
       tone: "neutral",
       max_tokens: 200,
     });
@@ -645,7 +687,7 @@ describe("AGENT-02 — tRPC createFollowUpAgent + listAgents", () => {
     const created = await trpcMutation<{ agentId: string }>("createFollowUpAgent", {
       name: NAME_AUDIT_TOGGLE,
       days_threshold: 5,
-      stage: "tech_screen",
+      stage: "tech_interview",
       tone: "neutral",
       max_tokens: 200,
     });

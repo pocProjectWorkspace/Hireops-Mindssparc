@@ -46,6 +46,8 @@ const A02_AGENT_SINGLE = "00000000-0000-4000-8000-00000a02a001";
 const A02_AGENT_MULTI = "00000000-0000-4000-8000-00000a02a002";
 const A02_AGENT_BAD = "00000000-0000-4000-8000-00000a02a003";
 const A02_AGENT_MISMATCH = "00000000-0000-4000-8000-00000a02a004";
+// ROBUST-01 Fix 1 — poisoned-resume guard fixture.
+const A02_AGENT_DUP = "00000000-0000-4000-8000-00000a02a005";
 
 let testTenantId: string;
 let testMembershipId: string;
@@ -142,13 +144,25 @@ describe("AGENT-02 — agent_run_outbox drain", () => {
     testMembershipId = m.id;
 
     // Defensive — wipe any leftovers from a prior failed run.
-    for (const id of [A02_AGENT_SINGLE, A02_AGENT_MULTI, A02_AGENT_BAD, A02_AGENT_MISMATCH]) {
+    for (const id of [
+      A02_AGENT_SINGLE,
+      A02_AGENT_MULTI,
+      A02_AGENT_BAD,
+      A02_AGENT_MISMATCH,
+      A02_AGENT_DUP,
+    ]) {
       await cleanupAgent(id);
     }
   });
 
   afterAll(async () => {
-    for (const id of [A02_AGENT_SINGLE, A02_AGENT_MULTI, A02_AGENT_BAD, A02_AGENT_MISMATCH]) {
+    for (const id of [
+      A02_AGENT_SINGLE,
+      A02_AGENT_MULTI,
+      A02_AGENT_BAD,
+      A02_AGENT_MISMATCH,
+      A02_AGENT_DUP,
+    ]) {
       await cleanupAgent(id);
     }
     await poolSql.end({ timeout: 10 });
@@ -340,5 +354,127 @@ describe("AGENT-02 — agent_run_outbox drain", () => {
       SELECT status FROM public.agent_run_outbox WHERE id = ${outboxId}
     `;
     assert.equal(outbox?.status, "failed");
+  });
+
+  it("Test 6: duplicate pending row matching a paused run is skipped, not failed (ROBUST-01 Fix 1)", async () => {
+    // Reproduces the poisoned-resume hazard: a run is legitimately paused
+    // on a still-pending approval, and a SECOND pending outbox row with a
+    // byte-identical trigger_context is claimed (as happens when the
+    // stage_stale scanner re-fires after a dedup marker was wiped). The
+    // drain must leave the paused run + approval untouched and terminate
+    // the duplicate row — NOT fail both.
+    await seedAgent(A02_AGENT_DUP, "agent-02-dup", [
+      {
+        order: 1,
+        type: "draft_message",
+        config: { template_prompt_id: "follow_up_v1", tone: "friendly", max_tokens: 200 },
+      },
+    ]);
+    const [draftActionRow] = await poolSql<{ id: string }[]>`
+      SELECT id FROM public.agent_actions
+      WHERE agent_id = ${A02_AGENT_DUP} AND action_order = 1
+    `;
+    if (!draftActionRow) throw new Error("draft action seed missing");
+
+    // Byte-identical trigger_context for the paused run + the duplicate row.
+    const triggerContext = { application_id: "dup-fake-app" };
+    const tcJson = JSON.stringify(triggerContext);
+
+    // Plant the paused run: run (awaiting_approval) + run_action
+    // (awaiting_approval) + a pending approval_request — the exact shape
+    // the drain produces when it gates on draft_message.
+    const [runRow] = await poolSql<{ id: string }[]>`
+      INSERT INTO public.agent_runs
+        (tenant_id, agent_id, triggered_by, triggered_at, trigger_context, status)
+      VALUES
+        (${testTenantId}, ${A02_AGENT_DUP}, 'system', now(), ${tcJson}::jsonb, 'awaiting_approval')
+      RETURNING id
+    `;
+    if (!runRow) throw new Error("paused run insert returned no row");
+    const pausedRunId = runRow.id;
+
+    const [runActionRow] = await poolSql<{ id: string }[]>`
+      INSERT INTO public.agent_run_actions
+        (tenant_id, run_id, action_id, action_order, status, started_at, input, output)
+      VALUES
+        (${testTenantId}, ${pausedRunId}, ${draftActionRow.id}, 1, 'awaiting_approval', now(),
+         ${JSON.stringify({ config: {}, triggerContext })}::jsonb,
+         ${JSON.stringify({ draft_text: "paused draft" })}::jsonb)
+      RETURNING id
+    `;
+    if (!runActionRow) throw new Error("paused run_action insert returned no row");
+    const pausedRunActionId = runActionRow.id;
+
+    const [approvalRow] = await poolSql<{ id: string }[]>`
+      INSERT INTO public.agent_approval_requests
+        (tenant_id, run_id, run_action_id, agent_id, proposed_action_summary,
+         proposed_action_payload, approver_role, status)
+      VALUES
+        (${testTenantId}, ${pausedRunId}, ${pausedRunActionId}, ${A02_AGENT_DUP},
+         'draft_message requires approval', ${JSON.stringify({ draft_text: "paused draft" })}::jsonb,
+         'any_recruiter', 'pending')
+      RETURNING id
+    `;
+    if (!approvalRow) throw new Error("approval insert returned no row");
+    const pausedApprovalId = approvalRow.id;
+
+    // The paused run's own outbox row is 'awaiting_approval' (not
+    // claimable). The duplicate re-enqueue is a fresh 'pending' row.
+    await poolSql`
+      INSERT INTO public.agent_run_outbox
+        (tenant_id, agent_id, trigger_context, status)
+      VALUES
+        (${testTenantId}, ${A02_AGENT_DUP}, ${tcJson}::jsonb, 'awaiting_approval')
+    `;
+    const dupOutboxId = await enqueueRun(A02_AGENT_DUP, triggerContext);
+
+    // Only one pending row exists tenant-wide for this drain (batch=1),
+    // and it's the duplicate; wipe any stray pending rows from other
+    // agents first so the drain claims ours.
+    await poolSql`
+      DELETE FROM public.agent_run_outbox
+      WHERE tenant_id = ${testTenantId} AND status = 'pending' AND id != ${dupOutboxId}
+    `;
+
+    const r = await drainAgentRunOutboxOnce({ log: drainLog, deps: execDeps });
+    assert.equal(r.claimed, 1);
+    assert.equal(r.completed, 1, "the duplicate row terminates (as completed), not fails");
+    assert.equal(r.failed, 0, "nothing was failed — the paused run is protected");
+
+    // The duplicate outbox row reached the chosen terminal representation.
+    const [dupOutbox] = await poolSql<{ status: string; last_error: string | null }[]>`
+      SELECT status, last_error FROM public.agent_run_outbox WHERE id = ${dupOutboxId}
+    `;
+    assert.equal(dupOutbox?.status, "completed");
+    assert.ok(
+      dupOutbox?.last_error?.includes(`duplicate_of run ${pausedRunId}`),
+      `duplicate marker names the paused run, got: ${dupOutbox?.last_error}`,
+    );
+
+    // The paused run is UNTOUCHED — still awaiting_approval, no error.
+    const [pausedRun] = await poolSql<{ status: string; error: string | null }[]>`
+      SELECT status, error FROM public.agent_runs WHERE id = ${pausedRunId}
+    `;
+    assert.equal(pausedRun?.status, "awaiting_approval", "paused run stays paused");
+    assert.equal(pausedRun?.error, null, "paused run was not failed");
+
+    // The run_action is UNTOUCHED.
+    const [pausedRunAction] = await poolSql<{ status: string }[]>`
+      SELECT status FROM public.agent_run_actions WHERE id = ${pausedRunActionId}
+    `;
+    assert.equal(pausedRunAction?.status, "awaiting_approval");
+
+    // The approval request is UNTOUCHED — still pending.
+    const [pausedApproval] = await poolSql<{ status: string }[]>`
+      SELECT status FROM public.agent_approval_requests WHERE id = ${pausedApprovalId}
+    `;
+    assert.equal(pausedApproval?.status, "pending", "the pending approval survives");
+
+    // No new run row was created for the duplicate — the paused run is the
+    // only run for this agent.
+    const runCount = await poolSql<{ n: number }[]>`
+      SELECT count(*)::int AS n FROM public.agent_runs WHERE agent_id = ${A02_AGENT_DUP}
+    `;
+    assert.equal(runCount[0]?.n, 1, "no duplicate run row was inserted");
   });
 });

@@ -272,7 +272,7 @@ async function createFollowUpAgent(name: string): Promise<string> {
     name,
     description: "AGENT-03 vertical smoke",
     days_threshold: 5,
-    stage: "tech_screen",
+    stage: "tech_interview",
     tone: "friendly",
     max_tokens: 200,
   });

@@ -70,6 +70,14 @@ let jwt: string;
 let testTenantId: string;
 let testMembershipId: string;
 let agentId: string;
+// ROBUST-01 Fix 2 — DB clock captured at suite start. The scan is
+// cross-tenant, so it enqueues rows for ambient enabled agents (e.g. the
+// SEED-01 demo follow-ups agent) as a side effect. Any agent_run_outbox
+// row with enqueued_at >= this instant and agent_id != our WK01 agent was
+// created by THIS suite's scans and must be cleaned so the table is left
+// exactly as found. Pre-existing ambient rows (enqueued earlier) are left
+// untouched.
+let suiteStartTs: string;
 
 const scanLog = createLogger({ base: { service: "wk01-test" } });
 
@@ -106,6 +114,22 @@ async function outboxCountForApp(appId: string): Promise<number> {
     WHERE agent_id = ${agentId} AND trigger_context->>'application_id' = ${appId}
   `;
   return row?.n ?? 0;
+}
+
+// ROBUST-01 Fix 2 — remove outbox rows the cross-tenant scan enqueued for
+// ambient (non-WK01) agents during this suite. Scoped by enqueued_at so
+// pre-existing ambient rows are never touched. These are pending outbox
+// rows with no children (this file never drains), so a direct delete is
+// safe.
+async function deleteLeakedAmbientRows(): Promise<number> {
+  if (!suiteStartTs || !agentId) return 0;
+  const deleted = await poolSql<{ id: string }[]>`
+    DELETE FROM public.agent_run_outbox
+    WHERE agent_id != ${agentId}
+      AND enqueued_at >= ${suiteStartTs}::timestamptz
+    RETURNING id
+  `;
+  return deleted.length;
 }
 
 async function cleanup(): Promise<void> {
@@ -261,9 +285,17 @@ describe("WORKER-01 — stage_stale scanner", () => {
     agentId = createEnv.result.data.agentId;
 
     await seedRequisitionChain();
+
+    // Capture the DB clock AFTER setup, BEFORE any scan runs — the
+    // watermark for ambient-row cleanup (Fix 2).
+    const [nowRow] = await poolSql<{ now: string }[]>`SELECT now()::text AS now`;
+    suiteStartTs = nowRow!.now;
   });
 
   afterAll(async () => {
+    // Guaranteed cleanup of ambient scan side effects even if a test
+    // failed before case (e) ran, then WK01 fixtures.
+    await deleteLeakedAmbientRows();
     await cleanup();
     await poolSql.end({ timeout: 10 });
   });
@@ -329,5 +361,24 @@ describe("WORKER-01 — stage_stale scanner", () => {
       "no row for a stale application under a disabled agent",
     );
     assert.equal(await outboxCountForAgent(), before, "disabled agent produced no new rows");
+  });
+
+  it("(e) leaves no residue: ambient outbox rows the cross-tenant scan enqueued are cleaned", async () => {
+    // The scan is cross-tenant and enqueues for ambient enabled agents
+    // (e.g. the SEED-01 demo follow-ups agent). Clean those side effects,
+    // then assert none survive — the suite leaves the table exactly as it
+    // found it apart from its own WK01 rows (cleaned in afterAll).
+    await deleteLeakedAmbientRows();
+
+    const [residual] = await poolSql<{ n: number }[]>`
+      SELECT count(*)::int AS n FROM public.agent_run_outbox
+      WHERE agent_id != ${agentId}
+        AND enqueued_at >= ${suiteStartTs}::timestamptz
+    `;
+    assert.equal(
+      residual?.n,
+      0,
+      "no non-WK01 outbox rows added by this suite's scans survive",
+    );
   });
 });

@@ -481,7 +481,12 @@ export const createFollowUpAgentInputSchema = z.object({
   name: z.string().min(1).max(100),
   description: z.string().max(500).optional(),
   days_threshold: z.number().int().positive().max(365),
-  stage: z.string().min(1).max(60),
+  // ROBUST-01 Fix 3: constrain to the application_stage enum labels
+  // (source of truth: packages/db/src/schema/application-stage.ts, mirrored
+  // by applicationStageSchema in ./enums). Previously an unconstrained
+  // string, which let an agent watch a nonexistent stage (e.g. the old
+  // hand-made 'tech_screen' agent that never fired).
+  stage: applicationStageSchema,
   tone: z.enum(["formal", "friendly", "neutral"]),
   max_tokens: z.number().int().positive().max(2000).default(200),
 });
@@ -680,7 +685,9 @@ export const updateFollowUpAgentInputSchema = z.object({
   agentId: z.string().uuid(),
   description: z.string().max(500).nullable().optional(),
   days_threshold: z.number().int().positive().max(365).optional(),
-  stage: z.string().min(1).max(60).optional(),
+  // ROBUST-01 Fix 3: same enum constraint as createFollowUpAgent (see note
+  // there). Optional here — omitted carries the prior version's stage forward.
+  stage: applicationStageSchema.optional(),
   tone: z.enum(["formal", "friendly", "neutral"]).optional(),
   max_tokens: z.number().int().positive().max(2000).optional(),
 });

@@ -140,7 +140,7 @@ describe("AGENT-02 — vertical smoke", () => {
         name: SMOKE_AGENT_NAME,
         description: "Vertical proof-of-life",
         days_threshold: 5,
-        stage: "tech_screen",
+        stage: "tech_interview",
         tone: "friendly",
         max_tokens: 200,
       }),

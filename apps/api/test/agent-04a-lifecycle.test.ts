@@ -176,7 +176,7 @@ describe("AGENT-04a — Follow-Up agent update / retire / toggle lifecycle", () 
       name: NAME_UPDATE,
       description: "v1 description",
       days_threshold: 5,
-      stage: "tech_screen",
+      stage: "tech_interview",
       tone: "friendly",
       max_tokens: 200,
     });
@@ -286,7 +286,7 @@ describe("AGENT-04a — Follow-Up agent update / retire / toggle lifecycle", () 
     `;
     assert.equal(v2Triggers.length, 1);
     assert.equal(v2Triggers[0]?.trigger_type, "stage_stale");
-    assert.equal(v2Triggers[0]?.trigger_config.stage, "tech_screen", "stage carried forward");
+    assert.equal(v2Triggers[0]?.trigger_config.stage, "tech_interview", "stage carried forward");
     assert.equal(v2Triggers[0]?.trigger_config.days_threshold, 9, "days_threshold from input");
     assert.notEqual(v2Triggers[0]?.id, v1Triggers[0]?.id, "trigger id is fresh");
 
@@ -364,7 +364,7 @@ describe("AGENT-04a — Follow-Up agent update / retire / toggle lifecycle", () 
     const createEnv = await trpcMutation<{ agentId: string }>("createFollowUpAgent", {
       name: NAME_RETIRE,
       days_threshold: 5,
-      stage: "tech_screen",
+      stage: "tech_interview",
       tone: "neutral",
       max_tokens: 200,
     });
@@ -412,7 +412,7 @@ describe("AGENT-04a — Follow-Up agent update / retire / toggle lifecycle", () 
     const createEnv = await trpcMutation<{ agentId: string }>("createFollowUpAgent", {
       name: NAME_TOGGLE,
       days_threshold: 5,
-      stage: "tech_screen",
+      stage: "tech_interview",
       tone: "friendly",
       max_tokens: 200,
     });
@@ -469,7 +469,7 @@ describe("AGENT-04a — Follow-Up agent update / retire / toggle lifecycle", () 
     const first = await trpcMutation<{ agentId: string }>("createFollowUpAgent", {
       name: NAME_DUP,
       days_threshold: 5,
-      stage: "tech_screen",
+      stage: "tech_interview",
       tone: "neutral",
       max_tokens: 200,
     });
@@ -502,7 +502,7 @@ describe("AGENT-04a — Follow-Up agent update / retire / toggle lifecycle", () 
     const v1 = await trpcMutation<{ agentId: string }>("createFollowUpAgent", {
       name: NAME_MULTIEDIT,
       days_threshold: 5,
-      stage: "tech_screen",
+      stage: "tech_interview",
       tone: "friendly",
       max_tokens: 200,
     });

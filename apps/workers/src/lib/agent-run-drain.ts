@@ -193,8 +193,8 @@ async function processOutboxRow(
   // here — the trigger_context on agent_runs was written from the same
   // outbox row's jsonb, so byte-for-byte equality holds.
   const triggerCtxJson = JSON.stringify(outbox.trigger_context);
-  const existingRuns = await poolSql<{ id: string; cost_micros: string }[]>`
-    SELECT id, cost_micros::text AS cost_micros
+  const existingRuns = await poolSql<{ id: string; status: string; cost_micros: string }[]>`
+    SELECT id, status, cost_micros::text AS cost_micros
     FROM public.agent_runs
     WHERE tenant_id = ${outbox.tenant_id}
       AND agent_id = ${outbox.agent_id}
@@ -203,6 +203,57 @@ async function processOutboxRow(
     ORDER BY triggered_at DESC
     LIMIT 1
   `;
+
+  // ROBUST-01 Fix 1 — poisoned-resume guard.
+  //
+  // A resume is re-queued by approval-resolution, which flips the run
+  // 'awaiting_approval' → 'running' BEFORE it sets the outbox back to
+  // 'pending'. So a genuine resume candidate is 'running' here. If we
+  // instead match a candidate that is still 'awaiting_approval' with a
+  // still-pending approval request, this claimed outbox row is NOT a
+  // resume — it's a duplicate re-enqueue for the same (agent, trigger
+  // context) whose original run is legitimately paused (this happens when
+  // the stage_stale scanner re-fires after a dedup marker was wiped).
+  //
+  // The old behaviour flipped the paused run to 'running', walked its
+  // actions, hit the run_action still in 'awaiting_approval', threw
+  // "resolution path inconsistent", and FAILED both the outbox row and
+  // the paused run — destroying a legitimately pending approval (incl.
+  // the seeded demo run). Instead: terminate THIS outbox row as a
+  // duplicate and leave the paused run + its approval untouched.
+  const matched = existingRuns.length > 0 ? existingRuns[0] : undefined;
+  if (matched && matched.status === "awaiting_approval") {
+    const pendingApprovals = await poolSql<{ id: string }[]>`
+      SELECT id FROM public.agent_approval_requests
+      WHERE tenant_id = ${outbox.tenant_id}
+        AND run_id = ${matched.id}
+        AND status = 'pending'
+      LIMIT 1
+    `;
+    if (pendingApprovals.length > 0 && pendingApprovals[0]) {
+      // No dedicated 'skipped' status exists in the CHECK constraint
+      // (pending/processing/awaiting_approval/completed/failed) and this
+      // is not a failure, so the least-invasive terminal representation
+      // without a migration is 'completed' plus a duplicate_of marker on
+      // last_error. The run + approval are deliberately not touched.
+      await poolSql`
+        UPDATE public.agent_run_outbox
+        SET status = 'completed',
+            completed_at = now(),
+            last_error = ${`duplicate_of run ${matched.id} (awaiting_approval; approval pending)`}
+        WHERE id = ${outbox.id}
+      `;
+      log.info(
+        {
+          run_id: matched.id,
+          duplicate_outbox_id: outbox.id,
+          approval_request_id: pendingApprovals[0].id,
+        },
+        "agent_run_drain.duplicate_pending_skipped",
+      );
+      return { runId: matched.id, terminal: "completed" };
+    }
+  }
 
   let runId: string;
   let totalCostMicros: bigint;
