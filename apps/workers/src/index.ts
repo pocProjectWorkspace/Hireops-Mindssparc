@@ -6,6 +6,7 @@ import { createLogger } from "@hireops/observability";
 import { drainOutboxOnce, recoverOrphans } from "./lib/dispatcher";
 import { runSchedulerTick, type ScheduledJob } from "./lib/scheduler";
 import { slaImminentScan } from "./jobs/sla-imminent-scan";
+import { stageStaleScan } from "./jobs/stage-stale-scan";
 import { drainWorkdayOutboxOnce } from "./lib/workday-simulation-drain";
 import { drainAiScoreOutboxOnce } from "./lib/ai-score-drain";
 import { drainAgentRunOutboxOnce } from "./lib/agent-run-drain";
@@ -15,7 +16,8 @@ import { drainAgentRunOutboxOnce } from "./lib/agent-run-drain";
  *
  *   1. Outbox drain (5s) — primary path for queued notifications.
  *   2. Scheduler tick (60s) — kicks scheduled jobs based on their
- *      individual intervals (sla-imminent-scan: every 15 min).
+ *      individual intervals (sla-imminent-scan + stage-stale-scan,
+ *      each every 15 min).
  *   3. Orphan recovery (5 min) — re-queues rows stuck in 'processing'.
  *
  * Graceful shutdown on SIGINT/SIGTERM: stop the tick loops, wait for
@@ -40,6 +42,11 @@ const SCHEDULED_JOBS: ScheduledJob[] = [
     name: "sla_imminent_scan",
     intervalMs: 15 * 60_000,
     run: slaImminentScan,
+  },
+  {
+    name: "stage_stale_scan",
+    intervalMs: 15 * 60_000,
+    run: stageStaleScan,
   },
 ];
 
