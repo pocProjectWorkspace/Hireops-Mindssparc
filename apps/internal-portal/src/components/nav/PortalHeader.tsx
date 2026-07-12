@@ -5,8 +5,8 @@
  * Consolidates the hand-rolled `border-b` headers that were duplicated
  * across /triage, /approvals, and the /admin/* pages. Renders the page
  * title on the left, the primary nav links next to it, and Sign out on
- * the right. The Admin group (Workflows / Audit / Costs / Integrations)
- * is only emitted for admins — the pages themselves still guard via
+ * the right. The Admin group (Workflows / Audit / Costs / Reports /
+ * Integrations) is only emitted for admins — the pages themselves still guard via
  * requireAdmin, so this is purely to avoid dangling links non-admins
  * can't use.
  *
@@ -25,6 +25,7 @@ export type PortalNavKey =
   | "workflows"
   | "audit"
   | "costs"
+  | "reports"
   | "integrations";
 
 interface NavLink {
@@ -42,6 +43,7 @@ const ADMIN_LINKS: NavLink[] = [
   { key: "workflows", label: "Workflows", href: "/admin/workflows" },
   { key: "audit", label: "Audit", href: "/admin/audit" },
   { key: "costs", label: "Costs", href: "/admin/costs" },
+  { key: "reports", label: "Reports", href: "/admin/reports" },
   { key: "integrations", label: "Integrations", href: "/admin/integrations" },
 ];
 

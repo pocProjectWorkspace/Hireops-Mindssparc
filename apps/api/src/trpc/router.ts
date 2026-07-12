@@ -45,6 +45,7 @@ import {
   agentRunOutbox,
   auditLogs,
   recordPiiAccess,
+  applicationStageEnum,
   type ApplicationStage,
 } from "@hireops/db";
 import { evaluateKnockouts, type KnockoutInput } from "@hireops/ai-scoring";
@@ -112,6 +113,8 @@ import {
   listAuditEventsOutputSchema,
   getAiUsageSummaryInputSchema,
   getAiUsageSummaryOutputSchema,
+  getRecruitmentReportInputSchema,
+  getRecruitmentReportOutputSchema,
   approveApprovalInputSchema,
   approveApprovalOutputSchema,
   approveApprovalWithEditInputSchema,
@@ -2002,6 +2005,215 @@ export const appRouter = router({
           calls: r.calls,
           cost_micros: r.cost_micros,
         })),
+      };
+    }),
+
+  // ─────────────────────── getRecruitmentReport (REPORT-01) ───────────────────────
+  //
+  // First reporting surface for /admin/reports — funnel + source mix +
+  // time-to-hire + per-stage durations + headline totals (requirements
+  // §9.8, a deliberate Wave-2 pull-forward for the demo). Reads only, no
+  // withAudit (matches getAiUsageSummary / listAuditEvents — this only
+  // reads tenant-scoped tables). Every WHERE carries an explicit
+  // `tenant_id = ctx.tenantId` on top of the tenant_isolation RLS the
+  // protectedProcedure tx applies. from/to bound applications.created_at
+  // as ISO strings interpolated with ::timestamptz casts — never a JS
+  // Date, which postgres-js can't serialize as a raw text param (the same
+  // rule getAiUsageSummary follows). Medians/percentiles use Postgres-
+  // native percentile_cont; an empty input set yields NULL, surfaced as a
+  // null median rather than a NOT_FOUND. Applications are aliased `a`
+  // throughout so a single created_at clause works across the joined
+  // queries. Funnel + stageDurations are zero-filled to the full 11-stage
+  // enum in enum order, in JS, so the UI always renders the whole funnel.
+  getRecruitmentReport: protectedProcedure
+    .input(getRecruitmentReportInputSchema)
+    .output(getRecruitmentReportOutputSchema)
+    .query(async ({ ctx, input }) => {
+      const db = requireDb(ctx);
+      if (!ctx.tenantId) {
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: "protected procedure missing tenantId",
+        });
+      }
+      const tenantId = ctx.tenantId;
+      // Bind against a.created_at so the same fragment slots into the
+      // single-table and joined queries alike.
+      const fromClause = input.from ? dsql`AND a.created_at >= ${input.from}::timestamptz` : dsql``;
+      const toClause = input.to ? dsql`AND a.created_at <= ${input.to}::timestamptz` : dsql``;
+
+      // Drizzle's db.execute returns a {rows: …} shape under postgres-js;
+      // fall back to the array form defensively (matches getAiUsageSummary).
+      const asRows = <T>(res: unknown): T[] => (res as { rows?: T[] }).rows ?? (res as T[]);
+
+      // Funnel — current count per stage, present stages only; zero-filled
+      // to the full enum below.
+      const funnelRes = await db.execute(dsql`
+        SELECT a.current_stage AS stage, COUNT(*)::int AS current_count
+        FROM public.applications a
+        WHERE a.tenant_id = ${tenantId}::uuid ${fromClause} ${toClause}
+        GROUP BY a.current_stage
+      `);
+
+      // Source mix — applications + hires (offer_accepted) per channel.
+      const sourceRes = await db.execute(dsql`
+        SELECT
+          a.source AS source,
+          COUNT(*)::int AS applications,
+          COUNT(*) FILTER (WHERE a.current_stage = 'offer_accepted')::int AS hires
+        FROM public.applications a
+        WHERE a.tenant_id = ${tenantId}::uuid ${fromClause} ${toClause}
+        GROUP BY a.source
+        ORDER BY COUNT(*) DESC, a.source ASC
+      `);
+
+      // Totals — one row; active = non-terminal, hired = offer_accepted,
+      // rejected_or_withdrawn = the other three terminals.
+      const totalsRes = await db.execute(dsql`
+        SELECT
+          COUNT(*)::int AS applications,
+          COUNT(*) FILTER (
+            WHERE a.current_stage NOT IN
+              ('offer_accepted', 'offer_declined', 'withdrawn', 'recruiter_rejected')
+          )::int AS active,
+          COUNT(*) FILTER (WHERE a.current_stage = 'offer_accepted')::int AS hired,
+          COUNT(*) FILTER (
+            WHERE a.current_stage IN ('offer_declined', 'withdrawn', 'recruiter_rejected')
+          )::int AS rejected_or_withdrawn
+        FROM public.applications a
+        WHERE a.tenant_id = ${tenantId}::uuid ${fromClause} ${toClause}
+      `);
+
+      // Time-to-hire — days from created_at to the earliest offer_accepted
+      // transition, per hired application. percentile_cont over an empty
+      // set yields NULL → null medians when hires_count = 0.
+      const timeToHireRes = await db.execute(dsql`
+        WITH hired AS (
+          SELECT
+            a.id,
+            EXTRACT(EPOCH FROM (MIN(t.transitioned_at) - a.created_at)) / 86400.0 AS days_to_hire
+          FROM public.applications a
+          JOIN public.application_state_transitions t
+            ON t.tenant_id = a.tenant_id
+           AND t.application_id = a.id
+           AND t.to_stage = 'offer_accepted'
+          WHERE a.tenant_id = ${tenantId}::uuid
+            AND a.current_stage = 'offer_accepted'
+            ${fromClause} ${toClause}
+          GROUP BY a.id, a.created_at
+        )
+        SELECT
+          COUNT(*)::int AS hires_count,
+          ROUND(percentile_cont(0.5) WITHIN GROUP (ORDER BY days_to_hire)::numeric, 2)::float8
+            AS median_days,
+          ROUND(percentile_cont(0.9) WITHIN GROUP (ORDER BY days_to_hire)::numeric, 2)::float8
+            AS p90_days
+        FROM hired
+      `);
+
+      // Stage durations — median days spent in each stage, from consecutive
+      // transition pairs. LEAD over (application ORDER BY transitioned_at)
+      // gives the next transition's timestamp (when the app left the stage
+      // it entered); the last transition per app has a NULL LEAD (still in
+      // that stage) and is excluded.
+      const stageDurationRes = await db.execute(dsql`
+        WITH ordered AS (
+          SELECT
+            t.to_stage AS stage,
+            t.transitioned_at AS entered_at,
+            LEAD(t.transitioned_at) OVER (
+              PARTITION BY t.application_id ORDER BY t.transitioned_at
+            ) AS left_at
+          FROM public.application_state_transitions t
+          JOIN public.applications a
+            ON a.tenant_id = t.tenant_id
+           AND a.id = t.application_id
+          WHERE t.tenant_id = ${tenantId}::uuid ${fromClause} ${toClause}
+        ),
+        durations AS (
+          SELECT stage, EXTRACT(EPOCH FROM (left_at - entered_at)) / 86400.0 AS days
+          FROM ordered
+          WHERE left_at IS NOT NULL
+        )
+        SELECT
+          stage,
+          ROUND(percentile_cont(0.5) WITHIN GROUP (ORDER BY days)::numeric, 2)::float8
+            AS median_days
+        FROM durations
+        GROUP BY stage
+      `);
+
+      interface FunnelRow {
+        stage: ApplicationStage;
+        current_count: number;
+      }
+      interface SourceRow {
+        source: string;
+        applications: number;
+        hires: number;
+      }
+      interface TotalsRow {
+        applications: number;
+        active: number;
+        hired: number;
+        rejected_or_withdrawn: number;
+      }
+      interface TimeToHireRow {
+        hires_count: number;
+        median_days: number | null;
+        p90_days: number | null;
+      }
+      interface StageDurationRow {
+        stage: ApplicationStage;
+        median_days: number | null;
+      }
+
+      // Zero-fill the funnel + stage durations to the full enum, in enum
+      // order, so the UI renders every stage regardless of data.
+      const funnelByStage = new Map(
+        asRows<FunnelRow>(funnelRes).map((r) => [r.stage, r.current_count]),
+      );
+      const durationByStage = new Map(
+        asRows<StageDurationRow>(stageDurationRes).map((r) => [r.stage, r.median_days]),
+      );
+
+      const t = asRows<TimeToHireRow>(timeToHireRes)[0] ?? {
+        hires_count: 0,
+        median_days: null,
+        p90_days: null,
+      };
+      const totalsRow = asRows<TotalsRow>(totalsRes)[0] ?? {
+        applications: 0,
+        active: 0,
+        hired: 0,
+        rejected_or_withdrawn: 0,
+      };
+
+      return {
+        funnel: applicationStageEnum.enumValues.map((stage) => ({
+          stage,
+          current_count: funnelByStage.get(stage) ?? 0,
+        })),
+        sourceMix: asRows<SourceRow>(sourceRes).map((r) => ({
+          source: r.source,
+          applications: r.applications,
+          hires: r.hires,
+        })),
+        timeToHire: {
+          median_days: t.median_days,
+          p90_days: t.p90_days,
+          hires_count: t.hires_count,
+        },
+        stageDurations: applicationStageEnum.enumValues.map((stage) => ({
+          stage,
+          median_days: durationByStage.get(stage) ?? null,
+        })),
+        totals: {
+          applications: totalsRow.applications,
+          active: totalsRow.active,
+          hired: totalsRow.hired,
+          rejected_or_withdrawn: totalsRow.rejected_or_withdrawn,
+        },
       };
     }),
 

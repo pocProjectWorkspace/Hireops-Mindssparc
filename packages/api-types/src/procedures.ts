@@ -858,6 +858,94 @@ export type AiUsageByFeature = z.infer<typeof aiUsageByFeatureSchema>;
 export type AiUsageByModel = z.infer<typeof aiUsageByModelSchema>;
 export type AiUsageByDay = z.infer<typeof aiUsageByDaySchema>;
 
+// ─────────────── getRecruitmentReport (REPORT-01) ───────────────
+
+/**
+ * Input for the recruitment funnel + time + source report at
+ * /admin/reports. from/to are optional ISO datetimes bounding
+ * applications.created_at (omitted = all time). Reserved for a date-range
+ * picker the UI does not yet expose — the API accepts them today so the
+ * later filter lands without a contract change.
+ */
+export const getRecruitmentReportInputSchema = z.object({
+  from: z.string().datetime().optional(),
+  to: z.string().datetime().optional(),
+});
+
+/**
+ * One funnel row: the count of applications currently sitting at `stage`.
+ * The procedure emits all 11 application_stage enum labels in enum order,
+ * zero-filled, so the UI renders the full funnel even where a stage is
+ * empty.
+ */
+export const recruitmentFunnelStageSchema = z.object({
+  stage: z.string(),
+  current_count: z.number().int(),
+});
+
+/**
+ * Source-mix row. `applications` counts submissions on that channel;
+ * `hires` counts those whose current_stage = 'offer_accepted'. Only
+ * sources with at least one application appear (ordered by applications
+ * desc, then source asc).
+ */
+export const recruitmentSourceMixSchema = z.object({
+  source: z.string(),
+  applications: z.number().int(),
+  hires: z.number().int(),
+});
+
+/**
+ * Time-to-hire summary. median_days / p90_days are days from
+ * applications.created_at to the earliest offer_accepted transition,
+ * across hired applications (current_stage = 'offer_accepted'). Both are
+ * null when hires_count = 0 (percentile_cont over an empty set).
+ */
+export const recruitmentTimeToHireSchema = z.object({
+  median_days: z.number().nullable(),
+  p90_days: z.number().nullable(),
+  hires_count: z.number().int(),
+});
+
+/**
+ * One stage-duration row: the median days an application spends in
+ * `stage`, from consecutive transition pairs (entered-then-left). All 11
+ * stages are listed in enum order; a stage with no completed visits (incl.
+ * terminal stages that are never left) carries median_days = null.
+ */
+export const recruitmentStageDurationSchema = z.object({
+  stage: z.string(),
+  median_days: z.number().nullable(),
+});
+
+/**
+ * Headline totals. active = applications not in a terminal stage; hired =
+ * offer_accepted; rejected_or_withdrawn = offer_declined + withdrawn +
+ * recruiter_rejected. active + hired + rejected_or_withdrawn = applications.
+ */
+export const recruitmentTotalsSchema = z.object({
+  applications: z.number().int(),
+  active: z.number().int(),
+  hired: z.number().int(),
+  rejected_or_withdrawn: z.number().int(),
+});
+
+export const getRecruitmentReportOutputSchema = z.object({
+  funnel: z.array(recruitmentFunnelStageSchema),
+  sourceMix: z.array(recruitmentSourceMixSchema),
+  timeToHire: recruitmentTimeToHireSchema,
+  stageDurations: z.array(recruitmentStageDurationSchema),
+  totals: recruitmentTotalsSchema,
+});
+
+export type GetRecruitmentReportInput = z.infer<typeof getRecruitmentReportInputSchema>;
+export type GetRecruitmentReportOutput = z.infer<typeof getRecruitmentReportOutputSchema>;
+export type RecruitmentFunnelStage = z.infer<typeof recruitmentFunnelStageSchema>;
+export type RecruitmentSourceMix = z.infer<typeof recruitmentSourceMixSchema>;
+export type RecruitmentTimeToHire = z.infer<typeof recruitmentTimeToHireSchema>;
+export type RecruitmentStageDuration = z.infer<typeof recruitmentStageDurationSchema>;
+export type RecruitmentTotals = z.infer<typeof recruitmentTotalsSchema>;
+
 // ─────────────── approval-resolution (AGENT-03) ───────────────
 
 /**
