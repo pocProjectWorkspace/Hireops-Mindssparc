@@ -54,7 +54,9 @@ export const agentRuns = pgTable(
     error: text("error"),
     // sql`0` default — passing 0n is rejected by drizzle-kit's BigInt
     // JSON serializer in the snapshot diff (TypeError on JSON.stringify).
-    costMicros: bigint("cost_micros", { mode: "bigint" }).notNull().default(sql`0`),
+    costMicros: bigint("cost_micros", { mode: "bigint" })
+      .notNull()
+      .default(sql`0`),
   },
   (table) => [
     unique("uniq_agent_runs_tenant_id_id").on(table.tenantId, table.id),

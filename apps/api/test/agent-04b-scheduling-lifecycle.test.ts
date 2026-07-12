@@ -149,13 +149,27 @@ describe("AGENT-04b — Scheduling agent create / update / retire / toggle lifec
     jwt = await getTestJwt();
     const claims = decodeJwt(jwt);
     testTenantId = (claims as { tid?: string }).tid as string;
-    for (const n of [NAME_CREATE, NAME_UPDATE, NAME_RETIRE, NAME_TOGGLE, NAME_DUP, NAME_MULTIEDIT]) {
+    for (const n of [
+      NAME_CREATE,
+      NAME_UPDATE,
+      NAME_RETIRE,
+      NAME_TOGGLE,
+      NAME_DUP,
+      NAME_MULTIEDIT,
+    ]) {
       await deleteAllAgentsByName(n);
     }
   });
 
   afterAll(async () => {
-    for (const n of [NAME_CREATE, NAME_UPDATE, NAME_RETIRE, NAME_TOGGLE, NAME_DUP, NAME_MULTIEDIT]) {
+    for (const n of [
+      NAME_CREATE,
+      NAME_UPDATE,
+      NAME_RETIRE,
+      NAME_TOGGLE,
+      NAME_DUP,
+      NAME_MULTIEDIT,
+    ]) {
       await deleteAllAgentsByName(n);
     }
     await poolSql.end({ timeout: 10 });
@@ -186,9 +200,7 @@ describe("AGENT-04b — Scheduling agent create / update / retire / toggle lifec
     assert.equal(agent?.name, NAME_CREATE);
 
     // 1 trigger: stage_entered with stage=shortlisted (the curated default).
-    const triggers = await poolSql<
-      { trigger_type: string; trigger_config: { stage: string } }[]
-    >`
+    const triggers = await poolSql<{ trigger_type: string; trigger_config: { stage: string } }[]>`
       SELECT trigger_type, trigger_config FROM public.agent_triggers WHERE agent_id = ${agentId}
     `;
     assert.equal(triggers.length, 1);
@@ -341,18 +353,24 @@ describe("AGENT-04b — Scheduling agent create / update / retire / toggle lifec
     assert.equal(v1?.version, 1);
     assert.equal(v1?.name, NAME_UPDATE);
 
-    const [v2] = await poolSql<{
-      retired_at: Date | null;
-      name: string;
-      version: number;
-      description: string | null;
-    }[]>`
+    const [v2] = await poolSql<
+      {
+        retired_at: Date | null;
+        name: string;
+        version: number;
+        description: string | null;
+      }[]
+    >`
       SELECT retired_at, name, version, description FROM public.automation_agents WHERE id = ${v2AgentId}
     `;
     assert.equal(v2?.retired_at, null, "v2 active");
     assert.equal(v2?.version, 2);
     assert.equal(v2?.name, NAME_UPDATE, "name preserved across versions");
-    assert.equal(v2?.description, "v1 description", "description carried forward when not in input");
+    assert.equal(
+      v2?.description,
+      "v1 description",
+      "description carried forward when not in input",
+    );
 
     // v2 children — fresh ids, FK'd to v2AgentId, with input deltas
     // applied to propose_calendar_slots' config.
@@ -422,7 +440,9 @@ describe("AGENT-04b — Scheduling agent create / update / retire / toggle lifec
     const agentId = createEnv.result.data.agentId;
 
     const before = (
-      await poolSql<{ c: number }[]>`SELECT COUNT(*)::int AS c FROM public.automation_agents WHERE name = ${NAME_RETIRE}`
+      await poolSql<
+        { c: number }[]
+      >`SELECT COUNT(*)::int AS c FROM public.automation_agents WHERE name = ${NAME_RETIRE}`
     )[0]?.c;
     assert.equal(before, 1);
 
@@ -439,7 +459,9 @@ describe("AGENT-04b — Scheduling agent create / update / retire / toggle lifec
     assert.ok(row?.retired_at, "retired_at set");
 
     const after = (
-      await poolSql<{ c: number }[]>`SELECT COUNT(*)::int AS c FROM public.automation_agents WHERE name = ${NAME_RETIRE}`
+      await poolSql<
+        { c: number }[]
+      >`SELECT COUNT(*)::int AS c FROM public.automation_agents WHERE name = ${NAME_RETIRE}`
     )[0]?.c;
     assert.equal(after, 1, "retire never inserts a new row");
 
@@ -487,7 +509,9 @@ describe("AGENT-04b — Scheduling agent create / update / retire / toggle lifec
     assert.equal(afterDisable?.version, 1, "toggle does NOT bump version");
 
     const count = (
-      await poolSql<{ c: number }[]>`SELECT COUNT(*)::int AS c FROM public.automation_agents WHERE name = ${NAME_TOGGLE}`
+      await poolSql<
+        { c: number }[]
+      >`SELECT COUNT(*)::int AS c FROM public.automation_agents WHERE name = ${NAME_TOGGLE}`
     )[0]?.c;
     assert.equal(count, 1);
 
@@ -524,7 +548,9 @@ describe("AGENT-04b — Scheduling agent create / update / retire / toggle lifec
     );
 
     const count = (
-      await poolSql<{ c: number }[]>`SELECT COUNT(*)::int AS c FROM public.automation_agents WHERE name = ${NAME_DUP}`
+      await poolSql<
+        { c: number }[]
+      >`SELECT COUNT(*)::int AS c FROM public.automation_agents WHERE name = ${NAME_DUP}`
     )[0]?.c;
     assert.equal(count, 1, "duplicate INSERT was a no-op, not a rolled-back row");
   });
@@ -556,9 +582,7 @@ describe("AGENT-04b — Scheduling agent create / update / retire / toggle lifec
     assert.equal(v3.result.data.previousAgentId, v2Id);
     const v3Id = v3.result.data.agentId;
 
-    const lineage = await poolSql<
-      { id: string; version: number; retired_at: Date | null }[]
-    >`
+    const lineage = await poolSql<{ id: string; version: number; retired_at: Date | null }[]>`
       SELECT id::text, version, retired_at FROM public.automation_agents
       WHERE tenant_id = ${testTenantId} AND name = ${NAME_MULTIEDIT}
       ORDER BY version ASC

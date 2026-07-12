@@ -114,9 +114,7 @@ export function WorkflowsClient({ initial }: { initial: ListAgentsOutput }) {
                     <span>{agent.pending_approval_count} pending</span>
                     <span>
                       last run{" "}
-                      {agent.last_run_at
-                        ? agent.last_run_at.slice(0, 16).replace("T", " ")
-                        : "—"}
+                      {agent.last_run_at ? agent.last_run_at.slice(0, 16).replace("T", " ") : "—"}
                     </span>
                     <span className="text-brand-600 underline">View detail →</span>
                   </div>
@@ -135,9 +133,7 @@ export function WorkflowsClient({ initial }: { initial: ListAgentsOutput }) {
         </ul>
       )}
 
-      {selected ? (
-        <AgentDetailDrawer agent={selected} onClose={() => setSelectedId(null)} />
-      ) : null}
+      {selected ? <AgentDetailDrawer agent={selected} onClose={() => setSelectedId(null)} /> : null}
     </div>
   );
 }
@@ -151,9 +147,7 @@ function AgentTypeBadge({ type }: { type: string }) {
         : type === "candidate_qa"
           ? "bg-amber-100 text-amber-900"
           : "bg-neutral-100 text-neutral-800";
-  return (
-    <span className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${cls}`}>{type}</span>
-  );
+  return <span className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${cls}`}>{type}</span>;
 }
 
 function Toggle({

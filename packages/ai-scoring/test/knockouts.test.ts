@@ -7,11 +7,7 @@
  */
 
 import { describe, expect, it } from "vitest";
-import {
-  evaluateKnockouts,
-  getByPath,
-  type KnockoutInput,
-} from "../src/knockouts";
+import { evaluateKnockouts, getByPath, type KnockoutInput } from "../src/knockouts";
 
 const baseCv = {
   personal: {
@@ -64,15 +60,12 @@ describe("evaluateKnockouts — boolean", () => {
   });
 
   it("fails (result=false) when the array is empty", () => {
-    const r = evaluateKnockouts(
-      { ...baseCv, skills: { ...baseCv.skills, technical: [] } },
-      [
-        k({
-          type: "boolean",
-          thresholdValue: { field_path: "skills.technical", required: true },
-        }),
-      ],
-    );
+    const r = evaluateKnockouts({ ...baseCv, skills: { ...baseCv.skills, technical: [] } }, [
+      k({
+        type: "boolean",
+        thresholdValue: { field_path: "skills.technical", required: true },
+      }),
+    ]);
     expect(r.passed).toBe(false);
     expect(r.failures).toHaveLength(1);
     expect(r.failures[0]!.result).toBe(false);

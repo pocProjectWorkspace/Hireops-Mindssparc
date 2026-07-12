@@ -43,12 +43,7 @@ import {
   signedLinkUses,
 } from "@hireops/db";
 import { and, eq } from "drizzle-orm";
-import {
-  signLink,
-  verifyLink,
-  hashToken,
-  enqueueNotification,
-} from "@hireops/notifications";
+import { signLink, verifyLink, hashToken, enqueueNotification } from "@hireops/notifications";
 import { getStorageClient } from "../src/lib/storage";
 import { drainOutboxOnce, recoverOrphans } from "../../../apps/workers/src/lib/dispatcher.js";
 import { runSchedulerTick } from "../../../apps/workers/src/lib/scheduler.js";
@@ -321,8 +316,7 @@ describe("Module 3 — notifications + signed-link + workers", () => {
     const storage = getStorageClient();
     const storageKey = `resumes/m3-test-9-${randomUUID()}.docx`;
     await storage.put(storageKey, cvBuffer, {
-      contentType:
-        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      contentType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     });
     const newCandEmail = `m3-fresh-${randomUUID()}@example.com`;
     const env = await trpcMutation<{ applicationId: string }>("submitApplication", {
@@ -358,8 +352,7 @@ describe("Module 3 — notifications + signed-link + workers", () => {
     const storage = getStorageClient();
     const storageKey = `resumes/m3-test-10-${randomUUID()}.docx`;
     await storage.put(storageKey, cvBuffer, {
-      contentType:
-        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      contentType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     });
     const newCandEmail = `m3-dup-${randomUUID()}@example.com`;
     const payload = {
@@ -420,10 +413,14 @@ describe("Module 3 — notifications + signed-link + workers", () => {
     await poolSql`DELETE FROM public.notification_outbox WHERE tenant_id = ${testTenantId} AND recipient_candidate_id = ${M3_CANDIDATE}`;
     await seedApplication("ai_screening");
 
-    await trpcMutation("advanceApplication", {
-      applicationId: M3_APP,
-      targetStage: "recruiter_review",
-    }, { jwt });
+    await trpcMutation(
+      "advanceApplication",
+      {
+        applicationId: M3_APP,
+        targetStage: "recruiter_review",
+      },
+      { jwt },
+    );
 
     const rows = await poolDb
       .select()
@@ -467,14 +464,7 @@ describe("Module 3 — notifications + signed-link + workers", () => {
         cause?: { code?: string; constraint_name?: string; message?: string };
       };
       const c = e.cause ?? {};
-      const haystack = [
-        e.code,
-        e.constraint_name,
-        e.message,
-        c.code,
-        c.constraint_name,
-        c.message,
-      ]
+      const haystack = [e.code, e.constraint_name, e.message, c.code, c.constraint_name, c.message]
         .filter(Boolean)
         .join(" | ");
       assert.ok(

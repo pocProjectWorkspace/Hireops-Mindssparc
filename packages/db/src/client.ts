@@ -16,8 +16,7 @@ import * as schema from "./schema";
 // DATABASE_URL — the common-case codepath. The hook adds no runtime
 // cost outside the test environment.
 const databaseUrl =
-  (process.env.NODE_ENV === "test" && process.env.TEST_DATABASE_URL) ||
-  process.env.DATABASE_URL;
+  (process.env.NODE_ENV === "test" && process.env.TEST_DATABASE_URL) || process.env.DATABASE_URL;
 if (!databaseUrl) {
   throw new Error("DATABASE_URL is not set. Add it to your .env file.");
 }

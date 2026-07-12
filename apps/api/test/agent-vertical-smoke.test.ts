@@ -58,8 +58,12 @@ const drainLog = createLogger({ base: { service: "agent-02-smoke" } });
 // Executor behaviour lives in packages/agent-actions unit tests.
 const execDeps = fakeExecutorDeps();
 
-interface TRPCSuccess<T> { result: { data: T } }
-interface TRPCErr { error: { data: { code: string } } }
+interface TRPCSuccess<T> {
+  result: { data: T };
+}
+interface TRPCErr {
+  error: { data: { code: string } };
+}
 function isErr<T>(e: TRPCSuccess<T> | TRPCErr): e is TRPCErr {
   return "error" in e;
 }

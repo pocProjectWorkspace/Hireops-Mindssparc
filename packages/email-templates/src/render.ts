@@ -5,10 +5,7 @@ import {
   type ApplicationReceivedProps,
 } from "./templates/application-received";
 import { StageAdvanced, type StageAdvancedProps } from "./templates/stage-advanced";
-import {
-  SlaBreachImminent,
-  type SlaBreachImminentProps,
-} from "./templates/sla-breach-imminent";
+import { SlaBreachImminent, type SlaBreachImminentProps } from "./templates/sla-breach-imminent";
 import { OfferExtended, type OfferExtendedProps } from "./templates/offer-extended";
 import {
   OfferAcceptedRecruiter,

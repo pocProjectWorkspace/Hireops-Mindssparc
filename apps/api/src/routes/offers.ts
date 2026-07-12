@@ -159,7 +159,9 @@ offersRoutes.post("/accept/:token", async (c) => {
   // Name-match defence — the candidate's full_name as stored on the
   // person record. Case-insensitive trim compare; the candidate doesn't
   // know "how" we stored it.
-  const [candidate] = await poolSql<{ full_name: string; email: string; person_id: string; candidate_id: string }[]>`
+  const [candidate] = await poolSql<
+    { full_name: string; email: string; person_id: string; candidate_id: string }[]
+  >`
     SELECT p.full_name, p.email_primary AS email, p.id AS person_id, c.id AS candidate_id
     FROM public.applications a
     JOIN public.candidates c ON c.id = a.candidate_id
@@ -516,6 +518,9 @@ async function enqueueRecruiterNotice(
       dedupKey: opts.dedupKey,
     });
   } catch (err) {
-    baseLog.warn({ err, application_id: applicationId, templateKey }, "offers.recruiter_notice_enqueue_failed");
+    baseLog.warn(
+      { err, application_id: applicationId, templateKey },
+      "offers.recruiter_notice_enqueue_failed",
+    );
   }
 }

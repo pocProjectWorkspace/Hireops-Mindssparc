@@ -80,7 +80,10 @@ export async function drainWorkdayOutboxOnce(opts: SimulationDrainOpts): Promise
         WHERE id = ${row.id}
       `;
       simulated += 1;
-      child.info({ wid: (response as { workday_reference?: { wid?: string } }).workday_reference?.wid }, "workday.simulated");
+      child.info(
+        { wid: (response as { workday_reference?: { wid?: string } }).workday_reference?.wid },
+        "workday.simulated",
+      );
     } catch (err) {
       const errMsg = err instanceof Error ? err.message : String(err);
       await poolSql`

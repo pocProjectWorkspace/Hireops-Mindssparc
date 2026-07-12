@@ -48,7 +48,10 @@ export async function runSchedulerTick(opts: RunSchedulerTickOpts): Promise<{ ra
   // postgres-js returns timestamps as Date sometimes and strings other times
   // depending on parser config; coerce defensively.
   const lastRunMap = new Map<string, Date>(
-    lastRuns.map((r) => [r.job_name, r.last_run_at instanceof Date ? r.last_run_at : new Date(r.last_run_at as unknown as string)]),
+    lastRuns.map((r) => [
+      r.job_name,
+      r.last_run_at instanceof Date ? r.last_run_at : new Date(r.last_run_at as unknown as string),
+    ]),
   );
 
   for (const job of opts.jobs) {

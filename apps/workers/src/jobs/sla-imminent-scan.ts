@@ -106,10 +106,7 @@ export async function slaImminentScan(log: Logger): Promise<void> {
       if (msg.includes("uniq_notification_outbox_dedup")) {
         log.debug({ recruiter: row.recruiter_membership_id }, "sla_scan.dedup_skip");
       } else {
-        log.error(
-          { err: msg, recruiter: row.recruiter_membership_id },
-          "sla_scan.enqueue_error",
-        );
+        log.error({ err: msg, recruiter: row.recruiter_membership_id }, "sla_scan.enqueue_error");
       }
     }
   }

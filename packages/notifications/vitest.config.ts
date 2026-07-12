@@ -18,8 +18,7 @@ export default defineConfig({
     include: ["test/**/*.test.ts"],
     reporters: ["default"],
     env: {
-      DATABASE_URL:
-        "postgresql://vitest:vitest@127.0.0.1:5432/hireops_notifications_test",
+      DATABASE_URL: "postgresql://vitest:vitest@127.0.0.1:5432/hireops_notifications_test",
     },
   },
 });

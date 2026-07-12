@@ -31,10 +31,7 @@ export default async function PublicApplySubmittedPage({
       reqSlug: params.reqSlug,
     });
   } catch (err) {
-    if (
-      err instanceof TRPCError &&
-      (err.code === "NOT_FOUND" || err.code === "BAD_REQUEST")
-    ) {
+    if (err instanceof TRPCError && (err.code === "NOT_FOUND" || err.code === "BAD_REQUEST")) {
       notFound();
     }
     throw err;
@@ -48,8 +45,8 @@ export default async function PublicApplySubmittedPage({
         <h1 className="text-2xl font-semibold text-neutral-900">Application received</h1>
         <p className="text-base text-neutral-700">
           Thanks for applying to <strong>{resolved.positionTitle}</strong> at{" "}
-          <strong>{resolved.tenantDisplayName}</strong>. We&rsquo;ll be in touch within the next
-          few business days if there&rsquo;s a fit.
+          <strong>{resolved.tenantDisplayName}</strong>. We&rsquo;ll be in touch within the next few
+          business days if there&rsquo;s a fit.
         </p>
         {ref && (
           <p className="text-sm text-neutral-600">

@@ -23,14 +23,14 @@ export default function PrivacyStubPage() {
       <section className="flex flex-col gap-3 text-sm leading-6 text-neutral-700">
         <p>
           We collect the data you submit through the apply form (name, contact, resume, and any
-          links you share) for the purpose of considering you for the role you applied to. We
-          retain this data for the duration permitted under the Digital Personal Data Protection
-          Act, 2023, after which it is redacted unless you grant separate consent for inclusion in
-          our talent pool.
+          links you share) for the purpose of considering you for the role you applied to. We retain
+          this data for the duration permitted under the Digital Personal Data Protection Act, 2023,
+          after which it is redacted unless you grant separate consent for inclusion in our talent
+          pool.
         </p>
         <p>
-          You can request access, correction, or deletion of your data by writing to the
-          recruiting team contact listed in any email you receive from us.
+          You can request access, correction, or deletion of your data by writing to the recruiting
+          team contact listed in any email you receive from us.
         </p>
       </section>
     </main>

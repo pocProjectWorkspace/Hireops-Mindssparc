@@ -58,11 +58,7 @@ export const agentApprovalRequests = pgTable(
   (table) => [
     unique("uniq_agent_approval_requests_tenant_id_id").on(table.tenantId, table.id),
     // The approval-queue query — pending requests across all agents.
-    index("idx_agent_approval_requests_queue").on(
-      table.tenantId,
-      table.status,
-      table.proposedAt,
-    ),
+    index("idx_agent_approval_requests_queue").on(table.tenantId, table.status, table.proposedAt),
     // Per-agent pending count.
     index("idx_agent_approval_requests_agent_status").on(
       table.tenantId,

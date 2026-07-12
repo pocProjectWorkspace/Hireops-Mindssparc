@@ -385,11 +385,13 @@ describe("AGENT-03 — approval cycle vertical smoke", () => {
       SELECT status FROM public.agent_runs WHERE agent_id = ${agentId}
     `;
     assert.equal(runMid?.status, "running");
-    const [approvalRow] = await poolSql<{
-      status: string;
-      decided_by_user_id: string | null;
-      decision_notes: string | null;
-    }[]>`
+    const [approvalRow] = await poolSql<
+      {
+        status: string;
+        decided_by_user_id: string | null;
+        decision_notes: string | null;
+      }[]
+    >`
       SELECT status, decided_by_user_id::text, decision_notes
       FROM public.agent_approval_requests WHERE id = ${approvalId}
     `;
@@ -486,11 +488,13 @@ describe("AGENT-03 — approval cycle vertical smoke", () => {
 
     // Approval-request audit triple: proposed_action_payload (original)
     // + edited_payload (the edit) + run_action.output (final, the edit).
-    const [ar] = await poolSql<{
-      proposed_action_payload: Record<string, unknown>;
-      edited_payload: Record<string, unknown> | null;
-      status: string;
-    }[]>`
+    const [ar] = await poolSql<
+      {
+        proposed_action_payload: Record<string, unknown>;
+        edited_payload: Record<string, unknown> | null;
+        status: string;
+      }[]
+    >`
       SELECT proposed_action_payload, edited_payload, status
       FROM public.agent_approval_requests WHERE id = ${approvalId}
     `;

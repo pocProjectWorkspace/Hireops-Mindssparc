@@ -1,10 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { sql as poolSql } from "@hireops/db";
-import {
-  getEmailProvider,
-  type EmailProvider,
-  type TemplateKey,
-} from "@hireops/notifications";
+import { getEmailProvider, type EmailProvider, type TemplateKey } from "@hireops/notifications";
 import { renderTemplate } from "@hireops/email-templates";
 import type { Logger } from "@hireops/observability";
 

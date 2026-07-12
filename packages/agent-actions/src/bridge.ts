@@ -3,10 +3,7 @@
 // so we don't want that runtime dep — it would break pure-function
 // tests in this package. Schema source-of-truth still lives in
 // packages/db/src/zod/agent-configs.ts.
-import {
-  ActionConfigSchema,
-  type ActionConfig,
-} from "@hireops/db/src/zod/agent-configs";
+import { ActionConfigSchema, type ActionConfig } from "@hireops/db/src/zod/agent-configs";
 
 /**
  * Bridge DB-column `action_type` to the Zod schema discriminator `type`.

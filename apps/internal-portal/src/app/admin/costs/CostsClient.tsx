@@ -35,8 +35,8 @@ export function CostsClient({ initial }: { initial: GetAiUsageSummaryOutput }) {
   return (
     <div className="mx-auto w-full max-w-5xl px-6 py-8">
       <p className="mb-6 text-sm text-neutral-600">
-        Every Anthropic call logged with tokens and cost — per feature, per model. All time.
-        Amounts in USD, computed from the per-call micro-cost ledger.
+        Every Anthropic call logged with tokens and cost — per feature, per model. All time. Amounts
+        in USD, computed from the per-call micro-cost ledger.
       </p>
 
       {!hasUsage ? (
@@ -84,7 +84,15 @@ export function CostsClient({ initial }: { initial: GetAiUsageSummaryOutput }) {
               By model
             </h2>
             <UsageTable
-              headers={["Provider", "Model", "Calls", "Tokens in", "Tokens out", "Cost", "Failures"]}
+              headers={[
+                "Provider",
+                "Model",
+                "Calls",
+                "Tokens in",
+                "Tokens out",
+                "Cost",
+                "Failures",
+              ]}
               rows={byModel.map((m) => ({
                 key: `${m.provider}/${m.model}`,
                 cells: [

@@ -34,9 +34,7 @@ export class ResendEmailProvider implements EmailProvider {
 
   constructor(opts: ResendEmailProviderOptions) {
     if (!opts.apiKey || opts.apiKey.trim() === "") {
-      throw new Error(
-        "ResendEmailProvider requires a non-empty apiKey (set RESEND_API_KEY).",
-      );
+      throw new Error("ResendEmailProvider requires a non-empty apiKey (set RESEND_API_KEY).");
     }
     if (!opts.from || opts.from.trim() === "") {
       throw new Error(
@@ -69,8 +67,7 @@ export class ResendEmailProvider implements EmailProvider {
       });
     } catch (err) {
       // AbortSignal.timeout fires a TimeoutError; DNS/connection errors also land here.
-      const reason =
-        err instanceof Error ? `${err.name}: ${err.message}` : String(err);
+      const reason = err instanceof Error ? `${err.name}: ${err.message}` : String(err);
       throw new Error(`Resend request failed before a response (${reason}).`);
     }
 
@@ -80,17 +77,16 @@ export class ResendEmailProvider implements EmailProvider {
         body.length > MAX_ERROR_BODY_CHARS
           ? `${body.slice(0, MAX_ERROR_BODY_CHARS)}…[truncated]`
           : body;
-      throw new Error(
-        `Resend send failed: HTTP ${res.status} ${res.statusText} — ${truncated}`,
-      );
+      throw new Error(`Resend send failed: HTTP ${res.status} ${res.statusText} — ${truncated}`);
     }
 
     const payload = (await res.json()) as { id?: unknown };
     if (typeof payload.id !== "string" || payload.id === "") {
       throw new Error(
-        `Resend returned ${res.status} without a message id (body: ${JSON.stringify(
-          payload,
-        ).slice(0, MAX_ERROR_BODY_CHARS)}).`,
+        `Resend returned ${res.status} without a message id (body: ${JSON.stringify(payload).slice(
+          0,
+          MAX_ERROR_BODY_CHARS,
+        )}).`,
       );
     }
     return { providerMessageId: payload.id };

@@ -183,9 +183,7 @@ function makeFailure(
     question_text: k.questionText ?? null,
     result,
     reason,
-    ...(Object.prototype.hasOwnProperty.call(extras, "actual")
-      ? { actual: extras.actual }
-      : {}),
+    ...(Object.prototype.hasOwnProperty.call(extras, "actual") ? { actual: extras.actual } : {}),
     ...(extras.threshold !== undefined ? { threshold: extras.threshold } : {}),
   };
 }

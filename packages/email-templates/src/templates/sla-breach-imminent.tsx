@@ -42,8 +42,8 @@ export function SlaBreachImminent({
           <Section>
             <Text style={text}>Hi {recruiterName},</Text>
             <Text style={text}>
-              You have <strong>{String(applicationCount)}</strong> {noun} approaching the stage
-              SLA threshold. Quickest path: open the Hot Zone on your triage board.
+              You have <strong>{String(applicationCount)}</strong> {noun} approaching the stage SLA
+              threshold. Quickest path: open the Hot Zone on your triage board.
             </Text>
             <Text style={text}>
               <Link href={triageUrl} style={link}>

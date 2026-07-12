@@ -351,9 +351,7 @@ export const appRouter = router({
               linkedinUrl: persons.linkedinUrl,
             })
             .from(persons)
-            .where(
-              and(eq(persons.tenantId, req.tenantId), eq(persons.emailNormalised, emailNorm)),
-            )
+            .where(and(eq(persons.tenantId, req.tenantId), eq(persons.emailNormalised, emailNorm)))
             .limit(1);
           const [phoneMatch] = await poolDb
             .select({
@@ -363,9 +361,7 @@ export const appRouter = router({
               linkedinUrl: persons.linkedinUrl,
             })
             .from(persons)
-            .where(
-              and(eq(persons.tenantId, req.tenantId), eq(persons.phoneNormalised, phoneNorm)),
-            )
+            .where(and(eq(persons.tenantId, req.tenantId), eq(persons.phoneNormalised, phoneNorm)))
             .limit(1);
 
           let personId: string;
@@ -374,8 +370,7 @@ export const appRouter = router({
 
           const sameMatch = emailMatch && phoneMatch && emailMatch.id === phoneMatch.id;
           const winner = sameMatch ? emailMatch : (emailMatch ?? phoneMatch);
-          const isCollision =
-            !!emailMatch && !!phoneMatch && emailMatch.id !== phoneMatch.id;
+          const isCollision = !!emailMatch && !!phoneMatch && emailMatch.id !== phoneMatch.id;
 
           if (winner && !isCollision) {
             personId = winner.id;
@@ -414,9 +409,7 @@ export const appRouter = router({
               .returning({ id: persons.id })
               .then((rows) => firstOrThrow(rows, "persons insert").id);
             dedupDecision = "allow_new";
-            dedupReason = isCollision
-              ? "ambiguous_email_phone_collision"
-              : "no_match";
+            dedupReason = isCollision ? "ambiguous_email_phone_collision" : "no_match";
           }
 
           // Audit the dedup decision. Fire-and-forget on failure — the
@@ -496,7 +489,10 @@ export const appRouter = router({
               reason: "knockouts_failed",
               skipped_at: knockoutEvaluatedAt.toISOString(),
             };
-          } else if (parserConfidence !== null && parserConfidence < PARSER_CONFIDENCE_SCORING_FLOOR) {
+          } else if (
+            parserConfidence !== null &&
+            parserConfidence < PARSER_CONFIDENCE_SCORING_FLOOR
+          ) {
             initialAiScoreExplanation = {
               scored_by: "skipped",
               reason: "parser_confidence_below_threshold",
@@ -518,8 +514,7 @@ export const appRouter = router({
                   requisitionId: req.id,
                   source: input.source,
                   knockoutPassed: knockoutEval.passed,
-                  knockoutFailures:
-                    knockoutEval.failures.length > 0 ? knockoutEval.failures : null,
+                  knockoutFailures: knockoutEval.failures.length > 0 ? knockoutEval.failures : null,
                   knockoutEvaluatedAt,
                   aiScoreExplanation: initialAiScoreExplanation,
                 })
@@ -607,17 +602,21 @@ export const appRouter = router({
         .innerJoin(tenants, eq(tenants.id, requisitions.tenantId))
         .innerJoin(
           positions,
-          and(eq(positions.id, requisitions.positionId), eq(positions.tenantId, requisitions.tenantId)),
+          and(
+            eq(positions.id, requisitions.positionId),
+            eq(positions.tenantId, requisitions.tenantId),
+          ),
         )
-        .where(
-          and(eq(tenants.slug, input.tenantSlug), eq(requisitions.publicSlug, input.reqSlug)),
-        )
+        .where(and(eq(tenants.slug, input.tenantSlug), eq(requisitions.publicSlug, input.reqSlug)))
         .limit(1);
       if (!row) {
         throw new TRPCError({ code: "NOT_FOUND", message: "Requisition not found" });
       }
       if (!PUBLIC_APPLY_ACCEPTING_STATUSES.has(row.status)) {
-        throw new TRPCError({ code: "NOT_FOUND", message: "Requisition not accepting applications" });
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: "Requisition not accepting applications",
+        });
       }
       return {
         tenantId: row.tenantId,
@@ -1090,9 +1089,7 @@ export const appRouter = router({
                 ? BigInt(input.variableTargetInrPaise)
                 : null,
             joiningBonusInrPaise:
-              input.joiningBonusInrPaise !== undefined
-                ? BigInt(input.joiningBonusInrPaise)
-                : null,
+              input.joiningBonusInrPaise !== undefined ? BigInt(input.joiningBonusInrPaise) : null,
             joiningDate: input.joiningDate,
             location: input.location,
             termsHtml: input.termsHtml ?? null,
@@ -1311,7 +1308,13 @@ export const appRouter = router({
         rows: rows.map((r) => ({
           id: r.id,
           applicationId: r.applicationId,
-          status: r.status as "drafted" | "extended" | "accepted" | "declined" | "expired" | "cancelled",
+          status: r.status as
+            | "drafted"
+            | "extended"
+            | "accepted"
+            | "declined"
+            | "expired"
+            | "cancelled",
           baseSalaryInrPaise: Number(r.baseSalaryInrPaise),
           variableTargetInrPaise:
             r.variableTargetInrPaise !== null ? Number(r.variableTargetInrPaise) : null,
@@ -1341,9 +1344,7 @@ export const appRouter = router({
       const limit = input.pagination.limit;
       const cursorDate = input.pagination.cursor ? new Date(input.pagination.cursor) : null;
       const conds = [
-        ...(input.filters?.status
-          ? [eq(workdaySyncOutbox.status, input.filters.status)]
-          : []),
+        ...(input.filters?.status ? [eq(workdaySyncOutbox.status, input.filters.status)] : []),
         ...(input.filters?.eventType
           ? [eq(workdaySyncOutbox.eventType, input.filters.eventType)]
           : []),
@@ -1649,9 +1650,7 @@ export const appRouter = router({
           retiredAt: automationAgents.retiredAt,
         })
         .from(automationAgents)
-        .where(
-          and(eq(automationAgents.id, input.agentId), eq(automationAgents.tenantId, tenantId)),
-        )
+        .where(and(eq(automationAgents.id, input.agentId), eq(automationAgents.tenantId, tenantId)))
         .limit(1);
       if (!agent) {
         throw new TRPCError({ code: "NOT_FOUND", message: "Agent not found" });
@@ -1664,9 +1663,7 @@ export const appRouter = router({
           triggerConfig: agentTriggers.triggerConfig,
         })
         .from(agentTriggers)
-        .where(
-          and(eq(agentTriggers.agentId, input.agentId), eq(agentTriggers.tenantId, tenantId)),
-        );
+        .where(and(eq(agentTriggers.agentId, input.agentId), eq(agentTriggers.tenantId, tenantId)));
 
       const actionRows = await db
         .select({
@@ -1935,8 +1932,7 @@ export const appRouter = router({
 
       // Drizzle's db.execute returns a {rows: …} shape under postgres-js;
       // fall back to the array form defensively (matches listAgents).
-      const asRows = <T>(res: unknown): T[] =>
-        (res as { rows?: T[] }).rows ?? (res as T[]);
+      const asRows = <T>(res: unknown): T[] => (res as { rows?: T[] }).rows ?? (res as T[]);
 
       interface TotalsRow {
         calls: number;
@@ -2070,10 +2066,7 @@ export const appRouter = router({
           .select()
           .from(automationAgents)
           .where(
-            and(
-              eq(automationAgents.id, input.agentId),
-              eq(automationAgents.tenantId, tenantId),
-            ),
+            and(eq(automationAgents.id, input.agentId), eq(automationAgents.tenantId, tenantId)),
           )
           .limit(1);
         if (!current) {
@@ -2249,10 +2242,7 @@ export const appRouter = router({
           })
           .from(automationAgents)
           .where(
-            and(
-              eq(automationAgents.id, input.agentId),
-              eq(automationAgents.tenantId, tenantId),
-            ),
+            and(eq(automationAgents.id, input.agentId), eq(automationAgents.tenantId, tenantId)),
           )
           .limit(1);
         if (!current) {
@@ -2304,10 +2294,7 @@ export const appRouter = router({
           })
           .from(automationAgents)
           .where(
-            and(
-              eq(automationAgents.id, input.agentId),
-              eq(automationAgents.tenantId, tenantId),
-            ),
+            and(eq(automationAgents.id, input.agentId), eq(automationAgents.tenantId, tenantId)),
           )
           .limit(1);
         if (!current) {
@@ -2532,10 +2519,7 @@ export const appRouter = router({
           .select()
           .from(automationAgents)
           .where(
-            and(
-              eq(automationAgents.id, input.agentId),
-              eq(automationAgents.tenantId, tenantId),
-            ),
+            and(eq(automationAgents.id, input.agentId), eq(automationAgents.tenantId, tenantId)),
           )
           .limit(1);
         if (!current) {
@@ -2710,10 +2694,7 @@ export const appRouter = router({
           })
           .from(automationAgents)
           .where(
-            and(
-              eq(automationAgents.id, input.agentId),
-              eq(automationAgents.tenantId, tenantId),
-            ),
+            and(eq(automationAgents.id, input.agentId), eq(automationAgents.tenantId, tenantId)),
           )
           .limit(1);
         if (!current) {
@@ -2762,10 +2743,7 @@ export const appRouter = router({
           })
           .from(automationAgents)
           .where(
-            and(
-              eq(automationAgents.id, input.agentId),
-              eq(automationAgents.tenantId, tenantId),
-            ),
+            and(eq(automationAgents.id, input.agentId), eq(automationAgents.tenantId, tenantId)),
           )
           .limit(1);
         if (!current) {
@@ -2982,10 +2960,7 @@ export const appRouter = router({
           .select()
           .from(automationAgents)
           .where(
-            and(
-              eq(automationAgents.id, input.agentId),
-              eq(automationAgents.tenantId, tenantId),
-            ),
+            and(eq(automationAgents.id, input.agentId), eq(automationAgents.tenantId, tenantId)),
           )
           .limit(1);
         if (!current) {
@@ -3154,10 +3129,7 @@ export const appRouter = router({
           })
           .from(automationAgents)
           .where(
-            and(
-              eq(automationAgents.id, input.agentId),
-              eq(automationAgents.tenantId, tenantId),
-            ),
+            and(eq(automationAgents.id, input.agentId), eq(automationAgents.tenantId, tenantId)),
           )
           .limit(1);
         if (!current) {
@@ -3206,10 +3178,7 @@ export const appRouter = router({
           })
           .from(automationAgents)
           .where(
-            and(
-              eq(automationAgents.id, input.agentId),
-              eq(automationAgents.tenantId, tenantId),
-            ),
+            and(eq(automationAgents.id, input.agentId), eq(automationAgents.tenantId, tenantId)),
           )
           .limit(1);
         if (!current) {

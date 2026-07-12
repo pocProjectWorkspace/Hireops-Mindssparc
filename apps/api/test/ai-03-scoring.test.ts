@@ -38,19 +38,10 @@ import { z } from "zod";
 import { createClient } from "@supabase/supabase-js";
 import { decodeJwt } from "jose";
 import { app } from "../src/index.js";
-import {
-  sql as poolSql,
-  db,
-  aiScoreOutbox,
-  applications,
-} from "@hireops/db";
+import { sql as poolSql, db, aiScoreOutbox, applications } from "@hireops/db";
 import { and, eq } from "drizzle-orm";
 import { resetStorageClient, getStorageClient } from "../src/lib/storage";
-import {
-  hashStructuredOptions,
-  resetAIClientCache,
-  type ParserOutput,
-} from "@hireops/ai-client";
+import { hashStructuredOptions, resetAIClientCache, type ParserOutput } from "@hireops/ai-client";
 import {
   AI_SCORING_PROMPT_VERSION,
   aiScoringResponseSchema,
@@ -73,7 +64,7 @@ const POSITION = "00000000-0000-4000-8000-00000a1030a2";
 const JD = "00000000-0000-4000-8000-00000a1030a3";
 const REQ_KO_PASS = "00000000-0000-4000-8000-00000a1030a4"; // knockouts that pass
 const REQ_KO_FAIL = "00000000-0000-4000-8000-00000a1030a5"; // knockouts that fail
-const REQ_NO_KO = "00000000-0000-4000-8000-00000a1030a6";    // no knockouts
+const REQ_NO_KO = "00000000-0000-4000-8000-00000a1030a6"; // no knockouts
 const MEMBERSHIP = "00000000-0000-4000-8000-00000a1030a7";
 
 const KO_MIN_PASS = "00000000-0000-4000-8000-00000a103100";
@@ -102,15 +93,17 @@ async function getTestJwt(): Promise<string> {
   return data.session.access_token;
 }
 
-interface TRPCSuccess<T> { result: { data: T } }
-interface TRPCErr { error: { data: { code: string } } }
+interface TRPCSuccess<T> {
+  result: { data: T };
+}
+interface TRPCErr {
+  error: { data: { code: string } };
+}
 function isErr<T>(e: TRPCSuccess<T> | TRPCErr): e is TRPCErr {
   return "error" in e;
 }
 
-async function trpcMutation<O>(name: string, input: unknown): Promise<
-  TRPCSuccess<O> | TRPCErr
-> {
+async function trpcMutation<O>(name: string, input: unknown): Promise<TRPCSuccess<O> | TRPCErr> {
   const res = await app.request(`/trpc/${name}`, {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -208,8 +201,7 @@ describe("AI-03 — knockout eval + scoring outbox + worker drain", () => {
     const cvBuffer = await readFile(SEED_CV_PATH);
     STORAGE_KEY = `resumes/${T}-ai03.docx`;
     await getStorageClient().put(STORAGE_KEY, cvBuffer, {
-      contentType:
-        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      contentType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     });
   });
 
@@ -276,9 +268,7 @@ describe("AI-03 — knockout eval + scoring outbox + worker drain", () => {
     const [outbox] = await db
       .select()
       .from(aiScoreOutbox)
-      .where(
-        and(eq(aiScoreOutbox.tenantId, T), eq(aiScoreOutbox.applicationId, applicationId)),
-      )
+      .where(and(eq(aiScoreOutbox.tenantId, T), eq(aiScoreOutbox.applicationId, applicationId)))
       .limit(1);
     assert.ok(outbox);
     assert.equal(outbox.status, "pending");
@@ -318,9 +308,7 @@ describe("AI-03 — knockout eval + scoring outbox + worker drain", () => {
     const outboxRows = await db
       .select()
       .from(aiScoreOutbox)
-      .where(
-        and(eq(aiScoreOutbox.tenantId, T), eq(aiScoreOutbox.applicationId, applicationId)),
-      );
+      .where(and(eq(aiScoreOutbox.tenantId, T), eq(aiScoreOutbox.applicationId, applicationId)));
     assert.equal(outboxRows.length, 0);
   });
 
@@ -351,9 +339,7 @@ describe("AI-03 — knockout eval + scoring outbox + worker drain", () => {
     const outboxRows = await db
       .select()
       .from(aiScoreOutbox)
-      .where(
-        and(eq(aiScoreOutbox.tenantId, T), eq(aiScoreOutbox.applicationId, applicationId)),
-      );
+      .where(and(eq(aiScoreOutbox.tenantId, T), eq(aiScoreOutbox.applicationId, applicationId)));
     assert.equal(outboxRows.length, 1);
   });
 
@@ -370,10 +356,7 @@ describe("AI-03 — knockout eval + scoring outbox + worker drain", () => {
       consentVersion: "v1",
     };
     const first = await trpcMutation<{ applicationId: string }>("submitApplication", payload);
-    const second = await trpcMutation<{ applicationId: string }>(
-      "submitApplication",
-      payload,
-    );
+    const second = await trpcMutation<{ applicationId: string }>("submitApplication", payload);
     assert.ok(!isErr(first));
     assert.ok(!isErr(second));
     assert.equal(first.result.data.applicationId, second.result.data.applicationId);
@@ -515,9 +498,7 @@ describe("AI-03 — knockout eval + scoring outbox + worker drain", () => {
     const [app] = await db
       .select()
       .from(applications)
-      .where(
-        and(eq(applications.tenantId, T), eq(applications.knockoutPassed, false)),
-      )
+      .where(and(eq(applications.tenantId, T), eq(applications.knockoutPassed, false)))
       .limit(1);
     assert.ok(app);
     const failures = app.knockoutFailures as Array<{
@@ -535,9 +516,7 @@ describe("AI-03 — knockout eval + scoring outbox + worker drain", () => {
     const [app] = await db
       .select()
       .from(applications)
-      .where(
-        and(eq(applications.tenantId, T), eq(applications.knockoutPassed, false)),
-      )
+      .where(and(eq(applications.tenantId, T), eq(applications.knockoutPassed, false)))
       .limit(1);
     assert.ok(app);
     const failures = app.knockoutFailures as Array<{ reason: string; result: false | null }>;
@@ -554,9 +533,7 @@ describe("AI-03 — knockout eval + scoring outbox + worker drain", () => {
     const [app] = await db
       .select()
       .from(applications)
-      .where(
-        and(eq(applications.tenantId, T), eq(applications.requisitionId, REQ_KO_PASS)),
-      )
+      .where(and(eq(applications.tenantId, T), eq(applications.requisitionId, REQ_KO_PASS)))
       .limit(1);
     assert.ok(app);
     assert.equal(app.knockoutPassed, true);

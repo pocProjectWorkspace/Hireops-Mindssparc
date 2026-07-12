@@ -134,9 +134,7 @@ export function OfferAcceptClient({ token }: { token: string }) {
   return (
     <main className="mx-auto min-h-screen max-w-xl bg-neutral-50 px-4 py-8 sm:py-12">
       <header className="mb-6 text-center">
-        <p className="text-xs uppercase tracking-wide text-neutral-500">
-          {offer.companyName}
-        </p>
+        <p className="text-xs uppercase tracking-wide text-neutral-500">{offer.companyName}</p>
         <h1 className="mt-1 text-2xl font-semibold text-neutral-900">Offer of Employment</h1>
       </header>
 
@@ -157,10 +155,7 @@ export function OfferAcceptClient({ token }: { token: string }) {
           />
         ) : null}
         {offer.joiningBonusInrPaise !== null ? (
-          <SummaryRow
-            label="Joining bonus"
-            value={formatPaiseAsInr(offer.joiningBonusInrPaise)}
-          />
+          <SummaryRow label="Joining bonus" value={formatPaiseAsInr(offer.joiningBonusInrPaise)} />
         ) : null}
         <SummaryRow label="Expires" value={offer.expiryAt.slice(0, 10)} />
       </section>
@@ -182,9 +177,9 @@ export function OfferAcceptClient({ token }: { token: string }) {
       ) : (
         <section className="space-y-4">
           <p className="rounded-md bg-amber-50 p-3 text-sm text-amber-900">
-            By clicking <strong>Accept Offer</strong>, you formally accept this offer of
-            employment from {offer.companyName}. By clicking <strong>Decline</strong>, you
-            indicate you are not proceeding with this offer.
+            By clicking <strong>Accept Offer</strong>, you formally accept this offer of employment
+            from {offer.companyName}. By clicking <strong>Decline</strong>, you indicate you are not
+            proceeding with this offer.
           </p>
           <label className="block">
             <span className="text-sm font-medium text-neutral-800">
@@ -237,9 +232,7 @@ export function OfferAcceptClient({ token }: { token: string }) {
             className="absolute inset-0 cursor-default"
           />
           <div className="relative w-full max-w-md rounded-t-xl bg-white p-5 shadow-2xl sm:rounded-xl">
-            <h2 className="mb-2 text-lg font-semibold text-neutral-900">
-              Decline this offer?
-            </h2>
+            <h2 className="mb-2 text-lg font-semibold text-neutral-900">Decline this offer?</h2>
             <p className="mb-3 text-sm text-neutral-700">
               Optionally let us know why — your recruiter will see this.
             </p>

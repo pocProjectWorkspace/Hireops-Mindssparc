@@ -278,9 +278,7 @@ describe("WORKER-01 — stage_stale scanner", () => {
         max_tokens: 200,
       }),
     });
-    const createEnv = (await createRes.json()) as
-      | TRPCSuccess<{ agentId: string }>
-      | TRPCErr;
+    const createEnv = (await createRes.json()) as TRPCSuccess<{ agentId: string }> | TRPCErr;
     assert.ok(!isErr(createEnv), `create should succeed: ${JSON.stringify(createEnv)}`);
     agentId = createEnv.result.data.agentId;
 
@@ -375,10 +373,6 @@ describe("WORKER-01 — stage_stale scanner", () => {
       WHERE agent_id != ${agentId}
         AND enqueued_at >= ${suiteStartTs}::timestamptz
     `;
-    assert.equal(
-      residual?.n,
-      0,
-      "no non-WK01 outbox rows added by this suite's scans survive",
-    );
+    assert.equal(residual?.n, 0, "no non-WK01 outbox rows added by this suite's scans survive");
   });
 });

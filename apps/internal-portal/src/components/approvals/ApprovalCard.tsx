@@ -25,9 +25,7 @@ export function ApprovalCard({
       type="button"
       onClick={() => onSelect(item.id)}
       className={`w-full border-l-2 px-4 py-3 text-left transition-colors ${
-        selected
-          ? "border-brand-600 bg-brand-50"
-          : "border-transparent hover:bg-neutral-50"
+        selected ? "border-brand-600 bg-brand-50" : "border-transparent hover:bg-neutral-50"
       }`}
     >
       <div className="flex items-center justify-between gap-2">

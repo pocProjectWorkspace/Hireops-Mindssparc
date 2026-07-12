@@ -96,6 +96,8 @@ test("candidate fills form, uploads resume, lands on confirmation", async ({ pag
     console.error("network/console trace:\n" + networkEvents.join("\n"));
     throw e;
   }
-  await expect(page.getByRole("heading", { level: 1, name: /application received/i })).toBeVisible();
+  await expect(
+    page.getByRole("heading", { level: 1, name: /application received/i }),
+  ).toBeVisible();
   await expect(page.getByText(/your reference/i)).toBeVisible();
 });

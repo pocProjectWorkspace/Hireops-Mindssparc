@@ -63,9 +63,7 @@ export function OfferSection({ applicationId }: OfferSectionProps) {
   }
 
   const rows = offers.data?.rows ?? [];
-  const activeOffer = rows.find(
-    (r) => r.status === "drafted" || r.status === "extended",
-  );
+  const activeOffer = rows.find((r) => r.status === "drafted" || r.status === "extended");
   const draftable = DRAFTABLE_STAGES.has(offers.data?.applicationCurrentStage ?? "");
 
   return (
@@ -198,7 +196,11 @@ function DraftOfferForm({ applicationId, onCreated, onCancel }: DraftFormProps) 
       }}
     >
       <NumField label="Base salary (INR per year)" value={baseInr} onChange={setBaseInr} required />
-      <NumField label="Variable target (INR per year)" value={variableInr} onChange={setVariableInr} />
+      <NumField
+        label="Variable target (INR per year)"
+        value={variableInr}
+        onChange={setVariableInr}
+      />
       <NumField label="Joining bonus (INR)" value={bonusInr} onChange={setBonusInr} />
       <DateField label="Joining date" value={joiningDate} onChange={setJoiningDate} />
       <TextField label="Location" value={location} onChange={setLocation} />
@@ -225,9 +227,7 @@ function DraftOfferForm({ applicationId, onCreated, onCancel }: DraftFormProps) 
           Discard
         </Button>
       </div>
-      {draft.error ? (
-        <p className="text-xs text-status-error-700">{draft.error.message}</p>
-      ) : null}
+      {draft.error ? <p className="text-xs text-status-error-700">{draft.error.message}</p> : null}
     </form>
   );
 }

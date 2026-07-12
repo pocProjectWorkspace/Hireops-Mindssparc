@@ -330,7 +330,11 @@ describe("Module 4 — offers + Workday simulation", () => {
 
     const res = await app.request(`/api/offers/preview/${token}`);
     assert.equal(res.status, 200);
-    const body = (await res.json()) as { ok: boolean; positionTitle: string; candidateFullName: string };
+    const body = (await res.json()) as {
+      ok: boolean;
+      positionTitle: string;
+      candidateFullName: string;
+    };
     assert.equal(body.ok, true);
     assert.equal(body.candidateFullName, "Priya Subramanian");
     assert.equal(body.positionTitle, "M4 Senior Engineer");
@@ -469,9 +473,7 @@ describe("Module 4 — offers + Workday simulation", () => {
       effective_date: "2026-06-01",
     });
     assert.ok(typeof (resp as { simulation_notes?: string }).simulation_notes === "string");
-    assert.ok(
-      (resp as { simulation_notes: string }).simulation_notes.includes("simulated"),
-    );
+    assert.ok((resp as { simulation_notes: string }).simulation_notes.includes("simulated"));
   });
 
   it("14. business_key UNIQUE prevents duplicate hire enqueue", async () => {

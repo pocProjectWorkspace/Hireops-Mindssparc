@@ -109,10 +109,7 @@ const KNOWN_CANDIDATE_ACTIONS = new Set([
   "candidate.decline_offer",
 ]);
 
-async function resolveTenantBySubject(
-  action: string,
-  subjectId: string,
-): Promise<string | null> {
+async function resolveTenantBySubject(action: string, subjectId: string): Promise<string | null> {
   if (KNOWN_CANDIDATE_ACTIONS.has(action)) {
     const rows = await poolSql<{ tenant_id: string }[]>`
       SELECT tenant_id FROM public.candidates WHERE id = ${subjectId} LIMIT 1

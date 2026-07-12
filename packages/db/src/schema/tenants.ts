@@ -1,14 +1,5 @@
 import { sql } from "drizzle-orm";
-import {
-  pgTable,
-  uuid,
-  text,
-  jsonb,
-  timestamp,
-  index,
-  pgPolicy,
-  check,
-} from "drizzle-orm/pg-core";
+import { pgTable, uuid, text, jsonb, timestamp, index, pgPolicy, check } from "drizzle-orm/pg-core";
 
 export const tenants = pgTable(
   "tenants",

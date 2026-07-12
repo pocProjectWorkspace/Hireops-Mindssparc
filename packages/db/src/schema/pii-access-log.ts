@@ -56,11 +56,7 @@ export const piiAccessLog = pgTable(
   },
   (table) => [
     index("idx_pii_access_log_tenant_chrono").on(table.tenantId, table.accessedAt.desc()),
-    index("idx_pii_access_log_tenant_entity").on(
-      table.tenantId,
-      table.entityType,
-      table.entityId,
-    ),
+    index("idx_pii_access_log_tenant_entity").on(table.tenantId, table.entityType, table.entityId),
     foreignKey({
       columns: [table.tenantId, table.actorMembershipId],
       foreignColumns: [tenantUserMemberships.tenantId, tenantUserMemberships.id],

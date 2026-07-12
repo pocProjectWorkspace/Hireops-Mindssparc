@@ -27,7 +27,12 @@ export interface AgentMessageProps {
  * nodes; React escapes each one, so no `dangerouslySetInnerHTML` and no
  * HTML-injection path from model output into a candidate's inbox.
  */
-export function AgentMessage({ candidateName, positionTitle, companyName, body }: AgentMessageProps) {
+export function AgentMessage({
+  candidateName,
+  positionTitle,
+  companyName,
+  body,
+}: AgentMessageProps) {
   // Defensive: a candidate-facing send must never crash on a missing or
   // non-string body. Coerce, then fall back to a plain greeting so the
   // email still goes out (the worker marks the row sent, not failed).

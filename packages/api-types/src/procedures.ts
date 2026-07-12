@@ -322,23 +322,9 @@ export const draftOfferInputSchema = z.object({
   // Paise — bigint expressed as number in transport (JSON has no bigint;
   // we cap at Number.MAX_SAFE_INTEGER which is comfortably above any
   // realistic INR amount).
-  baseSalaryInrPaise: z
-    .number()
-    .int()
-    .positive()
-    .max(Number.MAX_SAFE_INTEGER),
-  variableTargetInrPaise: z
-    .number()
-    .int()
-    .nonnegative()
-    .max(Number.MAX_SAFE_INTEGER)
-    .optional(),
-  joiningBonusInrPaise: z
-    .number()
-    .int()
-    .nonnegative()
-    .max(Number.MAX_SAFE_INTEGER)
-    .optional(),
+  baseSalaryInrPaise: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+  variableTargetInrPaise: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).optional(),
+  joiningBonusInrPaise: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).optional(),
   joiningDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Expected YYYY-MM-DD"),
   location: z.string().min(1).max(200),
   termsHtml: z.string().max(50_000).optional(),

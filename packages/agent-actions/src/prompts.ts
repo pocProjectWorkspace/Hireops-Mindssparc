@@ -44,8 +44,7 @@ const TONE_GUIDANCE: Record<MessageTone, string> = {
     "Write in a formal, professional register. Use complete sentences and avoid contractions, exclamation marks, and casual idiom.",
   friendly:
     "Write in a warm, conversational register. Contractions are fine. Stay professional — friendly, not chatty.",
-  neutral:
-    "Write in a plain, neutral register. Direct and clear, neither stiff nor effusive.",
+  neutral: "Write in a plain, neutral register. Direct and clear, neither stiff nor effusive.",
 };
 
 /**

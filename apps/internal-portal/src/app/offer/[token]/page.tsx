@@ -12,10 +12,6 @@
 
 import { OfferAcceptClient } from "./OfferAcceptClient";
 
-export default function OfferAcceptPage({
-  params,
-}: {
-  params: { token: string };
-}) {
+export default function OfferAcceptPage({ params }: { params: { token: string } }) {
   return <OfferAcceptClient token={params.token} />;
 }

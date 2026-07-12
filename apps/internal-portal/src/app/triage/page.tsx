@@ -46,11 +46,7 @@ export default async function TriagePage() {
   return (
     <UndoToastProvider>
       <main className="flex h-screen flex-col">
-        <PortalHeader
-          title="Triage"
-          isAdmin={session.roles.includes("admin")}
-          active="triage"
-        />
+        <PortalHeader title="Triage" isAdmin={session.roles.includes("admin")} active="triage" />
         <FilterChipsBar />
         <HotZone initial={breaches} />
         <MomentumFeed initial={momentum} />

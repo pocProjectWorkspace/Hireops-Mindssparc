@@ -53,9 +53,8 @@ export function ApplicationReceived({
             </Text>
             <Text style={textMuted}>— The {companyName} recruiting team</Text>
             <Text style={footer}>
-              This is an automated message. Please don&rsquo;t reply to this email — replies are
-              not monitored. If you need to reach the team, contact the recruiter who emails you
-              next.
+              This is an automated message. Please don&rsquo;t reply to this email — replies are not
+              monitored. If you need to reach the team, contact the recruiter who emails you next.
             </Text>
           </Section>
         </Container>

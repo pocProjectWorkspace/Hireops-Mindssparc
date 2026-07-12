@@ -66,10 +66,7 @@ export const workdaySyncOutbox = pgTable(
 
     // Idempotency: one row per (tenant, business_key). Re-enqueue of the
     // same event hits 23505 and the caller treats it as already queued.
-    uniqueIndex("uniq_workday_sync_outbox_business_key").on(
-      table.tenantId,
-      table.businessKey,
-    ),
+    uniqueIndex("uniq_workday_sync_outbox_business_key").on(table.tenantId, table.businessKey),
 
     // Worker drain query — partial to skip terminal rows.
     index("idx_workday_sync_outbox_queue")

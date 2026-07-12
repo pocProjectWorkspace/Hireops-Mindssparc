@@ -32,10 +32,7 @@ export default async function PublicApplyPage({
     // BAD_REQUEST = the URL slugs failed regex / length validation in
     // zod. From the candidate's perspective a malformed slug is
     // indistinguishable from a missing one — 404 in both cases.
-    if (
-      err instanceof TRPCError &&
-      (err.code === "NOT_FOUND" || err.code === "BAD_REQUEST")
-    ) {
+    if (err instanceof TRPCError && (err.code === "NOT_FOUND" || err.code === "BAD_REQUEST")) {
       notFound();
     }
     throw err;

@@ -118,7 +118,10 @@ async function seedAgent(
   return { agentId };
 }
 
-async function enqueueRun(agentId: string, triggerContext: Record<string, unknown>): Promise<string> {
+async function enqueueRun(
+  agentId: string,
+  triggerContext: Record<string, unknown>,
+): Promise<string> {
   const [row] = await poolSql<{ id: string }[]>`
     INSERT INTO public.agent_run_outbox
       (tenant_id, agent_id, trigger_context, status)
@@ -320,7 +323,9 @@ describe("AGENT-02 — agent_run_outbox drain", () => {
     assert.equal(r.completed, 0);
     assert.equal(r.failed, 1);
 
-    const [outbox] = await poolSql<{ status: string; last_error: string | null; attempt_count: number }[]>`
+    const [outbox] = await poolSql<
+      { status: string; last_error: string | null; attempt_count: number }[]
+    >`
       SELECT status, last_error, attempt_count
       FROM public.agent_run_outbox WHERE id = ${outboxId}
     `;

@@ -32,18 +32,12 @@ describe("ResendEmailProvider", () => {
   });
 
   it("constructor rejects an empty apiKey", () => {
-    expect(() => new ResendEmailProvider({ apiKey: "", from: FROM })).toThrow(
-      /RESEND_API_KEY/,
-    );
-    expect(() => new ResendEmailProvider({ apiKey: "   ", from: FROM })).toThrow(
-      /RESEND_API_KEY/,
-    );
+    expect(() => new ResendEmailProvider({ apiKey: "", from: FROM })).toThrow(/RESEND_API_KEY/);
+    expect(() => new ResendEmailProvider({ apiKey: "   ", from: FROM })).toThrow(/RESEND_API_KEY/);
   });
 
   it("constructor rejects an empty from address", () => {
-    expect(
-      () => new ResendEmailProvider({ apiKey: "re_x", from: "" }),
-    ).toThrow(/EMAIL_FROM/);
+    expect(() => new ResendEmailProvider({ apiKey: "re_x", from: "" })).toThrow(/EMAIL_FROM/);
   });
 
   it("success: posts the correct request shape and returns providerMessageId", async () => {
@@ -55,10 +49,7 @@ describe("ResendEmailProvider", () => {
     expect(result.providerMessageId).toBe("re_123");
     expect(fetchMock).toHaveBeenCalledTimes(1);
 
-    const [url, init] = fetchMock.mock.calls[0] as unknown as [
-      string,
-      RequestInit,
-    ];
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
     expect(url).toBe("https://api.resend.com/emails");
     expect(init.method).toBe("POST");
 
@@ -89,9 +80,7 @@ describe("ResendEmailProvider", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     await expect(makeProvider().send(MSG)).rejects.toThrow(/422/);
-    await expect(makeProvider().send(MSG)).rejects.toThrow(
-      /domain is not verified/,
-    );
+    await expect(makeProvider().send(MSG)).rejects.toThrow(/domain is not verified/);
   });
 
   it("non-2xx: truncates an oversized body to ~500 chars", async () => {
@@ -117,9 +106,7 @@ describe("ResendEmailProvider", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
 
-    await expect(makeProvider().send(MSG)).rejects.toThrow(
-      /failed before a response/,
-    );
+    await expect(makeProvider().send(MSG)).rejects.toThrow(/failed before a response/);
     await expect(makeProvider().send(MSG)).rejects.toThrow(/TimeoutError/);
   });
 });

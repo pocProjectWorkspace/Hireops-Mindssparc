@@ -162,17 +162,13 @@ export async function drainAiScoreOutboxOnce(opts: DrainOpts): Promise<{
         WHERE id = ${row.id}
       `;
       completed += 1;
-      child.info(
-        { score: validated.score, provider, model },
-        "ai_score.completed",
-      );
+      child.info({ score: validated.score, provider, model }, "ai_score.completed");
     } catch (err) {
       const errMsg = err instanceof Error ? err.message : String(err);
       // Schema-parse failures aren't worth retrying — the data won't
       // fix itself. Anything else (network blip, rate limit) we let
       // retry up to attempt_cap.
-      const terminal =
-        err instanceof z.ZodError || row.attempt_count >= row.attempt_cap;
+      const terminal = err instanceof z.ZodError || row.attempt_count >= row.attempt_cap;
       if (terminal) {
         await poolSql`
           UPDATE public.ai_score_outbox
@@ -225,9 +221,7 @@ async function loadContext(tenantId: string, applicationId: string): Promise<Loa
   }
   const parsedCv = parserOutputSchema.parse(appRow.parsed_skills);
 
-  const skillRows = await poolSql<
-    { skill_name: string; weight: string; is_required: boolean }[]
-  >`
+  const skillRows = await poolSql<{ skill_name: string; weight: string; is_required: boolean }[]>`
     SELECT s.skill_name, s.weight::text AS weight, s.is_required
     FROM public.jd_skills s
     JOIN public.requisitions r ON r.jd_version_id = s.jd_version_id AND r.tenant_id = s.tenant_id

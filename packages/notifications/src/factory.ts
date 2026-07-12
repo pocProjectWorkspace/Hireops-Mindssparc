@@ -44,17 +44,13 @@ function construct(): EmailProvider {
         "(set RESEND_API_KEY and EMAIL_FROM).",
     );
   }
-  throw new Error(
-    `Unknown EMAIL_PROVIDER=${mode}. Supported: 'local' (default) | 'resend'.`,
-  );
+  throw new Error(`Unknown EMAIL_PROVIDER=${mode}. Supported: 'local' (default) | 'resend'.`);
 }
 
 function constructResend(): EmailProvider {
   const apiKey = process.env.RESEND_API_KEY;
   if (!apiKey || apiKey.trim() === "") {
-    throw new Error(
-      "EMAIL_PROVIDER=resend requires RESEND_API_KEY to be set.",
-    );
+    throw new Error("EMAIL_PROVIDER=resend requires RESEND_API_KEY to be set.");
   }
   const from = process.env.EMAIL_FROM;
   if (!from || from.trim() === "") {

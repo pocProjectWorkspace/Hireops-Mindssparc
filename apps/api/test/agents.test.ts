@@ -93,8 +93,12 @@ const NAME_AD01_SYNTH = "admin-01-test-synth-invisible";
 let jwt: string;
 let testTenantId: string;
 
-interface TRPCSuccess<T> { result: { data: T } }
-interface TRPCErr { error: { data: { code: string; httpStatus?: number } } }
+interface TRPCSuccess<T> {
+  result: { data: T };
+}
+interface TRPCErr {
+  error: { data: { code: string; httpStatus?: number } };
+}
 function isErr<T>(e: TRPCSuccess<T> | TRPCErr): e is TRPCErr {
   return "error" in e;
 }
@@ -121,7 +125,10 @@ async function trpcMutation<O>(name: string, input: unknown): Promise<TRPCSucces
   return (await res.json()) as TRPCSuccess<O> | TRPCErr;
 }
 
-async function trpcQuery<O>(name: string, input: unknown = undefined): Promise<TRPCSuccess<O> | TRPCErr> {
+async function trpcQuery<O>(
+  name: string,
+  input: unknown = undefined,
+): Promise<TRPCSuccess<O> | TRPCErr> {
   const inputParam =
     input === undefined ? "" : `?input=${encodeURIComponent(JSON.stringify(input))}`;
   const res = await app.request(`/trpc/${name}${inputParam}`, {
@@ -427,7 +434,10 @@ describe("AGENT-02 — tRPC createFollowUpAgent + listAgents", () => {
       tone: "formal",
       max_tokens: 200,
     });
-    assert.ok(!isErr(second), `second create after retire should succeed: ${JSON.stringify(second)}`);
+    assert.ok(
+      !isErr(second),
+      `second create after retire should succeed: ${JSON.stringify(second)}`,
+    );
     assert.notEqual(second.result.data.agentId, firstId);
   });
 

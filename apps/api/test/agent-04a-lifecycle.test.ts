@@ -262,26 +262,34 @@ describe("AGENT-04a — Follow-Up agent update / retire / toggle lifecycle", () 
     assert.equal(v1?.version, 1);
     assert.equal(v1?.name, NAME_UPDATE);
 
-    const [v2] = await poolSql<{
-      retired_at: Date | null;
-      name: string;
-      version: number;
-      description: string | null;
-    }[]>`
+    const [v2] = await poolSql<
+      {
+        retired_at: Date | null;
+        name: string;
+        version: number;
+        description: string | null;
+      }[]
+    >`
       SELECT retired_at, name, version, description FROM public.automation_agents WHERE id = ${v2AgentId}
     `;
     assert.equal(v2?.retired_at, null, "v2 active");
     assert.equal(v2?.version, 2);
     assert.equal(v2?.name, NAME_UPDATE, "name preserved across versions");
-    assert.equal(v2?.description, "v1 description", "description carried forward when not in input");
+    assert.equal(
+      v2?.description,
+      "v1 description",
+      "description carried forward when not in input",
+    );
 
     // 5. v2 children exist, with NEW ids, FK'd to v2AgentId, and the
     //    input deltas applied to the right child.
-    const v2Triggers = await poolSql<{
-      id: string;
-      trigger_type: string;
-      trigger_config: { stage: string; days_threshold: number };
-    }[]>`
+    const v2Triggers = await poolSql<
+      {
+        id: string;
+        trigger_type: string;
+        trigger_config: { stage: string; days_threshold: number };
+      }[]
+    >`
       SELECT id::text, trigger_type, trigger_config FROM public.agent_triggers WHERE agent_id = ${v2AgentId}
     `;
     assert.equal(v2Triggers.length, 1);
@@ -290,12 +298,14 @@ describe("AGENT-04a — Follow-Up agent update / retire / toggle lifecycle", () 
     assert.equal(v2Triggers[0]?.trigger_config.days_threshold, 9, "days_threshold from input");
     assert.notEqual(v2Triggers[0]?.id, v1Triggers[0]?.id, "trigger id is fresh");
 
-    const v2Actions = await poolSql<{
-      id: string;
-      action_type: string;
-      action_config: Record<string, unknown>;
-      action_order: number;
-    }[]>`
+    const v2Actions = await poolSql<
+      {
+        id: string;
+        action_type: string;
+        action_config: Record<string, unknown>;
+        action_order: number;
+      }[]
+    >`
       SELECT id::text, action_type, action_config, action_order
       FROM public.agent_actions WHERE agent_id = ${v2AgentId} ORDER BY action_order
     `;
@@ -308,11 +318,13 @@ describe("AGENT-04a — Follow-Up agent update / retire / toggle lifecycle", () 
       assert.ok(!v1Actions.find((v1a) => v1a.id === a.id), "v2 action ids are fresh");
     }
 
-    const v2Rules = await poolSql<{
-      action_id: string;
-      approval_mode: string;
-      approver_role: string | null;
-    }[]>`
+    const v2Rules = await poolSql<
+      {
+        action_id: string;
+        approval_mode: string;
+        approver_role: string | null;
+      }[]
+    >`
       SELECT action_id::text, approval_mode, approver_role
       FROM public.agent_approval_rules WHERE agent_id = ${v2AgentId}
     `;
@@ -372,7 +384,9 @@ describe("AGENT-04a — Follow-Up agent update / retire / toggle lifecycle", () 
     const agentId = createEnv.result.data.agentId;
 
     const beforeCount = (
-      await poolSql<{ c: number }[]>`SELECT COUNT(*)::int AS c FROM public.automation_agents WHERE name = ${NAME_RETIRE}`
+      await poolSql<
+        { c: number }[]
+      >`SELECT COUNT(*)::int AS c FROM public.automation_agents WHERE name = ${NAME_RETIRE}`
     )[0]?.c;
     assert.equal(beforeCount, 1);
 
@@ -390,7 +404,9 @@ describe("AGENT-04a — Follow-Up agent update / retire / toggle lifecycle", () 
 
     // No new row created.
     const afterCount = (
-      await poolSql<{ c: number }[]>`SELECT COUNT(*)::int AS c FROM public.automation_agents WHERE name = ${NAME_RETIRE}`
+      await poolSql<
+        { c: number }[]
+      >`SELECT COUNT(*)::int AS c FROM public.automation_agents WHERE name = ${NAME_RETIRE}`
     )[0]?.c;
     assert.equal(afterCount, 1, "retire never inserts a new row");
 
@@ -441,7 +457,9 @@ describe("AGENT-04a — Follow-Up agent update / retire / toggle lifecycle", () 
 
     // Row count unchanged — no new version row inserted.
     const count = (
-      await poolSql<{ c: number }[]>`SELECT COUNT(*)::int AS c FROM public.automation_agents WHERE name = ${NAME_TOGGLE}`
+      await poolSql<
+        { c: number }[]
+      >`SELECT COUNT(*)::int AS c FROM public.automation_agents WHERE name = ${NAME_TOGGLE}`
     )[0]?.c;
     assert.equal(count, 1);
 
@@ -493,7 +511,9 @@ describe("AGENT-04a — Follow-Up agent update / retire / toggle lifecycle", () 
     // means the duplicate INSERT was a no-op (no row inserted then
     // rolled back).
     const count = (
-      await poolSql<{ c: number }[]>`SELECT COUNT(*)::int AS c FROM public.automation_agents WHERE name = ${NAME_DUP}`
+      await poolSql<
+        { c: number }[]
+      >`SELECT COUNT(*)::int AS c FROM public.automation_agents WHERE name = ${NAME_DUP}`
     )[0]?.c;
     assert.equal(count, 1, "duplicate INSERT was a no-op, not a rolled-back row");
   });
@@ -529,11 +549,13 @@ describe("AGENT-04a — Follow-Up agent update / retire / toggle lifecycle", () 
     const v3Id = v3.result.data.agentId;
 
     // Name-anchored lineage query returns all three versions.
-    const lineage = await poolSql<{
-      id: string;
-      version: number;
-      retired_at: Date | null;
-    }[]>`
+    const lineage = await poolSql<
+      {
+        id: string;
+        version: number;
+        retired_at: Date | null;
+      }[]
+    >`
       SELECT id::text, version, retired_at FROM public.automation_agents
       WHERE tenant_id = ${testTenantId} AND name = ${NAME_MULTIEDIT}
       ORDER BY version ASC

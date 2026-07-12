@@ -130,8 +130,5 @@ export async function stageStaleScan(log: Logger): Promise<void> {
     }
   }
 
-  log.info(
-    { agentsScanned, applicationsMatched, runsEnqueued },
-    "stage_stale_scan.complete",
-  );
+  log.info({ agentsScanned, applicationsMatched, runsEnqueued }, "stage_stale_scan.complete");
 }

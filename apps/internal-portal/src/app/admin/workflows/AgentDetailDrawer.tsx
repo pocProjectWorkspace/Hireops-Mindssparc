@@ -23,9 +23,7 @@ export function AgentDetailDrawer({
 }) {
   const detail = trpc.getAgentDetail.useQuery({ agentId: agent.id }, { staleTime: 5_000 });
 
-  const rulesByActionId = new Map(
-    (detail.data?.approvalRules ?? []).map((r) => [r.action_id, r]),
-  );
+  const rulesByActionId = new Map((detail.data?.approvalRules ?? []).map((r) => [r.action_id, r]));
 
   return (
     <div className="fixed inset-0 z-40 flex justify-end">

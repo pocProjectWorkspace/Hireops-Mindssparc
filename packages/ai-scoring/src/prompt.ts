@@ -80,7 +80,10 @@ export function buildAIScoringPrompt(input: BuildAIScoringPromptInput): BuiltPro
     : "(no JD body provided)";
 
   const skillBullets = input.jdSkills
-    .map((s) => `  - ${s.skillName} (weight: ${s.weight}, ${s.isRequired ? "required" : "nice-to-have"})`)
+    .map(
+      (s) =>
+        `  - ${s.skillName} (weight: ${s.weight}, ${s.isRequired ? "required" : "nice-to-have"})`,
+    )
     .join("\n");
   const skillsBlock = input.jdSkills.length > 0 ? skillBullets : "  (no required skills listed)";
 

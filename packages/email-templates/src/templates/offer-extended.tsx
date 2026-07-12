@@ -51,8 +51,8 @@ export function OfferExtended({
           <Section>
             <Text style={text}>Hi {candidateName},</Text>
             <Text style={text}>
-              We&rsquo;re pleased to extend an offer of employment at{" "}
-              <strong>{companyName}</strong> for the role of <strong>{positionTitle}</strong>.
+              We&rsquo;re pleased to extend an offer of employment at <strong>{companyName}</strong>{" "}
+              for the role of <strong>{positionTitle}</strong>.
             </Text>
             <Section style={summaryBox}>
               <Text style={summaryLine}>
@@ -71,9 +71,7 @@ export function OfferExtended({
                 <strong>Expires:</strong> {expiryAtFormatted}
               </Text>
             </Section>
-            <Text style={text}>
-              Please review the full offer and confirm your decision below.
-            </Text>
+            <Text style={text}>Please review the full offer and confirm your decision below.</Text>
             <Section style={{ textAlign: "center", margin: "24px 0" }}>
               <Link href={acceptUrl} style={button}>
                 Review &amp; Respond

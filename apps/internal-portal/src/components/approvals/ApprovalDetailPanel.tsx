@@ -88,10 +88,7 @@ export function ApprovalDetailPanel({ approvalId, onResolved }: ApprovalDetailPa
   });
 
   const busy =
-    approve.isPending ||
-    approveWithEdit.isPending ||
-    reject.isPending ||
-    snooze.isPending;
+    approve.isPending || approveWithEdit.isPending || reject.isPending || snooze.isPending;
 
   if (detail.isLoading) {
     return <div className="p-6 text-sm text-neutral-500">Loading approval…</div>;

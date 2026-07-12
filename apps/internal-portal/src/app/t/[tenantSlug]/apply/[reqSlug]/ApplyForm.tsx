@@ -74,18 +74,12 @@ const fieldSchema = z.object({
     .trim()
     .min(8, "Enter a valid phone number")
     .max(40)
-    .refine(
-      (v) => /^\+?\d[\d\s-]{7,}$/.test(v),
-      "Digits only, with or without country code",
-    ),
+    .refine((v) => /^\+?\d[\d\s-]{7,}$/.test(v), "Digits only, with or without country code"),
   linkedinUrl: z
     .string()
     .trim()
     .optional()
-    .refine(
-      (v) => !v || /^https?:\/\/.+/i.test(v),
-      "Must start with http:// or https://",
-    ),
+    .refine((v) => !v || /^https?:\/\/.+/i.test(v), "Must start with http:// or https://"),
   sourceText: z.string().trim().max(200).optional(),
   resume: z
     .instanceof(File, { message: "Choose your CV" })
@@ -127,7 +121,10 @@ export function ApplyForm({
   const [consentGiven, setConsentGiven] = useState(false);
   const [fieldErrors, setFieldErrors] = useState<FieldErrors>({});
   const [submitState, setSubmitState] = useState<
-    { kind: "idle" } | { kind: "uploading" } | { kind: "submitting" } | { kind: "error"; msg: string }
+    | { kind: "idle" }
+    | { kind: "uploading" }
+    | { kind: "submitting" }
+    | { kind: "error"; msg: string }
   >({ kind: "idle" });
 
   // Hydration marker — Playwright (and any other browser test) can wait

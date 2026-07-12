@@ -52,7 +52,9 @@ loadDotenv({ path: resolve(here, "../../../../.env") });
 function signSeedLink(action: string, subjectId: string, expiresAt: Date): string {
   const secret = process.env.SIGNED_LINK_SECRET;
   if (!secret || secret.length < 32) {
-    throw new Error("SIGNED_LINK_SECRET missing or < 32 chars; generate via openssl rand -base64 48");
+    throw new Error(
+      "SIGNED_LINK_SECRET missing or < 32 chars; generate via openssl rand -base64 48",
+    );
   }
   const payload = {
     a: action,
@@ -368,12 +370,12 @@ const DEMO_CANDIDATES: DemoCandidate[] = [
           title: "Senior Software Engineer",
           start_date: "2020-04",
           end_date: null,
-          highlights: ["Customer-support backend on Ruby + Java; led migration to event-driven model"],
+          highlights: [
+            "Customer-support backend on Ruby + Java; led migration to event-driven model",
+          ],
         },
       ],
-      education: [
-        { institution: "Anna University", degree: "B.E. CSE", graduated: "2018" },
-      ],
+      education: [{ institution: "Anna University", degree: "B.E. CSE", graduated: "2018" }],
       skills: ["Java", "Spring Boot", "Kafka", "PostgreSQL", "Redis", "AWS"],
       notice_period_days: 45,
       parse_metadata: { confidence_score: 0.93, source: "seed-demo-data" },
@@ -405,9 +407,7 @@ const DEMO_CANDIDATES: DemoCandidate[] = [
           highlights: ["Order-management APIs on Spring Boot + Cassandra"],
         },
       ],
-      education: [
-        { institution: "NIT Trichy", degree: "B.Tech CSE", graduated: "2018" },
-      ],
+      education: [{ institution: "NIT Trichy", degree: "B.Tech CSE", graduated: "2018" }],
       skills: ["Java", "Spring Boot", "Kafka", "PostgreSQL", "AWS", "Cassandra"],
       notice_period_days: 60,
       parse_metadata: { confidence_score: 0.95, source: "seed-demo-data" },
@@ -479,15 +479,7 @@ const DEMO_CANDIDATES: DemoCandidate[] = [
         },
       ],
       skills: {
-        technical: [
-          "Java",
-          "Spring Boot",
-          "Kafka",
-          "PostgreSQL",
-          "AWS",
-          "Redis",
-          "Kubernetes",
-        ],
+        technical: ["Java", "Spring Boot", "Kafka", "PostgreSQL", "AWS", "Redis", "Kubernetes"],
         languages: ["English", "Hindi", "Tamil"],
         certifications: [],
         domain: ["payments", "e-commerce"],
@@ -531,9 +523,7 @@ const DEMO_CANDIDATES: DemoCandidate[] = [
           highlights: ["Card-issuance APIs on Spring Boot + PostgreSQL"],
         },
       ],
-      education: [
-        { institution: "VIT Vellore", degree: "B.Tech CSE", graduated: "2018" },
-      ],
+      education: [{ institution: "VIT Vellore", degree: "B.Tech CSE", graduated: "2018" }],
       skills: ["Java", "Spring Boot", "Kafka", "PostgreSQL", "AWS", "Redis"],
       notice_period_days: 30,
       parse_metadata: { confidence_score: 0.95, source: "seed-demo-data" },
@@ -557,9 +547,7 @@ const DEMO_CANDIDATES: DemoCandidate[] = [
           highlights: ["Distributed storage control-plane services in Java + Kafka"],
         },
       ],
-      education: [
-        { institution: "NIT Calicut", degree: "B.Tech CSE", graduated: "2017" },
-      ],
+      education: [{ institution: "NIT Calicut", degree: "B.Tech CSE", graduated: "2017" }],
       skills: ["Java", "Spring Boot", "Kafka", "PostgreSQL", "AWS"],
       notice_period_days: 45,
       parse_metadata: { confidence_score: 0.93, source: "seed-demo-data" },
@@ -591,7 +579,11 @@ const DEMO_APPS: DemoApp[] = [
     aiScore: 92,
     aiScoreExplanation: {
       top_factors: [
-        { factor: "skills_match", score: 0.94, note: "5/5 required skills matched (Java, Spring Boot, Kafka, PostgreSQL, AWS)" },
+        {
+          factor: "skills_match",
+          score: 0.94,
+          note: "5/5 required skills matched (Java, Spring Boot, Kafka, PostgreSQL, AWS)",
+        },
         { factor: "experience_level", score: 0.92, note: "8.5 years matches L5 target band" },
         { factor: "notice_period", score: 0.88, note: "30-day notice — acceptable" },
         { factor: "education_signal", score: 0.85, note: "IIT Bombay B.Tech" },
@@ -613,7 +605,11 @@ const DEMO_APPS: DemoApp[] = [
     aiScore: 64,
     aiScoreExplanation: {
       top_factors: [
-        { factor: "skills_match", score: 0.62, note: "3/5 required skills matched; missing Kafka and AWS depth" },
+        {
+          factor: "skills_match",
+          score: 0.62,
+          note: "3/5 required skills matched; missing Kafka and AWS depth",
+        },
         { factor: "experience_level", score: 0.68, note: "4 years — below L5 floor of 5 years" },
         { factor: "notice_period", score: 0.55, note: "60-day notice — slow start" },
       ],
@@ -634,10 +630,14 @@ const DEMO_APPS: DemoApp[] = [
     aiScore: 88,
     aiScoreExplanation: {
       top_factors: [
-        { factor: "skills_match", score: 0.90, note: "All required skills + Azure depth" },
-        { factor: "experience_level", score: 0.95, note: "10 years — strong fit for L5 senior band" },
+        { factor: "skills_match", score: 0.9, note: "All required skills + Azure depth" },
+        {
+          factor: "experience_level",
+          score: 0.95,
+          note: "10 years — strong fit for L5 senior band",
+        },
         { factor: "education_signal", score: 0.92, note: "M.S. from BITS Pilani" },
-        { factor: "notice_period", score: 0.40, note: "90-day notice — long lead time" },
+        { factor: "notice_period", score: 0.4, note: "90-day notice — long lead time" },
       ],
       caveats: ["Notice period of 90 days exceeds typical preference"],
       scored_at: new Date().toISOString(),
@@ -657,7 +657,11 @@ const DEMO_APPS: DemoApp[] = [
     aiScoreExplanation: {
       top_factors: [
         { factor: "skills_match", score: 0.84, note: "4/5 required skills; AWS in past role only" },
-        { factor: "experience_level", score: 0.82, note: "6 years — comfortable at L5 with growth runway" },
+        {
+          factor: "experience_level",
+          score: 0.82,
+          note: "6 years — comfortable at L5 with growth runway",
+        },
         { factor: "notice_period", score: 0.75, note: "45-day notice" },
       ],
       caveats: [],
@@ -687,9 +691,17 @@ const DEMO_APPS: DemoApp[] = [
     aiScore: 85,
     aiScoreExplanation: {
       top_factors: [
-        { factor: "skills_match", score: 0.88, note: "All required skills + payments-domain depth" },
+        {
+          factor: "skills_match",
+          score: 0.88,
+          note: "All required skills + payments-domain depth",
+        },
         { factor: "experience_level", score: 0.85, note: "7 years — solid L5" },
-        { factor: "interview_signal", score: 0.90, note: "Strong rubric scores in tech + HR rounds" },
+        {
+          factor: "interview_signal",
+          score: 0.9,
+          note: "Strong rubric scores in tech + HR rounds",
+        },
       ],
       caveats: [],
       scored_at: new Date().toISOString(),
@@ -773,7 +785,11 @@ const DEMO_APPS: DemoApp[] = [
     aiScore: 83,
     aiScoreExplanation: {
       top_factors: [
-        { factor: "skills_match", score: 0.84, note: "4/5 required skills; strong systems background" },
+        {
+          factor: "skills_match",
+          score: 0.84,
+          note: "4/5 required skills; strong systems background",
+        },
         { factor: "experience_level", score: 0.82, note: "6 years — comfortable at L5" },
         { factor: "notice_period", score: 0.75, note: "45-day notice" },
       ],
@@ -1046,9 +1062,7 @@ async function main() {
   const expiresAt = new Date(Date.now() + OFFER_E.expiryDays * 24 * 60 * 60 * 1000);
   const token = signSeedLink("candidate.accept_offer", DEMO_OFFER, expiresAt);
   const tokenHash = hashSeedToken(token);
-  const joiningDate = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000)
-    .toISOString()
-    .slice(0, 10);
+  const joiningDate = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
 
   // postgres-js rejects bigint params; stringify the paise values + cast
   // to bigint server-side. expires_at goes via ISO string for the same
@@ -1275,22 +1289,42 @@ async function main() {
   const acceptUrl = `${PORTAL_BASE}/offer/${token}`;
   console.log("");
   console.log(`Seeded ${DEMO_APPS.length + 1} applications under requisition ${DEMO_REQ}`);
-  console.log("  A. Anika Raghavan      application_received   score=92   2h ago   (MomentumFeed top)");
-  console.log("  B. Vikram Joshi        application_received   score=64   6h ago   (MomentumFeed mid)");
-  console.log("  C. Sneha Banerjee      application_received   score=88   30h ago  (Hot Zone — SLA breach)");
-  console.log("  D. Karthik Mahadevan   recruiter_review       score=81   2d in stage  (drawer demo)");
+  console.log(
+    "  A. Anika Raghavan      application_received   score=92   2h ago   (MomentumFeed top)",
+  );
+  console.log(
+    "  B. Vikram Joshi        application_received   score=64   6h ago   (MomentumFeed mid)",
+  );
+  console.log(
+    "  C. Sneha Banerjee      application_received   score=88   30h ago  (Hot Zone — SLA breach)",
+  );
+  console.log(
+    "  D. Karthik Mahadevan   recruiter_review       score=81   2d in stage  (drawer demo)",
+  );
   console.log("  E. Priya Subramanian   offer_drafted          score=85   offer extended 1h ago");
-  console.log("  F. Aarav Iyer          application_received   score=PENDING   5m ago  (AI-03 real scoring)");
-  console.log("  G. Rohan Desai         tech_interview         score=87   7d in stage  (SEED-01 pending approval)");
-  console.log("  H. Meera Nair          tech_interview         score=83   6d in stage  (SEED-01 scanner live-fire)");
+  console.log(
+    "  F. Aarav Iyer          application_received   score=PENDING   5m ago  (AI-03 real scoring)",
+  );
+  console.log(
+    "  G. Rohan Desai         tech_interview         score=87   7d in stage  (SEED-01 pending approval)",
+  );
+  console.log(
+    "  H. Meera Nair          tech_interview         score=83   6d in stage  (SEED-01 scanner live-fire)",
+  );
   console.log("");
   console.log("SEED-01 follow-ups wedge:");
   console.log(`  Agent:    ${DEMO_AGENT_NAME}  (${DEMO_AGENT})`);
-  console.log(`            follow_up · stage_stale · stage=${STALE_STAGE} · days_threshold=${STALE_DAYS_THRESHOLD} · enabled`);
+  console.log(
+    `            follow_up · stage_stale · stage=${STALE_STAGE} · days_threshold=${STALE_DAYS_THRESHOLD} · enabled`,
+  );
   if (retired.length > 0) {
-    console.log(`            retired ${retired.length} stale active namesake(s): ${retired.map((r) => r.id).join(", ")}`);
+    console.log(
+      `            retired ${retired.length} stale active namesake(s): ${retired.map((r) => r.id).join(", ")}`,
+    );
   }
-  console.log(`  Approval: ${DEMO_APPROVAL_G}  (pending, owning_recruiter) — G's drafted check-in, visible at /approvals`);
+  console.log(
+    `  Approval: ${DEMO_APPROVAL_G}  (pending, owning_recruiter) — G's drafted check-in, visible at /approvals`,
+  );
   console.log(`  Run:      ${DEMO_RUN_G}  (awaiting_approval, halted on draft_message)`);
   console.log(`  H (${APP_H}) has NO seeded run — the stage_stale scanner live-fires on it.`);
   console.log("");

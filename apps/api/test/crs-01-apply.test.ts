@@ -28,11 +28,7 @@ import { readFile } from "node:fs/promises";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { app } from "../src/index.js";
-import {
-  sql as poolSql,
-  db,
-  candidateDedupAttempts,
-} from "@hireops/db";
+import { sql as poolSql, db, candidateDedupAttempts } from "@hireops/db";
 import { and, eq } from "drizzle-orm";
 import { resetStorageClient, getStorageClient } from "../src/lib/storage";
 
@@ -72,17 +68,19 @@ interface TRPCSuccessEnvelope<T> {
   result: { data: T };
 }
 
-async function trpcQuery<O>(name: string, input: unknown): Promise<
-  TRPCSuccessEnvelope<O> | TRPCErrorEnvelope
-> {
+async function trpcQuery<O>(
+  name: string,
+  input: unknown,
+): Promise<TRPCSuccessEnvelope<O> | TRPCErrorEnvelope> {
   const url = `/trpc/${name}?input=${encodeURIComponent(JSON.stringify(input))}`;
   const res = await app.request(url, { method: "GET" });
   return (await res.json()) as TRPCSuccessEnvelope<O> | TRPCErrorEnvelope;
 }
 
-async function trpcMutation<O>(name: string, input: unknown): Promise<
-  TRPCSuccessEnvelope<O> | TRPCErrorEnvelope
-> {
+async function trpcMutation<O>(
+  name: string,
+  input: unknown,
+): Promise<TRPCSuccessEnvelope<O> | TRPCErrorEnvelope> {
   const res = await app.request(`/trpc/${name}`, {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -302,7 +300,11 @@ describe("CRS-01 public apply form", () => {
       WHERE c.tenant_id = ${CRS_TENANT} AND a.requisition_id = ${CRS_REQ}
     `;
     assert.equal(personsForThisReq.length, 1);
-    assert.equal(personsForThisReq[0]!.person_id, existingPersonId, "expected silent merge by phone");
+    assert.equal(
+      personsForThisReq[0]!.person_id,
+      existingPersonId,
+      "expected silent merge by phone",
+    );
 
     // Cleanup so subsequent dedup tests start clean against the same req.
     // Order matters: candidate_dedup_attempts.(tenant_id, matched_person_id)

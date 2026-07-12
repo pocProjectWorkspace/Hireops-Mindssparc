@@ -31,7 +31,11 @@ const corsOrigins = (process.env.CORS_ALLOWED_ORIGINS ?? "")
   .split(",")
   .map((s) => s.trim())
   .filter(Boolean);
-const defaultDevOrigins = ["http://localhost:3000", "http://localhost:3002", "http://localhost:3003"];
+const defaultDevOrigins = [
+  "http://localhost:3000",
+  "http://localhost:3002",
+  "http://localhost:3003",
+];
 const allowedOrigins = corsOrigins.length > 0 ? corsOrigins : defaultDevOrigins;
 app.use(
   "*",

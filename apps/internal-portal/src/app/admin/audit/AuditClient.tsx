@@ -60,9 +60,7 @@ export function AuditClient({ initial }: { initial: ListAuditEventsOutput }) {
     getNextPageParam: (last) => last.nextCursor ?? undefined,
     // Seed page 1 from the server prefetch only for the default view; a
     // filtered query has a different key and fetches fresh.
-    initialData: filtersActive
-      ? undefined
-      : { pages: [initial], pageParams: [undefined] },
+    initialData: filtersActive ? undefined : { pages: [initial], pageParams: [undefined] },
     refetchOnWindowFocus: false,
     staleTime: 5_000,
   });
@@ -183,9 +181,7 @@ function AuditRow({
             </span>
             <span>
               actor_membership_id:{" "}
-              <span className="font-mono text-neutral-700">
-                {row.actor_membership_id ?? "—"}
-              </span>
+              <span className="font-mono text-neutral-700">{row.actor_membership_id ?? "—"}</span>
             </span>
           </div>
 
@@ -236,9 +232,7 @@ function ActionBadge({ action }: { action: string }) {
         : action === "delete"
           ? "bg-status-error-100 text-status-error-800"
           : "bg-neutral-100 text-neutral-800";
-  return (
-    <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${cls}`}>{action}</span>
-  );
+  return <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${cls}`}>{action}</span>;
 }
 
 function FilterChip({

@@ -55,9 +55,7 @@ export function StageAdvanced({
                 </Link>
               </Text>
             ) : (
-              <Text style={text}>
-                The recruiting team will reach out with next steps shortly.
-              </Text>
+              <Text style={text}>The recruiting team will reach out with next steps shortly.</Text>
             )}
             <Text style={textMuted}>— The {companyName} recruiting team</Text>
           </Section>

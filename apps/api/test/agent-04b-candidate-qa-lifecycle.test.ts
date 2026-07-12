@@ -139,13 +139,27 @@ describe("AGENT-04b — Candidate Q&A agent create / update / retire / toggle li
     jwt = await getTestJwt();
     const claims = decodeJwt(jwt);
     testTenantId = (claims as { tid?: string }).tid as string;
-    for (const n of [NAME_CREATE, NAME_UPDATE, NAME_RETIRE, NAME_TOGGLE, NAME_DUP, NAME_MULTIEDIT]) {
+    for (const n of [
+      NAME_CREATE,
+      NAME_UPDATE,
+      NAME_RETIRE,
+      NAME_TOGGLE,
+      NAME_DUP,
+      NAME_MULTIEDIT,
+    ]) {
       await deleteAllAgentsByName(n);
     }
   });
 
   afterAll(async () => {
-    for (const n of [NAME_CREATE, NAME_UPDATE, NAME_RETIRE, NAME_TOGGLE, NAME_DUP, NAME_MULTIEDIT]) {
+    for (const n of [
+      NAME_CREATE,
+      NAME_UPDATE,
+      NAME_RETIRE,
+      NAME_TOGGLE,
+      NAME_DUP,
+      NAME_MULTIEDIT,
+    ]) {
       await deleteAllAgentsByName(n);
     }
     await poolSql.end({ timeout: 10 });
@@ -320,12 +334,14 @@ describe("AGENT-04b — Candidate Q&A agent create / update / retire / toggle li
     assert.ok(v1?.retired_at);
     assert.equal(v1?.version, 1);
 
-    const [v2] = await poolSql<{
-      retired_at: Date | null;
-      name: string;
-      version: number;
-      description: string | null;
-    }[]>`
+    const [v2] = await poolSql<
+      {
+        retired_at: Date | null;
+        name: string;
+        version: number;
+        description: string | null;
+      }[]
+    >`
       SELECT retired_at, name, version, description FROM public.automation_agents WHERE id = ${v2AgentId}
     `;
     assert.equal(v2?.retired_at, null);
@@ -408,7 +424,9 @@ describe("AGENT-04b — Candidate Q&A agent create / update / retire / toggle li
     const agentId = createEnv.result.data.agentId;
 
     const before = (
-      await poolSql<{ c: number }[]>`SELECT COUNT(*)::int AS c FROM public.automation_agents WHERE name = ${NAME_RETIRE}`
+      await poolSql<
+        { c: number }[]
+      >`SELECT COUNT(*)::int AS c FROM public.automation_agents WHERE name = ${NAME_RETIRE}`
     )[0]?.c;
     assert.equal(before, 1);
 
@@ -424,7 +442,9 @@ describe("AGENT-04b — Candidate Q&A agent create / update / retire / toggle li
     assert.ok(row?.retired_at);
 
     const after = (
-      await poolSql<{ c: number }[]>`SELECT COUNT(*)::int AS c FROM public.automation_agents WHERE name = ${NAME_RETIRE}`
+      await poolSql<
+        { c: number }[]
+      >`SELECT COUNT(*)::int AS c FROM public.automation_agents WHERE name = ${NAME_RETIRE}`
     )[0]?.c;
     assert.equal(after, 1, "retire never inserts a new row");
 
@@ -463,7 +483,9 @@ describe("AGENT-04b — Candidate Q&A agent create / update / retire / toggle li
     assert.equal(afterDisable?.version, 1, "toggle does NOT bump version");
 
     const count = (
-      await poolSql<{ c: number }[]>`SELECT COUNT(*)::int AS c FROM public.automation_agents WHERE name = ${NAME_TOGGLE}`
+      await poolSql<
+        { c: number }[]
+      >`SELECT COUNT(*)::int AS c FROM public.automation_agents WHERE name = ${NAME_TOGGLE}`
     )[0]?.c;
     assert.equal(count, 1);
 
@@ -498,7 +520,9 @@ describe("AGENT-04b — Candidate Q&A agent create / update / retire / toggle li
     );
 
     const count = (
-      await poolSql<{ c: number }[]>`SELECT COUNT(*)::int AS c FROM public.automation_agents WHERE name = ${NAME_DUP}`
+      await poolSql<
+        { c: number }[]
+      >`SELECT COUNT(*)::int AS c FROM public.automation_agents WHERE name = ${NAME_DUP}`
     )[0]?.c;
     assert.equal(count, 1, "duplicate INSERT was a no-op, not a rolled-back row");
   });
@@ -529,9 +553,7 @@ describe("AGENT-04b — Candidate Q&A agent create / update / retire / toggle li
     assert.equal(v3.result.data.previousAgentId, v2Id);
     const v3Id = v3.result.data.agentId;
 
-    const lineage = await poolSql<
-      { id: string; version: number; retired_at: Date | null }[]
-    >`
+    const lineage = await poolSql<{ id: string; version: number; retired_at: Date | null }[]>`
       SELECT id::text, version, retired_at FROM public.automation_agents
       WHERE tenant_id = ${testTenantId} AND name = ${NAME_MULTIEDIT}
       ORDER BY version ASC
