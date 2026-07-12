@@ -3,7 +3,11 @@
 **Status:** Internal canonical demo script for late August 2026 Kyndryl
 session. Replaces the earlier demo-scope.md draft entirely.
 
-**Last updated:** 2026-05-28
+**Last updated:** 2026-07-12 — Act 2 rewritten under the week-7
+contingency decision (HANDOVER §0): scheduling and candidate Q&A are
+cut from the demo to the onboarding window; the follow-ups agent is
+taken end-to-end and is the wedge on stage. Act 2 now narrates only
+what is built and verified on the branch.
 
 ---
 
@@ -13,9 +17,11 @@ A capability + wedge demo for Kyndryl that lands three things:
 
 1. **The platform works end-to-end.** Apply through simulated Workday hire,
    live, on a real staging environment.
-2. **The wedge is real, not a slide.** HR-configurable agents handle
-   scheduling, follow-ups, and candidate Q&A — visibly, with human-in-loop
-   approval and full audit.
+2. **The wedge is real, not a slide.** An HR-configurable follow-ups agent
+   notices stalled candidates on its own, drafts with Claude, waits for a
+   human, sends, and logs everything — approval and audit visible live.
+   (Scheduling and candidate Q&A agents are onboarding-window scope; the
+   runtime they share is what's being demonstrated.)
 3. **The roadmap is credible.** What's not yet shipped is honestly framed
    as onboarding-window or post-onboarding work, not hidden.
 
@@ -53,25 +59,33 @@ ATS lifecycle, shown competently.
 
 ### Act 2 — The wedge (steps 7-14, ~12 min)
 
-This is the new build from weeks 1-10. The differentiation.
+The follow-ups agent, end-to-end: configure → notice → draft → approve →
+send → audit. One agent shown deeply beats three shown thinly — every
+minute of this act is the same runtime that scheduling and Q&A will run
+on in the onboarding window, and the narration says so once, up front.
+
+Pre-seeded state (one `pnpm db:seed:demo-data` run): **Rohan Desai**,
+stuck 7 days at tech-interview, with the agent's drafted check-in already
+pending in the approval queue; **Meera Nair**, 6 days stale, untouched —
+she is the optional live-fire target.
 
 | # | Action | Narration |
 |---|---|---|
-| 7 | Navigate to `/admin/workflows` as admin user | "This is HireOps' operating model. Recruiters don't operate the system — they direct it. Here's the admin workflows surface where HR configures what the platform does automatically." |
-| 8 | Show list of active workflows — scheduling agent, follow-ups agent, candidate Q&A agent. Click into scheduling agent. | "Three agents configured for this tenant. Let's look at scheduling. You see the triggers — when a candidate hits the 'schedule interview' stage. The actions — propose three slots, send candidate a self-scheduling link. The approval rules — auto-send for standard scheduling, recruiter approves for VIP candidates." |
-| 9 | Switch to recruiter view, advance the seeded candidate to "schedule interview" stage | "Recruiter advances the candidate. Behind the scenes, the scheduling agent picks up the trigger, queries the panel members' Google calendars, intersects availability, proposes three slots, drafts the candidate message." |
-| 10 | Show approval queue with proposed scheduling message and 3 slots | "Recruiter sees the proposed action in the approval queue. They can approve, edit, or override the slot selection. Every approval is logged with who, when, and what data the agent used." |
-| 11 | Approve, switch to candidate browser, open signed-link self-scheduling page, pick a slot | "Candidate gets the self-scheduling link. Picks a slot. Calendar invites fly out to the panel and the candidate." |
-| 12 | Show calendar invites landing on recruiter's calendar and a panelist's calendar | "Real calendar integration. Google and Microsoft 365 both supported via OAuth." |
-| 13 | Navigate to a separate seeded candidate stuck at "tech screen scheduled" for 5+ days. Show follow-ups agent has drafted a follow-up. | "Different candidate, different agent. This one's gone stale at tech-screen-scheduled. Follow-ups agent has drafted a check-in message. Recruiter approves, message sends, audit log records it." |
-| 14 | Show one more — candidate Q&A. A candidate's question email surfaces in the approval queue with a drafted AI reply from the JD + tenant FAQ. | "Third agent. Candidate emailed a question — 'what's the salary range for this role?' Agent drafts a reply from the JD and the tenant's FAQ library. Recruiter approves, reply sends." |
+| 7 | Navigate to `/admin/workflows` as admin user | "This is HireOps' operating model. Recruiters don't operate the system — they direct it. Here's where HR configures what the platform does automatically. No engineering involved: this agent was configured through this screen." |
+| 8 | Click into the follow-ups agent. Walk the detail: trigger, two actions, approval rules, run history. Flick the enable toggle off and back on. | "One agent live for this tenant. The trigger: a candidate sitting in tech-interview for more than 5 days. The actions: draft a check-in with Claude, then send it. Look at where the approval sits — on the *draft*, not the send. A human approves the words; once approved, sending is mechanical. And HR can pause the whole agent with one switch." |
+| 9 | Switch to recruiter view. Show Rohan Desai in `/triage` — 7 days in tech-interview. | "Rohan has been waiting 7 days. Nobody flagged him — no recruiter had to remember. Every 15 minutes the platform scans for exactly this and wakes the agent itself. That already happened." |
+| 10 | Open `/approvals`. The drafted check-in for Rohan is waiting: subject, friendly body, the trigger context visible. | "Here's what the agent did about it: a drafted, personalised check-in — the role, how long he's waited, a friendly tone HR chose in the config. It has NOT been sent. It's waiting for a human." |
+| 11 | Edit one line of the draft (make it personal), then Approve & send. | "The recruiter is the editor, not the typist. I'll tweak one line — and approve. The edited version is what ships; both versions are kept for audit." |
+| 12 | Switch to the candidate inbox; the email lands. | "Seconds later it's in Rohan's inbox — real delivery over our verified sending domain. The recruiter spent forty seconds on something that used to silently not happen." |
+| 13 | *(Optional live-fire — do only if the morning rehearsal was clean.)* Back as admin: show Meera Nair, 6 days stale, no run yet. Narrate the scanner cadence; if a tick fires during the act, her draft appears in the queue live. | "Meera is in the same position and the agent hasn't touched her yet — watch the queue. This is the platform noticing on its own, live. (Fallback if the tick doesn't land on cue: 'her check-in will be drafted within the quarter hour — this is Rohan's flow from ten minutes ago, on schedule.')" |
+| 14 | Return to the agent's run history in `/admin/workflows` — the completed run: triggered by system → drafted → approved → sent. Pause for questions. | "The whole story in one row: the system triggered it, Claude drafted it, a named human approved it at a timestamp, the send completed. Hold that thought — Act 3 shows this same trail from the auditor's chair." |
 
 ### Act 3 — The audit + cost surface, then offer through hire (steps 15-19, ~7 min)
 
 | # | Action | Narration |
 |---|---|---|
-| 15 | Open audit list view in admin | "Every agent action — proposed, approved, sent, logged here with the reasoning. This is what 'AI you can audit' looks like in practice. Procurement, risk, and assurance teams can verify any decision after the fact." |
-| 16 | Open cost-per-feature dashboard | "Same data, different lens. Every Anthropic call logged with input tokens, output tokens, cost in INR. Per agent, per workflow, per recruiter. Procurement gets a real TCO number, not a vendor estimate." |
+| 15 | Open `/admin/audit`. Click the "Agent activity" filter. Expand the row for the approval decision — changed columns, before/after diff, who, when. | "Every agent action — proposed, approved, sent — logged with the full data diff. This is what 'AI you can audit' looks like in practice: the edit the recruiter made in Act 2 is right here, before and after, with the approver's identity and timestamp. Procurement, risk, and assurance can verify any decision after the fact." |
+| 16 | Open `/admin/costs` — tiles, per-feature and per-model tables, the 14-day bars. | "Same data, different lens. Every Claude call logged with input tokens, output tokens, and cost — per feature, per model, per day. That draft you just approved cost a third of a US cent. Procurement gets a real TCO number, not a vendor estimate." |
 | 17 | Switch back to recruiter view, navigate to a seeded candidate with an offer extended | "Now let's close the loop. Candidate further along — offer extended. Recruiter sees the offer state, copies the candidate-facing signed link." |
 | 18 | Open `/offer/[token]` in a separate browser as candidate, preview, accept with full-name match | "Candidate reviews the offer, accepts by typing their full name. Click-is-acceptance for the POC — real e-signature integration is in the onboarding scope." |
 | 19 | Show `/admin/integrations` with the simulated Workday Hire response carrying `simulation_notes` marker | "Acceptance triggers the Workday Hire workflow. Right now this is a simulator — you can see the `simulation_notes` field marking it as such, deliberately visible. The real Workday SOAP connector is in the onboarding scope, gated on your sandbox tenant credentials." |
@@ -85,6 +99,8 @@ window or the post-POC roadmap.
 
 | Gap | Pre-framing |
 |---|---|
+| **No scheduling agent** | "Interview scheduling is the next agent on this same runtime — it needs calendar OAuth (Google + Microsoft), which we deliberately scoped to the onboarding window so we integrate against *your* tenant's calendars, not a demo account. The trigger/action/approval machinery you just watched is the hard part, and it's live." |
+| **No candidate Q&A agent** | "Same story: the Q&A agent drafts replies to candidate emails from the JD and your FAQ library. Inbound email intake is schema-ready (`candidate_inbound_messages`); the agent lands in onboarding on the runtime you saw." |
 | **No partner portal** | "Partner channel is in the onboarding scope. We modeled the schema for partner identity and assignment but want to design the UI with you — partner workflows vary per company." |
 | **No JD builder UI** | "Requisitions are seeded for the demo. Recruiter-facing JD builder with AI generation is in the onboarding scope." |
 | **No approvals enforcement on requisitions/offers** | "Approval schema is shipped. Enforcement layer is in the onboarding scope, deliberately deferred so we model your actual approval matrix with you." |
@@ -125,8 +141,12 @@ Same approach as draft v1 — lean in on strengths, be honest about gaps.
 ### Be honest about
 
 - OpenAI provider not yet smoked against live API
-- `pii_access_log` shipped only at week 7 of the 13-week build, was not
-  in Wave 1
+- `pii_access_log` is still pending (targeted before the demo; if it
+  slips, say so plainly — the audit_logs + api_audit_logs pair covers
+  data changes and API intent today, read-access logging is the gap)
+- Scheduling + candidate Q&A agents were descoped at the week-7
+  checkpoint to take follow-ups end-to-end — a deliberate depth-over-
+  breadth call, and the contingency plan working as designed
 - Real Workday SOAP connector is in onboarding scope
 - Real e-signature is in onboarding scope
 - Coverage isn't measured yet — coverage gates added during onboarding
@@ -145,30 +165,36 @@ Same approach as draft v1 — lean in on strengths, be honest about gaps.
 
 ### High risk
 
-**Calendar OAuth failing during the live scheduling demo (step 9-11).**
-Production Google / Microsoft OAuth flows occasionally have transient
-failures. Mitigation: pre-test on the morning of the demo. Have a
-pre-seeded candidate with calendar invites already set up as backup —
-if live OAuth fails, narrate "let's look at a candidate who's already
-been through this flow" and click the seeded one.
+**Live-fire timing on step 13 (Meera).** The stage_stale scanner ticks
+every 15 minutes and the draft then needs a real Anthropic call
+(baseline ~9s, spikes 15-20s). The tick will usually NOT land inside the
+act. Mitigation: step 13 is explicitly optional with a scripted fallback
+line; Rohan's pre-seeded approval (step 10) carries the act regardless.
+Never block the demo waiting for a tick.
 
-**Anthropic API latency spike during follow-up draft (step 13) or Q&A
-draft (step 14).** AI-03 baseline is ~9 seconds; spikes can hit 15-20.
-Mitigation: the approval queue surface shows "agent is drafting…" state.
-If it takes longer than 12 seconds, narrate the cost / audit data while
-waiting.
+**Demo state consumed by a test run.** `pnpm test:gate` defensively
+wipes the seeded wedge state (pending approval, outbox rows) and the
+scan-test can enqueue stray rows against the demo agent. Mitigation:
+**run `pnpm db:seed:demo-data` AFTER any test run and immediately before
+the demo** — the seed is idempotent and rebuilds the entire Act-2 state
+in one command. This is a hard runbook rule.
 
 ### Medium risk
 
-**Empty pre-seeded data in admin workflows page.** If the seed script for
-demo hasn't populated the three workflows visibly, step 8 falls flat.
-Mitigation: explicit pre-demo checklist verifies seed completeness.
+**Anthropic latency during any live draft.** If a live draft is in
+flight and slow, narrate the audit/cost surfaces while waiting — they're
+one click away in Act 3 and make the pause look intentional.
+
+**Empty pre-seeded data in admin workflows page.** If the seed hasn't
+run, step 8 falls flat. Mitigation: the pre-demo checklist verifies the
+agent, both stale candidates, and the pending approval exist (the seed
+prints all four ids in its summary).
 
 **SLA-imminent scanner firing during the demo creating unexpected
-notifications.** The scheduled scanner runs every 15 min. Could create
-mid-demo noise. Mitigation: pause the scanner during the demo window or
-ensure no candidates are within SLA-imminent thresholds in the demo
-data.
+notifications.** The scheduled scanners run every 15 min. Could create
+mid-demo noise. Mitigation: ensure no demo-data candidates sit inside
+SLA-imminent thresholds, or accept the noise and narrate it as the
+platform working.
 
 ### Low risk
 
@@ -183,14 +209,19 @@ delays.
 
 - [ ] Staging environment up and reachable
 - [ ] DNS records all green (SPF, DKIM, DMARC verified at Resend)
-- [ ] Demo tenant seeded fresh — 5 candidates at varied lifecycle stages,
-      1 live-submit slot reserved, 3 active workflows configured
+- [ ] Demo tenant seeded fresh via `pnpm db:seed:demo-data` — run AFTER
+      the last test run, never before one. Verify the seed summary
+      prints: the follow-ups agent (enabled), Rohan (7d stale, pending
+      approval), Meera (6d stale, no run), 1 live-submit slot reserved
+- [ ] Demo tenant has a real Anthropic credential
+      (`ai_anthropic` via storeIntegrationCredential) — live drafts and
+      scoring depend on it; the pre-seeded approval does not
+- [ ] Workers process running on staging (the scanner and send path
+      both live there); email template changes require a worker restart
 - [ ] Mobile browser and laptop both logged out
 - [ ] Candidate persona email inbox accessible to demo audience (or
       mirror-screen)
 - [ ] Backup recording of full flow captured (run-through, mp4)
-- [ ] Calendar OAuth tested on demo morning with the actual panel
-      members' calendars
 - [ ] Anthropic API budget alerts not at threshold (avoid mid-demo
       throttling)
 - [ ] All open critical issues either fixed or known and documented
