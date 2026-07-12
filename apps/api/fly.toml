@@ -1,0 +1,49 @@
+# Fly.io config — apps/api (HireOps HTTP API: Hono + tRPC).
+#
+# Deploy from the REPO ROOT so the Docker build context is the whole
+# workspace (the image is monorepo-aware — see apps/api/Dockerfile):
+#   fly deploy -c apps/api/fly.toml
+#
+# `app` is a placeholder — the staging app doesn't exist yet. Create it
+# first (`fly apps create hireops-api-staging`) or let `fly launch
+# --no-deploy` name it, then set it here. Region bom = Mumbai (ap-south-1
+# alignment, per the Workday ADR §3.5 / multi-tenancy sizing).
+
+app = "hireops-api-staging"
+primary_region = "bom"
+
+[build]
+  dockerfile = "apps/api/Dockerfile"
+
+[env]
+  # src/index.ts reads process.env.PORT (?? 3001); it MUST equal
+  # internal_port below. NODE_ENV=production is baked into the image.
+  PORT = "8080"
+  # CORS_ALLOWED_ORIGINS, DATABASE_URL, SUPABASE_*, SIGNED_LINK_SECRET,
+  # SUPABASE_KEK_SECRET, EMAIL_*, etc. are SECRETS — set via
+  # `fly secrets set …`, never here. See docs/new-set/staging-runbook.md
+  # for the complete per-app env table.
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  # Keep one machine always warm through the demo window (no cold-start
+  # latency mid-demo). Revisit auto-stop for cost once past the POC.
+  auto_stop_machines = "off"
+  auto_start_machines = true
+  min_machines_running = 1
+  processes = ["app"]
+
+  # Liveness — /api/healthz is the documented probe (src/index.ts). It
+  # returns 200 without touching the DB, so it stays green even if the
+  # pooler blips; a DB-aware readiness probe is a separate future ticket.
+  [[http_service.checks]]
+    interval = "15s"
+    timeout = "3s"
+    grace_period = "10s"
+    method = "GET"
+    path = "/api/healthz"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"

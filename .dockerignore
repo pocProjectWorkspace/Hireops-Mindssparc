@@ -1,0 +1,39 @@
+# Docker build context excludes. Build context is the repo root for both
+# apps/api and apps/workers images (monorepo-aware pnpm deploy needs the
+# whole workspace + lockfile). Keep the context lean so remote Fly builds
+# stay fast and no secrets/artefacts leak into an image layer.
+
+# Dependencies — reinstalled from the frozen lockfile inside the build.
+**/node_modules
+.pnpm-store
+
+# Secrets — NEVER copy .env into an image. Fly injects config via secrets
+# at runtime; dotenv no-ops when the file is absent.
+.env
+.env.local
+.env.*.local
+
+# Build artefacts / caches
+**/.next
+**/dist
+**/.turbo
+**/storybook-static
+**/coverage
+**/playwright-report
+**/test-results
+
+# VCS + editor + OS cruft
+.git
+.gitignore
+**/.DS_Store
+.vscode
+.idea
+
+# Docs & deploy manifests aren't needed at runtime
+docs
+**/*.md
+
+# Tests aren't needed in the runtime image (kept out of the deploy prune too)
+**/test
+**/*.test.ts
+**/*.test.tsx

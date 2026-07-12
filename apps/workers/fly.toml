@@ -1,0 +1,37 @@
+# Fly.io config — apps/workers (HireOps background loops: outbox drain,
+# scheduler ticks, agent-run drain, Workday-sim drain, AI-score drain).
+#
+# Deploy from the REPO ROOT (monorepo-aware build — see apps/workers/Dockerfile):
+#   fly deploy -c apps/workers/fly.toml
+#
+# `app` is a placeholder — create it first (`fly apps create
+# hireops-workers-staging`). Region bom = Mumbai, matching apps/api.
+
+app = "hireops-workers-staging"
+primary_region = "bom"
+
+[build]
+  dockerfile = "apps/workers/Dockerfile"
+
+[env]
+  # DATABASE_URL, SUPABASE_*, SIGNED_LINK_SECRET, SUPABASE_KEK_SECRET,
+  # EMAIL_PROVIDER/RESEND_API_KEY/EMAIL_FROM, AI_CLIENT_MODE etc. are
+  # SECRETS — set via `fly secrets set …`. See the staging runbook for
+  # the complete per-app env table.
+  NODE_ENV = "production"
+
+# NO [http_service] / [[services]] block: the worker exposes no port. It's
+# a pure loop process; Fly treats "process alive" as healthy and restarts a
+# crashed machine automatically.
+#
+# SINGLETON — Wave 1 assumption. The dispatcher's SKIP LOCKED + the
+# scheduler's advisory lock make multi-instance safe-by-construction, but
+# Wave 1 runs EXACTLY ONE machine. Fly can't express min_machines_running
+# outside a service, so enforce the count out-of-band after the first
+# deploy:
+#   fly scale count 1 -c apps/workers/fly.toml
+# and never scale it above 1 until the multi-instance work lands.
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"

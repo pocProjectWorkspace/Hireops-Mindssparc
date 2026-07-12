@@ -48,6 +48,22 @@ if (!process.env.NEXT_PUBLIC_API_BASE) {
  * native ESM + checked JSDoc typing via @type below.
  */
 
+// Server Actions reject POSTs whose Origin host isn't in this allow-list.
+// STAGING-PREP-01: derive the deployed host from NEXT_PUBLIC_SITE_URL so
+// staging/prod (e.g. https://portal.staging.hireops.app) is accepted
+// without editing this file. allowedOrigins wants host[:port], no
+// protocol. The localhost dev fallbacks are preserved (3002 default,
+// 3003 is the port the portal actually runs on locally per the
+// platform-build-status dev note).
+const serverActionOrigins = ["localhost:3002", "localhost:3003"];
+if (process.env.NEXT_PUBLIC_SITE_URL) {
+  try {
+    serverActionOrigins.unshift(new URL(process.env.NEXT_PUBLIC_SITE_URL).host);
+  } catch {
+    // Malformed NEXT_PUBLIC_SITE_URL — keep the dev fallbacks rather than crash the build.
+  }
+}
+
 /** @type {import('next').NextConfig} */
 const config = {
   reactStrictMode: true,
@@ -59,7 +75,7 @@ const config = {
     "@hireops/ui",
   ],
   experimental: {
-    serverActions: { allowedOrigins: ["localhost:3002"] },
+    serverActions: { allowedOrigins: serverActionOrigins },
   },
 };
 
