@@ -2,7 +2,7 @@
 
 **Purpose.** This is the master status + scope + roadmap document. Paste it at the start of a new build session to know, without re-deriving anything: exactly where the build is, what remains for the **August demo**, and what remains for the **full platform**. It is the "what to build next" companion to `docs/HANDOVER.md` (which is the ticket-level changelog + deep codebase realities — read that when you need the *why* behind a specific implementation).
 
-**Last updated:** 11 July 2026, after the full-platform scope audit (branch `feat/followup-01-real-executors`, tip `bce4a7c`).
+**Last updated:** 12 July 2026, after the fast-track sprint days 1–2 (branch `feat/followup-01-real-executors`, tip `ed04eff`). Demo-critical items §4 #1–5, #9 (minus pii_access_log), and #10 are DONE; the remaining path is external infra (#6 Resend, #7 staging, #8 credential) plus two small in-house tickets (pii_access_log; agent-runtime robustness follow-ups).
 
 **Read alongside this doc:**
 - `docs/requirements.md` — the full product requirements (the denominator for §5 below).
@@ -74,17 +74,19 @@ Monorepo: pnpm 11 + Turborepo + Node 22 LTS + TypeScript 5 strict. Apps: `api` (
 
 Demo script: `docs/new-set/demo-scope-v2.md` (Acts 1–3). Under the week-7 contingency (scheduling + Q&A cut), the demo's thesis is: **HR configures an agent → the agent drafts with Claude → a human approves → it sends → the audit trail shows all of it**, wrapped around the working apply→offer→sim-hire slice.
 
-### Demo-critical pending work (~7–9 build sessions)
-1. **`/admin/workflows` UI** — list agents, drill into triggers/actions/approval rules, toggle on/off, run history. Backend (`listAgents`) exists. *(≈1 session)*
-2. **Audit list view** — admin-facing "every agent action, logged." Needs a `listAuditEvents` procedure + UI. *(≈1 session)*
-3. **Cost dashboard** — per-feature/agent/model cost from `ai_usage_logs`. Needs an aggregation procedure + UI. *(≈1 session)*
-4. **`stage_stale` scanner worker** — so follow-up runs fire automatically instead of being hand-enqueued. *(≈½ session)*
-5. **Agent + pending-approval demo seed** — extend `seed-demo-data` to provision the follow-ups agent and a believable pending approval. *(≈½ session)*
-6. **Resend email provider + DNS** — replace `RealEmailProviderStub` (throws today); verify DKIM/SPF/DMARC. **External dependency — start the DNS clock NOW.** *(≈1 session + propagation wait)*
-7. **Staging deployment** — api + portal + workers + DB on a real domain. No deploy manifests exist yet. **Biggest unknown — spike early.** *(≈1–2 sessions)*
-8. **Real Anthropic credential** for the demo tenant so scores/drafts are real, not canned. *(≈½ session, mostly config)*
-9. **Hygiene:** delete the 3 empty apps, privacy-page pass, nav/link audit (no 404s), `pii_access_log` table + middleware. *(≈1 session)*
-10. **Rewrite `demo-scope-v2.md` Act 2** — steps 8–14 still narrate scheduling + Q&A, which are cut. *(≈½ session, doc)*
+### Demo-critical pending work — status as of 12 July 2026
+1. ~~**`/admin/workflows` UI**~~ **DONE** (`2255707`, ADMIN-01) — list, detail drill-in (new `getAgentDetail`), toggle, run history.
+2. ~~**Audit list view**~~ **DONE** (`9ce008f`, ADMIN-02) — `listAuditEvents` (keyset-paginated) + `/admin/audit` with Agent-activity preset + before/after diff expand.
+3. ~~**Cost dashboard**~~ **DONE** (`1c940d7`, ADMIN-03) — `getAiUsageSummary` + `/admin/costs` (tiles, per-feature/model, 14-day bars, USD).
+4. ~~**`stage_stale` scanner worker**~~ **DONE** (`1e65496`, WORKER-01) — 15-min scheduled scan, SQL-level one-shot dedup per (agent, application).
+5. ~~**Agent + pending-approval demo seed**~~ **DONE** (`0751e01`, SEED-01) — one idempotent seed provisions the agent (stage `tech_interview` — the old hand-made agent watched a nonexistent label), Rohan (pending approval, works without an AI credential) + Meera (scanner live-fire target). **Runbook rule: re-run the seed after any `test:gate`.**
+6. **Resend email provider + DNS** — replace `RealEmailProviderStub` (throws today); verify DKIM/SPF/DMARC. **External — user setting up DNS now.** *(≈1 session + propagation wait)*
+7. **Staging deployment** — decided shape: Vercel (portal) + Fly.io (api + workers, per §3.5 ADR) + separate staging Supabase. No deploy manifests yet. Known landmines: portal dev script + logout fallback + `serverActions.allowedOrigins` hardcode 3002; email-template changes need a worker restart; `audit_logs` partitions must exist. *(≈1–2 sessions)*
+8. **Real Anthropic credential** for the demo tenant (`ai_anthropic` via `storeIntegrationCredential`). *(≈½ session, mostly config)*
+9. **Hygiene** — ~~delete 3 empty apps, nav/link audit, privacy check~~ **DONE** (`ed04eff`, HYGIENE-01: stub apps deleted, shared role-aware PortalHeader on all 6 portal pages, 10-link inventory zero 404s). **Remaining: `pii_access_log` table + middleware** (own ticket). *(≈½ session)*
+10. ~~**Rewrite `demo-scope-v2.md` Act 2**~~ **DONE** (`0e70f8f`) — follow-ups-only arc, optional live-fire step with scripted fallback, risks + checklist updated.
+
+**New (from SEED-01/WORKER-01 findings, small robustness ticket):** scan-test leaks outbox rows onto ambient agents; drain-side defensive skip for pending rows matching awaiting_approval runs (poisoned-resume hazard); `/approvals` lists approvals whose run already failed; `createFollowUpAgent` accepts any stage string (no enum check). *(≈½–1 session, post-demo acceptable except the drain skip)*
 
 ### The two date-killers
 **#6 Resend** and **#7 staging** both have external dependencies and neither has started, despite being week-1 tasks. Everything else is in-house build at the pace we've been hitting. **Recommendation:** build the admin surface next (#1→#2→#3 — pure in-house, backends ready, completes Acts 2 & 3 visually) *while* kicking off DNS for Resend in parallel, and spike staging early to retire the unknown. Decide the slip question against the **week-9 (~24 July) fuse**.
@@ -152,10 +154,13 @@ Chat-Claude designs and writes prompts with explicit scope fences + verification
 ---
 
 ## 8. Branch state
-Working branch `feat/followup-01-real-executors`, 4 commits ahead of `main`, none pushed:
-- `d19fed7` — FOLLOWUP-01: real draft/send executors, gate-on-pure-action, `audit_logs` partition fix.
-- `9274bb7` — worker JSX runtime fix (email templates).
-- `d985ac2` — harden agent-message template against missing body.
-- `bce4a7c` — the approval queue UI.
+Working branch `feat/followup-01-real-executors` (verify with `git log --oneline main..HEAD`):
+- `d19fed7` → `bce4a7c` — FOLLOWUP-01 arc: real draft/send executors, JSX runtime + template fixes, approval queue UI.
+- `12ebfc3` — this status doc created.
+- `2255707` / `9ce008f` / `1c940d7` — ADMIN-01/02/03: the three admin surfaces.
+- `1e65496` — WORKER-01: stage_stale scanner.
+- `0751e01` — SEED-01: demo-wedge seed (+ smoke-test order-independence hardening).
+- `0e70f8f` — Act-2 demo-script rewrite.
+- `ed04eff` — HYGIENE-01: stub apps deleted, shared portal nav, link audit.
 
-`main` is clean. Verify with `git log --oneline main..HEAD`.
+Working rhythm since 11 July: the orchestrator (Fable, main session) scopes tickets and commits; an Opus executor subagent codes one ticket at a time; commits are delegated, pushes remain human-only.
