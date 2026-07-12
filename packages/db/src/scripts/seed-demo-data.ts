@@ -94,6 +94,11 @@ const PERSON_E = "00000000-0000-4000-8000-00000000a505";
 // loop drains it via getAIClient(tenantId) → real Anthropic call when
 // ANTHROPIC_API_KEY is present (LocalAIClient fixture otherwise).
 const PERSON_F = "00000000-0000-4000-8000-00000000a506";
+// SEED-01 — G/H are the follow-ups wedge candidates, both stuck at
+// tech_interview past the 5-day threshold. G carries a pre-seeded
+// pending approval; H is the scanner's live-fire target (no seeded run).
+const PERSON_G = "00000000-0000-4000-8000-00000000a507";
+const PERSON_H = "00000000-0000-4000-8000-00000000a508";
 
 const CAND_A = "00000000-0000-4000-8000-00000000a511";
 const CAND_B = "00000000-0000-4000-8000-00000000a512";
@@ -101,6 +106,8 @@ const CAND_C = "00000000-0000-4000-8000-00000000a513";
 const CAND_D = "00000000-0000-4000-8000-00000000a514";
 const CAND_E = "00000000-0000-4000-8000-00000000a515";
 const CAND_F = "00000000-0000-4000-8000-00000000a516";
+const CAND_G = "00000000-0000-4000-8000-00000000a517";
+const CAND_H = "00000000-0000-4000-8000-00000000a518";
 
 const APP_A = "00000000-0000-4000-8000-00000000a521";
 const APP_B = "00000000-0000-4000-8000-00000000a522";
@@ -108,8 +115,32 @@ const APP_C = "00000000-0000-4000-8000-00000000a523";
 const APP_D = "00000000-0000-4000-8000-00000000a524";
 const APP_E = "00000000-0000-4000-8000-00000000a525";
 const APP_F = "00000000-0000-4000-8000-00000000a526";
+const APP_G = "00000000-0000-4000-8000-00000000a527";
+const APP_H = "00000000-0000-4000-8000-00000000a528";
 
-const APP_IDS = [APP_A, APP_B, APP_C, APP_D, APP_E, APP_F];
+const APP_IDS = [APP_A, APP_B, APP_C, APP_D, APP_E, APP_F, APP_G, APP_H];
+
+// ─────────────── SEED-01 follow-ups agent + paused-run ids ───────────────
+//
+// Deterministic ids for the "Demo Follow-ups Agent" and the believable
+// pending approval seeded for Candidate G. All hex-suffixed 'a59x' — a
+// namespace unused by the a5a0-a5f0 static chain above.
+const DEMO_AGENT = "00000000-0000-4000-8000-00000000a590";
+const DEMO_AGENT_TRIGGER = "00000000-0000-4000-8000-00000000a591";
+const DEMO_DRAFT_ACTION = "00000000-0000-4000-8000-00000000a592";
+const DEMO_SEND_ACTION = "00000000-0000-4000-8000-00000000a593";
+const DEMO_DRAFT_RULE = "00000000-0000-4000-8000-00000000a594";
+const DEMO_SEND_RULE = "00000000-0000-4000-8000-00000000a595";
+const DEMO_RUN_G = "00000000-0000-4000-8000-00000000a596";
+const DEMO_RUN_ACTION_G = "00000000-0000-4000-8000-00000000a597";
+const DEMO_OUTBOX_G = "00000000-0000-4000-8000-00000000a598";
+const DEMO_APPROVAL_G = "00000000-0000-4000-8000-00000000a599";
+
+const DEMO_AGENT_NAME = "Demo Follow-ups Agent";
+const STALE_STAGE = "tech_interview";
+const STALE_DAYS_THRESHOLD = 5;
+const FOLLOWUP_TONE = "friendly";
+const FOLLOWUP_MAX_TOKENS = 300;
 
 const JD_BODY = `# Senior Backend Engineer — GCC Bengaluru
 
@@ -190,6 +221,20 @@ const DEMO_PERSONS = [
     email: "aarav.iyer@example.test",
     phone: "+919812345606",
     locationCity: "Bengaluru",
+  },
+  {
+    id: PERSON_G,
+    fullName: "Rohan Desai",
+    email: "rohan.desai@example.test",
+    phone: "+919812345607",
+    locationCity: "Bengaluru",
+  },
+  {
+    id: PERSON_H,
+    fullName: "Meera Nair",
+    email: "meera.nair@example.test",
+    phone: "+919812345608",
+    locationCity: "Kochi",
   },
 ];
 
@@ -458,6 +503,68 @@ const DEMO_CANDIDATES: DemoCandidate[] = [
       },
     },
   },
+  // G — SEED-01 follow-ups wedge: strong candidate stuck at tech_interview
+  // for ~7 days. Carries the pre-seeded pending approval.
+  {
+    candidateId: CAND_G,
+    personId: PERSON_G,
+    source: "referral",
+    yearsOfExperience: 7,
+    parsedSkills: {
+      personal: { full_name: "Rohan Desai", email: "rohan.desai@example.test" },
+      work_history: [
+        {
+          company: "PhonePe",
+          title: "Senior Backend Engineer",
+          start_date: "2021-05",
+          end_date: null,
+          highlights: [
+            "Owns UPI settlement reconciliation; Kafka consumers + PostgreSQL at 15k tx/sec",
+            "Cut p99 latency 40% by re-sharding the ledger service",
+          ],
+        },
+        {
+          company: "Zeta",
+          title: "Software Engineer II",
+          start_date: "2018-06",
+          end_date: "2021-04",
+          highlights: ["Card-issuance APIs on Spring Boot + PostgreSQL"],
+        },
+      ],
+      education: [
+        { institution: "VIT Vellore", degree: "B.Tech CSE", graduated: "2018" },
+      ],
+      skills: ["Java", "Spring Boot", "Kafka", "PostgreSQL", "AWS", "Redis"],
+      notice_period_days: 30,
+      parse_metadata: { confidence_score: 0.95, source: "seed-demo-data" },
+    },
+  },
+  // H — SEED-01 follow-ups wedge: second stale candidate at tech_interview
+  // (~6 days). No seeded run — the stage_stale scanner live-fires on H.
+  {
+    candidateId: CAND_H,
+    personId: PERSON_H,
+    source: "job_board",
+    yearsOfExperience: 6,
+    parsedSkills: {
+      personal: { full_name: "Meera Nair", email: "meera.nair@example.test" },
+      work_history: [
+        {
+          company: "Nutanix India",
+          title: "Senior Software Engineer",
+          start_date: "2020-09",
+          end_date: null,
+          highlights: ["Distributed storage control-plane services in Java + Kafka"],
+        },
+      ],
+      education: [
+        { institution: "NIT Calicut", degree: "B.Tech CSE", graduated: "2017" },
+      ],
+      skills: ["Java", "Spring Boot", "Kafka", "PostgreSQL", "AWS"],
+      notice_period_days: 45,
+      parse_metadata: { confidence_score: 0.93, source: "seed-demo-data" },
+    },
+  },
 ];
 
 interface DemoApp {
@@ -617,6 +724,80 @@ const DEMO_APPS: DemoApp[] = [
       },
     ],
   },
+  // G — SEED-01 wedge candidate: stuck at tech_interview for ~7 days
+  // (past the 5-day threshold). The pre-seeded pending approval hangs off
+  // this application. stage_entered_at refreshes each run like the others.
+  {
+    appId: APP_G,
+    candidateId: CAND_G,
+    stage: STALE_STAGE,
+    createdAtInterval: "20 days",
+    stageEnteredAtInterval: "7 days",
+    aiScore: 87,
+    aiScoreExplanation: {
+      top_factors: [
+        { factor: "skills_match", score: 0.9, note: "All required skills + payments-domain depth" },
+        { factor: "experience_level", score: 0.86, note: "7 years — solid L5" },
+        { factor: "notice_period", score: 0.9, note: "30-day notice — quick start" },
+      ],
+      caveats: [],
+      scored_at: new Date().toISOString(),
+      scored_by: "simulated",
+    },
+    source: "referral",
+    transitions: [
+      { from: null, to: "application_received", ageInterval: "20 days" },
+      {
+        from: "application_received",
+        to: "recruiter_review",
+        ageInterval: "16 days",
+        reason: "Recruiter shortlisted on AI score + payments background",
+      },
+      {
+        from: "recruiter_review",
+        to: STALE_STAGE,
+        ageInterval: "7 days",
+        reason: "Passed phone screen; scheduled for technical round",
+      },
+    ],
+  },
+  // H — SEED-01 wedge candidate: second stale candidate at tech_interview
+  // (~6 days). NO seeded run — H is the stage_stale scanner's live-fire
+  // target, proving the automatic path once a credential is wired.
+  {
+    appId: APP_H,
+    candidateId: CAND_H,
+    stage: STALE_STAGE,
+    createdAtInterval: "18 days",
+    stageEnteredAtInterval: "6 days",
+    aiScore: 83,
+    aiScoreExplanation: {
+      top_factors: [
+        { factor: "skills_match", score: 0.84, note: "4/5 required skills; strong systems background" },
+        { factor: "experience_level", score: 0.82, note: "6 years — comfortable at L5" },
+        { factor: "notice_period", score: 0.75, note: "45-day notice" },
+      ],
+      caveats: [],
+      scored_at: new Date().toISOString(),
+      scored_by: "simulated",
+    },
+    source: "job_board",
+    transitions: [
+      { from: null, to: "application_received", ageInterval: "18 days" },
+      {
+        from: "application_received",
+        to: "recruiter_review",
+        ageInterval: "15 days",
+        reason: "Recruiter shortlisted",
+      },
+      {
+        from: "recruiter_review",
+        to: STALE_STAGE,
+        ageInterval: "6 days",
+        reason: "Passed phone screen; scheduled for technical round",
+      },
+    ],
+  },
 ];
 
 // Offer E — base ₹38L, variable ₹6L, joining bonus ₹1.5L, 7-day expiry.
@@ -640,7 +821,7 @@ async function main() {
   const { tenants } = await import("../schema");
 
   const [tenant] = await db
-    .select({ id: tenants.id })
+    .select({ id: tenants.id, displayName: tenants.displayName })
     .from(tenants)
     .where(eq(tenants.slug, TENANT_SLUG))
     .limit(1);
@@ -649,6 +830,7 @@ async function main() {
     process.exit(2);
   }
   const tid = tenant.id;
+  const companyName = tenant.displayName;
   console.log(`Seeding demo data into tenant ${TENANT_SLUG} (${tid})`);
 
   // Look up recruiter1's membership specifically — the script assigns
@@ -889,6 +1071,206 @@ async function main() {
             now() - interval '1 hour', now() - interval '1 hour')
   `;
 
+  // ── 4a. SEED-01 — follow-ups agent + G's paused pending approval ──
+  //
+  // Provisions the complete Act-2 wedge state so /approvals shows a
+  // real drafted message even before an Anthropic credential is wired,
+  // while the live stage_stale scanner can still fire on H.
+  //
+  // Idempotency pattern (documented for the hand-back):
+  //
+  //   1. RETIRE, don't delete, any *active* agent named "Demo
+  //      Follow-ups Agent" whose id ≠ our deterministic DEMO_AGENT.
+  //      The dev DB carries an ADMIN-01-era agent with an INVALID
+  //      trigger stage ('tech_screen') that holds the partial-unique
+  //      slot `(tenant_id, name) WHERE retired_at IS NULL`; we cannot
+  //      insert our agent while it's active. Retire (retired_at=now,
+  //      enabled=false) preserves its append-only audit + any children.
+  //
+  //   2. DELETE-THEN-REINSERT our own agent block + G's paused-run rows
+  //      by deterministic id, CHILD-FIRST (approval_requests →
+  //      run_actions → runs → outbox → approval_rules → actions →
+  //      triggers → agent). Child-first matters: agent_run_actions.
+  //      action_id → agent_actions is ON DELETE RESTRICT, so a naive
+  //      `DELETE automation_agents` cascade could trip the restrict
+  //      mid-cascade. Deleting run_actions before actions sidesteps it.
+  //      Re-seeding every run refreshes proposed_at/triggered_at (a
+  //      "recent" approval) and resets H's live-fire target if the
+  //      scanner enqueued anything between seeds — all rows are ours.
+  //
+  // The seeded run mirrors the exact end-state a real drain reaches when
+  // it halts on the draft_message approval gate (agent-vertical-smoke +
+  // agent-approval-vertical-smoke): outbox/run 'awaiting_approval', a
+  // single draft_message run_action 'awaiting_approval' carrying the
+  // draft output, and a 'pending' agent_approval_requests row whose
+  // proposed_action_payload IS that draft.
+
+  // Step 1 — retire stale active namesakes (e.g. the tech_screen agent).
+  const retired = await poolSql<{ id: string }[]>`
+    UPDATE public.automation_agents
+    SET retired_at = now(), enabled = false, updated_at = now()
+    WHERE tenant_id = ${tid}
+      AND name = ${DEMO_AGENT_NAME}
+      AND id <> ${DEMO_AGENT}
+      AND retired_at IS NULL
+    RETURNING id::text AS id
+  `;
+
+  // Step 2a — child-first teardown of our own deterministic rows.
+  await poolSql`DELETE FROM public.agent_approval_requests WHERE agent_id = ${DEMO_AGENT}`;
+  await poolSql`
+    DELETE FROM public.agent_run_actions
+    WHERE run_id IN (SELECT id FROM public.agent_runs WHERE agent_id = ${DEMO_AGENT})
+  `;
+  await poolSql`DELETE FROM public.agent_runs WHERE agent_id = ${DEMO_AGENT}`;
+  await poolSql`DELETE FROM public.agent_run_outbox WHERE agent_id = ${DEMO_AGENT}`;
+  await poolSql`DELETE FROM public.agent_approval_rules WHERE agent_id = ${DEMO_AGENT}`;
+  await poolSql`DELETE FROM public.agent_actions WHERE agent_id = ${DEMO_AGENT}`;
+  await poolSql`DELETE FROM public.agent_triggers WHERE agent_id = ${DEMO_AGENT}`;
+  await poolSql`DELETE FROM public.automation_agents WHERE id = ${DEMO_AGENT}`;
+
+  // Step 2b — the agent + its curated 2-action follow-up chain. Shapes
+  // copied field-for-field from createFollowUpAgent (apps/api router):
+  // trigger_config omits the `type` discriminator; draft action gates on
+  // human_required/owning_recruiter; send action is auto (approver NULL).
+  await poolSql`
+    INSERT INTO public.automation_agents
+      (id, tenant_id, agent_type, name, description, enabled, version, created_by)
+    VALUES (${DEMO_AGENT}, ${tid}, 'follow_up', ${DEMO_AGENT_NAME},
+            'Drafts friendly check-in messages to candidates who have sat in a stage past the threshold, then sends on recruiter approval.',
+            true, 1, ${recruiterId})
+  `;
+  await poolSql`
+    INSERT INTO public.agent_triggers
+      (id, tenant_id, agent_id, trigger_type, trigger_config)
+    VALUES (${DEMO_AGENT_TRIGGER}, ${tid}, ${DEMO_AGENT}, 'stage_stale',
+            ${JSON.stringify({ stage: STALE_STAGE, days_threshold: STALE_DAYS_THRESHOLD })}::jsonb)
+  `;
+  await poolSql`
+    INSERT INTO public.agent_actions
+      (id, tenant_id, agent_id, action_order, action_type, action_config)
+    VALUES (${DEMO_DRAFT_ACTION}, ${tid}, ${DEMO_AGENT}, 1, 'draft_message',
+            ${JSON.stringify({ template_prompt_id: "follow_up_v1", tone: FOLLOWUP_TONE, max_tokens: FOLLOWUP_MAX_TOKENS })}::jsonb)
+  `;
+  await poolSql`
+    INSERT INTO public.agent_actions
+      (id, tenant_id, agent_id, action_order, action_type, action_config)
+    VALUES (${DEMO_SEND_ACTION}, ${tid}, ${DEMO_AGENT}, 2, 'send_message',
+            ${JSON.stringify({ channel: "email", outbox_kind: "agent_followup", requires_approval: false })}::jsonb)
+  `;
+  await poolSql`
+    INSERT INTO public.agent_approval_rules
+      (id, tenant_id, agent_id, action_id, approval_mode, approver_role)
+    VALUES (${DEMO_DRAFT_RULE}, ${tid}, ${DEMO_AGENT}, ${DEMO_DRAFT_ACTION},
+            'human_required', 'owning_recruiter')
+  `;
+  await poolSql`
+    INSERT INTO public.agent_approval_rules
+      (id, tenant_id, agent_id, action_id, approval_mode, approver_role)
+    VALUES (${DEMO_SEND_RULE}, ${tid}, ${DEMO_AGENT}, ${DEMO_SEND_ACTION},
+            'auto', NULL)
+  `;
+
+  // Step 2c — G's paused run. trigger_context matches the scanner's
+  // jsonb_build_object shape EXACTLY (application_id, trigger, stage) so
+  // an approve → resume in the drain re-probes and finds this run.
+  const gTriggerContext = {
+    application_id: APP_G,
+    trigger: "stage_stale",
+    stage: STALE_STAGE,
+  };
+  const gTriggerContextJson = JSON.stringify(gTriggerContext);
+
+  // The drafted email the recruiter sees in /approvals. Field-for-field
+  // the draftMessageExecutor output shape (packages/agent-actions):
+  // draft_text + executor-owned subject + the flat application context.
+  const gDraftText =
+    `Hi Rohan,\n\n` +
+    `I wanted to check in on your application for the Senior Backend Engineer ` +
+    `role at ${companyName}. You've been at the technical interview stage for ` +
+    `about a week now, and I didn't want you to feel out of the loop while we ` +
+    `line up the next round with the panel.\n\n` +
+    `We're still very much moving forward — I'm coordinating the interviewers' ` +
+    `availability and expect to confirm a slot for you shortly. If anything has ` +
+    `changed on your end, or if you have any questions in the meantime, just ` +
+    `reply here and I'll get back to you the same day.\n\n` +
+    `Thanks for your patience, and talk soon.\n\n` +
+    `Warm regards,\nThe Talent Team`;
+  const gDraftPayload = {
+    draft_text: gDraftText,
+    subject: "Update on your application — Senior Backend Engineer",
+    application_id: APP_G,
+    candidate_id: CAND_G,
+    candidate_name: "Rohan Desai",
+    candidate_email: "rohan.desai@example.test",
+    position_title: "Senior Backend Engineer",
+    company_name: companyName,
+    stage: STALE_STAGE,
+    days_in_stage: 7,
+    template_prompt_id: "follow_up_v1",
+    prompt_version: "followup-v1",
+    tone: FOLLOWUP_TONE,
+  };
+  const gDraftPayloadJson = JSON.stringify(gDraftPayload);
+  // The run_action.input snapshot the drain records: {config, triggerContext}.
+  const gRunActionInputJson = JSON.stringify({
+    config: {
+      template_prompt_id: "follow_up_v1",
+      tone: FOLLOWUP_TONE,
+      max_tokens: FOLLOWUP_MAX_TOKENS,
+    },
+    triggerContext: gTriggerContext,
+  });
+
+  // agent_runs — 'awaiting_approval', triggered_by='system' (so
+  // triggered_by_user_id stays NULL per the CHECK), cost rolled from the
+  // draft LLM call.
+  await poolSql`
+    INSERT INTO public.agent_runs
+      (id, tenant_id, agent_id, triggered_by, triggered_by_user_id,
+       triggered_at, trigger_context, status, cost_micros)
+    VALUES (${DEMO_RUN_G}, ${tid}, ${DEMO_AGENT}, 'system', NULL,
+            now() - interval '4 minutes', ${gTriggerContextJson}::jsonb,
+            'awaiting_approval', ${"3800"}::bigint)
+  `;
+  // agent_run_outbox — 'awaiting_approval' (out of polling rotation).
+  // trigger_context byte-identical to the run's. This is also the dedup
+  // marker: the scanner's NOT EXISTS on (agent_id, application_id) means
+  // G will NOT double-fire while this row exists — by design.
+  await poolSql`
+    INSERT INTO public.agent_run_outbox
+      (id, tenant_id, agent_id, trigger_context, status,
+       enqueued_at, started_at, locked_until, attempt_count)
+    VALUES (${DEMO_OUTBOX_G}, ${tid}, ${DEMO_AGENT}, ${gTriggerContextJson}::jsonb,
+            'awaiting_approval', now() - interval '4 minutes',
+            now() - interval '4 minutes', now() - interval '1 minute', 1)
+  `;
+  // agent_run_actions — action 1 (draft_message) 'awaiting_approval',
+  // output = the draft, back-pointer to the approval request. Action 2
+  // (send_message) has NO row yet — it executes for the first time on
+  // resume, exactly as the drain does.
+  await poolSql`
+    INSERT INTO public.agent_run_actions
+      (id, tenant_id, run_id, action_id, action_order, status,
+       started_at, input, output, approval_request_id)
+    VALUES (${DEMO_RUN_ACTION_G}, ${tid}, ${DEMO_RUN_G}, ${DEMO_DRAFT_ACTION}, 1,
+            'awaiting_approval', now() - interval '4 minutes',
+            ${gRunActionInputJson}::jsonb, ${gDraftPayloadJson}::jsonb,
+            ${DEMO_APPROVAL_G})
+  `;
+  // agent_approval_requests — 'pending', proposed_action_payload IS the
+  // draft, approver_role 'owning_recruiter', proposed_at recent, ttl_at
+  // NULL (human_required carries no TTL — matches the smoke tests).
+  await poolSql`
+    INSERT INTO public.agent_approval_requests
+      (id, tenant_id, run_id, run_action_id, agent_id, proposed_at,
+       proposed_action_summary, proposed_action_payload, approver_role,
+       status, ttl_at)
+    VALUES (${DEMO_APPROVAL_G}, ${tid}, ${DEMO_RUN_G}, ${DEMO_RUN_ACTION_G}, ${DEMO_AGENT},
+            now() - interval '4 minutes', 'draft_message requires approval',
+            ${gDraftPayloadJson}::jsonb, 'owning_recruiter', 'pending', NULL)
+  `;
+
   // ── 5. summary ──────────────────────────────────────────────────
   const acceptUrl = `${PORTAL_BASE}/offer/${token}`;
   console.log("");
@@ -899,6 +1281,18 @@ async function main() {
   console.log("  D. Karthik Mahadevan   recruiter_review       score=81   2d in stage  (drawer demo)");
   console.log("  E. Priya Subramanian   offer_drafted          score=85   offer extended 1h ago");
   console.log("  F. Aarav Iyer          application_received   score=PENDING   5m ago  (AI-03 real scoring)");
+  console.log("  G. Rohan Desai         tech_interview         score=87   7d in stage  (SEED-01 pending approval)");
+  console.log("  H. Meera Nair          tech_interview         score=83   6d in stage  (SEED-01 scanner live-fire)");
+  console.log("");
+  console.log("SEED-01 follow-ups wedge:");
+  console.log(`  Agent:    ${DEMO_AGENT_NAME}  (${DEMO_AGENT})`);
+  console.log(`            follow_up · stage_stale · stage=${STALE_STAGE} · days_threshold=${STALE_DAYS_THRESHOLD} · enabled`);
+  if (retired.length > 0) {
+    console.log(`            retired ${retired.length} stale active namesake(s): ${retired.map((r) => r.id).join(", ")}`);
+  }
+  console.log(`  Approval: ${DEMO_APPROVAL_G}  (pending, owning_recruiter) — G's drafted check-in, visible at /approvals`);
+  console.log(`  Run:      ${DEMO_RUN_G}  (awaiting_approval, halted on draft_message)`);
+  console.log(`  H (${APP_H}) has NO seeded run — the stage_stale scanner live-fires on it.`);
   console.log("");
   console.log("Candidate E offer-accept URL (single-use, expires in 7 days):");
   console.log(`  ${acceptUrl}`);

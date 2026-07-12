@@ -321,6 +321,16 @@ describe("AGENT-03 — approval cycle vertical smoke", () => {
       await cleanupAgentByName(n);
     }
     await cleanupAgentById(A03_RESUME_AGENT);
+    // Wipe ambient claimable outbox rows (same defensive statement as
+    // agent-run-drain.test.ts Test 1). The shared dev tenant carries the
+    // SEED-01 demo follow-ups agent (enabled, stage_stale on
+    // tech_interview) plus seeded stale applications, so the REAL scan in
+    // stage-stale-scan.test.ts enqueues pending rows for that agent as a
+    // side effect. Every drain in this file claims the globally-oldest
+    // pending row — an ambient row would steal a pass and strand the
+    // test's own row. fileParallelism=false guarantees no new ambient
+    // rows appear mid-file after this wipe.
+    await poolSql`DELETE FROM public.agent_run_outbox WHERE tenant_id = ${testTenantId} AND status != 'completed'`;
   });
 
   afterAll(async () => {
