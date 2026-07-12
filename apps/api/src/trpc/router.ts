@@ -44,6 +44,7 @@ import {
   agentRunActions,
   agentRunOutbox,
   auditLogs,
+  recordPiiAccess,
   type ApplicationStage,
 } from "@hireops/db";
 import { evaluateKnockouts, type KnockoutInput } from "@hireops/ai-scoring";
@@ -660,6 +661,28 @@ export const appRouter = router({
           .limit(1);
         if (!row) {
           throw new TRPCError({ code: "NOT_FOUND", message: "Candidate not found" });
+        }
+        // ADR-002 §7 — record the PII read (fire-and-forget, like withAudit).
+        // ctx carries no membership id (not in JWT claims), so we log the
+        // human actor via actor_user_id + actor_label 'user'. fields_accessed
+        // enumerates the PII columns this procedure actually selects.
+        if (ctx.tenantId) {
+          recordPiiAccess({
+            tenantId: ctx.tenantId,
+            actorUserId: ctx.userId,
+            actorLabel: "user",
+            entityType: "candidate",
+            entityId: input.id,
+            fieldsAccessed: [
+              "persons.full_name",
+              "persons.email_primary",
+              "persons.phone_primary",
+              "persons.location_country",
+              "candidates.parsed_skills",
+            ],
+            reason: "get_candidate_by_id",
+            requestId: ctx.requestId,
+          });
         }
         return {
           candidate: { ...row.candidate, createdAt: row.candidate.createdAt.toISOString() },

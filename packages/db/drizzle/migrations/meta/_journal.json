@@ -281,6 +281,20 @@
       "when": 1783699200000,
       "tag": "0042_audit_logs_partitions_2026_07_to_2027_06",
       "breakpoints": true
+    },
+    {
+      "idx": 43,
+      "version": "7",
+      "when": 1783699200001,
+      "tag": "0043_pii_access_log",
+      "breakpoints": true
+    },
+    {
+      "idx": 44,
+      "version": "7",
+      "when": 1783699200002,
+      "tag": "0044_pii_access_log_force_rls",
+      "breakpoints": true
     }
   ]
 }

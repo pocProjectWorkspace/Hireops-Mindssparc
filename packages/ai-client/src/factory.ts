@@ -56,7 +56,10 @@ export async function getAIClient(tenantId: string, opts: GetAIClientOpts = {}):
   if (cached) return cached;
 
   const credentialType = `ai_${provider}` as const;
-  const cred = await getIntegrationCredential({ tenantId, integrationType: credentialType });
+  const cred = await getIntegrationCredential(
+    { tenantId, integrationType: credentialType },
+    { actorLabel: "ai-client", reason: "get_ai_client.credential_read" },
+  );
   if (!cred) {
     throw new Error(
       `Tenant ${tenantId} has no ${provider} credential configured ` +

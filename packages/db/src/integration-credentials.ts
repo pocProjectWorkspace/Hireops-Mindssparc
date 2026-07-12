@@ -4,6 +4,7 @@ import { tenantEncryptionKeys } from "./schema/tenant-encryption-keys";
 import { integrationCredentials } from "./schema/integration-credentials";
 import { getKmsClient } from "./kms";
 import { decryptStringWithDek, encryptWithDek, generateDek, unwrapDek, wrapDek } from "./envelope";
+import { recordPiiAccess } from "./pii-access";
 
 /**
  * High-level integration credential API.
@@ -53,6 +54,19 @@ export interface GetCredentialArgs {
   integrationType: string;
 }
 
+/**
+ * Optional accountability context for a credential read (ADR-002 §7). Existing
+ * callers that don't pass it still compile; when absent the read is recorded
+ * with actor_label 'service_role' and reason 'unspecified' — the ADR wants
+ * every credential read logged, so absence of context must not mean absence of
+ * a row.
+ */
+export interface CredentialAccessContext {
+  actorLabel: string;
+  reason: string;
+  requestId?: string;
+}
+
 export interface CredentialResult {
   secret: string;
   metadata: Record<string, unknown>;
@@ -60,6 +74,7 @@ export interface CredentialResult {
 
 export async function getIntegrationCredential(
   args: GetCredentialArgs,
+  accessContext?: CredentialAccessContext,
 ): Promise<CredentialResult | null> {
   const kms = getKmsClient();
 
@@ -75,6 +90,19 @@ export async function getIntegrationCredential(
     .limit(1);
 
   if (!credRow) return null;
+
+  // ADR-002 §7 — record the decrypted-credential read (fire-and-forget).
+  // Service-role path: no human actor, so ids stay null and the label
+  // describes the caller (or defaults to 'service_role').
+  recordPiiAccess({
+    tenantId: args.tenantId,
+    actorLabel: accessContext?.actorLabel ?? "service_role",
+    entityType: "integration_credential",
+    entityId: credRow.id,
+    fieldsAccessed: ["credential_envelope"],
+    reason: accessContext?.reason ?? "unspecified",
+    requestId: accessContext?.requestId ?? null,
+  });
 
   const [dekRow] = await poolDb
     .select()

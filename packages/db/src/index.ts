@@ -20,10 +20,13 @@ export {
   decryptStringWithDek,
 } from "./envelope";
 export { storeIntegrationCredential, getIntegrationCredential } from "./integration-credentials";
+export { recordPiiAccess } from "./pii-access";
+export type { RecordPiiAccessArgs } from "./pii-access";
 export type {
   StoreCredentialArgs,
   GetCredentialArgs,
   CredentialResult,
+  CredentialAccessContext,
 } from "./integration-credentials";
 
 // Agent config zod schemas (AGENT-01a).
