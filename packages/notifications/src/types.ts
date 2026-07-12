@@ -1,10 +1,10 @@
 /**
  * Public types for @hireops/notifications.
  *
- * Three-tier pluggable provider pattern matching ai-client / storage:
+ * Pluggable provider pattern matching ai-client / storage:
  *   - EmailProvider — interface
  *   - LocalEmailProvider — writes to dev_email_outbox (no real send)
- *   - RealEmailProvider — stub; future ticket wires SES/Resend
+ *   - ResendEmailProvider — real HTTP delivery via Resend's REST API
  *
  * The worker (apps/workers) is the only consumer of EmailProvider; the
  * api never sends directly. Mutations enqueue via enqueueNotification(),
@@ -58,7 +58,7 @@ export interface EmailSendResult {
 }
 
 export interface EmailProvider {
-  /** "local" or e.g. "ses" / "resend" once real providers land. */
-  readonly provider: "local" | "real-stub" | "ses" | "resend";
+  /** "local" (dev/test), "resend" (real), or "ses" (reserved for a future provider). */
+  readonly provider: "local" | "ses" | "resend";
   send(msg: EmailMessage): Promise<EmailSendResult>;
 }

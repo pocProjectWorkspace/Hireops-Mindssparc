@@ -27,7 +27,7 @@
     "api:dev": "pnpm --filter @hireops/api dev",
     "api:start": "pnpm --filter @hireops/api start",
     "api:test": "pnpm --filter @hireops/api test",
-    "test:gate": "pnpm --filter @hireops/agent-actions exec vitest run && pnpm --filter @hireops/api test:gate",
+    "test:gate": "pnpm --filter @hireops/notifications exec vitest run && pnpm --filter @hireops/agent-actions exec vitest run && pnpm --filter @hireops/api test:gate",
     "portal:dev": "pnpm --filter @hireops/internal-portal dev",
     "e2e": "playwright test",
     "e2e:install": "playwright install --with-deps chromium"
