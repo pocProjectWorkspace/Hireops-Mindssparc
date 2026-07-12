@@ -87,6 +87,18 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm build
+    # The portal's next build collects page data through the in-process
+    # api caller (HANDOVER reality #116), so the build needs the same DB
+    # env as the test jobs — without it, "Failed to collect page data"
+    # on any DB-touching route.
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      DIRECT_URL: ${{ secrets.DIRECT_URL }}
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+      SUPABASE_KEK_SECRET: ${{ secrets.SUPABASE_KEK_SECRET }}
+      SIGNED_LINK_SECRET: ${{ secrets.SIGNED_LINK_SECRET }}
 
   test-gate:
     name: test:gate (PR blocking gate)
@@ -107,6 +119,7 @@ jobs:
       SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
       SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
       SUPABASE_KEK_SECRET: ${{ secrets.SUPABASE_KEK_SECRET }}
+      SIGNED_LINK_SECRET: ${{ secrets.SIGNED_LINK_SECRET }}
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -139,6 +152,7 @@ jobs:
       SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
       SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
       SUPABASE_KEK_SECRET: ${{ secrets.SUPABASE_KEK_SECRET }}
+      SIGNED_LINK_SECRET: ${{ secrets.SIGNED_LINK_SECRET }}
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -165,6 +179,7 @@ jobs:
       DATABASE_URL: ${{ secrets.DATABASE_URL }}
       DIRECT_URL: ${{ secrets.DIRECT_URL }}
       SUPABASE_KEK_SECRET: ${{ secrets.SUPABASE_KEK_SECRET }}
+      SIGNED_LINK_SECRET: ${{ secrets.SIGNED_LINK_SECRET }}
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
