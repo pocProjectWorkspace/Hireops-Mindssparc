@@ -41,3 +41,4 @@ Thumbs.db
 # drizzle snapshot backups (re-baselining safety net)
 packages/db/drizzle/migrations/meta.bak/
 apps/internal-portal/tsconfig.tsbuildinfo
+.vercel

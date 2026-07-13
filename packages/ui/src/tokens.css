@@ -21,45 +21,83 @@
    * 2.1 Colour
    * ============================================================ */
 
-  /* Neutrals — the workhorse scale */
-  --color-neutral-50: #fafafa;
-  --color-neutral-100: #f5f5f5;
-  --color-neutral-200: #e5e5e5;
-  --color-neutral-300: #d4d4d4;
-  --color-neutral-400: #a3a3a3;
-  --color-neutral-500: #737373;
-  --color-neutral-600: #525252;
-  --color-neutral-700: #404040;
-  --color-neutral-800: #262626;
-  --color-neutral-900: #171717;
+  /* Neutrals — warm gray ("stone") workhorse scale. Near-white app
+   * background at 50 (#fafaf9), warm ink at 900. Same variable names as
+   * the previous cool-gray ramp so every existing utility resolves; only
+   * the values changed (cool → warm) in the DESIGN-01 revamp. */
+  --color-neutral-50: #fafaf9;
+  --color-neutral-100: #f5f5f4;
+  --color-neutral-200: #e7e5e4;
+  --color-neutral-300: #d6d3d1;
+  --color-neutral-400: #a8a29e;
+  --color-neutral-500: #78716c;
+  --color-neutral-600: #57534e;
+  --color-neutral-700: #44403c;
+  --color-neutral-800: #292524;
+  --color-neutral-900: #1c1917;
 
-  /* Brand — used sparingly, primary actions only.
-   * Per-tenant white-labelling overrides --color-brand-* only. */
-  --color-brand-50: #eff6ff;
-  --color-brand-100: #dbeafe;
-  --color-brand-500: #3b82f6;
-  --color-brand-600: #2563eb;
-  --color-brand-700: #1d4ed8;
+  /* Brand — deep indigo, anchored on indigo-600 (#4f46e5). Full 50–900
+   * ramp. Used sparingly: interactive + active affordances only, never
+   * decoration. Per-tenant white-labelling overrides --color-brand-* only. */
+  --color-brand-50: #eef2ff;
+  --color-brand-100: #e0e7ff;
+  --color-brand-200: #c7d2fe;
+  --color-brand-300: #a5b4fc;
+  --color-brand-400: #818cf8;
+  --color-brand-500: #6366f1;
+  --color-brand-600: #4f46e5; /* anchor */
+  --color-brand-700: #4338ca;
+  --color-brand-800: #3730a3;
+  --color-brand-900: #312e81;
 
-  /* Semantic — never decorative */
-  --color-status-positive-50: #f0fdf4;
-  --color-status-positive-500: #22c55e;
-  --color-status-positive-700: #15803d;
+  /* Semantic — never decorative. Full ramps so every tint/shade referenced
+   * across the app resolves. Positive = emerald (warmer than raw green, to
+   * sit with the warm neutrals); warning = amber; error = red; info = blue
+   * (kept distinct from the indigo brand so "informational" never reads as
+   * "interactive"). */
+  --color-status-positive-50: #ecfdf5;
+  --color-status-positive-100: #d1fae5;
+  --color-status-positive-200: #a7f3d0;
+  --color-status-positive-300: #6ee7b7;
+  --color-status-positive-400: #34d399;
+  --color-status-positive-500: #10b981;
+  --color-status-positive-600: #059669;
+  --color-status-positive-700: #047857;
+  --color-status-positive-800: #065f46;
+  --color-status-positive-900: #064e3b;
 
   --color-status-warning-50: #fffbeb;
+  --color-status-warning-100: #fef3c7;
+  --color-status-warning-200: #fde68a;
+  --color-status-warning-300: #fcd34d;
+  --color-status-warning-400: #fbbf24;
   --color-status-warning-500: #f59e0b;
+  --color-status-warning-600: #d97706;
   --color-status-warning-700: #b45309;
+  --color-status-warning-800: #92400e;
+  --color-status-warning-900: #78350f;
 
   --color-status-error-50: #fef2f2;
+  --color-status-error-100: #fee2e2;
+  --color-status-error-200: #fecaca;
+  --color-status-error-300: #fca5a5;
+  --color-status-error-400: #f87171;
   --color-status-error-500: #ef4444;
+  --color-status-error-600: #dc2626;
   --color-status-error-700: #b91c1c;
+  --color-status-error-800: #991b1b;
+  --color-status-error-900: #7f1d1d;
 
   --color-status-info-50: #eff6ff;
   --color-status-info-100: #dbeafe;
   --color-status-info-200: #bfdbfe;
+  --color-status-info-300: #93c5fd;
   --color-status-info-400: #60a5fa;
   --color-status-info-500: #3b82f6;
+  --color-status-info-600: #2563eb;
+  --color-status-info-700: #1d4ed8;
   --color-status-info-800: #1e40af;
+  --color-status-info-900: #1e3a8a;
 
   /* Partner portal accent — navigation chrome only */
   --color-partner-accent-50: #fff7ed;
@@ -117,18 +155,24 @@
    * 2.4 Elevation — three levels only
    * ============================================================ */
 
-  --elevation-1: 0 1px 2px 0 rgb(0 0 0 / 0.05);
-  --elevation-2: 0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1);
-  --elevation-3: 0 20px 25px -5px rgb(0 0 0 / 0.1), 0 8px 10px -6px rgb(0 0 0 / 0.1);
+  /* Very sparing. Level 1 is a barely-there hairline lift (rarely needed —
+   * flat cards use a 1px border, not a shadow). Level 2 is the single
+   * elevation for genuinely floating surfaces: drawers, popovers, menus.
+   * Level 3 is retained for deep overlays. Shadow colour is warm-tinted
+   * (stone-900 rgb) so it sits with the warm neutral surfaces. */
+  --elevation-1: 0 1px 2px 0 rgb(28 25 23 / 0.05);
+  --elevation-2: 0 4px 12px -2px rgb(28 25 23 / 0.1), 0 2px 4px -2px rgb(28 25 23 / 0.06);
+  --elevation-3: 0 24px 32px -8px rgb(28 25 23 / 0.16), 0 8px 12px -6px rgb(28 25 23 / 0.08);
 
   /* ============================================================
    * 2.5 Border radius
    * ============================================================ */
 
-  --radius-sm: 0.25rem;
-  --radius-md: 0.5rem;
-  --radius-lg: 0.75rem;
-  --radius-full: 9999px;
+  --radius-sm: 0.25rem; /* 4px  — subtle */
+  --radius-button: 0.375rem; /* 6px — buttons, badges */
+  --radius-md: 0.5rem; /* 8px  — cards, inputs */
+  --radius-lg: 0.75rem; /* 12px — large surfaces */
+  --radius-full: 9999px; /* pills, avatars */
 
   /* ============================================================
    * 2.6 Density — comfortable default

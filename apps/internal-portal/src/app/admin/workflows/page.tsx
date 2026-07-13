@@ -1,6 +1,6 @@
-import { requireAdmin } from "@/lib/auth";
+import { requireAdmin, sessionUserChip } from "@/lib/auth";
 import { createServerTRPCCaller } from "@/lib/trpc-server";
-import { PortalHeader } from "@/components/nav/PortalHeader";
+import { AppShell } from "@/components/nav/AppShell";
 import { WorkflowsClient } from "./WorkflowsClient";
 
 export const dynamic = "force-dynamic"; // Admin-gated + reads live agent state.
@@ -20,9 +20,8 @@ export default async function WorkflowsPage() {
   const initial = await caller.listAgents();
 
   return (
-    <main className="flex min-h-screen flex-col">
-      <PortalHeader title="Agent Workflows" isAdmin active="workflows" />
+    <AppShell title="Agent Workflows" isAdmin active="workflows" user={sessionUserChip(session)}>
       <WorkflowsClient initial={initial} />
-    </main>
+    </AppShell>
   );
 }

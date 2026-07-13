@@ -1,6 +1,6 @@
-import { requireAuth } from "@/lib/auth";
+import { requireAuth, sessionUserChip } from "@/lib/auth";
 import { createServerTRPCCaller } from "@/lib/trpc-server";
-import { PortalHeader } from "@/components/nav/PortalHeader";
+import { AppShell } from "@/components/nav/AppShell";
 import { ApprovalQueue } from "@/components/approvals/ApprovalQueue";
 
 export const dynamic = "force-dynamic"; // Auth-gated + reads live queue state.
@@ -24,13 +24,14 @@ export default async function ApprovalsPage() {
   const initial = await caller.listPendingApprovals({ limit: 50 });
 
   return (
-    <main className="flex h-screen flex-col">
-      <PortalHeader
-        title="Approvals"
-        isAdmin={session.roles.includes("admin")}
-        active="approvals"
-      />
+    <AppShell
+      title="Approvals"
+      isAdmin={session.roles.includes("admin")}
+      active="approvals"
+      user={sessionUserChip(session)}
+      fill
+    >
       <ApprovalQueue initial={initial} />
-    </main>
+    </AppShell>
   );
 }

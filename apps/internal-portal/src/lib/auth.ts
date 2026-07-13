@@ -11,6 +11,20 @@ export interface AuthSession {
   userId: string;
   tenantId: string;
   roles: string[];
+  /** Present when the Supabase JWT carries the standard `email` claim.
+   * Purely for display (the sidebar user chip); never load-bearing. */
+  email?: string;
+}
+
+/**
+ * Display label + role for the sidebar user chip. Prefers the email claim;
+ * falls back to a generic label. Role is the first membership role,
+ * title-cased ("admin" → "Admin"). Pure formatting — no I/O.
+ */
+export function sessionUserChip(session: AuthSession): { label: string; role: string } {
+  const primary = session.roles[0] ?? "";
+  const role = primary ? primary.charAt(0).toUpperCase() + primary.slice(1).replace(/_/g, " ") : "";
+  return { label: session.email ?? "Signed in", role };
 }
 
 /**
@@ -71,6 +85,7 @@ function readSessionClaims(accessToken: string): AuthSession {
     sub?: string;
     tid?: string;
     roles?: string[];
+    email?: string;
   };
   if (!raw.sub || !raw.tid) {
     throw new Error("JWT missing required claims (sub, tid)");
@@ -80,5 +95,6 @@ function readSessionClaims(accessToken: string): AuthSession {
     userId: raw.sub,
     tenantId: raw.tid,
     roles: Array.isArray(raw.roles) ? raw.roles : [],
+    email: typeof raw.email === "string" ? raw.email : undefined,
   };
 }

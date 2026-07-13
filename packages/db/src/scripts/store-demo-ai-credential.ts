@@ -30,9 +30,7 @@ async function main(): Promise<void> {
   try {
     const apiKey = process.env.ANTHROPIC_DEMO_API_KEY;
     if (!apiKey || !apiKey.startsWith("sk-ant-")) {
-      throw new Error(
-        "ANTHROPIC_DEMO_API_KEY is not set in .env (or is not an sk-ant-… key).",
-      );
+      throw new Error("ANTHROPIC_DEMO_API_KEY is not set in .env (or is not an sk-ant-… key).");
     }
 
     const [tenant] = await db

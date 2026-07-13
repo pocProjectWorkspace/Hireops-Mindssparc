@@ -32,39 +32,70 @@ const config: Config = {
           800: "var(--color-neutral-800)",
           900: "var(--color-neutral-900)",
         },
+        // Full 50–900 ramps for brand + every status family. DESIGN-01
+        // established the complete ramps in tokens.css so any tint/shade a
+        // surface reaches for resolves — the old partial maps (brand 50–700,
+        // status 50/500/700) silently compiled missing steps to nothing
+        // (untinted tiles, invisible bars). Never re-introduce a partial map.
         brand: {
           50: "var(--color-brand-50)",
           100: "var(--color-brand-100)",
+          200: "var(--color-brand-200)",
+          300: "var(--color-brand-300)",
+          400: "var(--color-brand-400)",
           500: "var(--color-brand-500)",
           600: "var(--color-brand-600)",
           700: "var(--color-brand-700)",
+          800: "var(--color-brand-800)",
+          900: "var(--color-brand-900)",
         },
         "status-positive": {
           50: "var(--color-status-positive-50)",
+          100: "var(--color-status-positive-100)",
+          200: "var(--color-status-positive-200)",
+          300: "var(--color-status-positive-300)",
+          400: "var(--color-status-positive-400)",
           500: "var(--color-status-positive-500)",
+          600: "var(--color-status-positive-600)",
           700: "var(--color-status-positive-700)",
+          800: "var(--color-status-positive-800)",
+          900: "var(--color-status-positive-900)",
         },
         "status-warning": {
           50: "var(--color-status-warning-50)",
+          100: "var(--color-status-warning-100)",
+          200: "var(--color-status-warning-200)",
+          300: "var(--color-status-warning-300)",
+          400: "var(--color-status-warning-400)",
           500: "var(--color-status-warning-500)",
+          600: "var(--color-status-warning-600)",
           700: "var(--color-status-warning-700)",
+          800: "var(--color-status-warning-800)",
+          900: "var(--color-status-warning-900)",
         },
         "status-error": {
           50: "var(--color-status-error-50)",
+          100: "var(--color-status-error-100)",
+          200: "var(--color-status-error-200)",
+          300: "var(--color-status-error-300)",
+          400: "var(--color-status-error-400)",
           500: "var(--color-status-error-500)",
+          600: "var(--color-status-error-600)",
           700: "var(--color-status-error-700)",
+          800: "var(--color-status-error-800)",
+          900: "var(--color-status-error-900)",
         },
-        // status-info was referenced by five admin surfaces but never
-        // mapped here — the classes silently compiled to nothing
-        // (invisible cost bars / untinted tiles). Steps mirror the
-        // blue ramp the 50/500 tokens already sat on.
         "status-info": {
           50: "var(--color-status-info-50)",
           100: "var(--color-status-info-100)",
           200: "var(--color-status-info-200)",
+          300: "var(--color-status-info-300)",
           400: "var(--color-status-info-400)",
           500: "var(--color-status-info-500)",
+          600: "var(--color-status-info-600)",
+          700: "var(--color-status-info-700)",
           800: "var(--color-status-info-800)",
+          900: "var(--color-status-info-900)",
         },
       },
       fontFamily: {
@@ -95,8 +126,18 @@ const config: Config = {
       },
       borderRadius: {
         sm: "var(--radius-sm)",
+        button: "var(--radius-button)",
         md: "var(--radius-md)",
         lg: "var(--radius-lg)",
+        full: "var(--radius-full)",
+      },
+      // Two elevation levels wired from the tokens (level 3 retained for
+      // deep overlays). Shadows are used very sparingly — flat cards use a
+      // 1px hairline border; only drawers/popovers/menus float.
+      boxShadow: {
+        1: "var(--elevation-1)",
+        2: "var(--elevation-2)",
+        3: "var(--elevation-3)",
       },
     },
   },

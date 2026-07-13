@@ -1,6 +1,6 @@
-import { requireAdmin } from "@/lib/auth";
+import { requireAdmin, sessionUserChip } from "@/lib/auth";
 import { createServerTRPCCaller } from "@/lib/trpc-server";
-import { PortalHeader } from "@/components/nav/PortalHeader";
+import { AppShell } from "@/components/nav/AppShell";
 import { ReportsClient } from "./ReportsClient";
 
 export const dynamic = "force-dynamic"; // Admin-gated + reads live application data.
@@ -24,9 +24,8 @@ export default async function ReportsPage() {
   const initial = await caller.getRecruitmentReport({});
 
   return (
-    <main className="flex min-h-screen flex-col">
-      <PortalHeader title="Reports" isAdmin active="reports" />
+    <AppShell title="Reports" isAdmin active="reports" user={sessionUserChip(session)}>
       <ReportsClient initial={initial} />
-    </main>
+    </AppShell>
   );
 }

@@ -1,6 +1,6 @@
-import { requireAdmin } from "@/lib/auth";
+import { requireAdmin, sessionUserChip } from "@/lib/auth";
 import { createServerTRPCCaller } from "@/lib/trpc-server";
-import { PortalHeader } from "@/components/nav/PortalHeader";
+import { AppShell } from "@/components/nav/AppShell";
 import { AuditClient } from "./AuditClient";
 
 export const dynamic = "force-dynamic"; // Admin-gated + reads the live audit log.
@@ -20,9 +20,8 @@ export default async function AuditPage() {
   const initial = await caller.listAuditEvents({ limit: 50 });
 
   return (
-    <main className="flex min-h-screen flex-col">
-      <PortalHeader title="Audit Trail" isAdmin active="audit" />
+    <AppShell title="Audit Trail" isAdmin active="audit" user={sessionUserChip(session)}>
       <AuditClient initial={initial} />
-    </main>
+    </AppShell>
   );
 }

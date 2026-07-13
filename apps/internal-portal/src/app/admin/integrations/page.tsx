@@ -15,16 +15,20 @@
  *   - filter chips (status / event_type)
  */
 
-import { requireAdmin } from "@/lib/auth";
-import { PortalHeader } from "@/components/nav/PortalHeader";
+import { requireAdmin, sessionUserChip } from "@/lib/auth";
+import { AppShell } from "@/components/nav/AppShell";
 import { IntegrationsClient } from "./IntegrationsClient";
 
 export default async function IntegrationsPage() {
-  await requireAdmin();
+  const session = await requireAdmin();
   return (
-    <div className="flex min-h-screen flex-col">
-      <PortalHeader title="Integration Health" isAdmin active="integrations" />
+    <AppShell
+      title="Integration Health"
+      isAdmin
+      active="integrations"
+      user={sessionUserChip(session)}
+    >
       <IntegrationsClient />
-    </div>
+    </AppShell>
   );
 }

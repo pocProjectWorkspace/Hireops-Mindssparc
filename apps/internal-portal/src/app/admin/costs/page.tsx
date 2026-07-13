@@ -1,6 +1,6 @@
-import { requireAdmin } from "@/lib/auth";
+import { requireAdmin, sessionUserChip } from "@/lib/auth";
 import { createServerTRPCCaller } from "@/lib/trpc-server";
-import { PortalHeader } from "@/components/nav/PortalHeader";
+import { AppShell } from "@/components/nav/AppShell";
 import { CostsClient } from "./CostsClient";
 
 export const dynamic = "force-dynamic"; // Admin-gated + reads the live AI usage ledger.
@@ -22,9 +22,8 @@ export default async function CostsPage() {
   const initial = await caller.getAiUsageSummary({});
 
   return (
-    <main className="flex min-h-screen flex-col">
-      <PortalHeader title="AI Cost" isAdmin active="costs" />
+    <AppShell title="AI Cost" isAdmin active="costs" user={sessionUserChip(session)}>
       <CostsClient initial={initial} />
-    </main>
+    </AppShell>
   );
 }

@@ -1,6 +1,6 @@
-import { requireAuth } from "@/lib/auth";
+import { requireAuth, sessionUserChip } from "@/lib/auth";
 import { createServerTRPCCaller } from "@/lib/trpc-server";
-import { PortalHeader } from "@/components/nav/PortalHeader";
+import { AppShell } from "@/components/nav/AppShell";
 import { UndoToastProvider } from "@/components/triage/UndoToastProvider";
 import { FilterChipsBar } from "@/components/triage/FilterChipsBar";
 import { HotZone } from "@/components/triage/HotZone";
@@ -45,13 +45,18 @@ export default async function TriagePage() {
 
   return (
     <UndoToastProvider>
-      <main className="flex h-screen flex-col">
-        <PortalHeader title="Triage" isAdmin={session.roles.includes("admin")} active="triage" />
+      <AppShell
+        title="Triage"
+        isAdmin={session.roles.includes("admin")}
+        active="triage"
+        user={sessionUserChip(session)}
+        fill
+      >
         <FilterChipsBar />
         <HotZone initial={breaches} />
         <MomentumFeed initial={momentum} />
         <CandidateDetailDrawer />
-      </main>
+      </AppShell>
     </UndoToastProvider>
   );
 }
