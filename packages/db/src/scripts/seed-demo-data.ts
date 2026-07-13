@@ -227,7 +227,7 @@ const DEMO_PERSONS = [
   {
     id: PERSON_G,
     fullName: "Rohan Desai",
-    email: "rohan.desai@example.test",
+    email: "digitalfuturity@outlook.com",
     phone: "+919812345607",
     locationCity: "Bengaluru",
   },
@@ -503,7 +503,7 @@ const DEMO_CANDIDATES: DemoCandidate[] = [
     source: "referral",
     yearsOfExperience: 7,
     parsedSkills: {
-      personal: { full_name: "Rohan Desai", email: "rohan.desai@example.test" },
+      personal: { full_name: "Rohan Desai", email: "digitalfuturity@outlook.com" },
       work_history: [
         {
           company: "PhonePe",
@@ -941,7 +941,12 @@ async function main() {
          phone_primary, phone_normalised, location_country)
       VALUES (${p.id}, ${tid}, ${p.fullName}, ${p.email}, ${p.email.toLowerCase()},
               ${p.phone}, ${p.phone.replace(/[^0-9]/g, "")}, 'IN')
-      ON CONFLICT (id) DO NOTHING
+      ON CONFLICT (id) DO UPDATE SET
+        full_name = EXCLUDED.full_name,
+        email_primary = EXCLUDED.email_primary,
+        email_normalised = EXCLUDED.email_normalised,
+        phone_primary = EXCLUDED.phone_primary,
+        phone_normalised = EXCLUDED.phone_normalised
     `;
   }
   for (const c of DEMO_CANDIDATES) {
@@ -1216,7 +1221,7 @@ async function main() {
     application_id: APP_G,
     candidate_id: CAND_G,
     candidate_name: "Rohan Desai",
-    candidate_email: "rohan.desai@example.test",
+    candidate_email: "digitalfuturity@outlook.com",
     position_title: "Senior Backend Engineer",
     company_name: companyName,
     stage: STALE_STAGE,
