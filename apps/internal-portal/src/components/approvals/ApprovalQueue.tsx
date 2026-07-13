@@ -3,6 +3,7 @@
 import type { ListPendingApprovalsOutput } from "@hireops/api-types";
 import { trpc } from "@/lib/trpc-client";
 import { useApprovalSelection } from "@/lib/use-approval-selection";
+import { Badge, EmptyState } from "@/components/ui";
 import { ApprovalCard } from "./ApprovalCard";
 import { ApprovalDetailPanel } from "./ApprovalDetailPanel";
 
@@ -32,20 +33,22 @@ export function ApprovalQueue({ initial }: { initial: ListPendingApprovalsOutput
   return (
     <div className="flex min-h-0 flex-1">
       {/* List */}
-      <aside className="flex w-[380px] shrink-0 flex-col border-r border-neutral-200">
-        <div className="flex items-center justify-between border-b border-neutral-200 px-4 py-2.5">
-          <span className="text-xs font-medium uppercase tracking-wide text-neutral-500">
+      <aside className="flex w-[380px] shrink-0 flex-col border-r border-neutral-200 bg-white">
+        <div className="flex items-center gap-2 border-b border-neutral-200 px-4 py-3">
+          <span className="text-xs font-semibold uppercase tracking-wide text-neutral-600">
             Pending
           </span>
-          <span className="rounded-full bg-neutral-100 px-2 py-0.5 text-xs font-medium text-neutral-600">
+          <Badge tone={items.length > 0 ? "accent" : "neutral"} pill className="tabular-nums">
             {items.length}
-          </span>
+          </Badge>
         </div>
         <div className="min-h-0 flex-1 overflow-y-auto">
           {items.length === 0 ? (
-            <div className="px-4 py-10 text-center text-sm text-neutral-500">
-              ✓ Nothing waiting on you
-            </div>
+            <EmptyState
+              className="py-10"
+              title="All caught up"
+              hint="Nothing waiting on you right now."
+            />
           ) : (
             <ul className="divide-y divide-neutral-100">
               {items.map((item) => (
@@ -59,14 +62,19 @@ export function ApprovalQueue({ initial }: { initial: ListPendingApprovalsOutput
       </aside>
 
       {/* Detail */}
-      <section className="min-h-0 flex-1">
+      <section className="min-h-0 flex-1 bg-neutral-50">
         {selectedStillPresent ? (
           <ApprovalDetailPanel approvalId={selectedId} onResolved={clear} />
         ) : (
-          <div className="flex h-full items-center justify-center px-6 text-center text-sm text-neutral-400">
-            {items.length === 0
-              ? "No pending approvals. Agent actions that need a human land here."
-              : "Select an item to review the drafted action."}
+          <div className="flex h-full items-center justify-center px-6">
+            <EmptyState
+              title={items.length === 0 ? "All caught up" : "Select an item to review"}
+              hint={
+                items.length === 0
+                  ? "Agent actions that need a human land here. When one arrives, you'll review the draft before anything sends."
+                  : "Choose an approval on the left to read the agent's drafted action."
+              }
+            />
           </div>
         )}
       </section>

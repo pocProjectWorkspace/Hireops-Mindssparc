@@ -5,6 +5,7 @@ import type { ListCandidatesOutput } from "@hireops/api-types";
 import { trpc } from "@/lib/trpc-client";
 import { useFilterChips } from "@/lib/use-filter-chips";
 import { useDrawerRouting } from "@/lib/use-drawer-routing";
+import { Badge } from "@/components/ui";
 import { TriageCard } from "./TriageCard";
 
 /**
@@ -17,7 +18,7 @@ import { TriageCard } from "./TriageCard";
  */
 export function HotZone({ initial }: { initial: ListCandidatesOutput }) {
   const { filters } = useFilterChips();
-  const { open } = useDrawerRouting();
+  const { open, candidateId } = useDrawerRouting();
 
   const query = trpc.listCandidates.useQuery(
     {
@@ -43,26 +44,36 @@ export function HotZone({ initial }: { initial: ListCandidatesOutput }) {
   return (
     <section
       aria-label="SLA breaches"
-      className="border-b border-neutral-200 bg-status-error-50/40"
+      className="border-b border-neutral-200 bg-status-error-50/30"
     >
-      <header className="flex items-center gap-2 px-6 py-3">
-        <h2 className="text-sm font-semibold uppercase tracking-wider text-status-error-700">
-          SLA Breaches
+      <header className="flex items-center gap-2.5 px-6 pb-2.5 pt-4">
+        <h2 className="text-xs font-semibold uppercase tracking-wider text-status-error-700">
+          Hot Zone · SLA Breaches
         </h2>
-        <span className="rounded-full bg-status-error-500 px-2 py-0.5 text-xs font-mono text-white">
-          {rows.length}
-        </span>
+        {rows.length > 0 ? (
+          <Badge tone="error" pill className="tabular-nums">
+            {rows.length}
+          </Badge>
+        ) : null}
       </header>
       <div className="max-h-[40vh] overflow-y-auto">
         {rows.length === 0 ? (
-          <div role="status" className="px-6 py-4 text-sm font-medium text-status-positive-700">
-            ✓ No SLA breaches
+          <div
+            role="status"
+            className="flex items-center gap-2 px-6 pb-4 text-sm font-medium text-status-positive-700"
+          >
+            <span aria-hidden>✓</span> No SLA breaches — you&apos;re on top of it.
           </div>
         ) : (
-          <ul className="divide-y divide-neutral-200">
+          <ul className="divide-y divide-neutral-200/70">
             {rows.map((r) => (
               <li key={r.applicationId}>
-                <TriageCard row={r} variant="breach" onOpen={open} />
+                <TriageCard
+                  row={r}
+                  variant="breach"
+                  selected={candidateId === r.candidateId}
+                  onOpen={open}
+                />
               </li>
             ))}
           </ul>

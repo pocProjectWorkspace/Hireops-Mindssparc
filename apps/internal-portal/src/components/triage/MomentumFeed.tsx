@@ -19,7 +19,7 @@ import { TriageCard } from "./TriageCard";
  */
 export function MomentumFeed({ initial }: { initial: ListCandidatesOutput }) {
   const { filters } = useFilterChips();
-  const { open } = useDrawerRouting();
+  const { open, candidateId } = useDrawerRouting();
 
   const query = trpc.listCandidates.useQuery(
     {
@@ -43,20 +43,28 @@ export function MomentumFeed({ initial }: { initial: ListCandidatesOutput }) {
 
   return (
     <section aria-label="Momentum feed" className="flex-1 overflow-y-auto">
-      <header className="border-b border-neutral-200 bg-white px-6 py-3">
-        <h2 className="text-sm font-semibold uppercase tracking-wider text-neutral-700">
+      <header className="sticky top-0 z-sticky flex items-center gap-2.5 border-b border-neutral-200 bg-white/95 px-6 pb-2.5 pt-4 backdrop-blur">
+        <h2 className="text-xs font-semibold uppercase tracking-wider text-neutral-600">
           Momentum
         </h2>
+        <span className="text-xs text-neutral-400">
+          Fresh applications · highest AI score first
+        </span>
       </header>
       {rows.length === 0 ? (
         <div className="px-6 py-12 text-center text-sm text-neutral-500">
           No new applications. Check back later.
         </div>
       ) : (
-        <ul className="divide-y divide-neutral-200">
+        <ul className="divide-y divide-neutral-100">
           {rows.map((r) => (
             <li key={r.applicationId}>
-              <TriageCard row={r} variant="feed" onOpen={open} />
+              <TriageCard
+                row={r}
+                variant="feed"
+                selected={candidateId === r.candidateId}
+                onOpen={open}
+              />
             </li>
           ))}
         </ul>

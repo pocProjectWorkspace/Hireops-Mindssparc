@@ -2,7 +2,8 @@
 
 import { useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { Button } from "@hireops/ui";
+import { Badge, Button } from "@/components/ui";
+import type { BadgeTone } from "@/components/ui";
 import { trpc } from "@/lib/trpc-client";
 
 /**
@@ -56,7 +57,9 @@ export function OfferSection({ applicationId }: OfferSectionProps) {
   if (offers.isLoading) {
     return (
       <section className="rounded-lg border border-neutral-200 bg-white p-4">
-        <h3 className="mb-2 text-base font-semibold text-neutral-900">Offer</h3>
+        <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-neutral-500">
+          Offer
+        </h3>
         <p className="text-sm text-neutral-500">Loading…</p>
       </section>
     );
@@ -69,9 +72,9 @@ export function OfferSection({ applicationId }: OfferSectionProps) {
   return (
     <section className="rounded-lg border border-neutral-200 bg-white p-4">
       <header className="mb-3 flex items-center justify-between">
-        <h3 className="text-base font-semibold text-neutral-900">Offer</h3>
+        <h3 className="text-xs font-semibold uppercase tracking-wide text-neutral-500">Offer</h3>
         {!activeOffer && draftable && !showForm ? (
-          <Button variant="primary" onClick={() => setShowForm(true)}>
+          <Button variant="primary" size="sm" onClick={() => setShowForm(true)}>
             Draft offer
           </Button>
         ) : null}
@@ -98,14 +101,12 @@ export function OfferSection({ applicationId }: OfferSectionProps) {
 
       <ul className="space-y-3">
         {rows.map((offer) => (
-          <li key={offer.id} className="rounded border border-neutral-200 p-3">
-            <div className="mb-2 flex items-center justify-between">
+          <li key={offer.id} className="rounded-md border border-neutral-200 p-3">
+            <div className="mb-2 flex items-center justify-between gap-2">
               <span className="font-medium text-neutral-900">
                 {formatPaiseAsInr(offer.baseSalaryInrPaise)} · {offer.location}
               </span>
-              <span className={`rounded-full px-2 py-0.5 text-xs ${badgeClass(offer.status)}`}>
-                {offer.status}
-              </span>
+              <Badge tone={offerTone(offer.status)}>{offer.status}</Badge>
             </div>
             <p className="text-xs text-neutral-600">
               Joining {offer.joiningDate} · Expires {offer.expiryAt.slice(0, 10)}
@@ -114,6 +115,7 @@ export function OfferSection({ applicationId }: OfferSectionProps) {
               <div className="mt-3 flex gap-2">
                 <Button
                   variant="primary"
+                  size="sm"
                   disabled={extend.isPending}
                   onClick={() => extend.mutate({ offerId: offer.id })}
                 >
@@ -121,6 +123,7 @@ export function OfferSection({ applicationId }: OfferSectionProps) {
                 </Button>
                 <Button
                   variant="secondary"
+                  size="sm"
                   disabled={cancel.isPending}
                   onClick={() => {
                     const reason = window.prompt("Cancel reason?", "Withdrawn") ?? "";
@@ -135,6 +138,7 @@ export function OfferSection({ applicationId }: OfferSectionProps) {
               <div className="mt-3 flex gap-2">
                 <Button
                   variant="secondary"
+                  size="sm"
                   disabled={cancel.isPending}
                   onClick={() => {
                     const reason = window.prompt("Cancel reason?", "Withdrawn") ?? "";
@@ -220,10 +224,10 @@ function DraftOfferForm({ applicationId, onCreated, onCancel }: DraftFormProps) 
         />
       </label>
       <div className="flex gap-2">
-        <Button variant="primary" disabled={!canSubmit || draft.isPending}>
+        <Button variant="primary" size="sm" disabled={!canSubmit || draft.isPending}>
           {draft.isPending ? "Drafting…" : "Save draft"}
         </Button>
-        <Button variant="secondary" onClick={onCancel} disabled={draft.isPending}>
+        <Button variant="secondary" size="sm" onClick={onCancel} disabled={draft.isPending}>
           Discard
         </Button>
       </div>
@@ -306,20 +310,18 @@ function formatPaiseAsInr(paise: number): string {
   return `₹${Math.round(paise / 100).toLocaleString("en-IN")}`;
 }
 
-function badgeClass(status: string): string {
+function offerTone(status: string): BadgeTone {
   switch (status) {
-    case "drafted":
-      return "bg-neutral-100 text-neutral-800";
     case "extended":
-      return "bg-status-info-100 text-status-info-800";
+      return "info";
     case "accepted":
-      return "bg-status-success-100 text-status-success-800";
+      return "success";
     case "declined":
     case "expired":
-      return "bg-status-warning-100 text-status-warning-800";
+      return "warning";
+    case "drafted":
     case "cancelled":
-      return "bg-neutral-200 text-neutral-700";
     default:
-      return "bg-neutral-100 text-neutral-800";
+      return "neutral";
   }
 }

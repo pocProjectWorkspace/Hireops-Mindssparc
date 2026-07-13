@@ -38,7 +38,7 @@ export function FilterChipsBar({
           value={filters.requisitionId ?? ""}
           onChange={(e) => set({ requisitionId: e.target.value || null })}
           disabled={requisitionOptions.length === 0}
-          className="rounded-md border border-neutral-300 bg-white px-2 py-1 text-sm disabled:bg-neutral-100"
+          className="rounded-md border border-neutral-300 bg-white px-2.5 py-1.5 text-sm text-neutral-800 transition-colors hover:border-neutral-400 focus:border-brand-600 focus:outline-none focus:ring-1 focus:ring-brand-600 disabled:bg-neutral-100 disabled:text-neutral-400"
         >
           <option value="">All requisitions</option>
           {requisitionOptions.map((r) => (
@@ -55,7 +55,7 @@ export function FilterChipsBar({
           aria-label="Filter by stage"
           value={filters.stage ?? ""}
           onChange={(e) => set({ stage: (e.target.value || null) as ApplicationStage | null })}
-          className="rounded-md border border-neutral-300 bg-white px-2 py-1 text-sm"
+          className="rounded-md border border-neutral-300 bg-white px-2.5 py-1.5 text-sm text-neutral-800 transition-colors hover:border-neutral-400 focus:border-brand-600 focus:outline-none focus:ring-1 focus:ring-brand-600"
         >
           <option value="">All stages</option>
           {STAGES.map((s) => (
@@ -72,7 +72,7 @@ export function FilterChipsBar({
           aria-label="Filter by source"
           value={filters.source ?? ""}
           onChange={(e) => set({ source: (e.target.value || null) as ApplicationSource | null })}
-          className="rounded-md border border-neutral-300 bg-white px-2 py-1 text-sm"
+          className="rounded-md border border-neutral-300 bg-white px-2.5 py-1.5 text-sm text-neutral-800 transition-colors hover:border-neutral-400 focus:border-brand-600 focus:outline-none focus:ring-1 focus:ring-brand-600"
         >
           <option value="">All sources</option>
           {SOURCES.map((s) => (
@@ -87,7 +87,7 @@ export function FilterChipsBar({
         <button
           type="button"
           onClick={clearAll}
-          className="ml-auto text-sm text-neutral-600 underline hover:text-neutral-900"
+          className="ml-auto rounded-md px-2 py-1 text-sm text-neutral-600 transition-colors hover:bg-neutral-100 hover:text-neutral-900 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-500"
         >
           Clear filters
         </button>
