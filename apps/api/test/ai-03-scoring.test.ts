@@ -489,7 +489,18 @@ describe("AI-03 — knockout eval + scoring outbox + worker drain", () => {
     // Tests 1/3/4 enqueued rows; Test 5's two drain passes either
     // completed or retried them. Clear what's left so this test can
     // assert the "nothing-to-do" path of the drain.
-    await poolSql`DELETE FROM public.ai_score_outbox WHERE tenant_id = ${T} AND status != 'completed'`;
+    //
+    // TESTFIX-01: drainAiScoreOutboxOnce is GLOBAL — it claims ANY tenant's
+    // pending row, not just T's. Under the full CI suite the shared dev DB
+    // carries pending ai_score_outbox rows on OTHER tenants (e.g. kyndryl-poc
+    // demo rows whose prompt hash has no local AI fixture, so they retry
+    // forever in CI). A tenant-scoped delete left those claimable and the
+    // drain returned claimed=1 — green in test:gate (fewer files, no such
+    // stragglers) but red in the full run. Wipe every non-completed row so
+    // the precondition ("nothing to do") actually holds. Safe: vitest runs
+    // files serially (fileParallelism:false) and no worker is live, so
+    // nothing re-enqueues between the delete and the drain.
+    await poolSql`DELETE FROM public.ai_score_outbox WHERE status != 'completed'`;
     const result = await drainAiScoreOutboxOnce({ log: drainLog });
     assert.equal(result.claimed, 0);
   });

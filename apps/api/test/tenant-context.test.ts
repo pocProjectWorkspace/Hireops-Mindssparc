@@ -311,22 +311,19 @@ describe("tenant-context + RLS integration", () => {
   });
 
   it("Test 7: business_units RLS — tenant isolation (DB-01)", async () => {
-    // FLAKE-DIAGNOSED in CRS-01-FOLLOWUP — DO NOT "fix" by rerunning the
-    // seed teardown or by isolating to a fresh DB.
+    // FLAKE-DIAGNOSED in CRS-01-FOLLOWUP, FIXED in TESTFIX-01.
     //
-    // What's wrong: the assertion `visible.length === 1` was written
+    // What was wrong: the assertion `visible.length === 1` was written
     // against an empty-DB premise. `pnpm db:seed:demo-data` inserts a
-    // 'gcc-blr' BU into the same testTenantId (kyndryl-poc), so after
-    // the demo seed runs there are >=2 BUs visible to the test user and
-    // the test fails. The RLS contract this test is meant to prove —
-    // "the synth tenant's BU is NOT visible" — still holds; only the
-    // absolute count is wrong.
+    // 'gcc-blr' BU into the same testTenantId (kyndryl-poc), so once the
+    // dev DB carries the demo seed there are >=2 BUs visible to the test
+    // user and the absolute-count assertion failed under the full suite.
+    // The RLS contract this test proves — our own tenant's BU IS visible,
+    // the synth tenant's BU is NOT — was always intact.
     //
-    // Correct fix (in a follow-up ticket — see open-questions.md #22):
-    // assert positively on the synth row's absence + the test's
-    // 'bangalore-gcc' row's presence, not on visible.length. Leaving
-    // the assertion untouched here because changing it under the
-    // CRS-01-FOLLOWUP umbrella would mix scopes.
+    // Fix (open-questions.md #22): assert fixture-scoped — our planted
+    // 'bangalore-gcc' is present and the synth 'invisible' row is absent —
+    // instead of asserting a global count that ambient seed rows pollute.
     let cleanupSynthTenant = false;
     try {
       // Defensive pre-cleanup in case a prior run left rows.
@@ -349,8 +346,18 @@ describe("tenant-context + RLS integration", () => {
       const visible = await withTenantContext(decodedClaims, async ({ db }) => {
         return db.select().from(businessUnits);
       });
-      assert.equal(visible.length, 1, "user sees exactly their own tenant's business units");
-      assert.equal(visible[0]?.slug, "bangalore-gcc");
+      // Fixture-scoped assertions (TESTFIX-01): the demo seed adds other
+      // BUs to kyndryl-poc, so we assert on our own planted rows, never on
+      // a global count. RLS proof = ours visible, synth tenant's not.
+      const visibleSlugs = visible.map((bu) => bu.slug);
+      assert.ok(
+        visibleSlugs.includes("bangalore-gcc"),
+        "user sees their own tenant's planted business unit",
+      );
+      assert.ok(
+        !visibleSlugs.includes("invisible"),
+        "synth tenant's business unit is not visible (RLS isolation)",
+      );
     } finally {
       if (cleanupSynthTenant) {
         await poolSql`DELETE FROM public.business_units WHERE tenant_id = ${testTenantId} AND slug = 'bangalore-gcc'`;
@@ -1162,8 +1169,14 @@ describe("tenant-context + RLS integration", () => {
       `row should live in the current-month partition (${expected})`,
     );
 
+    // TESTFIX-01: query the CURRENT-month partition, not a hardcoded one.
+    // This was pinned to audit_logs_2026_05 (the month it was written) and
+    // silently rotted once the calendar moved on — the row now lands in the
+    // live month's partition, so the hardcoded lookup returned 0. `expected`
+    // is the dynamically-computed partition name from the assertion above;
+    // poolSql(expected) escapes it as a safe identifier.
     const direct = await poolSql<{ id: string }[]>`
-      SELECT id FROM public.audit_logs_2026_05 WHERE entity_id = ${AUDIT_PART_BU_ID}
+      SELECT id FROM public.${poolSql(expected)} WHERE entity_id = ${AUDIT_PART_BU_ID}
     `;
     assert.equal(direct.length, 1, "row reachable through the partition directly");
   });
