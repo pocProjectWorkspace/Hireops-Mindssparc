@@ -3,7 +3,17 @@
   "tasks": {
     "build": {
       "dependsOn": ["^build"],
-      "outputs": ["dist/**", ".next/**", "!.next/cache/**"]
+      "outputs": ["dist/**", ".next/**", "!.next/cache/**"],
+      "env": [
+        "DATABASE_URL",
+        "DIRECT_URL",
+        "SUPABASE_URL",
+        "SUPABASE_ANON_KEY",
+        "SUPABASE_SERVICE_ROLE_KEY",
+        "SUPABASE_KEK_SECRET",
+        "SIGNED_LINK_SECRET",
+        "NEXT_PUBLIC_SITE_URL"
+      ]
     },
     "@hireops/db#build": {
       "dependsOn": ["^build"],
