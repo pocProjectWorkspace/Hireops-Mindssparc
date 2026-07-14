@@ -3,6 +3,7 @@ import { sql as poolSql } from "@hireops/db";
 import { verifyLink, enqueueNotification } from "@hireops/notifications";
 import { offerAcceptRequestSchema, offerDeclineRequestSchema } from "@hireops/api-types";
 import { baseLog } from "../lib/observability";
+import { createOnboardingCaseForApplication } from "../lib/onboarding-case";
 
 /**
  * Public candidate accept / decline endpoints.
@@ -221,6 +222,25 @@ offersRoutes.post("/accept/:token", async (c) => {
   }
 
   await enqueueWorkdayHire(offer);
+
+  // Open the onboarding case + generate its checklist (ONBOARD-02). This
+  // sits OUTSIDE the accept UPDATE, alongside the Workday-hire enqueue and
+  // the recruiter notice, and is best-effort by design: the acceptance is
+  // already committed and durable, so a case-creation failure is logged but
+  // must NOT fail the candidate's 200 or unwind a valid acceptance. The
+  // creation is idempotent (unique(tenant_id, application_id)); a retried
+  // accept returns 409 before reaching here anyway, so the case is opened
+  // exactly once by the winning acceptance. A dropped case is recoverable
+  // via the createOnboardingCaseForApplication backfill procedure.
+  try {
+    await createOnboardingCaseForApplication(poolSql, {
+      tenantId: offer.tenant_id,
+      applicationId: offer.application_id,
+    });
+  } catch (err) {
+    baseLog.error({ err, offer_id: offer.id }, "offers.accept.onboarding_case_failed");
+  }
+
   await enqueueRecruiterNotice(offer.tenant_id, offer.application_id, "recruiter.offer_accepted", {
     extraTemplateData: {
       acceptedAtFormatted: new Date().toISOString().slice(0, 16).replace("T", " "),

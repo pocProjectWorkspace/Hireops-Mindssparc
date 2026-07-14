@@ -76,6 +76,12 @@ export const onboardingCases = pgTable(
   (table) => [
     unique("uniq_onboarding_cases_tenant_id_id").on(table.tenantId, table.id),
 
+    // ONBOARD-02: at most one case per (tenant, application). Backs the
+    // idempotent ON CONFLICT (tenant_id, application_id) DO NOTHING insert
+    // in the offer-accept case-creation hook. Added by hand-written
+    // migration 0049 (additive; the ONBOARD-01 schema shipped without it).
+    unique("uniq_onboarding_cases_tenant_application").on(table.tenantId, table.applicationId),
+
     index("idx_onboarding_cases_status").on(table.tenantId, table.status),
     index("idx_onboarding_cases_application").on(table.tenantId, table.applicationId),
 

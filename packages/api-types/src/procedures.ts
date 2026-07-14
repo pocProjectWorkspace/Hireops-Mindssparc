@@ -1172,3 +1172,190 @@ export const getAgentDetailOutputSchema = z.object({
 });
 export type GetAgentDetailInput = z.infer<typeof getAgentDetailInputSchema>;
 export type GetAgentDetailOutput = z.infer<typeof getAgentDetailOutputSchema>;
+
+// ─────────────── onboarding cases + tasks (ONBOARD-02) ───────────────
+
+/**
+ * onboarding_cases.status / onboarding_tasks.status / task_type — text +
+ * CHECK in the DB (ONBOARD-01, HANDOVER reality #114), mirrored here as
+ * zod enums for the tRPC surface. Wave-1 values; additive to grow.
+ */
+export const onboardingCaseStatusSchema = z.enum([
+  "pre_boarding",
+  "day_zero",
+  "in_progress",
+  "completed",
+  "cancelled",
+]);
+export type OnboardingCaseStatus = z.infer<typeof onboardingCaseStatusSchema>;
+
+export const onboardingTaskStatusSchema = z.enum([
+  "pending",
+  "in_progress",
+  "blocked",
+  "completed",
+  "cancelled",
+  "skipped",
+]);
+export type OnboardingTaskStatus = z.infer<typeof onboardingTaskStatusSchema>;
+
+// ─────────── listOnboardingCases ───────────
+
+export const onboardingCaseListRowSchema = z.object({
+  id: z.string().uuid(),
+  applicationId: z.string().uuid(),
+  candidateId: z.string().uuid(),
+  status: onboardingCaseStatusSchema,
+  geographyCode: z.string(),
+  expectedStartDate: z.string().nullable(),
+  actualStartDate: z.string().nullable(),
+  probationDays: z.number().int(),
+  probationEndsAt: z.string().nullable(),
+  buddyMembershipId: z.string().uuid().nullable(),
+  managerMembershipId: z.string().uuid().nullable(),
+  workdayWorkerId: z.string().nullable(),
+  candidateName: z.string().nullable(),
+  positionTitle: z.string().nullable(),
+  totalTasks: z.number().int(),
+  completedTasks: z.number().int(),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+});
+export type OnboardingCaseListRow = z.infer<typeof onboardingCaseListRowSchema>;
+
+export const listOnboardingCasesInputSchema = z.object({
+  status: onboardingCaseStatusSchema.optional(),
+  limit: z.number().int().positive().max(100).default(50),
+  cursor: z.string().optional(),
+});
+export const listOnboardingCasesOutputSchema = z.object({
+  items: z.array(onboardingCaseListRowSchema),
+  nextCursor: z.string().nullable(),
+});
+export type ListOnboardingCasesInput = z.infer<typeof listOnboardingCasesInputSchema>;
+export type ListOnboardingCasesOutput = z.infer<typeof listOnboardingCasesOutputSchema>;
+
+// ─────────── getOnboardingCaseDetail ───────────
+
+export const onboardingTaskRowSchema = z.object({
+  id: z.string().uuid(),
+  caseId: z.string().uuid(),
+  taskType: z.string(),
+  status: onboardingTaskStatusSchema,
+  title: z.string(),
+  description: z.string().nullable(),
+  assigneeMembershipId: z.string().uuid().nullable(),
+  dueAt: z.string().nullable(),
+  completedAt: z.string().nullable(),
+  blockedReason: z.string().nullable(),
+  // jsonb payload (checkInDay, documentTypeId, …) — passthrough as unknown.
+  metadata: z.unknown().nullable(),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+});
+export type OnboardingTaskRow = z.infer<typeof onboardingTaskRowSchema>;
+
+export const onboardingDocumentRowSchema = z.object({
+  id: z.string().uuid(),
+  caseId: z.string().uuid(),
+  documentTypeId: z.string().uuid(),
+  verificationStatus: z.string(),
+  fileName: z.string().nullable(),
+  mimeType: z.string().nullable(),
+  uploadedAt: z.string(),
+  createdAt: z.string(),
+});
+export type OnboardingDocumentRow = z.infer<typeof onboardingDocumentRowSchema>;
+
+export const onboardingCaseDetailSchema = onboardingCaseListRowSchema.omit({
+  totalTasks: true,
+  completedTasks: true,
+});
+export type OnboardingCaseDetail = z.infer<typeof onboardingCaseDetailSchema>;
+
+export const getOnboardingCaseDetailInputSchema = z.object({
+  caseId: z.string().uuid(),
+});
+export const getOnboardingCaseDetailOutputSchema = z.object({
+  case: onboardingCaseDetailSchema,
+  tasks: z.array(onboardingTaskRowSchema),
+  documents: z.array(onboardingDocumentRowSchema),
+});
+export type GetOnboardingCaseDetailInput = z.infer<typeof getOnboardingCaseDetailInputSchema>;
+export type GetOnboardingCaseDetailOutput = z.infer<typeof getOnboardingCaseDetailOutputSchema>;
+
+// ─────────── updateOnboardingTaskStatus ───────────
+
+export const updateOnboardingTaskStatusInputSchema = z.object({
+  taskId: z.string().uuid(),
+  status: onboardingTaskStatusSchema,
+  // Required when status = 'blocked'; ignored (cleared) otherwise. Enforced
+  // in the procedure so the message can name the offending field.
+  blockedReason: z.string().min(1).max(1000).optional(),
+});
+export const updateOnboardingTaskStatusOutputSchema = z.object({
+  taskId: z.string().uuid(),
+  status: onboardingTaskStatusSchema,
+  completedAt: z.string().nullable(),
+  blockedReason: z.string().nullable(),
+});
+export type UpdateOnboardingTaskStatusInput = z.infer<
+  typeof updateOnboardingTaskStatusInputSchema
+>;
+export type UpdateOnboardingTaskStatusOutput = z.infer<
+  typeof updateOnboardingTaskStatusOutputSchema
+>;
+
+// ─────────── updateOnboardingCase ───────────
+
+export const updateOnboardingCaseInputSchema = z
+  .object({
+    caseId: z.string().uuid(),
+    geographyCode: z
+      .string()
+      .length(2)
+      .regex(/^[A-Za-z]{2}$/, "Expected a 2-letter ISO country code")
+      .optional(),
+    expectedStartDate: z
+      .string()
+      .regex(/^\d{4}-\d{2}-\d{2}$/, "Expected YYYY-MM-DD")
+      .optional(),
+    buddyMembershipId: z.string().uuid().nullable().optional(),
+    managerMembershipId: z.string().uuid().nullable().optional(),
+    status: onboardingCaseStatusSchema.optional(),
+  })
+  .refine(
+    (v) =>
+      v.geographyCode !== undefined ||
+      v.expectedStartDate !== undefined ||
+      v.buddyMembershipId !== undefined ||
+      v.managerMembershipId !== undefined ||
+      v.status !== undefined,
+    { message: "At least one field to update is required" },
+  );
+export const updateOnboardingCaseOutputSchema = z.object({
+  caseId: z.string().uuid(),
+  status: onboardingCaseStatusSchema,
+  geographyCode: z.string(),
+  // How many document_collection tasks were soft-added by a geography change.
+  documentTasksAdded: z.number().int(),
+});
+export type UpdateOnboardingCaseInput = z.infer<typeof updateOnboardingCaseInputSchema>;
+export type UpdateOnboardingCaseOutput = z.infer<typeof updateOnboardingCaseOutputSchema>;
+
+// ─────────── createOnboardingCaseForApplication (manual / backfill) ───────────
+
+export const createOnboardingCaseForApplicationInputSchema = z.object({
+  applicationId: z.string().uuid(),
+});
+export const createOnboardingCaseForApplicationOutputSchema = z.object({
+  caseId: z.string().uuid(),
+  created: z.boolean(),
+  geographyCode: z.string(),
+});
+export type CreateOnboardingCaseForApplicationInput = z.infer<
+  typeof createOnboardingCaseForApplicationInputSchema
+>;
+export type CreateOnboardingCaseForApplicationOutput = z.infer<
+  typeof createOnboardingCaseForApplicationOutputSchema
+>;

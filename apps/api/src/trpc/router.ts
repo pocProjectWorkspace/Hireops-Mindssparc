@@ -44,6 +44,9 @@ import {
   agentRunActions,
   agentRunOutbox,
   auditLogs,
+  onboardingCases,
+  onboardingTasks,
+  onboardingDocuments,
   recordPiiAccess,
   applicationStageEnum,
   type ApplicationStage,
@@ -127,6 +130,20 @@ import {
   listPendingApprovalsOutputSchema,
   getApprovalRequestInputSchema,
   getApprovalRequestOutputSchema,
+  listOnboardingCasesInputSchema,
+  listOnboardingCasesOutputSchema,
+  getOnboardingCaseDetailInputSchema,
+  getOnboardingCaseDetailOutputSchema,
+  updateOnboardingTaskStatusInputSchema,
+  updateOnboardingTaskStatusOutputSchema,
+  updateOnboardingCaseInputSchema,
+  updateOnboardingCaseOutputSchema,
+  createOnboardingCaseForApplicationInputSchema,
+  createOnboardingCaseForApplicationOutputSchema,
+  type OnboardingCaseListRow,
+  type OnboardingTaskRow,
+  type OnboardingDocumentRow,
+  type OnboardingCaseStatus,
   type SubmitApplicationOutput,
   type GetCandidateByIdOutput,
   type AgentListRow,
@@ -139,6 +156,11 @@ import { enqueueNotification, signLink, hashToken } from "@hireops/notifications
 import { assertRuleAttachable, IncompatibleApprovalRuleError } from "@hireops/agent-actions";
 import { router, publicProcedure, protectedProcedure, type HonoTRPCContext } from "./trpc-core";
 import { withAudit } from "./with-audit";
+import {
+  createOnboardingCaseForApplication as createOnboardingCase,
+  ensureDocumentCollectionTasks,
+  resolveGeographyCode,
+} from "../lib/onboarding-case";
 import { getStorageClient } from "../lib/storage";
 import { tenants, positions } from "@hireops/db";
 
@@ -3826,7 +3848,514 @@ export const appRouter = router({
       };
       return out;
     }),
+
+  // ─────────────────────── onboarding cases (ONBOARD-02) ───────────────────────
+  //
+  // Internal onboarding surface. All procedures are protectedProcedure — a
+  // JWT-resolved tenant member (recruiter / hr_ops / people_ops / admin);
+  // candidates never reach these (they use the public offer routes). This
+  // matches the dominant router convention (listAgents, draftOffer, …): the
+  // tenant tx + RLS is the gate; no finer role set is invented here. Reads
+  // run through ctx.db (RLS-scoped) so tenant isolation is enforced by the
+  // database, plus an explicit eq(tenantId) matching listAuditEvents.
+
+  /**
+   * listOnboardingCases — tenant-scoped, optional status filter, keyset-
+   * paginated on (created_at, id) desc (same codec as the audit list).
+   * Carries candidate name + position title + task-progress counts for the
+   * list UI (ONBOARD-03).
+   */
+  listOnboardingCases: protectedProcedure
+    .input(listOnboardingCasesInputSchema)
+    .output(listOnboardingCasesOutputSchema)
+    .query(async ({ ctx, input }) => {
+      const db = requireDb(ctx);
+      if (!ctx.tenantId) {
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: "protected procedure missing tenantId",
+        });
+      }
+      const tenantId = ctx.tenantId;
+      const limit = input.limit;
+      const decoded = decodeAuditCursor(input.cursor);
+
+      const conditions = [eq(onboardingCases.tenantId, tenantId)];
+      if (input.status) {
+        conditions.push(eq(onboardingCases.status, input.status));
+      }
+      if (decoded) {
+        conditions.push(
+          dsql`(${onboardingCases.createdAt}, ${onboardingCases.id}) < (${decoded.createdAt.toISOString()}::timestamptz, ${decoded.id}::uuid)`,
+        );
+      }
+
+      const rows = await db
+        .select({
+          id: onboardingCases.id,
+          applicationId: onboardingCases.applicationId,
+          candidateId: onboardingCases.candidateId,
+          status: onboardingCases.status,
+          geographyCode: onboardingCases.geographyCode,
+          expectedStartDate: onboardingCases.expectedStartDate,
+          actualStartDate: onboardingCases.actualStartDate,
+          probationDays: onboardingCases.probationDays,
+          probationEndsAt: onboardingCases.probationEndsAt,
+          buddyMembershipId: onboardingCases.buddyMembershipId,
+          managerMembershipId: onboardingCases.managerMembershipId,
+          workdayWorkerId: onboardingCases.workdayWorkerId,
+          candidateName: persons.fullName,
+          positionTitle: positions.title,
+          totalTasks: dsql<number>`(SELECT count(*)::int FROM public.onboarding_tasks t WHERE t.tenant_id = ${onboardingCases.tenantId} AND t.case_id = ${onboardingCases.id})`,
+          completedTasks: dsql<number>`(SELECT count(*)::int FROM public.onboarding_tasks t WHERE t.tenant_id = ${onboardingCases.tenantId} AND t.case_id = ${onboardingCases.id} AND t.status = 'completed')`,
+          createdAt: onboardingCases.createdAt,
+          updatedAt: onboardingCases.updatedAt,
+        })
+        .from(onboardingCases)
+        .leftJoin(
+          candidates,
+          and(
+            eq(candidates.id, onboardingCases.candidateId),
+            eq(candidates.tenantId, onboardingCases.tenantId),
+          ),
+        )
+        .leftJoin(
+          persons,
+          and(eq(persons.id, candidates.personId), eq(persons.tenantId, onboardingCases.tenantId)),
+        )
+        .leftJoin(
+          applications,
+          and(
+            eq(applications.id, onboardingCases.applicationId),
+            eq(applications.tenantId, onboardingCases.tenantId),
+          ),
+        )
+        .leftJoin(
+          requisitions,
+          and(
+            eq(requisitions.id, applications.requisitionId),
+            eq(requisitions.tenantId, onboardingCases.tenantId),
+          ),
+        )
+        .leftJoin(
+          positions,
+          and(
+            eq(positions.id, requisitions.positionId),
+            eq(positions.tenantId, onboardingCases.tenantId),
+          ),
+        )
+        .where(and(...conditions))
+        .orderBy(desc(onboardingCases.createdAt), desc(onboardingCases.id))
+        .limit(limit + 1);
+
+      const hasMore = rows.length > limit;
+      const pageRows = hasMore ? rows.slice(0, limit) : rows;
+      const items: OnboardingCaseListRow[] = pageRows.map((r) => ({
+        id: r.id,
+        applicationId: r.applicationId,
+        candidateId: r.candidateId,
+        status: r.status as OnboardingCaseStatus,
+        geographyCode: r.geographyCode,
+        expectedStartDate: r.expectedStartDate ?? null,
+        actualStartDate: r.actualStartDate ?? null,
+        probationDays: r.probationDays,
+        probationEndsAt: r.probationEndsAt ?? null,
+        buddyMembershipId: r.buddyMembershipId ?? null,
+        managerMembershipId: r.managerMembershipId ?? null,
+        workdayWorkerId: r.workdayWorkerId ?? null,
+        candidateName: r.candidateName ?? null,
+        positionTitle: r.positionTitle ?? null,
+        totalTasks: Number(r.totalTasks),
+        completedTasks: Number(r.completedTasks),
+        createdAt: toIsoString(r.createdAt) ?? new Date(0).toISOString(),
+        updatedAt: toIsoString(r.updatedAt) ?? new Date(0).toISOString(),
+      }));
+
+      const lastRow = pageRows[pageRows.length - 1];
+      const nextCursor =
+        hasMore && lastRow ? encodeAuditCursor(lastRow.createdAt, lastRow.id) : null;
+
+      return { items, nextCursor };
+    }),
+
+  /**
+   * getOnboardingCaseDetail — one case + its tasks + its document rows.
+   */
+  getOnboardingCaseDetail: protectedProcedure
+    .input(getOnboardingCaseDetailInputSchema)
+    .output(getOnboardingCaseDetailOutputSchema)
+    .query(async ({ ctx, input }) => {
+      const db = requireDb(ctx);
+      if (!ctx.tenantId) {
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: "protected procedure missing tenantId",
+        });
+      }
+      const tenantId = ctx.tenantId;
+
+      const [caseRow] = await db
+        .select({
+          id: onboardingCases.id,
+          applicationId: onboardingCases.applicationId,
+          candidateId: onboardingCases.candidateId,
+          status: onboardingCases.status,
+          geographyCode: onboardingCases.geographyCode,
+          expectedStartDate: onboardingCases.expectedStartDate,
+          actualStartDate: onboardingCases.actualStartDate,
+          probationDays: onboardingCases.probationDays,
+          probationEndsAt: onboardingCases.probationEndsAt,
+          buddyMembershipId: onboardingCases.buddyMembershipId,
+          managerMembershipId: onboardingCases.managerMembershipId,
+          workdayWorkerId: onboardingCases.workdayWorkerId,
+          candidateName: persons.fullName,
+          positionTitle: positions.title,
+          createdAt: onboardingCases.createdAt,
+          updatedAt: onboardingCases.updatedAt,
+        })
+        .from(onboardingCases)
+        .leftJoin(
+          candidates,
+          and(
+            eq(candidates.id, onboardingCases.candidateId),
+            eq(candidates.tenantId, onboardingCases.tenantId),
+          ),
+        )
+        .leftJoin(
+          persons,
+          and(eq(persons.id, candidates.personId), eq(persons.tenantId, onboardingCases.tenantId)),
+        )
+        .leftJoin(
+          applications,
+          and(
+            eq(applications.id, onboardingCases.applicationId),
+            eq(applications.tenantId, onboardingCases.tenantId),
+          ),
+        )
+        .leftJoin(
+          requisitions,
+          and(
+            eq(requisitions.id, applications.requisitionId),
+            eq(requisitions.tenantId, onboardingCases.tenantId),
+          ),
+        )
+        .leftJoin(
+          positions,
+          and(
+            eq(positions.id, requisitions.positionId),
+            eq(positions.tenantId, onboardingCases.tenantId),
+          ),
+        )
+        .where(and(eq(onboardingCases.tenantId, tenantId), eq(onboardingCases.id, input.caseId)))
+        .limit(1);
+      if (!caseRow) {
+        throw new TRPCError({ code: "NOT_FOUND", message: "Onboarding case not found" });
+      }
+
+      const taskRows = await db
+        .select()
+        .from(onboardingTasks)
+        .where(
+          and(eq(onboardingTasks.tenantId, tenantId), eq(onboardingTasks.caseId, input.caseId)),
+        )
+        .orderBy(onboardingTasks.createdAt, onboardingTasks.id);
+
+      const documentRows = await db
+        .select()
+        .from(onboardingDocuments)
+        .where(
+          and(
+            eq(onboardingDocuments.tenantId, tenantId),
+            eq(onboardingDocuments.caseId, input.caseId),
+          ),
+        )
+        .orderBy(onboardingDocuments.createdAt, onboardingDocuments.id);
+
+      const tasks: OnboardingTaskRow[] = taskRows.map((t) => ({
+        id: t.id,
+        caseId: t.caseId,
+        taskType: t.taskType,
+        status: t.status as OnboardingTaskRow["status"],
+        title: t.title,
+        description: t.description ?? null,
+        assigneeMembershipId: t.assigneeMembershipId ?? null,
+        dueAt: toIsoString(t.dueAt),
+        completedAt: toIsoString(t.completedAt),
+        blockedReason: t.blockedReason ?? null,
+        metadata: t.metadata ?? null,
+        createdAt: toIsoString(t.createdAt) ?? new Date(0).toISOString(),
+        updatedAt: toIsoString(t.updatedAt) ?? new Date(0).toISOString(),
+      }));
+
+      const documents: OnboardingDocumentRow[] = documentRows.map((d) => ({
+        id: d.id,
+        caseId: d.caseId,
+        documentTypeId: d.documentTypeId,
+        verificationStatus: d.verificationStatus,
+        fileName: d.fileName ?? null,
+        mimeType: d.mimeType ?? null,
+        uploadedAt: toIsoString(d.uploadedAt) ?? new Date(0).toISOString(),
+        createdAt: toIsoString(d.createdAt) ?? new Date(0).toISOString(),
+      }));
+
+      return {
+        case: {
+          id: caseRow.id,
+          applicationId: caseRow.applicationId,
+          candidateId: caseRow.candidateId,
+          status: caseRow.status as OnboardingCaseStatus,
+          geographyCode: caseRow.geographyCode,
+          expectedStartDate: caseRow.expectedStartDate ?? null,
+          actualStartDate: caseRow.actualStartDate ?? null,
+          probationDays: caseRow.probationDays,
+          probationEndsAt: caseRow.probationEndsAt ?? null,
+          buddyMembershipId: caseRow.buddyMembershipId ?? null,
+          managerMembershipId: caseRow.managerMembershipId ?? null,
+          workdayWorkerId: caseRow.workdayWorkerId ?? null,
+          candidateName: caseRow.candidateName ?? null,
+          positionTitle: caseRow.positionTitle ?? null,
+          createdAt: toIsoString(caseRow.createdAt) ?? new Date(0).toISOString(),
+          updatedAt: toIsoString(caseRow.updatedAt) ?? new Date(0).toISOString(),
+        },
+        tasks,
+        documents,
+      };
+    }),
+
+  /**
+   * updateOnboardingTaskStatus — task status transition. Sets completed_at
+   * when → completed (clears it otherwise); requires blocked_reason when →
+   * blocked (clears it otherwise). The audit_logs trigger (0047) records the
+   * row change; withAudit records the API intent + actor.
+   */
+  updateOnboardingTaskStatus: protectedProcedure
+    .input(updateOnboardingTaskStatusInputSchema)
+    .output(updateOnboardingTaskStatusOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      return withAudit("update_onboarding_task_status", ctx, input, async () => {
+        const db = requireDb(ctx);
+        if (!ctx.tenantId) {
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: "protected procedure missing tenantId",
+          });
+        }
+        const tenantId = ctx.tenantId;
+
+        if (input.status === "blocked" && !input.blockedReason) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: "blockedReason is required when status is 'blocked'",
+          });
+        }
+
+        const [existing] = await db
+          .select({ id: onboardingTasks.id })
+          .from(onboardingTasks)
+          .where(
+            and(eq(onboardingTasks.tenantId, tenantId), eq(onboardingTasks.id, input.taskId)),
+          )
+          .limit(1);
+        if (!existing) {
+          throw new TRPCError({ code: "NOT_FOUND", message: "Onboarding task not found" });
+        }
+
+        const completedAt = input.status === "completed" ? new Date() : null;
+        const blockedReason = input.status === "blocked" ? (input.blockedReason ?? null) : null;
+
+        const [updated] = await db
+          .update(onboardingTasks)
+          .set({
+            status: input.status,
+            completedAt,
+            blockedReason,
+            updatedAt: new Date(),
+          })
+          .where(and(eq(onboardingTasks.tenantId, tenantId), eq(onboardingTasks.id, input.taskId)))
+          .returning({
+            id: onboardingTasks.id,
+            status: onboardingTasks.status,
+            completedAt: onboardingTasks.completedAt,
+            blockedReason: onboardingTasks.blockedReason,
+          });
+        if (!updated) {
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: "task update returned no row",
+          });
+        }
+
+        return {
+          taskId: updated.id,
+          status: updated.status as OnboardingTaskRow["status"],
+          completedAt: toIsoString(updated.completedAt),
+          blockedReason: updated.blockedReason ?? null,
+        };
+      });
+    }),
+
+  /**
+   * updateOnboardingCase — limited-field update: geography_code, expected
+   * start date, buddy / manager assignment, status transition (guarded).
+   * A geography change SOFT-ADDS the newly-applicable document_collection
+   * tasks (existing tasks + any progress are preserved; nothing is deleted)
+   * and reports the count as `documentTasksAdded`.
+   */
+  updateOnboardingCase: protectedProcedure
+    .input(updateOnboardingCaseInputSchema)
+    .output(updateOnboardingCaseOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      return withAudit("update_onboarding_case", ctx, input, async () => {
+        const db = requireDb(ctx);
+        if (!ctx.tenantId) {
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: "protected procedure missing tenantId",
+          });
+        }
+        const tenantId = ctx.tenantId;
+
+        const [existing] = await db
+          .select({
+            status: onboardingCases.status,
+            geographyCode: onboardingCases.geographyCode,
+          })
+          .from(onboardingCases)
+          .where(
+            and(eq(onboardingCases.tenantId, tenantId), eq(onboardingCases.id, input.caseId)),
+          )
+          .limit(1);
+        if (!existing) {
+          throw new TRPCError({ code: "NOT_FOUND", message: "Onboarding case not found" });
+        }
+
+        const setFields: Record<string, unknown> = { updatedAt: new Date() };
+
+        if (input.status !== undefined && input.status !== existing.status) {
+          const allowed = ALLOWED_CASE_TRANSITIONS[existing.status] ?? [];
+          if (!allowed.includes(input.status)) {
+            throw new TRPCError({
+              code: "BAD_REQUEST",
+              message: `Illegal case status transition ${existing.status} → ${input.status}`,
+            });
+          }
+          setFields.status = input.status;
+        }
+
+        let nextGeography = existing.geographyCode;
+        if (input.geographyCode !== undefined) {
+          nextGeography = resolveGeographyCode(input.geographyCode);
+          setFields.geographyCode = nextGeography;
+        }
+        if (input.expectedStartDate !== undefined) {
+          setFields.expectedStartDate = input.expectedStartDate;
+        }
+        if (input.buddyMembershipId !== undefined) {
+          setFields.buddyMembershipId = input.buddyMembershipId;
+        }
+        if (input.managerMembershipId !== undefined) {
+          setFields.managerMembershipId = input.managerMembershipId;
+        }
+
+        const [updated] = await db
+          .update(onboardingCases)
+          .set(setFields)
+          .where(and(eq(onboardingCases.tenantId, tenantId), eq(onboardingCases.id, input.caseId)))
+          .returning({
+            status: onboardingCases.status,
+            geographyCode: onboardingCases.geographyCode,
+          });
+        if (!updated) {
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: "case update returned no row",
+          });
+        }
+
+        // Soft-add document tasks for a changed geography. Runs LAST via the
+        // service-role client (ctx.sql, explicit tenant_id) as the final
+        // statement — a failure throws and rolls back the ctx.db update above,
+        // so geography and its documents move together.
+        let documentTasksAdded = 0;
+        if (input.geographyCode !== undefined && nextGeography !== existing.geographyCode) {
+          documentTasksAdded = await ensureDocumentCollectionTasks(ctx.sql, {
+            tenantId,
+            caseId: input.caseId,
+            geographyCode: nextGeography,
+          });
+        }
+
+        return {
+          caseId: input.caseId,
+          status: updated.status as OnboardingCaseStatus,
+          geographyCode: updated.geographyCode,
+          documentTasksAdded,
+        };
+      });
+    }),
+
+  /**
+   * createOnboardingCaseForApplication — manual / backfill entry point,
+   * reusing the same idempotent creation helper as the offer-accept hook.
+   * Unlike that best-effort hook, this runs to completion or errors: it is a
+   * deliberate recovery action, so a failure should surface, not be swallowed.
+   */
+  createOnboardingCaseForApplication: protectedProcedure
+    .input(createOnboardingCaseForApplicationInputSchema)
+    .output(createOnboardingCaseForApplicationOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      return withAudit("create_onboarding_case_for_application", ctx, input, async () => {
+        const db = requireDb(ctx);
+        if (!ctx.tenantId) {
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: "protected procedure missing tenantId",
+          });
+        }
+        const tenantId = ctx.tenantId;
+
+        // Confirm the application exists in this tenant (RLS-scoped) before
+        // handing off to the service-role creation helper — turns a missing
+        // application into a clean 404 instead of an internal error.
+        const [app] = await db
+          .select({ id: applications.id })
+          .from(applications)
+          .where(and(eq(applications.tenantId, tenantId), eq(applications.id, input.applicationId)))
+          .limit(1);
+        if (!app) {
+          throw new TRPCError({ code: "NOT_FOUND", message: "Application not found" });
+        }
+
+        const result = await createOnboardingCase(ctx.sql, {
+          tenantId,
+          applicationId: input.applicationId,
+        });
+        return {
+          caseId: result.caseId,
+          created: result.created,
+          geographyCode: result.geographyCode,
+        };
+      });
+    }),
 });
+
+// ─────────────── ONBOARD-02 case status transition guard ───────────────
+
+/**
+ * Legal onboarding_cases.status transitions (requirements.md §7 lifecycle):
+ *   pre_boarding → day_zero | cancelled
+ *   day_zero     → in_progress | cancelled
+ *   in_progress  → completed | cancelled
+ *   completed / cancelled are terminal.
+ * A no-op (same status) is filtered out before this map is consulted.
+ */
+const ALLOWED_CASE_TRANSITIONS: Record<string, OnboardingCaseStatus[]> = {
+  pre_boarding: ["day_zero", "cancelled"],
+  day_zero: ["in_progress", "cancelled"],
+  in_progress: ["completed", "cancelled"],
+  completed: [],
+  cancelled: [],
+};
 
 // ─────────────── AGENT-04a #30 rule-attachment guard ───────────────
 
