@@ -26,6 +26,7 @@ import { cn } from "@/components/ui/cn";
 import {
   IconTriage,
   IconApprovals,
+  IconOnboarding,
   IconWorkflows,
   IconAudit,
   IconCosts,
@@ -37,6 +38,7 @@ import {
 export type PortalNavKey =
   | "triage"
   | "approvals"
+  | "onboarding"
   | "workflows"
   | "audit"
   | "costs"
@@ -53,6 +55,7 @@ interface NavItem {
 const MAIN_NAV: NavItem[] = [
   { key: "triage", label: "Triage", href: "/triage", icon: <IconTriage /> },
   { key: "approvals", label: "Approvals", href: "/approvals", icon: <IconApprovals /> },
+  { key: "onboarding", label: "Onboarding", href: "/onboarding", icon: <IconOnboarding /> },
 ];
 
 const ADMIN_NAV: NavItem[] = [
