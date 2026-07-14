@@ -2,7 +2,7 @@
 
 **Purpose.** This is the master status + scope + roadmap document. Paste it at the start of a new build session to know, without re-deriving anything: exactly where the build is, what remains for the **August demo**, and what remains for the **full platform**. It is the "what to build next" companion to `docs/HANDOVER.md` (which is the ticket-level changelog + deep codebase realities — read that when you need the *why* behind a specific implementation).
 
-**Last updated:** 14 July 2026 (main @ `d3c7cb6`). **ALL demo-critical build work is DONE** — §4 items 1–10 complete, CI green (first fully-green board 13 July, run 29243695378), STAGING IS LIVE, and a four-phase UI/UX revamp (DESIGN-01→04) shipped: token system, app shell, ten shared primitives, every internal + candidate surface restyled, zero behavioral change.
+**Last updated:** 14 July 2026, post-demo (main @ `bf01008`). **ALL demo-critical build work is DONE** — §4 items 1–10 complete, CI green (first fully-green board 13 July, run 29243695378), STAGING IS LIVE, and a four-phase UI/UX revamp (DESIGN-01→04) shipped: token system, app shell, ten shared primitives, every internal + candidate surface restyled, zero behavioral change.
 
 **Staging (live since 13 July):**
 - Portal: https://hireops-portal.vercel.app (Vercel, auto-deploys on push to main; project hireops-portal, Root Directory apps/internal-portal, framework nextjs)
@@ -11,6 +11,13 @@
 - DB: the DEV Supabase project is ALSO the staging DB (user decision, cost) — consequences: live workers interfere with drain-timing tests (CI api:test tripwire reads red on them; the five quality jobs are the signal), and test runs consume demo state → **re-seed before any demo**. Real Anthropic credential stored for kyndryl-poc (`pnpm db:store:demo-ai-credential`).
 
 **Update 14 July 2026 (main @ `2063f67` + local `8950bca`): CONSTRUCTION PHASE CLOSED.** Since the revamp shipped: UX-01 (triage = one scroll surface with sticky-header handoff, deep-link scroll-into-view), the production `/trpc` env fix (NEXT_PUBLIC_API_BASE_URL on Vercel MUST include the `/trpc` suffix — detail panels 404'd without it), and GROOM-01 (`pnpm db:groom:demo-data`, dry-run default / `--execute` — class-based sweep of test residue with hard protections; first sweep removed 36 rows). The live workers scored a seeded candidate with real Anthropic (scored_by=anthropic) — the full AI path is verified live on staging. First demo showcase: 14 July 2026.
+
+**Update 14 July 2026, evening (post-demo, main @ `bf01008`): FIRST DEMO SHOWN — PHASE-2 PIVOT.** The showcase went very well. Client direction, and what it changes:
+- **They want to see the finished platform** — phases 2/3 (onboarding, offboarding, partner portal + commercials) — before anything else.
+- **Workday integration is deprioritised.** Kyndryl is pitching HireOps to GCC clients in France and Germany; real Workday integration becomes a **separate post-deal work package** (the signed client's own team is needed to make it seamless). The simulator stays sufficient for all demos. "Real Workday connector" drops out of the §6 build order entirely.
+- **24–30 August window reframed (agreed with user 14 July):** onboarding end-to-end (offer-accept → pre-boarding document collection → Day-0 sim hire → Day 1–30 checklist, check-ins, probation) **plus the partner portal shell** if time allows; offboarding narrated as roadmap. Stock-take after each item lands.
+- France/Germany targets put **GDPR + FR/DE i18n** (currently 0%) on the future radar — flagged, not current work.
+- Active pillar: **onboarding** (ONBOARD-01, schema first). Revised §6 order: onboarding → partner portal + commercials → offboarding → cross-cutting hardening.
 
 **Pre-demo runbook (3 commands + 1 check):**
 1. `pnpm db:groom:demo-data --execute` (sweeps any test residue since the last CI run)
@@ -25,7 +32,7 @@
 4. Local-dev-only pino thread-stream crash in next dev (drawer detail errors in dev only; production unaffected) — annoyance, not a defect.
 5. Multi-application deep-links select >1 row (test-data pattern; mostly moot post-grooming).
 6. HANDOVER.md ticket log: add DESIGN-01→04, UX-01, GROOM-01, staging-deploy entries (docs debt; commit messages are canonical meanwhile).
-7. Then the post-demo roadmap per §6: onboarding pillar → real Workday → partner portal → offboarding.
+7. Then the post-demo roadmap per §6 **as revised 14 July**: onboarding pillar (ACTIVE) → partner portal + commercials → offboarding → cross-cutting. Real Workday: deferred to a post-deal work package.
 
 **Read alongside this doc:**
 - `docs/requirements.md` — the full product requirements (the denominator for §5 below).
@@ -159,13 +166,12 @@ The full build maps to the 24-week wave structure (`requirements.md` §11, `HAND
 - **Wave 2 (volume & polish):** bulk ops, real AI scoring calibration + bias shield, WhatsApp/SMS, job-board posting, reporting suite, interviewing.
 - **Wave 3 (production readiness):** real Workday, SSO, pen test, DPDPA audit, DR drills, scale to 300 hires/month.
 
-**Recommended order once the demo is delivered:**
-1. Finish the demo (§4).
-2. **Onboarding pillar** — highest continuity (extends the Workday-hire moment), unblocks the "full lifecycle" claim.
-3. **Real Workday connector** — replaces the simulator; onboarding needs it to be real.
-4. **Partner portal + commercials** — the dominant sourcing channel for GCC; schema is ready.
-5. **Offboarding pillar** — completes the lifecycle.
-6. **Cross-cutting hardening** — SSO, reporting, search, bulk ops, real notification channels.
+**Recommended order (revised 14 July 2026 per client feedback — Workday deferred to a post-deal work package):**
+1. **Onboarding pillar** — highest continuity (extends the Workday-hire moment), unblocks the "full lifecycle" claim. Runs against the simulator — the client explicitly does not want real Workday now.
+2. **Partner portal + commercials** — the dominant sourcing channel for GCC; schema is ready; the most demonstrable "phase 3" surface. Shell targeted for the August window.
+3. **Offboarding pillar** — completes the lifecycle.
+4. **Cross-cutting hardening** — SSO, reporting, search, bulk ops, real notification channels. France/Germany GCC targets add GDPR + FR/DE i18n here.
+5. **Real Workday connector** — post-deal work package with the signed GCC client's team; not scheduled.
 
 Reshape at each pillar boundary; don't plan the whole thing up front. The foundation (RLS, encryption, outbox/worker, audit, agent runtime) is strong enough that each pillar mostly *reuses* patterns rather than inventing them — that's the leverage.
 
