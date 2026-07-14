@@ -5,22 +5,28 @@ import type { ReactNode } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import type {
   GetOnboardingCaseDetailOutput,
+  OnboardingCaseDetail,
   OnboardingCaseStatus,
   OnboardingTaskRow,
   OnboardingTaskStatus,
 } from "@hireops/api-types";
+import { Select } from "@hireops/ui";
 import { trpc } from "@/lib/trpc-client";
 import { Badge, Button, Card, EmptyState } from "@/components/ui";
 import {
   CASE_STATUS_META,
   TASK_STATUS_META,
   TASK_GROUPS,
+  GEOGRAPHY_OPTIONS,
   caseStatusActions,
   formatDate,
   formatGeography,
   groupForTaskType,
   isTaskResolved,
 } from "./onboarding-format";
+
+/** Select sentinel for "no buddy/manager" — Radix Select forbids "" values. */
+const UNASSIGNED = "__unassigned__";
 
 /**
  * Task shape as delivered by the detail query. `metadata` is a z.unknown()
@@ -96,19 +102,7 @@ export function OnboardingCaseView({
           </div>
         </div>
 
-        <dl className="mt-5 grid grid-cols-2 gap-x-6 gap-y-3 sm:grid-cols-3">
-          <Field label="Geography">{formatGeography(c.geographyCode)}</Field>
-          <Field label="Expected start">{formatDate(c.expectedStartDate)}</Field>
-          <Field label="Actual start">{formatDate(c.actualStartDate)}</Field>
-          <Field label="Probation">
-            {c.probationDays} days
-            {c.probationEndsAt ? (
-              <span className="text-neutral-500"> · ends {formatDate(c.probationEndsAt)}</span>
-            ) : null}
-          </Field>
-          <Field label="Buddy">{c.buddyMembershipId ? "Assigned" : "Not yet assigned"}</Field>
-          <Field label="Manager">{c.managerMembershipId ? "Assigned" : "Not yet assigned"}</Field>
-        </dl>
+        <CaseDetailsEditor caseId={caseId} c={c} />
 
         <CaseStatusActions caseId={caseId} status={c.status} />
       </Card>
@@ -154,6 +148,169 @@ function Field({ label, children }: { label: string; children: ReactNode }) {
     <div className="min-w-0">
       <dt className="text-xs uppercase tracking-wide text-neutral-400">{label}</dt>
       <dd className="mt-0.5 truncate text-sm text-neutral-800">{children}</dd>
+    </div>
+  );
+}
+
+function EditField({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <div className="min-w-0">
+      <span className="text-xs uppercase tracking-wide text-neutral-400">{label}</span>
+      <div className="mt-1">{children}</div>
+    </div>
+  );
+}
+
+// ─────────────── editable case header (ONBOARD-04) ───────────────
+
+/**
+ * The who/where/when grid. Geography, expected start, buddy and manager are
+ * editable inline; each edit calls updateOnboardingCase and invalidates the
+ * detail + list queries. A geography change soft-adds the newly-applicable
+ * document tasks server-side — we surface the returned count in a small
+ * confirmation note. Buddy/manager options come from listTenantMemberships;
+ * resolved names render once assigned.
+ */
+function CaseDetailsEditor({ caseId, c }: { caseId: string; c: OnboardingCaseDetail }) {
+  const queryClient = useQueryClient();
+  const [error, setError] = useState<string | null>(null);
+  const [note, setNote] = useState<string | null>(null);
+  const [startDraft, setStartDraft] = useState<string>(c.expectedStartDate ?? "");
+
+  const membersQuery = trpc.listTenantMemberships.useQuery(undefined, {
+    staleTime: 60_000,
+  });
+  const members = membersQuery.data?.items ?? [];
+
+  const mutation = trpc.updateOnboardingCase.useMutation({
+    onSuccess: (res) => {
+      queryClient.invalidateQueries({ queryKey: [["getOnboardingCaseDetail"]] });
+      queryClient.invalidateQueries({ queryKey: [["listOnboardingCases"]] });
+      if (res.documentTasksAdded > 0) {
+        setNote(
+          `Geography set to ${formatGeography(res.geographyCode)} — added ${res.documentTasksAdded} document task${
+            res.documentTasksAdded === 1 ? "" : "s"
+          }.`,
+        );
+      }
+    },
+    onError: (e) => setError(e.message),
+  });
+
+  function memberLabel(name: string | null, email: string | null, membershipId: string): string {
+    return name ?? email ?? `Member ${membershipId.slice(0, 8)}`;
+  }
+
+  const memberOptions = [
+    { value: UNASSIGNED, label: "Not assigned" },
+    ...members.map((m) => ({
+      value: m.membershipId,
+      label: memberLabel(m.displayName, m.email, m.membershipId),
+    })),
+  ];
+
+  function update(fields: Parameters<typeof mutation.mutate>[0]) {
+    setError(null);
+    setNote(null);
+    mutation.mutate(fields);
+  }
+
+  const busy = mutation.isPending;
+  const membersReady = !membersQuery.isLoading;
+
+  return (
+    <div className="mt-5">
+      <dl className="grid grid-cols-2 gap-x-6 gap-y-4 sm:grid-cols-3">
+        <EditField label="Geography">
+          <Select
+            size="sm"
+            value={c.geographyCode.toUpperCase()}
+            options={GEOGRAPHY_OPTIONS}
+            disabled={busy}
+            onValueChange={(value) => {
+              if (value !== c.geographyCode.toUpperCase()) update({ caseId, geographyCode: value });
+            }}
+          />
+        </EditField>
+
+        <EditField label="Expected start">
+          <input
+            type="date"
+            value={startDraft}
+            disabled={busy}
+            onChange={(e) => setStartDraft(e.target.value)}
+            onBlur={() => {
+              const next = startDraft.trim();
+              if (next && next !== (c.expectedStartDate ?? "")) {
+                update({ caseId, expectedStartDate: next });
+              }
+            }}
+            className="h-8 w-full rounded-md border border-neutral-300 bg-white px-3 text-sm text-neutral-900 transition-colors hover:border-neutral-400 focus:border-brand-600 focus:outline-none focus:ring-1 focus:ring-brand-600 disabled:cursor-not-allowed disabled:bg-neutral-50 disabled:text-neutral-400"
+          />
+        </EditField>
+
+        <Field label="Actual start">{formatDate(c.actualStartDate)}</Field>
+
+        <EditField label="Buddy">
+          <Select
+            size="sm"
+            value={c.buddyMembershipId ?? UNASSIGNED}
+            options={memberOptions}
+            disabled={busy || !membersReady}
+            placeholder={membersReady ? "Assign a buddy…" : "Loading…"}
+            onValueChange={(value) =>
+              update({ caseId, buddyMembershipId: value === UNASSIGNED ? null : value })
+            }
+          />
+          {c.buddyName || c.buddyEmail ? (
+            <p className="mt-1 truncate text-xs text-neutral-500">
+              {c.buddyName ?? c.buddyEmail}
+              {c.buddyName && c.buddyEmail ? (
+                <span className="text-neutral-400"> · {c.buddyEmail}</span>
+              ) : null}
+            </p>
+          ) : null}
+        </EditField>
+
+        <EditField label="Manager">
+          <Select
+            size="sm"
+            value={c.managerMembershipId ?? UNASSIGNED}
+            options={memberOptions}
+            disabled={busy || !membersReady}
+            placeholder={membersReady ? "Assign a manager…" : "Loading…"}
+            onValueChange={(value) =>
+              update({ caseId, managerMembershipId: value === UNASSIGNED ? null : value })
+            }
+          />
+          {c.managerName || c.managerEmail ? (
+            <p className="mt-1 truncate text-xs text-neutral-500">
+              {c.managerName ?? c.managerEmail}
+              {c.managerName && c.managerEmail ? (
+                <span className="text-neutral-400"> · {c.managerEmail}</span>
+              ) : null}
+            </p>
+          ) : null}
+        </EditField>
+
+        <Field label="Probation">
+          {c.probationDays} days
+          {c.probationEndsAt ? (
+            <span className="text-neutral-500"> · ends {formatDate(c.probationEndsAt)}</span>
+          ) : null}
+        </Field>
+      </dl>
+
+      {note ? (
+        <p className="mt-3 rounded-md bg-status-success-50 px-3 py-2 text-sm text-status-success-700">
+          {note}
+        </p>
+      ) : null}
+      {error ? (
+        <p className="mt-3 rounded-md bg-status-error-50 px-3 py-2 text-sm text-status-error-700">
+          {error}
+        </p>
+      ) : null}
     </div>
   );
 }

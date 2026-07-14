@@ -53,6 +53,7 @@
 import { config as loadDotenv } from "dotenv";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import type postgres from "postgres";
 
 const here = dirname(fileURLToPath(import.meta.url));
 loadDotenv({ path: resolve(here, "../../../../.env") });
@@ -67,10 +68,19 @@ const DEMO_AGENT_ID = "00000000-0000-4000-8000-00000000a590";
 const DEMO_AGENT_NAME = "Demo Follow-ups Agent";
 const LEAKED_AGENT_NAME = "robust-01-test-stage-validation";
 const DEV_LOCAL_EMAIL = "%@hireops-dev.local";
+// ONBOARD-02 test personas carry an `@onb02.test` email marker. The
+// onboarding lifecycle tests clean up after themselves, but an interrupted
+// run can leave onboarding_cases + their whole subtree behind — residue the
+// CRS `@hireops-dev.local` class does NOT catch. Class 6 below sweeps both.
+const ONB_TEST_EMAIL = "%@onb02.test";
 const SYNTH_SLUG = "%synth%";
 
 // postgres-js Sql instance type, derived from the client export.
 type SqlTag = (typeof import("../client"))["sql"];
+// Either the pool client OR a transaction client — both are tagged-template
+// callables. The residue-case fragment builder accepts both so it can run in
+// gather() (pool `sql`) and inside sql.begin (transaction `tx`).
+type AnySql = SqlTag | postgres.TransactionSql<Record<string, never>>;
 
 interface Row {
   klass: string;
@@ -152,6 +162,27 @@ async function agentSubtreeCounts(sql: SqlTag): Promise<{
     runOutbox: row?.run_outbox ?? 0,
     approvalRequests: row?.approval_requests ?? 0,
   };
+}
+
+/**
+ * The set of RESIDUE onboarding_cases in kyndryl-poc: cases whose backing
+ * candidate/person carries a test-marker email (`@hireops-dev.local` from
+ * CRS-01 e2e, `@onb02.test` from the ONBOARD-02 lifecycle tests), EXCLUDING
+ * anything in the seed a5xx namespace. The seeded ONBOARD-04 demo cases use
+ * `example.test` candidate emails + a5xx ids, so they never match — they are
+ * protected twice over (email marker AND the NOT LIKE a5xx guard). Reused for
+ * both the count (gather) and the child-first delete (tx), so counts and
+ * deletes agree by construction.
+ */
+function onboardingResidueCaseSub(sql: AnySql, kid: string) {
+  return sql`
+    SELECT oc.id
+    FROM public.onboarding_cases oc
+    JOIN public.candidates c ON c.id = oc.candidate_id AND c.tenant_id = oc.tenant_id
+    JOIN public.persons p ON p.id = c.person_id AND p.tenant_id = oc.tenant_id
+    WHERE oc.tenant_id = ${kid}
+      AND (p.email_primary ILIKE ${DEV_LOCAL_EMAIL} OR p.email_primary ILIKE ${ONB_TEST_EMAIL})
+      AND oc.id::text NOT LIKE ${SEED_A5XX_PREFIX + "%"}`;
 }
 
 async function main(): Promise<void> {
@@ -268,6 +299,39 @@ async function main(): Promise<void> {
         WHERE aa.id IS NULL OR aa.retired_at IS NOT NULL
       `);
 
+      // 6. onboarding residue — cases (+ tasks / documents / bgv / IT /
+      //    assets) tied to test-marker personas, never the seeded a5xx cases.
+      const onbSub = onboardingResidueCaseSub(sql, kid);
+      const onbCases = await scalar(sql<{ n: number }[]>`
+        SELECT count(*)::int AS n FROM public.onboarding_cases WHERE id IN (${onbSub})
+      `);
+      const onbTasks = await scalar(sql<{ n: number }[]>`
+        SELECT count(*)::int AS n FROM public.onboarding_tasks
+        WHERE case_id IN (${onboardingResidueCaseSub(sql, kid)})
+      `);
+      const onbDocs = await scalar(sql<{ n: number }[]>`
+        SELECT count(*)::int AS n FROM public.onboarding_documents
+        WHERE case_id IN (${onboardingResidueCaseSub(sql, kid)})
+      `);
+      const onbBgvRuns = await scalar(sql<{ n: number }[]>`
+        SELECT count(*)::int AS n FROM public.bgv_runs
+        WHERE case_id IN (${onboardingResidueCaseSub(sql, kid)})
+      `);
+      const onbBgvResults = await scalar(sql<{ n: number }[]>`
+        SELECT count(*)::int AS n FROM public.bgv_results
+        WHERE bgv_run_id IN (
+          SELECT id FROM public.bgv_runs WHERE case_id IN (${onboardingResidueCaseSub(sql, kid)})
+        )
+      `);
+      const onbIt = await scalar(sql<{ n: number }[]>`
+        SELECT count(*)::int AS n FROM public.it_provisioning_requests
+        WHERE case_id IN (${onboardingResidueCaseSub(sql, kid)})
+      `);
+      const onbAssets = await scalar(sql<{ n: number }[]>`
+        SELECT count(*)::int AS n FROM public.asset_assignments
+        WHERE case_id IN (${onboardingResidueCaseSub(sql, kid)})
+      `);
+
       const rows: Row[] = [
         { klass: "1. CRS-01 dev.local", detail: "persons (kyndryl-poc)", count: crsPersons },
         { klass: "1. CRS-01 dev.local", detail: "candidates", count: crsCands },
@@ -302,6 +366,17 @@ async function main(): Promise<void> {
           detail: "agent_run_outbox (missing/retired agent)",
           count: strayOutbox,
         },
+        {
+          klass: "6. onboarding residue",
+          detail: "onboarding_cases (test personas)",
+          count: onbCases,
+        },
+        { klass: "6. onboarding residue", detail: "onboarding_tasks", count: onbTasks },
+        { klass: "6. onboarding residue", detail: "onboarding_documents", count: onbDocs },
+        { klass: "6. onboarding residue", detail: "bgv_runs", count: onbBgvRuns },
+        { klass: "6. onboarding residue", detail: "bgv_results", count: onbBgvResults },
+        { klass: "6. onboarding residue", detail: "it_provisioning_requests", count: onbIt },
+        { klass: "6. onboarding residue", detail: "asset_assignments", count: onbAssets },
       ];
       return { rows, synth };
     }
@@ -358,6 +433,24 @@ async function main(): Promise<void> {
       process.exit(3);
     }
 
+    // The onboarding residue subquery already excludes a5xx case ids, but a
+    // seeded demo case carrying a test-marker email would be a seed bug we
+    // must NOT silently skip — refuse loudly so it gets fixed.
+    const onbA5xxHits = await scalar(sql<{ n: number }[]>`
+      SELECT count(*)::int AS n FROM public.onboarding_cases oc
+      JOIN public.candidates c ON c.id = oc.candidate_id AND c.tenant_id = oc.tenant_id
+      JOIN public.persons p ON p.id = c.person_id AND p.tenant_id = oc.tenant_id
+      WHERE oc.tenant_id = ${kid}
+        AND (p.email_primary ILIKE ${DEV_LOCAL_EMAIL} OR p.email_primary ILIKE ${ONB_TEST_EMAIL})
+        AND oc.id::text LIKE ${SEED_A5XX_PREFIX + "%"}
+    `);
+    if (onbA5xxHits > 0) {
+      console.error(
+        `FATAL: ${onbA5xxHits} seed a5xx onboarding case(s) carry a test-marker email — refusing (seed bug).`,
+      );
+      process.exit(3);
+    }
+
     // The leaked-agent set must never include the protected …a590 agent.
     const a590InSet = await scalar(sql<{ n: number }[]>`
       SELECT count(*)::int AS n FROM public.automation_agents
@@ -397,6 +490,27 @@ async function main(): Promise<void> {
       const personSub = tx`
         SELECT id FROM public.persons
         WHERE tenant_id = ${kid} AND email_primary ILIKE ${DEV_LOCAL_EMAIL}`;
+
+      // 0. onboarding residue — EXPLICIT child-first teardown of the whole
+      // subtree, run FIRST so dev.local onboarding rows are removed here
+      // (and counted as class 6), NOT swept implicitly by the class-1
+      // application cascade below; it also catches @onb02.test cases that
+      // have no matching class-1 application. Order: bgv_results → bgv_runs,
+      // asset_assignments, it_provisioning_requests, onboarding_documents,
+      // onboarding_tasks, then onboarding_cases LAST. The residue subquery is
+      // re-derived each step and stays valid until the cases are deleted.
+      // Every statement excludes a5xx by construction (onboardingResidueCaseSub).
+      await tx`
+        DELETE FROM public.bgv_results
+        WHERE bgv_run_id IN (
+          SELECT id FROM public.bgv_runs WHERE case_id IN (${onboardingResidueCaseSub(tx, kid)})
+        )`;
+      await tx`DELETE FROM public.bgv_runs WHERE case_id IN (${onboardingResidueCaseSub(tx, kid)})`;
+      await tx`DELETE FROM public.asset_assignments WHERE case_id IN (${onboardingResidueCaseSub(tx, kid)})`;
+      await tx`DELETE FROM public.it_provisioning_requests WHERE case_id IN (${onboardingResidueCaseSub(tx, kid)})`;
+      await tx`DELETE FROM public.onboarding_documents WHERE case_id IN (${onboardingResidueCaseSub(tx, kid)})`;
+      await tx`DELETE FROM public.onboarding_tasks WHERE case_id IN (${onboardingResidueCaseSub(tx, kid)})`;
+      await tx`DELETE FROM public.onboarding_cases WHERE id IN (${onboardingResidueCaseSub(tx, kid)})`;
 
       // 1. CRS-01 — child-first. dev_email_outbox references
       // notification_outbox (SET NULL); delete the mirror rows first so

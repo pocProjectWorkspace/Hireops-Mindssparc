@@ -136,6 +136,21 @@ export function formatGeography(code: string): string {
   return name ? `${name} (${code.toUpperCase()})` : code.toUpperCase();
 }
 
+/**
+ * Options for the geography picker in the case header (ONBOARD-04). IN + PH
+ * are the two geographies with statutory document sets today; the rest are
+ * valid ISO codes that resolve to the common document set only. Kept in sync
+ * with GEOGRAPHY_NAMES above.
+ */
+export const GEOGRAPHY_OPTIONS: { value: string; label: string }[] = [
+  "IN",
+  "PH",
+  "US",
+  "GB",
+  "DE",
+  "FR",
+].map((code) => ({ value: code, label: formatGeography(code) }));
+
 // ─────────────── dates ───────────────
 
 const DATE_FMT = new Intl.DateTimeFormat("en-IN", {

@@ -138,6 +138,57 @@ const DEMO_RUN_ACTION_G = "00000000-0000-4000-8000-00000000a597";
 const DEMO_OUTBOX_G = "00000000-0000-4000-8000-00000000a598";
 const DEMO_APPROVAL_G = "00000000-0000-4000-8000-00000000a599";
 
+// ─────────────── ONBOARD-04 onboarding demo namespace ───────────────
+//
+// Six onboarding cases so a fresh seed makes /onboarding look ALIVE. Their
+// own hex-suffixed a5xx blocks (a53x persons, a54x candidates, a55x
+// applications, a56x cases, a57x accepted offers) — distinct from the
+// recruitment chain (a5[0-2]x) and the agent chain (a59x). a5xx = protected
+// from the groom, so these seeded cases are never classed as residue.
+const ONB_HR_OPS_EMAIL = "hr_ops1@kyndryl-poc.test";
+const ONB_ADMIN_EMAIL = "admin1@kyndryl-poc.test";
+
+const ONB_PERSON_IDS = [
+  "00000000-0000-4000-8000-00000000a531",
+  "00000000-0000-4000-8000-00000000a532",
+  "00000000-0000-4000-8000-00000000a533",
+  "00000000-0000-4000-8000-00000000a534",
+  "00000000-0000-4000-8000-00000000a535",
+  "00000000-0000-4000-8000-00000000a536",
+] as const;
+const ONB_CANDIDATE_IDS = [
+  "00000000-0000-4000-8000-00000000a541",
+  "00000000-0000-4000-8000-00000000a542",
+  "00000000-0000-4000-8000-00000000a543",
+  "00000000-0000-4000-8000-00000000a544",
+  "00000000-0000-4000-8000-00000000a545",
+  "00000000-0000-4000-8000-00000000a546",
+] as const;
+const ONB_APP_IDS = [
+  "00000000-0000-4000-8000-00000000a551",
+  "00000000-0000-4000-8000-00000000a552",
+  "00000000-0000-4000-8000-00000000a553",
+  "00000000-0000-4000-8000-00000000a554",
+  "00000000-0000-4000-8000-00000000a555",
+  "00000000-0000-4000-8000-00000000a556",
+] as const;
+const ONB_CASE_IDS = [
+  "00000000-0000-4000-8000-00000000a561",
+  "00000000-0000-4000-8000-00000000a562",
+  "00000000-0000-4000-8000-00000000a563",
+  "00000000-0000-4000-8000-00000000a564",
+  "00000000-0000-4000-8000-00000000a565",
+  "00000000-0000-4000-8000-00000000a566",
+] as const;
+const ONB_OFFER_IDS = [
+  "00000000-0000-4000-8000-00000000a571",
+  "00000000-0000-4000-8000-00000000a572",
+  "00000000-0000-4000-8000-00000000a573",
+  "00000000-0000-4000-8000-00000000a574",
+  "00000000-0000-4000-8000-00000000a575",
+  "00000000-0000-4000-8000-00000000a576",
+] as const;
+
 const DEMO_AGENT_NAME = "Demo Follow-ups Agent";
 const STALE_STAGE = "tech_interview";
 const STALE_DAYS_THRESHOLD = 5;
@@ -829,6 +880,198 @@ const OFFER_E = {
   expiryDays: 7,
 };
 
+// ─────────────── ONBOARD-04 onboarding case specs ───────────────
+//
+// Six cases spanning the lifecycle so /onboarding demos as a live board on a
+// fresh seed. Dates are relative to now (like the "7d stale" recruitment
+// pattern) so the screen never looks stale. Geography mix is mostly IN with
+// one PH case (surfaces the statutory PH document set on screen). Buddy /
+// manager on the two in_progress cases use the seeded test-user memberships.
+
+const ONB_PROBATION_DAYS = 90;
+const ONB_CHECK_IN_DAYS = [7, 14, 30] as const;
+
+interface OnbCaseSpec {
+  idx: number; // index into the ONB_* id arrays
+  fullName: string;
+  email: string;
+  city: string;
+  country: "IN" | "PH"; // persons.location_country + case geography
+  status: "pre_boarding" | "day_zero" | "in_progress" | "completed";
+  /** Expected start date, in days from now (negative = already started). */
+  expectedStartOffsetDays: number;
+  /** Actual start date, in days from now; null = not started yet. */
+  actualStartOffsetDays: number | null;
+  /** How long ago the case (and its accepted offer) was created, in days. */
+  createdOffsetDays: number;
+  /** 'buddy'/'manager' = which seeded member; null = unassigned. */
+  buddy: "recruiter" | "hr_ops" | "admin" | null;
+  manager: "recruiter" | "hr_ops" | "admin" | null;
+  /** How many document_collection tasks to mark completed. */
+  docsCompleted: number;
+  /** Block exactly one (not-yet-completed) document task with this reason. */
+  blockDocReason: string | null;
+  /** Standard task_types to mark completed. */
+  standardCompleted: string[];
+  /** Standard task_types to mark in_progress. */
+  standardInProgress: string[];
+  /** Which check-in days (7/14/30) to mark completed. */
+  checkInsCompleted: number[];
+  /** completed case → resolve EVERY task, ignore the granular fields above. */
+  allComplete: boolean;
+  blurb: string; // console summary line
+}
+
+const ONB_CASE_SPECS: OnbCaseSpec[] = [
+  // 1 — fresh pre_boarding, zero progress (the "just accepted" case).
+  {
+    idx: 0,
+    fullName: "Aditya Menon",
+    email: "aditya.menon@example.test",
+    city: "Bengaluru",
+    country: "IN",
+    status: "pre_boarding",
+    expectedStartOffsetDays: 28,
+    actualStartOffsetDays: null,
+    createdOffsetDays: 1,
+    buddy: null,
+    manager: null,
+    docsCompleted: 0,
+    blockDocReason: null,
+    standardCompleted: [],
+    standardInProgress: [],
+    checkInsCompleted: [],
+    allComplete: false,
+    blurb: "pre_boarding · IN · fresh (0 tasks done)",
+  },
+  // 2 — pre_boarding, several docs collected + one BLOCKED (red line on screen).
+  {
+    idx: 1,
+    fullName: "Kavya Reddy",
+    email: "kavya.reddy@example.test",
+    city: "Hyderabad",
+    country: "IN",
+    status: "pre_boarding",
+    expectedStartOffsetDays: 14,
+    actualStartOffsetDays: null,
+    createdOffsetDays: 4,
+    buddy: null,
+    manager: null,
+    docsCompleted: 4,
+    blockDocReason: "Awaiting an attested copy from the candidate — flagged for follow-up",
+    standardCompleted: [],
+    standardInProgress: ["it_provisioning"],
+    checkInsCompleted: [],
+    allComplete: false,
+    blurb: "pre_boarding · IN · 4 docs done, 1 blocked",
+  },
+  // 3 — day_zero (starting today-ish), pre-boarding wrapped up.
+  {
+    idx: 2,
+    fullName: "Rahul Verma",
+    email: "rahul.verma@example.test",
+    city: "Pune",
+    country: "IN",
+    status: "day_zero",
+    expectedStartOffsetDays: 1,
+    actualStartOffsetDays: null,
+    createdOffsetDays: 9,
+    buddy: "hr_ops",
+    manager: null,
+    docsCompleted: 10,
+    blockDocReason: null,
+    standardCompleted: ["buddy_assignment"],
+    standardInProgress: ["it_provisioning"],
+    checkInsCompleted: [],
+    allComplete: false,
+    blurb: "day_zero · IN · docs complete, IT in progress",
+  },
+  // 4 — in_progress, ~40%, buddy + manager assigned.
+  {
+    idx: 3,
+    fullName: "Divya Krishnan",
+    email: "divya.krishnan@example.test",
+    city: "Chennai",
+    country: "IN",
+    status: "in_progress",
+    expectedStartOffsetDays: -5,
+    actualStartOffsetDays: -5,
+    createdOffsetDays: 16,
+    buddy: "recruiter",
+    manager: "admin",
+    docsCompleted: 10,
+    blockDocReason: null,
+    standardCompleted: ["it_provisioning", "buddy_assignment"],
+    standardInProgress: ["training"],
+    checkInsCompleted: [7],
+    allComplete: false,
+    blurb: "in_progress · IN · ~40% · buddy+manager assigned",
+  },
+  // 5 — in_progress, ~75%, PH geography (shows the PH statutory doc set).
+  {
+    idx: 4,
+    fullName: "Jose Rizal Santos",
+    email: "jose.santos@example.test",
+    city: "Manila",
+    country: "PH",
+    status: "in_progress",
+    expectedStartOffsetDays: -12,
+    actualStartOffsetDays: -12,
+    createdOffsetDays: 24,
+    buddy: "hr_ops",
+    manager: "admin",
+    docsCompleted: 9, // 5 common + 4 PH
+    blockDocReason: null,
+    standardCompleted: ["it_provisioning", "buddy_assignment", "training"],
+    standardInProgress: [],
+    checkInsCompleted: [7, 14],
+    allComplete: false,
+    blurb: "in_progress · PH · ~75% · buddy+manager assigned",
+  },
+  // 6 — completed, everything resolved, started ~45 days ago.
+  {
+    idx: 5,
+    fullName: "Ananya Gupta",
+    email: "ananya.gupta@example.test",
+    city: "Bengaluru",
+    country: "IN",
+    status: "completed",
+    expectedStartOffsetDays: -45,
+    actualStartOffsetDays: -45,
+    createdOffsetDays: 60,
+    buddy: "recruiter",
+    manager: "admin",
+    docsCompleted: 10,
+    blockDocReason: null,
+    standardCompleted: [],
+    standardInProgress: [],
+    checkInsCompleted: [7, 14, 30],
+    allComplete: true,
+    blurb: "completed · IN · all tasks resolved",
+  },
+];
+
+/** YYYY-MM-DD for `now + offsetDays` at UTC midnight. */
+function onbDateStr(offsetDays: number): string {
+  const d = new Date();
+  d.setUTCDate(d.getUTCDate() + offsetDays);
+  return d.toISOString().slice(0, 10);
+}
+
+/** ISO timestamp for `now + offsetDays`. */
+function onbIso(offsetDays: number): string {
+  const d = new Date();
+  d.setUTCDate(d.getUTCDate() + offsetDays);
+  return d.toISOString();
+}
+
+/** Indexed lookup that throws instead of returning undefined (no `!`). */
+function onbAt(arr: readonly string[], i: number): string {
+  const v = arr[i];
+  if (v === undefined) throw new Error(`ONBOARD-04 seed: index ${i} out of range`);
+  return v;
+}
+
 async function main() {
   // Dynamic imports so dotenv (above) runs before client.ts evaluates
   // DATABASE_URL at module init. Same pattern as seed-test-users.ts.
@@ -867,6 +1110,27 @@ async function main() {
     process.exit(2);
   }
   const recruiterId = recruiter.id;
+
+  // hr_ops1 + admin1 memberships — buddy / manager assignees for the
+  // ONBOARD-04 in_progress cases. Optional: if a persona is missing (older
+  // test-user seed) the assignment is simply left unset for that role.
+  async function membershipByEmail(email: string): Promise<string | null> {
+    const [m] = await poolSql<{ id: string }[]>`
+      SELECT tum.id
+      FROM public.tenant_user_memberships tum
+      JOIN auth.users au ON au.id = tum.user_id
+      WHERE tum.tenant_id = ${tid} AND tum.status = 'active' AND au.email = ${email}
+      LIMIT 1
+    `;
+    return m?.id ?? null;
+  }
+  const hrOpsId = await membershipByEmail(ONB_HR_OPS_EMAIL);
+  const adminId = await membershipByEmail(ONB_ADMIN_EMAIL);
+  const onbMemberByRole: Record<"recruiter" | "hr_ops" | "admin", string | null> = {
+    recruiter: recruiterId,
+    hr_ops: hrOpsId,
+    admin: adminId,
+  };
 
   // ── 1. BU / envelope / position / JD / req / req_recruiter ──────
   await poolSql`
@@ -1290,6 +1554,207 @@ async function main() {
             ${gDraftPayloadJson}::jsonb, 'owning_recruiter', 'pending', NULL)
   `;
 
+  // ── 4b. ONBOARD-04 onboarding demo cases ────────────────────────
+  //
+  // Six cases across the lifecycle so /onboarding is a live board on a fresh
+  // seed. Idempotency: each case's application is delete-then-reinserted by
+  // deterministic id — deleting an application CASCADES its onboarding_case →
+  // tasks / documents / bgv / IT / assets and its offers, so a re-run
+  // rebuilds the case from scratch with refreshed relative timestamps.
+  // application_state_transitions do NOT cascade, so clear them first.
+  //
+  // Checklist generation MIRRORS apps/api/src/lib/onboarding-case.ts (not
+  // imported — packages/db must not depend on apps/api): document_collection
+  // tasks INSERT…SELECT from document_types (common + geography rows), then
+  // the 7 standard tasks. Per-case progress is then layered on with targeted
+  // UPDATEs so the board shows a spread of states (incl. one blocked task
+  // with a reason — a visible red line for the demo).
+  for (const id of ONB_APP_IDS) {
+    await poolSql`DELETE FROM public.application_state_transitions WHERE application_id = ${id}`;
+    // Deleting the application cascades onboarding_cases → tasks/docs/etc + offers.
+    await poolSql`DELETE FROM public.applications WHERE id = ${id}`;
+  }
+
+  for (const spec of ONB_CASE_SPECS) {
+    const personId = onbAt(ONB_PERSON_IDS, spec.idx);
+    const candidateId = onbAt(ONB_CANDIDATE_IDS, spec.idx);
+    const appId = onbAt(ONB_APP_IDS, spec.idx);
+    const caseId = onbAt(ONB_CASE_IDS, spec.idx);
+    const offerId = onbAt(ONB_OFFER_IDS, spec.idx);
+    const phone = `+9198765432${String(10 + spec.idx)}`;
+
+    // person + candidate (stable content → upsert / do-nothing).
+    await poolSql`
+      INSERT INTO public.persons
+        (id, tenant_id, full_name, email_primary, email_normalised,
+         phone_primary, phone_normalised, location_country, location_city)
+      VALUES (${personId}, ${tid}, ${spec.fullName}, ${spec.email}, ${spec.email.toLowerCase()},
+              ${phone}, ${phone.replace(/[^0-9]/g, "")}, ${spec.country}, ${spec.city})
+      ON CONFLICT (id) DO UPDATE SET
+        full_name = EXCLUDED.full_name,
+        email_primary = EXCLUDED.email_primary,
+        email_normalised = EXCLUDED.email_normalised,
+        location_country = EXCLUDED.location_country,
+        location_city = EXCLUDED.location_city
+    `;
+    await poolSql`
+      INSERT INTO public.candidates
+        (id, tenant_id, person_id, source, consent_version, years_of_experience)
+      VALUES (${candidateId}, ${tid}, ${personId}, 'referral', 'v1', '6.0')
+      ON CONFLICT (id) DO NOTHING
+    `;
+
+    // application at offer_accepted — the post-accept state onboarding sits on.
+    await poolSql`
+      INSERT INTO public.applications
+        (id, tenant_id, candidate_id, requisition_id, source,
+         current_stage, stage_entered_at, created_at, updated_at)
+      VALUES (${appId}, ${tid}, ${candidateId}, ${DEMO_REQ}, 'referral',
+              'offer_accepted', ${onbIso(-spec.createdOffsetDays)}::timestamptz,
+              ${onbIso(-spec.createdOffsetDays)}::timestamptz,
+              ${onbIso(-spec.createdOffsetDays)}::timestamptz)
+    `;
+    await poolSql`
+      INSERT INTO public.application_state_transitions
+        (tenant_id, application_id, from_stage, to_stage, transitioned_at, actor_membership_id)
+      VALUES (${tid}, ${appId}, NULL, 'offer_accepted',
+              ${onbIso(-spec.createdOffsetDays)}::timestamptz, ${recruiterId})
+    `;
+
+    // accepted offer (joining_date = expected start) — coherence with the
+    // real accept→onboard path, though the screen reads dates off the case.
+    const expectedStart = onbDateStr(spec.expectedStartOffsetDays);
+    await poolSql`
+      INSERT INTO public.offers
+        (id, tenant_id, application_id, drafted_by_membership_id,
+         base_salary_inr_paise, joining_date, location, expiry_at,
+         status, extended_at, accepted_at, created_at, updated_at)
+      VALUES (${offerId}, ${tid}, ${appId}, ${recruiterId},
+              ${"420000000"}::bigint, ${expectedStart}, ${spec.city},
+              ${onbIso(-spec.createdOffsetDays + 7)}::timestamptz,
+              'accepted', ${onbIso(-spec.createdOffsetDays)}::timestamptz,
+              ${onbIso(-spec.createdOffsetDays)}::timestamptz,
+              ${onbIso(-spec.createdOffsetDays)}::timestamptz,
+              ${onbIso(-spec.createdOffsetDays)}::timestamptz)
+    `;
+
+    // onboarding_case (deterministic id). probation_ends_at = start + 90.
+    const actualStart =
+      spec.actualStartOffsetDays !== null ? onbDateStr(spec.actualStartOffsetDays) : null;
+    const probationEnds = onbDateStr(spec.expectedStartOffsetDays + ONB_PROBATION_DAYS);
+    const buddyId = spec.buddy ? onbMemberByRole[spec.buddy] : null;
+    const managerId = spec.manager ? onbMemberByRole[spec.manager] : null;
+    await poolSql`
+      INSERT INTO public.onboarding_cases
+        (id, tenant_id, application_id, candidate_id, status, geography_code,
+         expected_start_date, actual_start_date, probation_days, probation_ends_at,
+         buddy_membership_id, manager_membership_id, created_at, updated_at)
+      VALUES (${caseId}, ${tid}, ${appId}, ${candidateId}, ${spec.status}, ${spec.country},
+              ${expectedStart}::date, ${actualStart}::date, ${ONB_PROBATION_DAYS}, ${probationEnds}::date,
+              ${buddyId}, ${managerId},
+              ${onbIso(-spec.createdOffsetDays)}::timestamptz, ${onbIso(-spec.createdOffsetDays)}::timestamptz)
+    `;
+
+    // document_collection tasks — common + geography rows (mirror of
+    // ensureDocumentCollectionTasks). Names/metadata come straight from the
+    // document_types reference so they match the production checklist.
+    await poolSql`
+      INSERT INTO public.onboarding_tasks
+        (tenant_id, case_id, task_type, status, title, metadata)
+      SELECT ${tid}, ${caseId}, 'document_collection', 'pending', dt.name,
+             jsonb_build_object('documentTypeId', dt.id, 'documentTypeCode', dt.code,
+                                'geographyCode', dt.geography_code)
+      FROM public.document_types dt
+      WHERE dt.required_for_lifecycle_stage = 'pre_boarding'
+        AND (dt.geography_code IS NULL OR dt.geography_code = ${spec.country})
+    `;
+
+    // standard tasks (mirror of createStandardTasks): IT, buddy, training,
+    // day 7/14/30 check-ins, probation review. Check-in due_at = start + N.
+    await poolSql`
+      INSERT INTO public.onboarding_tasks (tenant_id, case_id, task_type, status, title)
+      VALUES
+        (${tid}, ${caseId}, 'it_provisioning', 'pending', 'Provision IT accounts, email, and equipment'),
+        (${tid}, ${caseId}, 'buddy_assignment', 'pending', 'Assign an onboarding buddy'),
+        (${tid}, ${caseId}, 'training', 'pending', 'Complete mandatory onboarding training')
+    `;
+    for (const day of ONB_CHECK_IN_DAYS) {
+      await poolSql`
+        INSERT INTO public.onboarding_tasks
+          (tenant_id, case_id, task_type, status, title, due_at, metadata)
+        VALUES (${tid}, ${caseId}, 'check_in', 'pending', ${`Day ${day} check-in`},
+                ${onbIso(spec.expectedStartOffsetDays + day)}::timestamptz,
+                ${JSON.stringify({ checkInDay: day })}::jsonb)
+      `;
+    }
+    await poolSql`
+      INSERT INTO public.onboarding_tasks
+        (tenant_id, case_id, task_type, status, title, due_at, metadata)
+      VALUES (${tid}, ${caseId}, 'probation_review', 'pending', 'Probation review',
+              ${onbIso(spec.expectedStartOffsetDays + ONB_PROBATION_DAYS)}::timestamptz,
+              ${JSON.stringify({ probationDays: ONB_PROBATION_DAYS })}::jsonb)
+    `;
+
+    // ── progress overlay ──
+    if (spec.allComplete) {
+      // Completed case: resolve EVERY task.
+      await poolSql`
+        UPDATE public.onboarding_tasks
+        SET status = 'completed', completed_at = ${onbIso(-2)}::timestamptz, updated_at = ${onbIso(-2)}::timestamptz
+        WHERE case_id = ${caseId} AND status <> 'completed'
+      `;
+    } else {
+      // N document tasks → completed (ordered by title for determinism).
+      if (spec.docsCompleted > 0) {
+        await poolSql`
+          UPDATE public.onboarding_tasks
+          SET status = 'completed', completed_at = ${onbIso(-3)}::timestamptz, updated_at = ${onbIso(-3)}::timestamptz
+          WHERE id IN (
+            SELECT id FROM public.onboarding_tasks
+            WHERE case_id = ${caseId} AND task_type = 'document_collection'
+            ORDER BY title LIMIT ${spec.docsCompleted}
+          )
+        `;
+      }
+      // One still-pending document task → blocked (the demo red line).
+      if (spec.blockDocReason) {
+        await poolSql`
+          UPDATE public.onboarding_tasks
+          SET status = 'blocked', blocked_reason = ${spec.blockDocReason}, updated_at = ${onbIso(-2)}::timestamptz
+          WHERE id = (
+            SELECT id FROM public.onboarding_tasks
+            WHERE case_id = ${caseId} AND task_type = 'document_collection' AND status = 'pending'
+            ORDER BY title LIMIT 1
+          )
+        `;
+      }
+      // Standard tasks → completed / in_progress.
+      for (const t of spec.standardCompleted) {
+        await poolSql`
+          UPDATE public.onboarding_tasks
+          SET status = 'completed', completed_at = ${onbIso(-3)}::timestamptz, updated_at = ${onbIso(-3)}::timestamptz
+          WHERE case_id = ${caseId} AND task_type = ${t}
+        `;
+      }
+      for (const t of spec.standardInProgress) {
+        await poolSql`
+          UPDATE public.onboarding_tasks
+          SET status = 'in_progress', updated_at = ${onbIso(-1)}::timestamptz
+          WHERE case_id = ${caseId} AND task_type = ${t}
+        `;
+      }
+      // Completed check-ins (matched by metadata.checkInDay).
+      for (const day of spec.checkInsCompleted) {
+        await poolSql`
+          UPDATE public.onboarding_tasks
+          SET status = 'completed', completed_at = ${onbIso(-2)}::timestamptz, updated_at = ${onbIso(-2)}::timestamptz
+          WHERE case_id = ${caseId} AND task_type = 'check_in'
+            AND (metadata->>'checkInDay')::int = ${day}
+        `;
+      }
+    }
+  }
+
   // ── 5. summary ──────────────────────────────────────────────────
   const acceptUrl = `${PORTAL_BASE}/offer/${token}`;
   console.log("");
@@ -1329,6 +1794,14 @@ async function main() {
   }
   console.log(
     `  Approval: ${DEMO_APPROVAL_G}  (pending, owning_recruiter) — G's drafted check-in, visible at /approvals`,
+  );
+  console.log("");
+  console.log(`ONBOARD-04 onboarding cases (${ONB_CASE_SPECS.length}) at /onboarding:`);
+  for (const spec of ONB_CASE_SPECS) {
+    console.log(`  ${spec.fullName.padEnd(20)} ${spec.blurb}`);
+  }
+  console.log(
+    `  buddy/manager assignees: recruiter1${hrOpsId ? " + hr_ops1" : ""}${adminId ? " + admin1" : ""}`,
   );
   console.log(`  Run:      ${DEMO_RUN_G}  (awaiting_approval, halted on draft_message)`);
   console.log(`  H (${APP_H}) has NO seeded run — the stage_stale scanner live-fires on it.`);

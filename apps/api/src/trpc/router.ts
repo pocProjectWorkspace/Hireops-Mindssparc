@@ -47,6 +47,7 @@ import {
   onboardingCases,
   onboardingTasks,
   onboardingDocuments,
+  documentTypes,
   recordPiiAccess,
   applicationStageEnum,
   type ApplicationStage,
@@ -140,10 +141,13 @@ import {
   updateOnboardingCaseOutputSchema,
   createOnboardingCaseForApplicationInputSchema,
   createOnboardingCaseForApplicationOutputSchema,
+  listTenantMembershipsInputSchema,
+  listTenantMembershipsOutputSchema,
   type OnboardingCaseListRow,
   type OnboardingTaskRow,
   type OnboardingDocumentRow,
   type OnboardingCaseStatus,
+  type TenantMembershipRow,
   type SubmitApplicationOutput,
   type GetCandidateByIdOutput,
   type AgentListRow,
@@ -3860,6 +3864,58 @@ export const appRouter = router({
   // database, plus an explicit eq(tenantId) matching listAuditEvents.
 
   /**
+   * listTenantMemberships — the buddy/manager assignment pickers (ONBOARD-04).
+   * Returns active members of the caller's tenant with id + display name +
+   * email + roles. Goes through ctx.sql (service-role, explicit tenant_id)
+   * rather than ctx.db because RLS on public.users is self-only — an
+   * RLS-scoped join would return every OTHER member's name as null. Tenant
+   * isolation is enforced by the explicit `tum.tenant_id = ${tenantId}` on a
+   * JWT-resolved tenantId, matching onboarding-case.ts's discipline. No
+   * pagination: at POC scale a tenant has a handful of members; capped at 200
+   * defensively with a logged warning if the cap is hit.
+   */
+  listTenantMemberships: protectedProcedure
+    .input(listTenantMembershipsInputSchema)
+    .output(listTenantMembershipsOutputSchema)
+    .query(async ({ ctx }) => {
+      if (!ctx.tenantId) {
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: "protected procedure missing tenantId",
+        });
+      }
+      const tenantId = ctx.tenantId;
+      const MEMBERSHIP_CAP = 200;
+
+      const rows = await ctx.sql<
+        { id: string; display_name: string | null; email: string | null; roles: string[] }[]
+      >`
+        SELECT tum.id::text AS id, u.display_name AS display_name,
+               au.email AS email, tum.roles AS roles
+        FROM public.tenant_user_memberships tum
+        JOIN auth.users au ON au.id = tum.user_id
+        LEFT JOIN public.users u ON u.id = tum.user_id
+        WHERE tum.tenant_id = ${tenantId} AND tum.status = 'active'
+        ORDER BY u.display_name ASC NULLS LAST, au.email ASC
+        LIMIT ${MEMBERSHIP_CAP + 1}
+      `;
+      if (rows.length > MEMBERSHIP_CAP) {
+        ctx.log.warn(
+          { tenantId, count: rows.length },
+          "listTenantMemberships hit the membership cap; truncating",
+        );
+      }
+
+      const items: TenantMembershipRow[] = rows.slice(0, MEMBERSHIP_CAP).map((r) => ({
+        membershipId: r.id,
+        displayName: r.display_name ?? null,
+        email: r.email ?? null,
+        roles: Array.isArray(r.roles) ? r.roles : [],
+      }));
+      return { items };
+    }),
+
+  /**
    * listOnboardingCases — tenant-scoped, optional status filter, keyset-
    * paginated on (created_at, id) desc (same codec as the audit list).
    * Carries candidate name + position title + task-progress counts for the
@@ -4060,9 +4116,23 @@ export const appRouter = router({
         )
         .orderBy(onboardingTasks.createdAt, onboardingTasks.id);
 
+      // document_types is a reference table with a permissive read policy
+      // for any authenticated caller, so this join resolves the name under
+      // the RLS-scoped ctx.db (unlike the buddy/manager names below).
       const documentRows = await db
-        .select()
+        .select({
+          id: onboardingDocuments.id,
+          caseId: onboardingDocuments.caseId,
+          documentTypeId: onboardingDocuments.documentTypeId,
+          documentTypeName: documentTypes.name,
+          verificationStatus: onboardingDocuments.verificationStatus,
+          fileName: onboardingDocuments.fileName,
+          mimeType: onboardingDocuments.mimeType,
+          uploadedAt: onboardingDocuments.uploadedAt,
+          createdAt: onboardingDocuments.createdAt,
+        })
         .from(onboardingDocuments)
+        .leftJoin(documentTypes, eq(documentTypes.id, onboardingDocuments.documentTypeId))
         .where(
           and(
             eq(onboardingDocuments.tenantId, tenantId),
@@ -4070,6 +4140,35 @@ export const appRouter = router({
           ),
         )
         .orderBy(onboardingDocuments.createdAt, onboardingDocuments.id);
+
+      // Resolve buddy/manager membership ids → display name + email. RLS on
+      // public.users is self-only, so a plain ctx.db join would return only
+      // the caller's own name; we go through the service-role client
+      // (ctx.sql) with an explicit tenant_id filter — the same
+      // explicit-tenant discipline as onboarding-case.ts. auth.users holds
+      // the email; public.users holds the display_name (nullable).
+      const nameTargets = [caseRow.buddyMembershipId, caseRow.managerMembershipId].filter(
+        (id): id is string => id != null,
+      );
+      const nameById = new Map<string, { displayName: string | null; email: string | null }>();
+      if (nameTargets.length > 0) {
+        const nameRows = await ctx.sql<
+          { id: string; display_name: string | null; email: string | null }[]
+        >`
+          SELECT tum.id::text AS id, u.display_name AS display_name, au.email AS email
+          FROM public.tenant_user_memberships tum
+          JOIN auth.users au ON au.id = tum.user_id
+          LEFT JOIN public.users u ON u.id = tum.user_id
+          WHERE tum.tenant_id = ${tenantId} AND tum.id::text = ANY(${nameTargets})
+        `;
+        for (const r of nameRows) {
+          nameById.set(r.id, { displayName: r.display_name, email: r.email });
+        }
+      }
+      const buddy = caseRow.buddyMembershipId ? nameById.get(caseRow.buddyMembershipId) : undefined;
+      const manager = caseRow.managerMembershipId
+        ? nameById.get(caseRow.managerMembershipId)
+        : undefined;
 
       const tasks: OnboardingTaskRow[] = taskRows.map((t) => ({
         id: t.id,
@@ -4091,6 +4190,7 @@ export const appRouter = router({
         id: d.id,
         caseId: d.caseId,
         documentTypeId: d.documentTypeId,
+        documentTypeName: d.documentTypeName ?? null,
         verificationStatus: d.verificationStatus,
         fileName: d.fileName ?? null,
         mimeType: d.mimeType ?? null,
@@ -4114,6 +4214,10 @@ export const appRouter = router({
           workdayWorkerId: caseRow.workdayWorkerId ?? null,
           candidateName: caseRow.candidateName ?? null,
           positionTitle: caseRow.positionTitle ?? null,
+          buddyName: buddy?.displayName ?? null,
+          buddyEmail: buddy?.email ?? null,
+          managerName: manager?.displayName ?? null,
+          managerEmail: manager?.email ?? null,
           createdAt: toIsoString(caseRow.createdAt) ?? new Date(0).toISOString(),
           updatedAt: toIsoString(caseRow.updatedAt) ?? new Date(0).toISOString(),
         },

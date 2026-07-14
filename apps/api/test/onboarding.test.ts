@@ -90,6 +90,15 @@ async function trpcMutation<O>(name: string, input: unknown, opts: { jwt?: strin
   });
   return (await res.json()) as TRPCSuccess<O> | TRPCErrorEnv;
 }
+async function trpcQuery<O>(name: string, input: unknown = undefined, opts: { jwt?: string } = {}) {
+  const inputParam =
+    input === undefined ? "" : `?input=${encodeURIComponent(JSON.stringify(input))}`;
+  const res = await app.request(`/trpc/${name}${inputParam}`, {
+    method: "GET",
+    headers: { ...(opts.jwt ? { Authorization: `Bearer ${opts.jwt}` } : {}) },
+  });
+  return (await res.json()) as TRPCSuccess<O> | TRPCErrorEnv;
+}
 
 interface SeedHireOpts {
   suffix: string;
@@ -508,5 +517,98 @@ describe("ONBOARD-02 — onboarding case lifecycle", () => {
         .where(eq(onboardingCases.id, caseId)),
     );
     assert.equal(crossVisible.length, 0);
+  });
+
+  it("10. getOnboardingCaseDetail resolves buddy/manager names + document type names (ONBOARD-04)", async () => {
+    const hire = await seedHire({ suffix: "names", country: "IN" });
+    const env = await trpcMutation<{ caseId: string }>(
+      "createOnboardingCaseForApplication",
+      { applicationId: hire.applicationId },
+      { jwt },
+    );
+    assert.ok(!isError(env));
+    const caseId = (env as TRPCSuccess<{ caseId: string }>).result.data.caseId;
+
+    // Assign buddy + manager to the caller's own membership, then confirm the
+    // detail payload reflects the assignment WITH resolved names.
+    const upd = await trpcMutation(
+      "updateOnboardingCase",
+      { caseId, buddyMembershipId: testMembershipId, managerMembershipId: testMembershipId },
+      { jwt },
+    );
+    assert.ok(!isError(upd), `assign error: ${JSON.stringify(upd)}`);
+
+    // Seed one onboarding_document so documentTypeName resolution is exercised.
+    const [dt] = await poolSql<{ id: string; name: string }[]>`
+      SELECT id, name FROM public.document_types WHERE code = 'pan_card' LIMIT 1
+    `;
+    assert.ok(dt, "expected the pan_card reference document_type to exist");
+    await poolSql`
+      INSERT INTO public.onboarding_documents
+        (tenant_id, case_id, document_type_id, storage_ref, verification_status)
+      VALUES (${testTenantId}, ${caseId}, ${dt.id}, 'seed://onb04-doc', 'pending')
+    `;
+
+    const detail = await trpcQuery<{
+      case: {
+        buddyMembershipId: string | null;
+        managerMembershipId: string | null;
+        buddyName: string | null;
+        buddyEmail: string | null;
+        managerName: string | null;
+        managerEmail: string | null;
+      };
+      documents: { documentTypeId: string; documentTypeName: string | null }[];
+    }>("getOnboardingCaseDetail", { caseId }, { jwt });
+    assert.ok(!isError(detail), `detail error: ${JSON.stringify(detail)}`);
+    const d = (
+      detail as TRPCSuccess<{
+        case: {
+          buddyMembershipId: string | null;
+          managerMembershipId: string | null;
+          buddyName: string | null;
+          buddyEmail: string | null;
+          managerName: string | null;
+          managerEmail: string | null;
+        };
+        documents: { documentTypeId: string; documentTypeName: string | null }[];
+      }>
+    ).result.data;
+
+    assert.equal(d.case.buddyMembershipId, testMembershipId);
+    assert.equal(d.case.managerMembershipId, testMembershipId);
+    // email always resolves (auth.users); display_name may be null.
+    assert.equal(d.case.buddyEmail, TEST_EMAIL);
+    assert.equal(d.case.managerEmail, TEST_EMAIL);
+
+    const doc = d.documents.find((x) => x.documentTypeId === dt.id);
+    assert.ok(doc, "expected the seeded document in the detail payload");
+    assert.equal(doc.documentTypeName, dt.name);
+  });
+
+  it("11. listTenantMemberships returns this tenant's active members, tenant-scoped (ONBOARD-04)", async () => {
+    const env = await trpcQuery<{
+      items: { membershipId: string; email: string | null; roles: string[] }[];
+    }>("listTenantMemberships", undefined, { jwt });
+    assert.ok(!isError(env), `list error: ${JSON.stringify(env)}`);
+    const items = (
+      env as TRPCSuccess<{
+        items: { membershipId: string; email: string | null; roles: string[] }[];
+      }>
+    ).result.data.items;
+
+    const mine = items.find((m) => m.membershipId === testMembershipId);
+    assert.ok(mine, "expected the caller's own membership in the list");
+    assert.equal(mine.email, TEST_EMAIL);
+    assert.ok(Array.isArray(mine.roles));
+
+    // Tenant-scoping: every returned id resolves to a membership in THIS
+    // tenant (a cross-tenant leak would leave some ids unmatched).
+    const ids = items.map((m) => m.membershipId);
+    const [countRow] = await poolSql<{ n: number }[]>`
+      SELECT count(*)::int AS n FROM public.tenant_user_memberships
+      WHERE tenant_id = ${testTenantId} AND id::text = ANY(${ids})
+    `;
+    assert.equal(countRow?.n, ids.length);
   });
 });

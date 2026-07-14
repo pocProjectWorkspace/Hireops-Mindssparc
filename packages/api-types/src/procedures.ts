@@ -1259,6 +1259,10 @@ export const onboardingDocumentRowSchema = z.object({
   id: z.string().uuid(),
   caseId: z.string().uuid(),
   documentTypeId: z.string().uuid(),
+  // Human-readable document_types.name resolved via the reference join
+  // (ONBOARD-04). Nullable defensively — a document_type row is never
+  // groomed, so in practice this is always present.
+  documentTypeName: z.string().nullable(),
   verificationStatus: z.string(),
   fileName: z.string().nullable(),
   mimeType: z.string().nullable(),
@@ -1267,10 +1271,26 @@ export const onboardingDocumentRowSchema = z.object({
 });
 export type OnboardingDocumentRow = z.infer<typeof onboardingDocumentRowSchema>;
 
-export const onboardingCaseDetailSchema = onboardingCaseListRowSchema.omit({
-  totalTasks: true,
-  completedTasks: true,
-});
+/**
+ * Case detail carries the resolved buddy/manager display name + email
+ * (ONBOARD-04) on top of the list-row fields. Resolution goes through the
+ * service-role client (tenant_user_memberships → public.users → auth.users)
+ * because RLS on public.users is self-only — a plain RLS-scoped join would
+ * reveal only the caller's own name. Every field is nullable: an
+ * unassigned buddy/manager, or a membership with no display_name, yields
+ * null and the UI shows "Not yet assigned".
+ */
+export const onboardingCaseDetailSchema = onboardingCaseListRowSchema
+  .omit({
+    totalTasks: true,
+    completedTasks: true,
+  })
+  .extend({
+    buddyName: z.string().nullable(),
+    buddyEmail: z.string().nullable(),
+    managerName: z.string().nullable(),
+    managerEmail: z.string().nullable(),
+  });
 export type OnboardingCaseDetail = z.infer<typeof onboardingCaseDetailSchema>;
 
 export const getOnboardingCaseDetailInputSchema = z.object({
@@ -1357,3 +1377,26 @@ export type CreateOnboardingCaseForApplicationInput = z.infer<
 export type CreateOnboardingCaseForApplicationOutput = z.infer<
   typeof createOnboardingCaseForApplicationOutputSchema
 >;
+
+// ─────────── listTenantMemberships (ONBOARD-04) ───────────
+
+/**
+ * A tenant member for the assignment pickers (buddy / manager). Minimal by
+ * design — id + display name + email + roles — and tenant-scoped. No
+ * pagination: at POC scale a tenant has a handful of members; the procedure
+ * caps the result and flags if the cap is hit.
+ */
+export const tenantMembershipRowSchema = z.object({
+  membershipId: z.string().uuid(),
+  displayName: z.string().nullable(),
+  email: z.string().nullable(),
+  roles: z.array(z.string()),
+});
+export type TenantMembershipRow = z.infer<typeof tenantMembershipRowSchema>;
+
+export const listTenantMembershipsInputSchema = z.object({}).optional();
+export const listTenantMembershipsOutputSchema = z.object({
+  items: z.array(tenantMembershipRowSchema),
+});
+export type ListTenantMembershipsInput = z.infer<typeof listTenantMembershipsInputSchema>;
+export type ListTenantMembershipsOutput = z.infer<typeof listTenantMembershipsOutputSchema>;
