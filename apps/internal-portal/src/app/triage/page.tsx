@@ -53,8 +53,15 @@ export default async function TriagePage() {
         fill
       >
         <FilterChipsBar />
-        <HotZone initial={breaches} />
-        <MomentumFeed initial={momentum} />
+        {/* UX-01: one scroll container for the whole feed. Both section
+            headers pin as `sticky top-0` inside THIS scroller — the classic
+            stacked-sticky-group handoff (Hot Zone pins, then Momentum pushes
+            it away and pins). No per-section overflow. The filter bar above
+            and the drawer (fixed) sit outside the scroller. */}
+        <div className="min-h-0 flex-1 overflow-y-auto">
+          <HotZone initial={breaches} />
+          <MomentumFeed initial={momentum} />
+        </div>
         <CandidateDetailDrawer />
       </AppShell>
     </UndoToastProvider>

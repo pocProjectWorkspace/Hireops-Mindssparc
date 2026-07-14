@@ -9,9 +9,14 @@ import { Badge } from "@/components/ui";
 import { TriageCard } from "./TriageCard";
 
 /**
- * Pinned at top, max 40vh, internal scrollbar. Filter chips apply
- * here too, so an SLA breach for a filtered-out req disappears
- * from the recruiter's view rather than misleading them.
+ * The first group in the single triage scroller (UX-01). Its header is
+ * `sticky top-0` and pins at the top while breach rows scroll beneath;
+ * when the section scrolls fully out, the Momentum header takes over the
+ * pin (stacked-sticky-group handoff). No internal scroll of its own —
+ * the parent scroller owns vertical overflow.
+ *
+ * Filter chips apply here too, so an SLA breach for a filtered-out req
+ * disappears from the recruiter's view rather than misleading them.
  *
  * Hot Zone uses the listCandidates({sort:'sla_breach', filters:{slaBreachOnly:true}})
  * call. Empty state is affirmative ("✓ No SLA breaches"), not absence.
@@ -46,7 +51,7 @@ export function HotZone({ initial }: { initial: ListCandidatesOutput }) {
       aria-label="SLA breaches"
       className="border-b border-neutral-200 bg-status-error-50/30"
     >
-      <header className="flex items-center gap-2.5 px-6 pb-2.5 pt-4">
+      <header className="sticky top-0 z-sticky flex items-center gap-2.5 border-b border-status-error-100 bg-status-error-50/95 px-6 pb-2.5 pt-4 backdrop-blur">
         <h2 className="text-xs font-semibold uppercase tracking-wider text-status-error-700">
           Hot Zone · SLA Breaches
         </h2>
@@ -56,29 +61,27 @@ export function HotZone({ initial }: { initial: ListCandidatesOutput }) {
           </Badge>
         ) : null}
       </header>
-      <div className="max-h-[40vh] overflow-y-auto">
-        {rows.length === 0 ? (
-          <div
-            role="status"
-            className="flex items-center gap-2 px-6 pb-4 text-sm font-medium text-status-positive-700"
-          >
-            <span aria-hidden>✓</span> No SLA breaches — you&apos;re on top of it.
-          </div>
-        ) : (
-          <ul className="divide-y divide-neutral-200/70">
-            {rows.map((r) => (
-              <li key={r.applicationId}>
-                <TriageCard
-                  row={r}
-                  variant="breach"
-                  selected={candidateId === r.candidateId}
-                  onOpen={open}
-                />
-              </li>
-            ))}
-          </ul>
-        )}
-      </div>
+      {rows.length === 0 ? (
+        <div
+          role="status"
+          className="flex items-center gap-2 px-6 pb-4 pt-2.5 text-sm font-medium text-status-positive-700"
+        >
+          <span aria-hidden>✓</span> No SLA breaches — you&apos;re on top of it.
+        </div>
+      ) : (
+        <ul className="divide-y divide-neutral-200/70">
+          {rows.map((r) => (
+            <li key={r.applicationId}>
+              <TriageCard
+                row={r}
+                variant="breach"
+                selected={candidateId === r.candidateId}
+                onOpen={open}
+              />
+            </li>
+          ))}
+        </ul>
+      )}
     </section>
   );
 }

@@ -1,5 +1,6 @@
 "use client";
 
+import { useEffect, useRef } from "react";
 import type { ListCandidatesOutput } from "@hireops/api-types";
 import { Avatar, Badge, ScoreMeter, cn } from "@/components/ui";
 import type { BadgeTone } from "@/components/ui";
@@ -58,8 +59,18 @@ export function TriageCard({
   const name = row.fullName ?? "(no name on file)";
   const { label: inStageLabel, tone: inStageTone } = timeInStage(row.stageEnteredAt, variant);
 
+  // UX-01: pull the selected row into view within the single triage
+  // scroller — chiefly for a `?candidateId=` deep link that lands with a
+  // row selected below the fold. `block: "nearest"` is a no-op when the
+  // row is already visible, so clicking a visible row never jerks the feed.
+  const ref = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    if (selected) ref.current?.scrollIntoView({ block: "nearest" });
+  }, [selected]);
+
   return (
     <button
+      ref={ref}
       type="button"
       onClick={() => onOpen({ candidateId: row.candidateId, applicationId: row.applicationId })}
       aria-pressed={selected}

@@ -7,7 +7,9 @@ import { useDrawerRouting } from "@/lib/use-drawer-routing";
 import { TriageCard } from "./TriageCard";
 
 /**
- * Below the Hot Zone divider — sorted by AI score descending. Wave 1
+ * Below the Hot Zone in the single triage scroller (UX-01) — sorted by
+ * AI score descending. No internal scroll of its own; its `sticky top-0`
+ * header pins once the Hot Zone section has scrolled past. Wave 1
  * uses a single fetch (limit=50) instead of useInfiniteQuery; the
  * "load more" affordance + cursor-paginated fetchNextPage lands when
  * a recruiter complains about hitting the cap. Documented in
@@ -42,7 +44,7 @@ export function MomentumFeed({ initial }: { initial: ListCandidatesOutput }) {
   const rows = query.data?.rows ?? [];
 
   return (
-    <section aria-label="Momentum feed" className="flex-1 overflow-y-auto">
+    <section aria-label="Momentum feed">
       <header className="sticky top-0 z-sticky flex items-center gap-2.5 border-b border-neutral-200 bg-white/95 px-6 pb-2.5 pt-4 backdrop-blur">
         <h2 className="text-xs font-semibold uppercase tracking-wider text-neutral-600">
           Momentum

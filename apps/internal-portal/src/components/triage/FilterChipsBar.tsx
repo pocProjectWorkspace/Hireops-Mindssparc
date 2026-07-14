@@ -28,7 +28,7 @@ export function FilterChipsBar({
   const { filters, set, clearAll, isAnyActive } = useFilterChips();
 
   return (
-    <div className="flex flex-wrap items-center gap-2 border-b border-neutral-200 bg-white px-6 py-3">
+    <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-neutral-200 bg-white px-6 py-3">
       <span className="text-xs font-medium uppercase tracking-wider text-neutral-500">Filter</span>
 
       <label className="flex items-center gap-1 text-sm">
