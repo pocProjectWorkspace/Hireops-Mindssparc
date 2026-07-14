@@ -10,7 +10,22 @@
 - Workers: Railway service `workers` (6 loops, scanners live). EMAIL_PROVIDER=resend in TEST MODE — no domain, so delivery ONLY to digitalfuturity@outlook.com (the demo inbox; Rohan's seeded email). Sender onboarding@resend.dev. A real domain upgrades this with zero code.
 - DB: the DEV Supabase project is ALSO the staging DB (user decision, cost) — consequences: live workers interfere with drain-timing tests (CI api:test tripwire reads red on them; the five quality jobs are the signal), and test runs consume demo state → **re-seed before any demo**. Real Anthropic credential stored for kyndryl-poc (`pnpm db:store:demo-ai-credential`).
 
-**Remaining before the demo (small):** demo-data grooming (CRS-01 test candidates, AD03 cost-fixture rows, leaked `robust-01-test-stage-validation` agent), drawer AI-score query ticket (getCandidateById lacks score/top_factors), then rehearsal per demo-scope-v2.
+**Update 14 July 2026 (main @ `2063f67` + local `8950bca`): CONSTRUCTION PHASE CLOSED.** Since the revamp shipped: UX-01 (triage = one scroll surface with sticky-header handoff, deep-link scroll-into-view), the production `/trpc` env fix (NEXT_PUBLIC_API_BASE_URL on Vercel MUST include the `/trpc` suffix — detail panels 404'd without it), and GROOM-01 (`pnpm db:groom:demo-data`, dry-run default / `--execute` — class-based sweep of test residue with hard protections; first sweep removed 36 rows). The live workers scored a seeded candidate with real Anthropic (scored_by=anthropic) — the full AI path is verified live on staging. First demo showcase: 14 July 2026.
+
+**Pre-demo runbook (3 commands + 1 check):**
+1. `pnpm db:groom:demo-data --execute` (sweeps any test residue since the last CI run)
+2. `pnpm db:seed:demo-data` (fresh timestamps: Rohan 7d stale + pending approval a599, Meera 6d live-fire target)
+3. Verify Railway workers healthy (`railway logs --service workers` shows worker.ready + drain passes)
+4. Hard-refresh the portal. Login: recruiter1/admin1@kyndryl-poc.test, TestPassword123!. Candidate emails typed on stage must be digitalfuturity@outlook.com (Resend test mode).
+
+**Backlog — things to work on (post-demo priority order):**
+1. Drawer AI-score hero: getCandidateById lacks score/top_factors — needs a small query addition + wiring the existing ScoreMeter ring (deferred from DESIGN-02).
+2. Real domain → Resend DKIM/SPF/DMARC → real candidate email delivery (today: test mode, owner inbox only). Zero code.
+3. Separate staging Supabase project when budget allows — removes the live-worker/test interference class permanently (user deferred on cost 13 July).
+4. Local-dev-only pino thread-stream crash in next dev (drawer detail errors in dev only; production unaffected) — annoyance, not a defect.
+5. Multi-application deep-links select >1 row (test-data pattern; mostly moot post-grooming).
+6. HANDOVER.md ticket log: add DESIGN-01→04, UX-01, GROOM-01, staging-deploy entries (docs debt; commit messages are canonical meanwhile).
+7. Then the post-demo roadmap per §6: onboarding pillar → real Workday → partner portal → offboarding.
 
 **Read alongside this doc:**
 - `docs/requirements.md` — the full product requirements (the denominator for §5 below).
