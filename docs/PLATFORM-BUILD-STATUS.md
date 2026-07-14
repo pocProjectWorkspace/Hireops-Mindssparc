@@ -2,7 +2,15 @@
 
 **Purpose.** This is the master status + scope + roadmap document. Paste it at the start of a new build session to know, without re-deriving anything: exactly where the build is, what remains for the **August demo**, and what remains for the **full platform**. It is the "what to build next" companion to `docs/HANDOVER.md` (which is the ticket-level changelog + deep codebase realities — read that when you need the *why* behind a specific implementation).
 
-**Last updated:** 12 July 2026, after the fast-track sprint days 1–2 (branch `feat/followup-01-real-executors`, tip `ed04eff`). Demo-critical items §4 #1–5, #9 (minus pii_access_log), and #10 are DONE; the remaining path is external infra (#6 Resend, #7 staging, #8 credential) plus two small in-house tickets (pii_access_log; agent-runtime robustness follow-ups).
+**Last updated:** 14 July 2026 (main @ `d3c7cb6`). **ALL demo-critical build work is DONE** — §4 items 1–10 complete, CI green (first fully-green board 13 July, run 29243695378), STAGING IS LIVE, and a four-phase UI/UX revamp (DESIGN-01→04) shipped: token system, app shell, ten shared primitives, every internal + candidate surface restyled, zero behavioral change.
+
+**Staging (live since 13 July):**
+- Portal: https://hireops-portal.vercel.app (Vercel, auto-deploys on push to main; project hireops-portal, Root Directory apps/internal-portal, framework nextjs)
+- API: https://api-production-d16f.up.railway.app (Railway project hireops-staging, service `api`)
+- Workers: Railway service `workers` (6 loops, scanners live). EMAIL_PROVIDER=resend in TEST MODE — no domain, so delivery ONLY to digitalfuturity@outlook.com (the demo inbox; Rohan's seeded email). Sender onboarding@resend.dev. A real domain upgrades this with zero code.
+- DB: the DEV Supabase project is ALSO the staging DB (user decision, cost) — consequences: live workers interfere with drain-timing tests (CI api:test tripwire reads red on them; the five quality jobs are the signal), and test runs consume demo state → **re-seed before any demo**. Real Anthropic credential stored for kyndryl-poc (`pnpm db:store:demo-ai-credential`).
+
+**Remaining before the demo (small):** demo-data grooming (CRS-01 test candidates, AD03 cost-fixture rows, leaked `robust-01-test-stage-validation` agent), drawer AI-score query ticket (getCandidateById lacks score/top_factors), then rehearsal per demo-scope-v2.
 
 **Read alongside this doc:**
 - `docs/requirements.md` — the full product requirements (the denominator for §5 below).
