@@ -1,6 +1,20 @@
 "use client";
 
+import { useEffect } from "react";
+import type { ReactNode } from "react";
 import type { AgentListRow } from "@hireops/api-types";
+import {
+  Badge,
+  Card,
+  EmptyState,
+  TableShell,
+  Thead,
+  Th,
+  Tbody,
+  Tr,
+  Td,
+  type BadgeTone,
+} from "@/components/ui";
 import { trpc } from "@/lib/trpc-client";
 
 /**
@@ -13,6 +27,12 @@ import { trpc } from "@/lib/trpc-client";
  * Local-state driven (no URL routing) — use-drawer-routing is triage's
  * candidateId/applicationId scheme and doesn't map onto an agentId
  * drill-in, so a plain overlay is the cheaper fit here.
+ *
+ * DESIGN-03: at the DESIGN-02 drawer quality bar — shadow-3 floating panel,
+ * Esc-to-close + backdrop-close, a clean icon close button, sectioned body.
+ * The action list reads as a pipeline: each step carries its approval-rule
+ * badge (draft → gate → send), and run history is a TableShell with status
+ * Badges.
  */
 export function AgentDetailDrawer({
   agent,
@@ -23,40 +43,74 @@ export function AgentDetailDrawer({
 }) {
   const detail = trpc.getAgentDetail.useQuery({ agentId: agent.id }, { staleTime: 5_000 });
 
+  // Esc-to-close + body scroll lock while open (matches the triage drawer).
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      document.body.style.overflow = prev;
+    };
+  }, [onClose]);
+
   const rulesByActionId = new Map((detail.data?.approvalRules ?? []).map((r) => [r.action_id, r]));
 
   return (
-    <div className="fixed inset-0 z-40 flex justify-end">
-      {/* Backdrop */}
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-label="Agent detail"
+      className="fixed inset-0 z-modal flex justify-end"
+    >
       <button
         type="button"
         aria-label="Close detail"
         onClick={onClose}
-        className="absolute inset-0 bg-neutral-900/30"
+        className="absolute inset-0 bg-neutral-900/40 transition-opacity"
       />
-      {/* Panel */}
-      <aside className="relative z-50 flex h-full w-full max-w-lg flex-col overflow-y-auto border-l border-neutral-200 bg-white shadow-xl">
-        <div className="flex items-start justify-between border-b border-neutral-200 px-6 py-4">
+      <aside className="relative ml-auto flex h-full w-[52vw] max-w-xl flex-col overflow-hidden bg-neutral-50 shadow-3">
+        {/* Header */}
+        <header className="flex items-start justify-between gap-4 border-b border-neutral-200 bg-white px-6 py-5">
           <div className="min-w-0">
-            <h2 className="truncate text-lg font-semibold text-neutral-900">{agent.name}</h2>
-            <p className="text-xs text-neutral-500">
-              {agent.agent_type} · v{agent.version} · {agent.enabled ? "enabled" : "paused"}
-            </p>
+            <h2 className="truncate text-xl font-semibold tracking-tight text-neutral-900">
+              {agent.name}
+            </h2>
+            <div className="mt-1.5 flex flex-wrap items-center gap-2">
+              <Badge tone="accent">{humanize(agent.agent_type)}</Badge>
+              <Badge tone="neutral">v{agent.version}</Badge>
+              <Badge tone={agent.enabled ? "success" : "neutral"}>
+                {agent.enabled ? "Enabled" : "Paused"}
+              </Badge>
+            </div>
           </div>
           <button
             type="button"
             onClick={onClose}
-            className="ml-4 rounded-md px-2 py-1 text-sm text-neutral-500 hover:bg-neutral-100 hover:text-neutral-900"
+            className="-mr-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-neutral-500 transition-colors hover:bg-neutral-100 hover:text-neutral-900 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-500"
+            aria-label="Close"
           >
-            Close
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden>
+              <path
+                d="M4 4l8 8M12 4l-8 8"
+                stroke="currentColor"
+                strokeWidth="1.5"
+                strokeLinecap="round"
+              />
+            </svg>
           </button>
-        </div>
+        </header>
 
-        <div className="flex-1 space-y-6 px-6 py-5">
+        <div className="flex-1 space-y-5 overflow-y-auto px-6 py-5">
           {detail.isLoading ? (
             <p className="text-sm text-neutral-500">Loading detail…</p>
           ) : detail.isError || !detail.data ? (
-            <p className="text-sm text-status-error-700">Couldn’t load this agent’s detail.</p>
+            <p className="text-sm text-status-error-700">
+              Couldn&rsquo;t load this agent&rsquo;s detail.
+            </p>
           ) : (
             <>
               {detail.data.agent.description ? (
@@ -64,46 +118,54 @@ export function AgentDetailDrawer({
               ) : null}
 
               {/* Triggers */}
-              <Section title="Triggers">
+              <Section title="Trigger">
                 {detail.data.triggers.length === 0 ? (
-                  <Empty>No triggers configured.</Empty>
+                  <Card>
+                    <Empty>No triggers configured.</Empty>
+                  </Card>
                 ) : (
                   <ul className="space-y-3">
                     {detail.data.triggers.map((t) => (
-                      <li key={t.id} className="rounded-md border border-neutral-200">
-                        <div className="border-b border-neutral-100 px-3 py-2 text-xs font-medium text-neutral-700">
-                          {t.trigger_type}
-                        </div>
-                        <ConfigBlock value={t.trigger_config} />
+                      <li key={t.id}>
+                        <Card padded={false} className="overflow-hidden">
+                          <div className="flex items-center gap-2 border-b border-neutral-100 px-4 py-2.5">
+                            <Badge tone="info">{humanize(t.trigger_type)}</Badge>
+                          </div>
+                          <ConfigBlock value={t.trigger_config} />
+                        </Card>
                       </li>
                     ))}
                   </ul>
                 )}
               </Section>
 
-              {/* Actions + attached approval rules */}
+              {/* Actions + attached approval rules — the pipeline. */}
               <Section title="Actions">
                 {detail.data.actions.length === 0 ? (
-                  <Empty>No actions configured.</Empty>
+                  <Card>
+                    <Empty>No actions configured.</Empty>
+                  </Card>
                 ) : (
                   <ol className="space-y-3">
                     {detail.data.actions.map((a) => {
                       const rule = rulesByActionId.get(a.id);
                       return (
-                        <li key={a.id} className="rounded-md border border-neutral-200">
-                          <div className="flex items-center justify-between border-b border-neutral-100 px-3 py-2">
-                            <span className="text-xs font-medium text-neutral-700">
-                              <span className="mr-2 rounded bg-neutral-100 px-1.5 py-0.5 text-[11px] text-neutral-500">
-                                {a.action_order}
+                        <li key={a.id}>
+                          <Card padded={false} className="overflow-hidden">
+                            <div className="flex items-center justify-between gap-3 border-b border-neutral-100 px-4 py-2.5">
+                              <span className="flex min-w-0 items-center gap-2 text-sm font-medium text-neutral-800">
+                                <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-neutral-100 text-[11px] font-semibold tabular-nums text-neutral-500">
+                                  {a.action_order}
+                                </span>
+                                <span className="truncate font-mono text-xs">{a.action_type}</span>
                               </span>
-                              {a.action_type}
-                            </span>
-                            <ApprovalBadge
-                              mode={rule?.approval_mode ?? null}
-                              role={rule?.approver_role ?? null}
-                            />
-                          </div>
-                          <ConfigBlock value={a.action_config} />
+                              <ApprovalBadge
+                                mode={rule?.approval_mode ?? null}
+                                role={rule?.approver_role ?? null}
+                              />
+                            </div>
+                            <ConfigBlock value={a.action_config} />
+                          </Card>
                         </li>
                       );
                     })}
@@ -112,42 +174,49 @@ export function AgentDetailDrawer({
               </Section>
 
               {/* Recent runs */}
-              <Section title="Recent runs">
+              <Section title="Run history">
                 {detail.data.recentRuns.length === 0 ? (
-                  <Empty>No runs yet.</Empty>
+                  <Card padded={false}>
+                    <EmptyState
+                      title="No runs yet"
+                      hint="Runs appear here once this agent fires."
+                    />
+                  </Card>
                 ) : (
-                  <div className="overflow-x-auto">
-                    <table className="w-full text-left text-xs">
-                      <thead className="text-neutral-500">
-                        <tr className="border-b border-neutral-200">
-                          <th className="py-1.5 pr-3 font-medium">Status</th>
-                          <th className="py-1.5 pr-3 font-medium">Triggered by</th>
-                          <th className="py-1.5 pr-3 font-medium">Triggered at</th>
-                          <th className="py-1.5 pr-3 font-medium">Completed</th>
-                          <th className="py-1.5 font-medium">Error</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {detail.data.recentRuns.map((run) => (
-                          <tr key={run.id} className="border-b border-neutral-100 align-top">
-                            <td className="py-1.5 pr-3">
-                              <RunStatusBadge status={run.status} />
-                            </td>
-                            <td className="py-1.5 pr-3 text-neutral-600">{run.triggered_by}</td>
-                            <td className="py-1.5 pr-3 text-neutral-600">
-                              {run.triggered_at.slice(0, 16).replace("T", " ")}
-                            </td>
-                            <td className="py-1.5 pr-3 text-neutral-600">
-                              {run.completed_at
-                                ? run.completed_at.slice(0, 16).replace("T", " ")
-                                : "—"}
-                            </td>
-                            <td className="py-1.5 text-status-error-700">{run.error ?? "—"}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
+                  <TableShell>
+                    <Thead>
+                      <Th>Status</Th>
+                      <Th>Triggered by</Th>
+                      <Th>Triggered at</Th>
+                      <Th>Completed</Th>
+                    </Thead>
+                    <Tbody>
+                      {detail.data.recentRuns.map((run) => (
+                        <Tr key={run.id}>
+                          <Td>
+                            <RunStatusBadge status={run.status} />
+                            {run.error ? (
+                              <span
+                                className="ml-2 truncate align-middle text-xs text-status-error-700"
+                                title={run.error}
+                              >
+                                {run.error}
+                              </span>
+                            ) : null}
+                          </Td>
+                          <Td className="text-neutral-600">{run.triggered_by}</Td>
+                          <Td className="tabular-nums text-neutral-600">
+                            {run.triggered_at.slice(0, 16).replace("T", " ")}
+                          </Td>
+                          <Td className="tabular-nums text-neutral-600">
+                            {run.completed_at
+                              ? run.completed_at.slice(0, 16).replace("T", " ")
+                              : "—"}
+                          </Td>
+                        </Tr>
+                      ))}
+                    </Tbody>
+                  </TableShell>
                 )}
               </Section>
             </>
@@ -158,7 +227,7 @@ export function AgentDetailDrawer({
   );
 }
 
-function Section({ title, children }: { title: string; children: React.ReactNode }) {
+function Section({ title, children }: { title: string; children: ReactNode }) {
   return (
     <section>
       <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-neutral-500">
@@ -169,16 +238,16 @@ function Section({ title, children }: { title: string; children: React.ReactNode
   );
 }
 
-function Empty({ children }: { children: React.ReactNode }) {
+function Empty({ children }: { children: ReactNode }) {
   return <p className="text-xs text-neutral-400">{children}</p>;
 }
 
 function ConfigBlock({ value }: { value: unknown }) {
   if (value === null || value === undefined) {
-    return <p className="px-3 py-2 text-[11px] text-neutral-400">no config</p>;
+    return <p className="px-4 py-2.5 text-[11px] text-neutral-400">no config</p>;
   }
   return (
-    <pre className="overflow-x-auto px-3 py-2 text-[11px] leading-relaxed text-neutral-700">
+    <pre className="overflow-x-auto px-4 py-2.5 font-mono text-[11px] leading-relaxed text-neutral-700">
       {JSON.stringify(value, null, 2)}
     </pre>
   );
@@ -186,36 +255,32 @@ function ConfigBlock({ value }: { value: unknown }) {
 
 function ApprovalBadge({ mode, role }: { mode: string | null; role: string | null }) {
   if (!mode) {
-    return (
-      <span className="rounded-full bg-neutral-100 px-2 py-0.5 text-[11px] font-medium text-neutral-500">
-        no rule (auto)
-      </span>
-    );
+    return <Badge tone="neutral">no rule · auto</Badge>;
   }
-  const cls =
-    mode === "human_required"
-      ? "bg-amber-100 text-amber-900"
-      : mode === "human_optional"
-        ? "bg-status-info-100 text-status-info-800"
-        : "bg-green-100 text-green-800";
+  const tone: BadgeTone =
+    mode === "human_required" ? "warning" : mode === "human_optional" ? "info" : "success";
   return (
-    <span className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${cls}`}>
-      {mode}
+    <Badge tone={tone}>
+      {humanize(mode)}
       {role ? ` · ${role}` : ""}
-    </span>
+    </Badge>
   );
 }
 
 function RunStatusBadge({ status }: { status: string }) {
-  const cls =
+  const tone: BadgeTone =
     status === "completed"
-      ? "bg-green-100 text-green-800"
+      ? "success"
       : status === "failed" || status === "rejected"
-        ? "bg-status-error-100 text-status-error-800"
+        ? "error"
         : status === "awaiting_approval"
-          ? "bg-amber-100 text-amber-900"
-          : "bg-neutral-100 text-neutral-700";
-  return (
-    <span className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${cls}`}>{status}</span>
-  );
+          ? "warning"
+          : "neutral";
+  return <Badge tone={tone}>{humanize(status)}</Badge>;
+}
+
+/** snake_case → "Sentence case". */
+function humanize(value: string): string {
+  const spaced = value.replace(/_/g, " ");
+  return spaced.charAt(0).toUpperCase() + spaced.slice(1);
 }

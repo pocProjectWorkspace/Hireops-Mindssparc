@@ -1,7 +1,21 @@
 "use client";
 
 import { useState } from "react";
+import type { ReactNode } from "react";
 import type { ListAuditEventsOutput } from "@hireops/api-types";
+import {
+  Badge,
+  Button,
+  Card,
+  EmptyState,
+  TableShell,
+  Thead,
+  Th,
+  Tbody,
+  Tr,
+  Td,
+  type BadgeTone,
+} from "@/components/ui";
 import { trpc } from "@/lib/trpc-client";
 
 // Derive the row type from the procedure output, relaxing the two jsonb
@@ -26,6 +40,11 @@ type AuditEventRow = Omit<ListAuditEventsOutput["items"][number], "before_data" 
  * Actor is shown as the truncated actor_user_id (or "system" when null). We
  * deliberately do NOT join users / memberships for display names: their RLS
  * is self-select-only, so the join would silently null for other actors.
+ *
+ * DESIGN-03: the "AI you can audit" screen. Events sit in a TableShell with an
+ * action Badge toned by DML verb, entity_type as a neutral mono Badge, actor
+ * mono. Expanding a row reveals a forensic diff: a two-column Before/After
+ * Card pair, changed-columns as Badge chips, metadata as a definition list.
  */
 
 // The agent-runtime tables — the "Agent activity" preset. Hardcoded because
@@ -80,29 +99,44 @@ export function AuditClient({ initial }: { initial: ListAuditEventsOutput }) {
           active={agentPreset}
           onClick={() => setAgentPreset((v) => !v)}
         />
-        <span className="mx-1 text-neutral-300">|</span>
+        <span aria-hidden className="mx-1 h-4 w-px bg-neutral-200" />
         <FilterChip
-          label="all actions"
+          label="All actions"
           active={actionFilter === null}
           onClick={() => setActionFilter(null)}
         />
         {(["insert", "update", "delete"] as ActionFilter[]).map((a) => (
           <FilterChip
             key={a}
-            label={a}
+            label={humanize(a)}
             active={actionFilter === a}
             onClick={() => setActionFilter(a)}
           />
         ))}
       </section>
 
-      <section className="rounded-lg border border-neutral-200 bg-white">
-        {query.isLoading ? (
-          <p className="p-6 text-sm text-neutral-500">Loading…</p>
-        ) : items.length === 0 ? (
-          <p className="p-6 text-sm text-neutral-500">No audit events match.</p>
-        ) : (
-          <ul>
+      {query.isLoading ? (
+        <Card>
+          <p className="text-sm text-neutral-500">Loading…</p>
+        </Card>
+      ) : items.length === 0 ? (
+        <Card padded={false}>
+          <EmptyState
+            title="No audit events match"
+            hint="Clear the filters above to see all activity."
+          />
+        </Card>
+      ) : (
+        <TableShell>
+          <Thead>
+            <Th>When</Th>
+            <Th>Entity</Th>
+            <Th>Action</Th>
+            <Th>Entity ID</Th>
+            <Th>Actor</Th>
+            <Th className="w-8" aria-label="Expand" />
+          </Thead>
+          <Tbody>
             {items.map((row) => (
               <AuditRow
                 key={row.id}
@@ -111,20 +145,19 @@ export function AuditClient({ initial }: { initial: ListAuditEventsOutput }) {
                 onToggle={() => setExpandedId(expandedId === row.id ? null : row.id)}
               />
             ))}
-          </ul>
-        )}
-      </section>
+          </Tbody>
+        </TableShell>
+      )}
 
       {query.hasNextPage ? (
         <div className="mt-4 flex justify-center">
-          <button
-            type="button"
+          <Button
+            variant="secondary"
             onClick={() => query.fetchNextPage()}
             disabled={query.isFetchingNextPage}
-            className="rounded-md border border-neutral-300 bg-white px-4 py-2 text-sm font-medium text-neutral-700 hover:bg-neutral-50 disabled:opacity-50"
           >
             {query.isFetchingNextPage ? "Loading…" : "Load more"}
-          </button>
+          </Button>
         </div>
       ) : null}
     </div>
@@ -141,98 +174,114 @@ function AuditRow({
   onToggle: () => void;
 }) {
   return (
-    <li className="border-b border-neutral-100 last:border-0">
-      <button
-        type="button"
-        onClick={onToggle}
-        className="grid w-full grid-cols-12 items-center gap-3 px-4 py-3 text-left text-sm hover:bg-neutral-50"
-      >
-        <span className="col-span-3 text-xs text-neutral-600">
-          <span className="block text-neutral-800">{absolute(row.created_at)}</span>
-          <span className="block text-neutral-400">{relative(row.created_at)}</span>
-        </span>
-        <span className="col-span-3">
-          <span className="rounded-full bg-neutral-100 px-2 py-0.5 font-mono text-[11px] font-medium text-neutral-700">
+    <>
+      <Tr onClick={onToggle} className="cursor-pointer" aria-expanded={expanded}>
+        <Td className="whitespace-nowrap">
+          <span className="block text-neutral-800 tabular-nums">{absolute(row.created_at)}</span>
+          <span className="block text-xs text-neutral-400">{relative(row.created_at)}</span>
+        </Td>
+        <Td>
+          <Badge tone="neutral" className="font-mono">
             {row.entity_type}
-          </span>
-        </span>
-        <span className="col-span-2">
+          </Badge>
+        </Td>
+        <Td>
           <ActionBadge action={row.action} />
-        </span>
-        <span className="col-span-2 font-mono text-xs text-neutral-500">
-          {row.entity_id.slice(0, 8)}…
-        </span>
-        <span className="col-span-1 truncate font-mono text-[11px] text-neutral-500">
+        </Td>
+        <Td className="font-mono text-xs text-neutral-500">{row.entity_id.slice(0, 8)}…</Td>
+        <Td className="font-mono text-xs text-neutral-500">
           {row.actor_user_id ? `${row.actor_user_id.slice(0, 8)}…` : "system"}
-        </span>
-        <span className="col-span-1 text-right text-xs text-neutral-400">
-          {expanded ? "▾" : "▸"}
-        </span>
-      </button>
+        </Td>
+        <Td className="text-right text-neutral-400">{expanded ? "▾" : "▸"}</Td>
+      </Tr>
       {expanded ? (
-        <div className="space-y-4 bg-neutral-50 px-6 py-4 text-xs">
-          <div className="flex flex-wrap gap-4 text-neutral-500">
-            <span>
-              source: <span className="font-mono text-neutral-700">{row.source}</span>
-            </span>
-            <span>
-              request_id:{" "}
-              <span className="font-mono text-neutral-700">{row.request_id ?? "—"}</span>
-            </span>
-            <span>
-              actor_membership_id:{" "}
-              <span className="font-mono text-neutral-700">{row.actor_membership_id ?? "—"}</span>
-            </span>
-          </div>
+        <tr className="border-b border-neutral-100">
+          <td colSpan={6} className="bg-neutral-50 px-6 py-5">
+            <div className="space-y-4">
+              {/* Metadata — a calm definition list. */}
+              <dl className="grid grid-cols-1 gap-x-8 gap-y-1.5 sm:grid-cols-3">
+                <MetaRow label="Source">
+                  <span className="font-mono">{row.source}</span>
+                </MetaRow>
+                <MetaRow label="Request ID">
+                  <span className="font-mono">{row.request_id ?? "—"}</span>
+                </MetaRow>
+                <MetaRow label="Actor membership">
+                  <span className="font-mono">{row.actor_membership_id ?? "—"}</span>
+                </MetaRow>
+              </dl>
 
-          {row.changed_columns && row.changed_columns.length > 0 ? (
-            <div>
-              <p className="mb-1 font-semibold uppercase tracking-wide text-neutral-600">
-                Changed columns
-              </p>
-              <div className="flex flex-wrap gap-1.5">
-                {row.changed_columns.map((c) => (
-                  <span
-                    key={c}
-                    className="rounded-full bg-status-info-100 px-2 py-0.5 font-mono text-[11px] text-status-info-800"
-                  >
-                    {c}
-                  </span>
-                ))}
+              {row.changed_columns && row.changed_columns.length > 0 ? (
+                <div>
+                  <p className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-neutral-500">
+                    Changed columns
+                  </p>
+                  <div className="flex flex-wrap gap-1.5">
+                    {row.changed_columns.map((c) => (
+                      <Badge key={c} tone="info" className="font-mono">
+                        {c}
+                      </Badge>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
+
+              <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+                <DiffCard label="Before" tone="error" data={row.before_data} />
+                <DiffCard label="After" tone="success" data={row.after_data} />
               </div>
             </div>
-          ) : null}
-
-          <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-            <div>
-              <p className="mb-1 font-semibold uppercase tracking-wide text-neutral-600">Before</p>
-              <pre className="max-h-80 overflow-auto rounded bg-white p-2 text-neutral-800">
-                {row.before_data ? JSON.stringify(row.before_data, null, 2) : "—"}
-              </pre>
-            </div>
-            <div>
-              <p className="mb-1 font-semibold uppercase tracking-wide text-neutral-600">After</p>
-              <pre className="max-h-80 overflow-auto rounded bg-white p-2 text-neutral-800">
-                {row.after_data ? JSON.stringify(row.after_data, null, 2) : "—"}
-              </pre>
-            </div>
-          </div>
-        </div>
+          </td>
+        </tr>
       ) : null}
-    </li>
+    </>
+  );
+}
+
+function MetaRow({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <div className="flex items-baseline gap-2 text-xs">
+      <dt className="shrink-0 font-medium uppercase tracking-wide text-neutral-400">{label}</dt>
+      <dd className="min-w-0 truncate text-neutral-700">{children}</dd>
+    </div>
+  );
+}
+
+function DiffCard({
+  label,
+  tone,
+  data,
+}: {
+  label: string;
+  tone: "error" | "success";
+  data: unknown;
+}) {
+  const dotClass = tone === "error" ? "bg-status-error-400" : "bg-status-positive-400";
+  return (
+    <Card padded={false} className="overflow-hidden">
+      <div className="flex items-center gap-2 border-b border-neutral-100 px-4 py-2">
+        <span aria-hidden className={`h-1.5 w-1.5 rounded-full ${dotClass}`} />
+        <span className="text-xs font-semibold uppercase tracking-wide text-neutral-500">
+          {label}
+        </span>
+      </div>
+      <pre className="max-h-80 overflow-auto px-4 py-3 font-mono text-xs leading-relaxed text-neutral-700">
+        {data ? JSON.stringify(data, null, 2) : "—"}
+      </pre>
+    </Card>
   );
 }
 
 function ActionBadge({ action }: { action: string }) {
-  const cls =
+  const tone: BadgeTone =
     action === "insert"
-      ? "bg-green-100 text-green-800"
+      ? "success"
       : action === "update"
-        ? "bg-amber-100 text-amber-900"
+        ? "warning"
         : action === "delete"
-          ? "bg-status-error-100 text-status-error-800"
-          : "bg-neutral-100 text-neutral-800";
-  return <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${cls}`}>{action}</span>;
+          ? "error"
+          : "neutral";
+  return <Badge tone={tone}>{humanize(action)}</Badge>;
 }
 
 function FilterChip({
@@ -248,15 +297,22 @@ function FilterChip({
     <button
       type="button"
       onClick={onClick}
-      className={`rounded-full px-3 py-1 text-xs ${
+      aria-pressed={active}
+      className={`rounded-full px-3 py-1 text-xs font-medium transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-500 ${
         active
-          ? "bg-neutral-900 text-white"
+          ? "bg-brand-600 text-white"
           : "border border-neutral-300 bg-white text-neutral-700 hover:bg-neutral-50"
       }`}
     >
       {label}
     </button>
   );
+}
+
+/** snake_case → "Sentence case". */
+function humanize(value: string): string {
+  const spaced = value.replace(/_/g, " ");
+  return spaced.charAt(0).toUpperCase() + spaced.slice(1);
 }
 
 function absolute(iso: string): string {

@@ -1,11 +1,44 @@
 "use client";
 
 import { useState } from "react";
+import type { ReactNode } from "react";
+import type { ListWorkdaySyncsOutput } from "@hireops/api-types";
+import {
+  Badge,
+  Card,
+  EmptyState,
+  StatTile,
+  TableShell,
+  Thead,
+  Th,
+  Tbody,
+  Tr,
+  Td,
+  type BadgeTone,
+} from "@/components/ui";
 import { trpc } from "@/lib/trpc-client";
+
+// Derive the row type from the procedure output, relaxing the two jsonb
+// columns to optional — the tRPC client re-infers `unknown` zod fields as
+// optional, so the prop type must accept the client's (optional) shape.
+type SyncRowData = Omit<ListWorkdaySyncsOutput["rows"][number], "payload" | "simulatedResponse"> & {
+  payload?: unknown;
+  simulatedResponse?: unknown;
+};
 
 const STATUS_OPTIONS = ["pending", "processing", "simulated", "sent", "failed"];
 const EVENT_OPTIONS = ["hire_employee"];
 
+/**
+ * The admin integration-health surface — outbound sync events to external
+ * systems (currently only Workday Hire, in SIMULATED mode). Summary tiles +
+ * status/event filter chips + a TableShell whose rows expand to the payload,
+ * simulated response, and any error.
+ *
+ * DESIGN-03: the SIMULATED banner is warning-toned (informative, not alarming);
+ * tiles → StatTile; rows + payload accordion in the TableShell/Card idiom with
+ * status Badges.
+ */
 export function IntegrationsClient() {
   const [statusFilter, setStatusFilter] = useState<string | null>(null);
   const [eventFilter, setEventFilter] = useState<string | null>(null);
@@ -23,11 +56,25 @@ export function IntegrationsClient() {
   const totals = summarise(rows);
 
   return (
-    <main className="mx-auto max-w-5xl px-6 py-8">
-      <div className="mb-4 rounded-md border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900">
-        <strong>Integration mode: SIMULATED</strong> — awaiting Workday tenant credentials. All sync
-        events below are mock dispatches; the simulated_response carries an explicit notes field
-        saying so.
+    <div className="mx-auto w-full max-w-5xl px-6 py-8">
+      <div className="mb-5 flex items-start gap-3 rounded-md border border-status-warning-200 bg-status-warning-50 px-4 py-3 text-sm text-status-warning-800">
+        <span aria-hidden className="mt-0.5 shrink-0">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+            <path
+              d="M8 1.5L15 14H1L8 1.5z"
+              stroke="currentColor"
+              strokeWidth="1.3"
+              strokeLinejoin="round"
+            />
+            <path d="M8 6.5v3" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
+            <circle cx="8" cy="11.5" r="0.75" fill="currentColor" />
+          </svg>
+        </span>
+        <p>
+          <strong className="font-semibold">Integration mode: Simulated</strong> — awaiting Workday
+          tenant credentials. All sync events below are mock dispatches; each simulated_response
+          carries an explicit notes field saying so.
+        </p>
       </div>
 
       <p className="mb-6 text-sm text-neutral-600">
@@ -35,118 +82,151 @@ export function IntegrationsClient() {
       </p>
 
       <section className="mb-6 grid grid-cols-2 gap-4 sm:grid-cols-4">
-        <Tile label="Total events" value={totals.total} />
-        <Tile label="Simulated" value={totals.simulated} tone="success" />
-        <Tile label="Pending" value={totals.pending} tone="info" />
-        <Tile
+        <StatTile label="Total events" value={totals.total.toLocaleString()} />
+        <StatTile label="Simulated" value={totals.simulated.toLocaleString()} tone="positive" />
+        <StatTile label="Pending" value={totals.pending.toLocaleString()} tone="info" />
+        <StatTile
           label="Failed"
-          value={totals.failed}
-          tone={totals.failed > 0 ? "warning" : "neutral"}
+          value={totals.failed.toLocaleString()}
+          tone={totals.failed > 0 ? "error" : "neutral"}
         />
       </section>
 
-      <section className="mb-4 flex flex-wrap gap-2">
+      <section className="mb-4 flex flex-wrap items-center gap-2">
         <FilterChip
-          label="all statuses"
+          label="All statuses"
           active={statusFilter === null}
           onClick={() => setStatusFilter(null)}
         />
         {STATUS_OPTIONS.map((s) => (
           <FilterChip
             key={s}
-            label={s}
+            label={humanize(s)}
             active={statusFilter === s}
             onClick={() => setStatusFilter(s)}
           />
         ))}
-        <span className="mx-2 text-neutral-300">|</span>
+        <span aria-hidden className="mx-1 h-4 w-px bg-neutral-200" />
         <FilterChip
-          label="all events"
+          label="All events"
           active={eventFilter === null}
           onClick={() => setEventFilter(null)}
         />
         {EVENT_OPTIONS.map((e) => (
           <FilterChip
             key={e}
-            label={e}
+            label={humanize(e)}
             active={eventFilter === e}
             onClick={() => setEventFilter(e)}
           />
         ))}
       </section>
 
-      <section className="rounded-lg border border-neutral-200 bg-white">
-        {query.isLoading ? (
-          <p className="p-6 text-sm text-neutral-500">Loading…</p>
-        ) : rows.length === 0 ? (
-          <p className="p-6 text-sm text-neutral-500">No events match the current filters.</p>
-        ) : (
-          <ul>
+      {query.isLoading ? (
+        <Card>
+          <p className="text-sm text-neutral-500">Loading…</p>
+        </Card>
+      ) : rows.length === 0 ? (
+        <Card padded={false}>
+          <EmptyState
+            title="No events match the current filters"
+            hint="Sync events appear here as hires are dispatched to Workday."
+          />
+        </Card>
+      ) : (
+        <TableShell>
+          <Thead>
+            <Th>Event</Th>
+            <Th>Business key</Th>
+            <Th>Status</Th>
+            <Th>Created</Th>
+            <Th className="w-8" aria-label="Expand" />
+          </Thead>
+          <Tbody>
             {rows.map((row) => (
-              <li key={row.id} className="border-b border-neutral-100 last:border-0">
-                <button
-                  type="button"
-                  onClick={() => setExpanded(expanded === row.id ? null : row.id)}
-                  className="grid w-full grid-cols-12 items-center gap-3 px-4 py-3 text-left text-sm hover:bg-neutral-50"
-                >
-                  <span className="col-span-3 font-mono text-xs text-neutral-700">
-                    {row.eventType}
-                  </span>
-                  <span className="col-span-4 truncate font-mono text-xs text-neutral-500">
-                    {row.businessKey}
-                  </span>
-                  <span className="col-span-2">
-                    <StatusBadge status={row.status} />
-                  </span>
-                  <span className="col-span-2 text-xs text-neutral-500">
-                    {row.createdAt.slice(0, 16).replace("T", " ")}
-                  </span>
-                  <span className="col-span-1 text-right text-xs text-neutral-400">
-                    {expanded === row.id ? "▾" : "▸"}
-                  </span>
-                </button>
-                {expanded === row.id ? (
-                  <div className="space-y-3 bg-neutral-50 px-6 py-4 text-xs">
-                    <div>
-                      <p className="mb-1 font-semibold uppercase tracking-wide text-neutral-600">
-                        Payload
-                      </p>
-                      <pre className="overflow-x-auto rounded bg-white p-2 text-neutral-800">
-                        {JSON.stringify(row.payload, null, 2)}
-                      </pre>
-                    </div>
-                    {row.simulatedResponse ? (
-                      <div>
-                        <p className="mb-1 font-semibold uppercase tracking-wide text-neutral-600">
-                          Simulated response
-                        </p>
-                        <pre className="overflow-x-auto rounded bg-white p-2 text-neutral-800">
-                          {JSON.stringify(row.simulatedResponse, null, 2)}
-                        </pre>
-                      </div>
-                    ) : null}
-                    {row.lastError ? (
-                      <div>
-                        <p className="mb-1 font-semibold uppercase tracking-wide text-neutral-600">
-                          Last error
-                        </p>
-                        <p className="rounded bg-status-error-50 p-2 text-status-error-800">
-                          {row.lastError}
-                        </p>
-                      </div>
-                    ) : null}
-                    <p className="text-neutral-500">
-                      Attempts: {row.attemptCount} · Simulated at:{" "}
-                      {row.simulatedAt ? row.simulatedAt.slice(0, 16).replace("T", " ") : "—"}
-                    </p>
-                  </div>
-                ) : null}
-              </li>
+              <SyncRow
+                key={row.id}
+                row={row}
+                expanded={expanded === row.id}
+                onToggle={() => setExpanded(expanded === row.id ? null : row.id)}
+              />
             ))}
-          </ul>
-        )}
-      </section>
-    </main>
+          </Tbody>
+        </TableShell>
+      )}
+    </div>
+  );
+}
+
+function SyncRow({
+  row,
+  expanded,
+  onToggle,
+}: {
+  row: SyncRowData;
+  expanded: boolean;
+  onToggle: () => void;
+}) {
+  return (
+    <>
+      <Tr onClick={onToggle} className="cursor-pointer" aria-expanded={expanded}>
+        <Td className="font-mono text-xs text-neutral-700">{row.eventType}</Td>
+        <Td className="max-w-[16rem] truncate font-mono text-xs text-neutral-500">
+          {row.businessKey}
+        </Td>
+        <Td>
+          <StatusBadge status={row.status} />
+        </Td>
+        <Td className="whitespace-nowrap tabular-nums text-xs text-neutral-500">
+          {row.createdAt.slice(0, 16).replace("T", " ")}
+        </Td>
+        <Td className="text-right text-neutral-400">{expanded ? "▾" : "▸"}</Td>
+      </Tr>
+      {expanded ? (
+        <tr className="border-b border-neutral-100">
+          <td colSpan={5} className="bg-neutral-50 px-6 py-5">
+            <div className="space-y-4">
+              <PayloadBlock label="Payload" value={row.payload} />
+              {row.simulatedResponse ? (
+                <PayloadBlock label="Simulated response" value={row.simulatedResponse} />
+              ) : null}
+              {row.lastError ? (
+                <div>
+                  <p className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-neutral-500">
+                    Last error
+                  </p>
+                  <p className="rounded-md bg-status-error-50 px-3 py-2 text-xs text-status-error-800">
+                    {row.lastError}
+                  </p>
+                </div>
+              ) : null}
+              <p className="text-xs text-neutral-500">
+                Attempts: <span className="tabular-nums text-neutral-700">{row.attemptCount}</span>{" "}
+                · Simulated at:{" "}
+                <span className="tabular-nums text-neutral-700">
+                  {row.simulatedAt ? row.simulatedAt.slice(0, 16).replace("T", " ") : "—"}
+                </span>
+              </p>
+            </div>
+          </td>
+        </tr>
+      ) : null}
+    </>
+  );
+}
+
+function PayloadBlock({ label, value }: { label: string; value: unknown }) {
+  return (
+    <div>
+      <p className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-neutral-500">
+        {label}
+      </p>
+      <Card padded={false}>
+        <pre className="max-h-80 overflow-auto px-4 py-3 font-mono text-xs leading-relaxed text-neutral-700">
+          {JSON.stringify(value, null, 2)}
+        </pre>
+      </Card>
+    </div>
   );
 }
 
@@ -167,31 +247,6 @@ function summarise(rows: { status: string }[]): Totals {
   return t;
 }
 
-function Tile({
-  label,
-  value,
-  tone = "neutral",
-}: {
-  label: string;
-  value: number;
-  tone?: "neutral" | "info" | "success" | "warning";
-}) {
-  const toneClass =
-    tone === "success"
-      ? "border-green-200 bg-green-50 text-green-800"
-      : tone === "info"
-        ? "border-status-info-200 bg-status-info-50 text-status-info-800"
-        : tone === "warning"
-          ? "border-status-warning-200 bg-status-warning-50 text-status-warning-800"
-          : "border-neutral-200 bg-white text-neutral-800";
-  return (
-    <div className={`rounded-md border p-3 ${toneClass}`}>
-      <p className="text-xs uppercase tracking-wide opacity-70">{label}</p>
-      <p className="mt-1 text-xl font-semibold">{value}</p>
-    </div>
-  );
-}
-
 function FilterChip({
   label,
   active,
@@ -205,9 +260,10 @@ function FilterChip({
     <button
       type="button"
       onClick={onClick}
-      className={`rounded-full px-3 py-1 text-xs ${
+      aria-pressed={active}
+      className={`rounded-full px-3 py-1 text-xs font-medium transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-500 ${
         active
-          ? "bg-neutral-900 text-white"
+          ? "bg-brand-600 text-white"
           : "border border-neutral-300 bg-white text-neutral-700 hover:bg-neutral-50"
       }`}
     >
@@ -216,14 +272,20 @@ function FilterChip({
   );
 }
 
-function StatusBadge({ status }: { status: string }) {
-  const cls =
+function StatusBadge({ status }: { status: string }): ReactNode {
+  const tone: BadgeTone =
     status === "simulated" || status === "sent"
-      ? "bg-green-100 text-green-800"
+      ? "success"
       : status === "pending" || status === "processing"
-        ? "bg-status-info-100 text-status-info-800"
+        ? "info"
         : status === "failed"
-          ? "bg-status-error-100 text-status-error-800"
-          : "bg-neutral-100 text-neutral-800";
-  return <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${cls}`}>{status}</span>;
+          ? "error"
+          : "neutral";
+  return <Badge tone={tone}>{humanize(status)}</Badge>;
+}
+
+/** snake_case → "Sentence case". */
+function humanize(value: string): string {
+  const spaced = value.replace(/_/g, " ");
+  return spaced.charAt(0).toUpperCase() + spaced.slice(1);
 }

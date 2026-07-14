@@ -18,6 +18,8 @@ export { StatTile } from "./StatTile";
 export type { StatTileProps, StatTileTone } from "./StatTile";
 export { EmptyState } from "./EmptyState";
 export type { EmptyStateProps } from "./EmptyState";
+export { DataBar } from "./DataBar";
+export type { DataBarProps } from "./DataBar";
 export { Skeleton, SkeletonTiles, SkeletonRows } from "./Skeleton";
 export type { SkeletonProps } from "./Skeleton";
 export { TableShell, Thead, Th, Tbody, Tr, Td } from "./TableShell";
