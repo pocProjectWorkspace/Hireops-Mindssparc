@@ -13,7 +13,8 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { TRPCError } from "@trpc/server";
-import { Card } from "@hireops/ui";
+import { Card } from "@/components/ui";
+import { CandidateShell } from "@/components/candidate/CandidateShell";
 import { createPublicServerTRPCCaller } from "@/lib/trpc-server";
 
 export default async function PublicApplySubmittedPage({
@@ -40,28 +41,65 @@ export default async function PublicApplySubmittedPage({
   const ref = (searchParams.ref ?? "").replace(/[^a-zA-Z0-9-]/g, "").slice(0, 12);
 
   return (
-    <main className="mx-auto flex min-h-screen max-w-xl flex-col gap-6 px-4 py-10 sm:px-6">
-      <Card className="flex flex-col gap-4 p-6">
-        <h1 className="text-2xl font-semibold text-neutral-900">Application received</h1>
-        <p className="text-base text-neutral-700">
-          Thanks for applying to <strong>{resolved.positionTitle}</strong> at{" "}
-          <strong>{resolved.tenantDisplayName}</strong>. We&rsquo;ll be in touch within the next few
-          business days if there&rsquo;s a fit.
+    <CandidateShell
+      brand={resolved.tenantDisplayName}
+      footer={
+        <p className="text-xs text-neutral-500">
+          <Link href="/privacy" className="text-brand-600 underline">
+            Privacy policy
+          </Link>
         </p>
-        {ref && (
+      }
+    >
+      <Card className="flex flex-col items-center gap-4 p-6 text-center sm:p-8">
+        <span
+          aria-hidden="true"
+          className="flex h-14 w-14 items-center justify-center rounded-full bg-status-positive-50 text-status-positive-600"
+        >
+          <svg
+            width="28"
+            height="28"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2.5"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          >
+            <path d="M20 6 9 17l-5-5" />
+          </svg>
+        </span>
+
+        <div className="flex flex-col gap-1.5">
+          <h1 className="text-2xl font-semibold tracking-tight text-neutral-900">
+            Application received
+          </h1>
           <p className="text-sm text-neutral-600">
-            Your reference: <strong className="font-mono">{ref}</strong>
+            Thanks for applying to{" "}
+            <strong className="text-neutral-800">{resolved.positionTitle}</strong> at{" "}
+            <strong className="text-neutral-800">{resolved.tenantDisplayName}</strong>.
           </p>
+        </div>
+
+        {ref && (
+          <div className="flex flex-col items-center gap-1.5">
+            <p className="text-xs font-medium uppercase tracking-wide text-neutral-500">
+              Your reference
+            </p>
+            <p className="select-all rounded-md border border-neutral-200 bg-neutral-50 px-4 py-2 font-mono text-base tracking-wider text-neutral-900">
+              {ref}
+            </p>
+          </div>
         )}
-        <p className="text-sm text-neutral-600">
-          A confirmation email is on its way. You don&rsquo;t need to do anything right now.
-        </p>
+
+        <div className="mt-1 w-full border-t border-neutral-100 pt-4 text-sm text-neutral-600">
+          <p className="mb-1 font-medium text-neutral-800">What happens next</p>
+          <p>
+            A confirmation email is on its way. We&rsquo;ll be in touch within the next few business
+            days if there&rsquo;s a fit — you don&rsquo;t need to do anything right now.
+          </p>
+        </div>
       </Card>
-      <p className="text-center text-xs text-neutral-500">
-        <Link href="/privacy" className="text-brand-600 underline">
-          Privacy policy
-        </Link>
-      </p>
-    </main>
+    </CandidateShell>
   );
 }

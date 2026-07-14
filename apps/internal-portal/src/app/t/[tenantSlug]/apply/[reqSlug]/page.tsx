@@ -11,8 +11,11 @@
  * resume upload + tRPC mutation can run from the browser.
  */
 
+import Link from "next/link";
 import { notFound } from "next/navigation";
 import { TRPCError } from "@trpc/server";
+import { Badge, Card } from "@/components/ui";
+import { CandidateShell } from "@/components/candidate/CandidateShell";
 import { createPublicServerTRPCCaller } from "@/lib/trpc-server";
 import { ApplyForm } from "./ApplyForm";
 
@@ -39,23 +42,38 @@ export default async function PublicApplyPage({
   }
 
   return (
-    <main className="mx-auto flex min-h-screen max-w-xl flex-col gap-6 px-4 py-8 sm:px-6">
-      <header className="flex flex-col gap-1">
-        <p className="text-sm font-medium text-brand-600">{resolved.tenantDisplayName}</p>
-        <h1 className="text-2xl font-semibold text-neutral-900">{resolved.positionTitle}</h1>
+    <CandidateShell
+      brand={resolved.tenantDisplayName}
+      footer={
+        <p className="text-xs text-neutral-500">
+          <Link href="/privacy" className="text-brand-600 underline">
+            Privacy policy
+          </Link>
+        </p>
+      }
+    >
+      <header className="flex flex-col gap-2">
+        <Badge tone="accent" className="w-fit">
+          Now hiring
+        </Badge>
+        <h1 className="text-2xl font-semibold tracking-tight text-neutral-900">
+          {resolved.positionTitle}
+        </h1>
         <p className="text-sm text-neutral-600">
-          Apply below. The recruiting team will reach out within the next few business days if
-          there&rsquo;s a fit.
+          Apply below. The {resolved.tenantDisplayName} recruiting team will reach out within the
+          next few business days if there&rsquo;s a fit.
         </p>
       </header>
 
-      <ApplyForm
-        requisitionId={resolved.requisitionId}
-        tenantDisplayName={resolved.tenantDisplayName}
-        positionTitle={resolved.positionTitle}
-        tenantSlug={params.tenantSlug}
-        reqSlug={params.reqSlug}
-      />
-    </main>
+      <Card className="p-5 sm:p-6">
+        <ApplyForm
+          requisitionId={resolved.requisitionId}
+          tenantDisplayName={resolved.tenantDisplayName}
+          positionTitle={resolved.positionTitle}
+          tenantSlug={params.tenantSlug}
+          reqSlug={params.reqSlug}
+        />
+      </Card>
+    </CandidateShell>
   );
 }

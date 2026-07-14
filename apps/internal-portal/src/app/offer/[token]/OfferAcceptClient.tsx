@@ -1,6 +1,9 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
+import { Button, Input } from "@hireops/ui";
+import { Badge, Card, EmptyState } from "@/components/ui";
+import { CandidateShell } from "@/components/candidate/CandidateShell";
 
 /**
  * Single-page candidate offer accept / decline flow.
@@ -14,7 +17,8 @@ import { useEffect, useState } from "react";
  *      ok=true and we render a "Thank you" page
  *
  * Errors surface as inline banners. Mobile-first layout: single column,
- * full-width buttons.
+ * full-width buttons. DESIGN-04 restyle is visual only — the fetch calls,
+ * state machine, and name-match enforcement are unchanged.
  */
 
 interface OfferPreview {
@@ -105,26 +109,38 @@ export function OfferAcceptClient({ token }: { token: string }) {
   }
 
   if (state.kind === "loading") {
-    return <Centered message="Loading your offer…" />;
+    return (
+      <StatusScreen>
+        <EmptyState title="Loading your offer…" />
+      </StatusScreen>
+    );
   }
   if (state.kind === "error") {
-    return <Centered message={state.reason} variant="warning" />;
+    return (
+      <StatusScreen>
+        <EmptyState icon={<WarningIcon />} title="We hit a snag" hint={state.reason} />
+      </StatusScreen>
+    );
   }
   if (state.kind === "accepted") {
     return (
-      <Centered
-        title="Thank you!"
-        message="We've recorded your acceptance. Your recruiter will be in touch shortly with onboarding paperwork."
-        variant="success"
-      />
+      <StatusScreen>
+        <EmptyState
+          icon={<CheckIcon />}
+          title="Offer accepted"
+          hint="We've recorded your acceptance. Your recruiter will be in touch shortly with onboarding paperwork."
+        />
+      </StatusScreen>
     );
   }
   if (state.kind === "declined") {
     return (
-      <Centered
-        title="Got it."
-        message="We've recorded your decision. Your recruiter has been notified."
-      />
+      <StatusScreen>
+        <EmptyState
+          title="Got it."
+          hint="We've recorded your decision. Your recruiter has been notified."
+        />
+      </StatusScreen>
     );
   }
 
@@ -132,90 +148,112 @@ export function OfferAcceptClient({ token }: { token: string }) {
   const isTerminal = offer.status !== "extended";
 
   return (
-    <main className="mx-auto min-h-screen max-w-xl bg-neutral-50 px-4 py-8 sm:py-12">
-      <header className="mb-6 text-center">
-        <p className="text-xs uppercase tracking-wide text-neutral-500">{offer.companyName}</p>
-        <h1 className="mt-1 text-2xl font-semibold text-neutral-900">Offer of Employment</h1>
+    <CandidateShell brand={offer.companyName}>
+      <header className="flex flex-col items-center gap-2 text-center">
+        <p className="text-xs font-medium uppercase tracking-wide text-neutral-500">
+          {offer.companyName}
+        </p>
+        <h1 className="text-2xl font-semibold tracking-tight text-neutral-900">
+          Offer of Employment
+        </h1>
+        <p className="text-sm text-neutral-600">
+          Hi {offer.candidateFullName.split(" ")[0]}, please review the details below.
+        </p>
       </header>
 
-      <p className="mb-4 text-base text-neutral-800">Hi {offer.candidateFullName.split(" ")[0]},</p>
-
-      <section className="mb-6 rounded-lg border border-neutral-200 bg-white p-5 shadow-sm">
-        <SummaryRow label="Position" value={offer.positionTitle} />
-        <SummaryRow label="Joining date" value={offer.joiningDate} />
-        <SummaryRow label="Location" value={offer.location} />
-        <SummaryRow
-          label="Base salary"
-          value={`${formatPaiseAsInr(offer.baseSalaryInrPaise)} per year`}
-        />
-        {offer.variableTargetInrPaise !== null ? (
+      {/* Formal, document-like summary. */}
+      <Card className="p-0">
+        <div className="border-b border-neutral-100 px-5 py-4">
+          <p className="text-xs font-medium uppercase tracking-wide text-neutral-500">Position</p>
+          <p className="mt-0.5 text-base font-semibold text-neutral-900">{offer.positionTitle}</p>
+        </div>
+        <dl className="px-5 py-1">
+          <SummaryRow label="Joining date" value={offer.joiningDate} />
+          <SummaryRow label="Location" value={offer.location} />
           <SummaryRow
-            label="Variable target"
-            value={`${formatPaiseAsInr(offer.variableTargetInrPaise)} per year`}
+            label="Base salary"
+            value={`${formatPaiseAsInr(offer.baseSalaryInrPaise)} per year`}
           />
-        ) : null}
-        {offer.joiningBonusInrPaise !== null ? (
-          <SummaryRow label="Joining bonus" value={formatPaiseAsInr(offer.joiningBonusInrPaise)} />
-        ) : null}
-        <SummaryRow label="Expires" value={offer.expiryAt.slice(0, 10)} />
-      </section>
+          {offer.variableTargetInrPaise !== null ? (
+            <SummaryRow
+              label="Variable target"
+              value={`${formatPaiseAsInr(offer.variableTargetInrPaise)} per year`}
+            />
+          ) : null}
+          {offer.joiningBonusInrPaise !== null ? (
+            <SummaryRow
+              label="Joining bonus"
+              value={formatPaiseAsInr(offer.joiningBonusInrPaise)}
+            />
+          ) : null}
+          <SummaryRow label="Offer expires" value={offer.expiryAt.slice(0, 10)} />
+        </dl>
+      </Card>
 
       {offer.termsHtml ? (
-        <section className="mb-6 rounded-lg border border-neutral-200 bg-white p-5 shadow-sm">
-          <h2 className="mb-2 text-sm font-semibold uppercase tracking-wide text-neutral-700">
+        <Card>
+          <h2 className="mb-2 text-xs font-semibold uppercase tracking-wide text-neutral-500">
             Terms
           </h2>
-          <pre className="whitespace-pre-wrap text-sm text-neutral-800">{offer.termsHtml}</pre>
-        </section>
+          <pre className="whitespace-pre-wrap font-ui text-sm text-neutral-800">
+            {offer.termsHtml}
+          </pre>
+        </Card>
       ) : null}
 
       {isTerminal ? (
-        <Centered
-          message={`This offer is no longer active (status: ${offer.status}). Please contact your recruiter if you have questions.`}
-          variant="warning"
-        />
+        <Card className="flex flex-col items-center gap-3 py-8 text-center">
+          <Badge tone="warning">Status: {offer.status}</Badge>
+          <p className="max-w-sm text-sm text-neutral-600">
+            This offer is no longer active. Please contact your recruiter if you have questions.
+          </p>
+        </Card>
       ) : (
-        <section className="space-y-4">
-          <p className="rounded-md bg-amber-50 p-3 text-sm text-amber-900">
+        <Card className="flex flex-col gap-4 border-brand-200 bg-brand-50/40">
+          <p className="text-sm text-neutral-700">
             By clicking <strong>Accept Offer</strong>, you formally accept this offer of employment
             from {offer.companyName}. By clicking <strong>Decline</strong>, you indicate you are not
             proceeding with this offer.
           </p>
-          <label className="block">
-            <span className="text-sm font-medium text-neutral-800">
-              Confirm your full name as it appears on the offer
-            </span>
-            <input
-              value={fullName}
-              onChange={(e) => setFullName(e.target.value)}
-              placeholder={offer.candidateFullName}
-              className="mt-1 w-full rounded-md border border-neutral-300 p-3 text-base"
-            />
-          </label>
+          <Input
+            label="Confirm your full name as it appears on the offer"
+            value={fullName}
+            onChange={(e) => setFullName(e.target.value)}
+            placeholder={offer.candidateFullName}
+            autoComplete="name"
+          />
           {error ? (
-            <p className="rounded-md bg-status-error-50 p-3 text-sm text-status-error-800">
+            <div
+              role="alert"
+              className="rounded-md border border-status-error-200 bg-status-error-50 px-3.5 py-2.5 text-sm text-status-error-800"
+            >
               {error}
-            </p>
+            </div>
           ) : null}
           <div className="flex flex-col gap-3 sm:flex-row">
-            <button
+            <Button
               type="button"
+              variant="primary"
+              size="lg"
+              fullWidth
               disabled={busy || fullName.trim().length === 0}
+              loading={busy}
               onClick={() => void submitAccept()}
-              className="flex-1 rounded-md bg-green-600 px-4 py-3 text-base font-semibold text-white disabled:opacity-60"
             >
-              {busy ? "Submitting…" : "Accept Offer"}
-            </button>
-            <button
+              Accept Offer
+            </Button>
+            <Button
               type="button"
+              variant="secondary"
+              size="lg"
+              fullWidth
               disabled={busy}
               onClick={() => setShowDecline(true)}
-              className="flex-1 rounded-md border border-neutral-400 px-4 py-3 text-base font-semibold text-neutral-800 disabled:opacity-60"
             >
               Decline
-            </button>
+            </Button>
           </div>
-        </section>
+        </Card>
       )}
 
       {showDecline ? (
@@ -223,7 +261,7 @@ export function OfferAcceptClient({ token }: { token: string }) {
           role="dialog"
           aria-modal="true"
           aria-label="Decline this offer"
-          className="fixed inset-0 z-50 flex items-end justify-center bg-neutral-900/50 sm:items-center"
+          className="fixed inset-0 z-modal flex items-end justify-center bg-neutral-900/50 sm:items-center"
         >
           <button
             type="button"
@@ -231,73 +269,101 @@ export function OfferAcceptClient({ token }: { token: string }) {
             onClick={() => setShowDecline(false)}
             className="absolute inset-0 cursor-default"
           />
-          <div className="relative w-full max-w-md rounded-t-xl bg-white p-5 shadow-2xl sm:rounded-xl">
+          <div className="relative w-full max-w-md rounded-t-lg border border-neutral-200 bg-white p-5 shadow-2 sm:rounded-lg">
             <h2 className="mb-2 text-lg font-semibold text-neutral-900">Decline this offer?</h2>
-            <p className="mb-3 text-sm text-neutral-700">
+            <p className="mb-3 text-sm text-neutral-600">
               Optionally let us know why — your recruiter will see this.
             </p>
             <textarea
               value={declineReason}
               onChange={(e) => setDeclineReason(e.target.value)}
               rows={4}
-              className="mb-4 w-full rounded-md border border-neutral-300 p-3 text-sm"
+              className="mb-4 w-full rounded-md border border-neutral-300 p-3 text-sm text-neutral-900 focus:outline focus:outline-2 focus:outline-offset-2 focus:outline-brand-500"
               placeholder="Reason (optional)"
             />
             <div className="flex gap-3">
-              <button
+              <Button
                 type="button"
+                variant="secondary"
+                fullWidth
                 onClick={() => setShowDecline(false)}
-                className="flex-1 rounded-md border border-neutral-300 px-3 py-2 text-sm font-medium text-neutral-800"
               >
                 Cancel
-              </button>
-              <button
+              </Button>
+              <Button
                 type="button"
+                variant="destructive"
+                fullWidth
                 disabled={busy}
+                loading={busy}
                 onClick={() => void submitDecline()}
-                className="flex-1 rounded-md bg-status-error-600 px-3 py-2 text-sm font-semibold text-white"
               >
-                {busy ? "Submitting…" : "Confirm decline"}
-              </button>
+                Confirm decline
+              </Button>
             </div>
           </div>
         </div>
       ) : null}
-    </main>
+    </CandidateShell>
+  );
+}
+
+function StatusScreen({ children }: { children: ReactNode }) {
+  return (
+    <CandidateShell>
+      <Card className="my-auto">{children}</Card>
+    </CandidateShell>
   );
 }
 
 function SummaryRow({ label, value }: { label: string; value: string }) {
   return (
-    <div className="flex items-baseline justify-between border-b border-neutral-100 py-2 last:border-0">
-      <span className="text-sm text-neutral-600">{label}</span>
-      <span className="text-sm font-medium text-neutral-900">{value}</span>
+    <div className="flex items-baseline justify-between gap-4 border-b border-neutral-100 py-2.5 last:border-0">
+      <dt className="text-sm text-neutral-600">{label}</dt>
+      <dd className="text-right text-sm font-medium text-neutral-900">{value}</dd>
     </div>
   );
 }
 
-function Centered({
-  title,
-  message,
-  variant = "info",
-}: {
-  title?: string;
-  message: string;
-  variant?: "info" | "success" | "warning";
-}) {
-  const bg =
-    variant === "success"
-      ? "bg-green-50 text-green-900"
-      : variant === "warning"
-        ? "bg-amber-50 text-amber-900"
-        : "bg-white text-neutral-800";
+function CheckIcon() {
   return (
-    <main className="mx-auto min-h-screen max-w-md px-4 py-16">
-      <div className={`rounded-lg p-6 text-center shadow-sm ${bg}`}>
-        {title ? <h1 className="mb-2 text-xl font-semibold">{title}</h1> : null}
-        <p className="text-base">{message}</p>
-      </div>
-    </main>
+    <span className="flex h-12 w-12 items-center justify-center rounded-full bg-status-positive-50 text-status-positive-600">
+      <svg
+        width="24"
+        height="24"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2.5"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        aria-hidden="true"
+      >
+        <path d="M20 6 9 17l-5-5" />
+      </svg>
+    </span>
+  );
+}
+
+function WarningIcon() {
+  return (
+    <span className="flex h-12 w-12 items-center justify-center rounded-full bg-status-warning-50 text-status-warning-600">
+      <svg
+        width="24"
+        height="24"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        aria-hidden="true"
+      >
+        <path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0Z" />
+        <line x1="12" y1="9" x2="12" y2="13" />
+        <line x1="12" y1="17" x2="12.01" y2="17" />
+      </svg>
+    </span>
   );
 }
 

@@ -42,6 +42,32 @@ const ALLOWED_RESUME_MIME = new Set([
  * answer is also sent separately so the audit row keeps the
  * unmapped detail (e.g. "via my manager Rohit").
  */
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function UploadIcon() {
+  return (
+    <svg
+      width="18"
+      height="18"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+      <polyline points="17 8 12 3 7 8" />
+      <line x1="12" y1="3" x2="12" y2="15" />
+    </svg>
+  );
+}
+
 function mapSourceText(text: string): "career_site" | "referral" | "job_board" | "whatsapp" {
   const t = text.trim().toLowerCase();
   if (!t) return "career_site";
@@ -260,30 +286,65 @@ export function ApplyForm({
         error={fieldErrors.sourceText}
       />
 
-      <div className="flex flex-col gap-1">
+      <div className="flex flex-col gap-1.5">
         <label htmlFor="resume" className="text-sm font-medium text-neutral-700">
           Resume
           <span className="ml-1 text-status-error-500" aria-hidden="true">
             *
           </span>
         </label>
-        <input
-          id="resume"
-          name="resume"
-          type="file"
-          accept="application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-          onChange={onFileChange}
-          aria-invalid={fieldErrors.resume ? true : undefined}
-          aria-describedby={fieldErrors.resume ? "resume-error" : "resume-hint"}
-          className="block min-h-[44px] w-full rounded-md border border-neutral-300 bg-white px-3 py-2 text-base text-neutral-900 file:mr-3 file:rounded file:border-0 file:bg-neutral-100 file:px-3 file:py-2 file:text-sm file:font-medium file:text-neutral-700 hover:file:bg-neutral-200"
-        />
+        {/*
+         * Drop-zone-styled affordance. The native <input type="file"> keeps
+         * its exact id / name / accept / onChange semantics (Playwright and
+         * every browser feature still target it directly); the dashed frame
+         * and the selected-file summary are purely visual chrome around it.
+         */}
+        <div
+          className={
+            "rounded-lg border border-dashed bg-neutral-50 p-4 transition-colors " +
+            (fieldErrors.resume
+              ? "border-status-error-400"
+              : resume
+                ? "border-brand-300 bg-brand-50"
+                : "border-neutral-300")
+          }
+        >
+          <div className="mb-3 flex items-center gap-3">
+            <span
+              aria-hidden="true"
+              className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-white text-neutral-400 ring-1 ring-neutral-200"
+            >
+              <UploadIcon />
+            </span>
+            <div className="min-w-0 flex-1">
+              <p className="truncate text-sm font-medium text-neutral-800">
+                {resume ? resume.name : "Upload your CV"}
+              </p>
+              <p className="text-xs text-neutral-500">
+                {resume
+                  ? `${formatBytes(resume.size)} — choose another to replace`
+                  : "PDF or DOCX, up to 10 MB"}
+              </p>
+            </div>
+          </div>
+          <input
+            id="resume"
+            name="resume"
+            type="file"
+            accept="application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+            onChange={onFileChange}
+            aria-invalid={fieldErrors.resume ? true : undefined}
+            aria-describedby={fieldErrors.resume ? "resume-error" : "resume-hint"}
+            className="block min-h-[44px] w-full rounded-md border border-neutral-300 bg-white px-3 py-2 text-base text-neutral-900 file:mr-3 file:rounded file:border-0 file:bg-brand-600 file:px-3 file:py-2 file:text-sm file:font-medium file:text-white hover:file:bg-brand-700"
+          />
+        </div>
         {fieldErrors.resume ? (
           <p id="resume-error" className="text-sm text-status-error-700">
             {fieldErrors.resume}
           </p>
         ) : (
           <p id="resume-hint" className="text-sm text-neutral-500">
-            PDF or DOCX, up to 10 MB.
+            We accept PDF or DOCX files up to 10 MB.
           </p>
         )}
       </div>
@@ -294,7 +355,7 @@ export function ApplyForm({
        * string-only labels and onCheckedChange — both wrong for this
        * shape. Mobile target is the full row (44+ px), not just the box.
        */}
-      <div className="flex flex-col gap-1">
+      <div className="flex flex-col gap-1 rounded-lg border border-neutral-200 bg-neutral-50 p-4">
         <label
           htmlFor="consent"
           className="flex min-h-[44px] items-start gap-3 text-sm text-neutral-700"
@@ -331,9 +392,12 @@ export function ApplyForm({
       </div>
 
       {submitState.kind === "error" && (
-        <p role="alert" className="text-sm text-status-error-700">
+        <div
+          role="alert"
+          className="rounded-md border border-status-error-200 bg-status-error-50 px-3.5 py-2.5 text-sm text-status-error-800"
+        >
           {submitState.msg}
-        </p>
+        </div>
       )}
 
       <Button
