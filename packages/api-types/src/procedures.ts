@@ -1299,9 +1299,7 @@ export const updateOnboardingTaskStatusOutputSchema = z.object({
   completedAt: z.string().nullable(),
   blockedReason: z.string().nullable(),
 });
-export type UpdateOnboardingTaskStatusInput = z.infer<
-  typeof updateOnboardingTaskStatusInputSchema
->;
+export type UpdateOnboardingTaskStatusInput = z.infer<typeof updateOnboardingTaskStatusInputSchema>;
 export type UpdateOnboardingTaskStatusOutput = z.infer<
   typeof updateOnboardingTaskStatusOutputSchema
 >;

@@ -4152,9 +4152,7 @@ export const appRouter = router({
         const [existing] = await db
           .select({ id: onboardingTasks.id })
           .from(onboardingTasks)
-          .where(
-            and(eq(onboardingTasks.tenantId, tenantId), eq(onboardingTasks.id, input.taskId)),
-          )
+          .where(and(eq(onboardingTasks.tenantId, tenantId), eq(onboardingTasks.id, input.taskId)))
           .limit(1);
         if (!existing) {
           throw new TRPCError({ code: "NOT_FOUND", message: "Onboarding task not found" });
@@ -4221,9 +4219,7 @@ export const appRouter = router({
             geographyCode: onboardingCases.geographyCode,
           })
           .from(onboardingCases)
-          .where(
-            and(eq(onboardingCases.tenantId, tenantId), eq(onboardingCases.id, input.caseId)),
-          )
+          .where(and(eq(onboardingCases.tenantId, tenantId), eq(onboardingCases.id, input.caseId)))
           .limit(1);
         if (!existing) {
           throw new TRPCError({ code: "NOT_FOUND", message: "Onboarding case not found" });

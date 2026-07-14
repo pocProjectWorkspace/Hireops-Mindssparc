@@ -160,13 +160,7 @@ function Field({ label, children }: { label: string; children: ReactNode }) {
 
 // ─────────────── case status action ───────────────
 
-function CaseStatusActions({
-  caseId,
-  status,
-}: {
-  caseId: string;
-  status: OnboardingCaseStatus;
-}) {
+function CaseStatusActions({ caseId, status }: { caseId: string; status: OnboardingCaseStatus }) {
   const queryClient = useQueryClient();
   const [error, setError] = useState<string | null>(null);
   const actions = caseStatusActions(status);
@@ -183,7 +177,10 @@ function CaseStatusActions({
 
   function run(target: OnboardingCaseStatus, kind: "advance" | "cancel") {
     setError(null);
-    if (kind === "cancel" && !window.confirm("Cancel this onboarding case? This can't be undone.")) {
+    if (
+      kind === "cancel" &&
+      !window.confirm("Cancel this onboarding case? This can't be undone.")
+    ) {
       return;
     }
     mutation.mutate({ caseId, status: target });
@@ -329,7 +326,12 @@ function TaskRow({ task }: { task: TaskItem }) {
         {/* Actions */}
         <div className="flex shrink-0 items-center gap-1.5">
           {task.status !== "completed" ? (
-            <Button variant="secondary" size="sm" disabled={busy} onClick={() => setStatus("completed")}>
+            <Button
+              variant="secondary"
+              size="sm"
+              disabled={busy}
+              onClick={() => setStatus("completed")}
+            >
               Complete
             </Button>
           ) : null}

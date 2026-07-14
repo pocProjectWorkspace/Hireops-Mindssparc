@@ -16,10 +16,7 @@ import type { BadgeTone } from "@/components/ui";
 
 // ─────────────── case status ───────────────
 
-export const CASE_STATUS_META: Record<
-  OnboardingCaseStatus,
-  { label: string; tone: BadgeTone }
-> = {
+export const CASE_STATUS_META: Record<OnboardingCaseStatus, { label: string; tone: BadgeTone }> = {
   pre_boarding: { label: "Pre-boarding", tone: "info" },
   day_zero: { label: "Day zero", tone: "accent" },
   in_progress: { label: "In progress", tone: "accent" },
@@ -72,10 +69,7 @@ export function caseStatusActions(status: OnboardingCaseStatus): CaseStatusActio
 
 // ─────────────── task status ───────────────
 
-export const TASK_STATUS_META: Record<
-  OnboardingTaskStatus,
-  { label: string; tone: BadgeTone }
-> = {
+export const TASK_STATUS_META: Record<OnboardingTaskStatus, { label: string; tone: BadgeTone }> = {
   pending: { label: "To do", tone: "neutral" },
   in_progress: { label: "In progress", tone: "info" },
   blocked: { label: "Blocked", tone: "error" },
@@ -85,11 +79,7 @@ export const TASK_STATUS_META: Record<
 };
 
 /** A task counts as "resolved" (not outstanding) once it is any of these. */
-const RESOLVED_TASK_STATUSES: OnboardingTaskStatus[] = [
-  "completed",
-  "cancelled",
-  "skipped",
-];
+const RESOLVED_TASK_STATUSES: OnboardingTaskStatus[] = ["completed", "cancelled", "skipped"];
 
 export function isTaskResolved(status: OnboardingTaskStatus): boolean {
   return RESOLVED_TASK_STATUSES.includes(status);

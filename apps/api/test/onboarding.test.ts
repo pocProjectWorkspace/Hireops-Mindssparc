@@ -366,7 +366,9 @@ describe("ONBOARD-02 — onboarding case lifecycle", () => {
     const [task] = await poolDb
       .select({ id: onboardingTasks.id })
       .from(onboardingTasks)
-      .where(and(eq(onboardingTasks.caseId, caseId), eq(onboardingTasks.taskType, "it_provisioning")))
+      .where(
+        and(eq(onboardingTasks.caseId, caseId), eq(onboardingTasks.taskType, "it_provisioning")),
+      )
       .limit(1);
     assert.ok(task);
 
@@ -486,7 +488,10 @@ describe("ONBOARD-02 — onboarding case lifecycle", () => {
 
     // Visible from the owning tenant's context.
     const ownVisible = await withTenantContext(realClaims, async ({ db }) =>
-      db.select({ id: onboardingCases.id }).from(onboardingCases).where(eq(onboardingCases.id, caseId)),
+      db
+        .select({ id: onboardingCases.id })
+        .from(onboardingCases)
+        .where(eq(onboardingCases.id, caseId)),
     );
     assert.equal(ownVisible.length, 1);
 
@@ -497,7 +502,10 @@ describe("ONBOARD-02 — onboarding case lifecycle", () => {
       roles: ["recruiter"],
     };
     const crossVisible = await withTenantContext(synthClaims, async ({ db }) =>
-      db.select({ id: onboardingCases.id }).from(onboardingCases).where(eq(onboardingCases.id, caseId)),
+      db
+        .select({ id: onboardingCases.id })
+        .from(onboardingCases)
+        .where(eq(onboardingCases.id, caseId)),
     );
     assert.equal(crossVisible.length, 0);
   });
