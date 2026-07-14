@@ -295,6 +295,34 @@
       "when": 1783699200002,
       "tag": "0044_pii_access_log_force_rls",
       "breakpoints": true
+    },
+    {
+      "idx": 45,
+      "version": "7",
+      "when": 1784011464943,
+      "tag": "0045_dashing_magneto",
+      "breakpoints": true
+    },
+    {
+      "idx": 46,
+      "version": "7",
+      "when": 1784011464944,
+      "tag": "0046_onboard_01_force_rls",
+      "breakpoints": true
+    },
+    {
+      "idx": 47,
+      "version": "7",
+      "when": 1784011464945,
+      "tag": "0047_onboard_01_audit_triggers",
+      "breakpoints": true
+    },
+    {
+      "idx": 48,
+      "version": "7",
+      "when": 1784011464946,
+      "tag": "0048_onboard_01_seed_document_types",
+      "breakpoints": true
     }
   ]
 }

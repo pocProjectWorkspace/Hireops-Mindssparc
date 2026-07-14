@@ -61,3 +61,12 @@ export * from "./agent-runs";
 export * from "./agent-approval-requests";
 export * from "./agent-run-outbox";
 export * from "./candidate-inbound-messages";
+// Onboarding pillar (ONBOARD-01)
+export * from "./document-types";
+export * from "./onboarding-cases";
+export * from "./onboarding-tasks";
+export * from "./onboarding-documents";
+export * from "./bgv-runs";
+export * from "./bgv-results";
+export * from "./it-provisioning-requests";
+export * from "./asset-assignments";

@@ -43,6 +43,7 @@ const PLATFORM_TABLES_ALLOWLIST = new Set<string>([
   "tenant_encryption_keys", // DEK store; service-role only per ADR-002 §5.5, no authenticated reads
   "users", // platform-level user profile (user-scoped via id = auth.uid(), survives tenant deletion)
   "scheduled_job_runs", // worker bookkeeping; service_role only, no authenticated reads (Module 3)
+  "document_types", // tenant-agnostic onboarding reference table (no tenant_id); RLS+FORCE with a permissive SELECT policy for authenticated reads, writes seeded via migration (ONBOARD-01)
 ]);
 
 interface TableRow {
