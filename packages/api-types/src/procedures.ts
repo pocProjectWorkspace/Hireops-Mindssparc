@@ -1268,6 +1268,17 @@ export const onboardingDocumentRowSchema = z.object({
   mimeType: z.string().nullable(),
   uploadedAt: z.string(),
   createdAt: z.string(),
+  // ONBOARD-05 review fields. verifiedByMembershipId / verifiedAt are the
+  // reviewer + decision timestamp (stamped on both verify and reject — the
+  // schema has no separate rejected_by column, so this doubles as the
+  // decision-actor for a rejection). rejectionReason is set only on reject.
+  // verifierName is resolved cheaply via the SAME service-role membership
+  // lookup that resolves buddy/manager names (no extra join); null when the
+  // document is still pending or the membership has no display name/email.
+  verifiedByMembershipId: z.string().uuid().nullable(),
+  verifiedAt: z.string().nullable(),
+  rejectionReason: z.string().nullable(),
+  verifierName: z.string().nullable(),
 });
 export type OnboardingDocumentRow = z.infer<typeof onboardingDocumentRowSchema>;
 
@@ -1377,6 +1388,90 @@ export type CreateOnboardingCaseForApplicationInput = z.infer<
 export type CreateOnboardingCaseForApplicationOutput = z.infer<
   typeof createOnboardingCaseForApplicationOutputSchema
 >;
+
+// ─────────── onboarding documents (ONBOARD-05) ───────────
+
+/**
+ * REST (multipart) upload response for POST /api/onboarding-documents/upload.
+ * Same shape as the resume upload (storageKey + metadata + sha256 checksum);
+ * the storage KEY is opaque and only becomes a real document row once
+ * attachOnboardingDocument references it — the two-step upload-then-reference
+ * pattern the apply form uses.
+ */
+export const uploadOnboardingDocumentResponseSchema = z.object({
+  storageKey: z.string(),
+  sizeBytes: z.number().int().nonnegative(),
+  contentType: z.string(),
+  checksum: z.string().length(64), // sha256 hex
+});
+export type UploadOnboardingDocumentResponse = z.infer<
+  typeof uploadOnboardingDocumentResponseSchema
+>;
+
+/**
+ * attachOnboardingDocument — records an uploaded blob as a document row for a
+ * (case, documentType), verification_status = 'pending', and nudges the
+ * matching document_collection task pending → in_progress. Re-upload for the
+ * same document type REPLACES the existing row (single current document per
+ * type — the schema carries no version/superseded column, see the router
+ * note), resetting it back to pending review.
+ */
+export const attachOnboardingDocumentInputSchema = z.object({
+  caseId: z.string().uuid(),
+  documentTypeId: z.string().uuid(),
+  storageKey: z.string().min(1),
+  fileName: z.string().min(1).max(255),
+  mimeType: z.string().min(1).max(255),
+  sizeBytes: z.number().int().nonnegative(),
+});
+export const attachOnboardingDocumentOutputSchema = z.object({
+  documentId: z.string().uuid(),
+  verificationStatus: z.string(),
+  // Whether a new row was created (false = an existing document for this type
+  // was replaced).
+  created: z.boolean(),
+  // The matched document_collection task, when one exists for this type.
+  taskId: z.string().uuid().nullable(),
+  taskStatus: onboardingTaskStatusSchema.nullable(),
+});
+export type AttachOnboardingDocumentInput = z.infer<typeof attachOnboardingDocumentInputSchema>;
+export type AttachOnboardingDocumentOutput = z.infer<typeof attachOnboardingDocumentOutputSchema>;
+
+/**
+ * verifyOnboardingDocument — recruiter marks a pending/rejected document
+ * verified; stamps verifier + verified_at and auto-completes the matching
+ * document_collection task.
+ */
+export const verifyOnboardingDocumentInputSchema = z.object({
+  documentId: z.string().uuid(),
+});
+export const verifyOnboardingDocumentOutputSchema = z.object({
+  documentId: z.string().uuid(),
+  verificationStatus: z.string(),
+  taskId: z.string().uuid().nullable(),
+  taskStatus: onboardingTaskStatusSchema.nullable(),
+});
+export type VerifyOnboardingDocumentInput = z.infer<typeof verifyOnboardingDocumentInputSchema>;
+export type VerifyOnboardingDocumentOutput = z.infer<typeof verifyOnboardingDocumentOutputSchema>;
+
+/**
+ * rejectOnboardingDocument — recruiter rejects a document with a required
+ * reason (the procedure 400s without one); the matching document_collection
+ * task drops back to pending so the candidate can re-submit.
+ */
+export const rejectOnboardingDocumentInputSchema = z.object({
+  documentId: z.string().uuid(),
+  rejectionReason: z.string().min(1).max(1000),
+});
+export const rejectOnboardingDocumentOutputSchema = z.object({
+  documentId: z.string().uuid(),
+  verificationStatus: z.string(),
+  rejectionReason: z.string().nullable(),
+  taskId: z.string().uuid().nullable(),
+  taskStatus: onboardingTaskStatusSchema.nullable(),
+});
+export type RejectOnboardingDocumentInput = z.infer<typeof rejectOnboardingDocumentInputSchema>;
+export type RejectOnboardingDocumentOutput = z.infer<typeof rejectOnboardingDocumentOutputSchema>;
 
 // ─────────── listTenantMemberships (ONBOARD-04) ───────────
 

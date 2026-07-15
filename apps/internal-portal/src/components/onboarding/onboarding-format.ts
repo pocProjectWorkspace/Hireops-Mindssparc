@@ -85,6 +85,25 @@ export function isTaskResolved(status: OnboardingTaskStatus): boolean {
   return RESOLVED_TASK_STATUSES.includes(status);
 }
 
+// ─────────────── document verification status ───────────────
+
+/**
+ * onboarding_documents.verification_status → badge label + tone (ONBOARD-05).
+ * Mirrors the DB CHECK vocabulary ('pending' | 'verified' | 'rejected' |
+ * 'resubmit_required'). An unknown value falls back to a neutral chip so a
+ * future status is never rendered blank.
+ */
+export const DOC_VERIFICATION_META: Record<string, { label: string; tone: BadgeTone }> = {
+  pending: { label: "Pending review", tone: "info" },
+  verified: { label: "Verified", tone: "success" },
+  rejected: { label: "Rejected", tone: "error" },
+  resubmit_required: { label: "Resubmit required", tone: "warning" },
+};
+
+export function docVerificationMeta(status: string): { label: string; tone: BadgeTone } {
+  return DOC_VERIFICATION_META[status] ?? { label: status.replace(/_/g, " "), tone: "neutral" };
+}
+
 // ─────────────── task grouping ───────────────
 
 export interface TaskGroupDef {

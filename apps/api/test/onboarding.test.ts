@@ -154,7 +154,64 @@ async function docTaskCount(applicationId: string): Promise<number> {
   return Number(row?.n ?? 0);
 }
 
+/**
+ * POST a small file to the authenticated onboarding upload route. Returns the
+ * raw Response so callers can assert on status (401 without a JWT) or read the
+ * storageKey out of the body.
+ */
+async function uploadDoc(opts: {
+  jwt?: string;
+  type?: string;
+  bytes?: Buffer;
+  name?: string;
+}): Promise<Response> {
+  const fd = new FormData();
+  const type = opts.type ?? "application/pdf";
+  const bytes = opts.bytes ?? Buffer.from("%PDF-1.4 onboard-05 test document");
+  fd.append("file", new File([bytes], opts.name ?? "id-document.pdf", { type }));
+  return app.request("/api/onboarding-documents/upload", {
+    method: "POST",
+    headers: { ...(opts.jwt ? { Authorization: `Bearer ${opts.jwt}` } : {}) },
+    body: fd,
+  });
+}
+
+/** The documentTypeId carried in the first document_collection task's metadata. */
+async function firstDocTypeIdForCase(caseId: string): Promise<string> {
+  const [row] = await poolSql<{ document_type_id: string }[]>`
+    SELECT metadata->>'documentTypeId' AS document_type_id
+    FROM public.onboarding_tasks
+    WHERE case_id = ${caseId} AND task_type = 'document_collection'
+    ORDER BY created_at, id
+    LIMIT 1
+  `;
+  if (!row?.document_type_id) throw new Error("no document_collection task for case");
+  return row.document_type_id;
+}
+
+/** Poll for the fire-and-forget pii_access_log row a download writes. */
+async function waitForDownloadPiiRow(documentId: string): Promise<number> {
+  for (let i = 0; i < 30; i++) {
+    const [row] = await poolSql<{ n: number }[]>`
+      SELECT count(*)::int AS n FROM public.pii_access_log
+      WHERE entity_type = 'onboarding_document'
+        AND entity_id = ${documentId}
+        AND reason = 'download_onboarding_document'
+    `;
+    if (Number(row?.n ?? 0) > 0) return Number(row?.n);
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  return 0;
+}
+
 async function cleanup(): Promise<void> {
+  // ONBOARD-05 download tests append pii_access_log rows (append-only, no
+  // cascade) — clear this tenant's onboarding-document read log so reruns and
+  // the demo groom stay clean.
+  await poolSql`
+    DELETE FROM public.pii_access_log
+    WHERE tenant_id = ${testTenantId} AND entity_type = 'onboarding_document'
+  `;
   // The accept-path test drives two side-effects that FK to applications
   // without a cascade — a workday_sync_outbox row and an
   // application_state_transitions row — so clear both (scoped to this
@@ -610,5 +667,288 @@ describe("ONBOARD-02 — onboarding case lifecycle", () => {
       WHERE tenant_id = ${testTenantId} AND id::text = ANY(${ids})
     `;
     assert.equal(countRow?.n, ids.length);
+  });
+
+  // ─────────────── ONBOARD-05 — document upload + verification ───────────────
+
+  it("12. upload route rejects an unauthenticated request (401)", async () => {
+    const res = await uploadDoc({}); // no jwt
+    assert.equal(res.status, 401);
+  });
+
+  it("13. upload → attach shows the document row + moves the task to in_progress", async () => {
+    const hire = await seedHire({ suffix: "attach", country: "IN" });
+    const env = await trpcMutation<{ caseId: string }>(
+      "createOnboardingCaseForApplication",
+      { applicationId: hire.applicationId },
+      { jwt },
+    );
+    assert.ok(!isError(env));
+    const caseId = (env as TRPCSuccess<{ caseId: string }>).result.data.caseId;
+    const documentTypeId = await firstDocTypeIdForCase(caseId);
+
+    const up = await uploadDoc({ jwt });
+    assert.equal(up.status, 200);
+    const upBody = (await up.json()) as {
+      storageKey: string;
+      sizeBytes: number;
+      contentType: string;
+    };
+    assert.ok(upBody.storageKey.startsWith("onboarding-documents/"));
+
+    const attach = await trpcMutation<{
+      documentId: string;
+      created: boolean;
+      taskId: string | null;
+      taskStatus: string | null;
+    }>(
+      "attachOnboardingDocument",
+      {
+        caseId,
+        documentTypeId,
+        storageKey: upBody.storageKey,
+        fileName: "id-document.pdf",
+        mimeType: upBody.contentType,
+        sizeBytes: upBody.sizeBytes,
+      },
+      { jwt },
+    );
+    assert.ok(!isError(attach), `attach error: ${JSON.stringify(attach)}`);
+    const aData = (
+      attach as TRPCSuccess<{ documentId: string; created: boolean; taskStatus: string | null }>
+    ).result.data;
+    assert.equal(aData.created, true);
+    assert.equal(aData.taskStatus, "in_progress");
+
+    // The detail payload now carries the document row (pending) and the task
+    // reads in_progress.
+    const detail = await trpcQuery<{
+      tasks: { taskType: string; status: string; metadata?: unknown }[];
+      documents: { id: string; documentTypeId: string; verificationStatus: string }[];
+    }>("getOnboardingCaseDetail", { caseId }, { jwt });
+    assert.ok(!isError(detail));
+    const dData = (
+      detail as TRPCSuccess<{
+        tasks: { taskType: string; status: string; metadata?: unknown }[];
+        documents: { id: string; documentTypeId: string; verificationStatus: string }[];
+      }>
+    ).result.data;
+    const docRow = dData.documents.find((d) => d.documentTypeId === documentTypeId);
+    assert.ok(docRow, "expected the attached document in the detail payload");
+    assert.equal(docRow.verificationStatus, "pending");
+    const docTask = dData.tasks.find(
+      (t) =>
+        t.taskType === "document_collection" &&
+        (t.metadata as { documentTypeId?: string } | null)?.documentTypeId === documentTypeId,
+    );
+    assert.ok(docTask);
+    assert.equal(docTask.status, "in_progress");
+  });
+
+  it("14. verify → document verified + matching task completed", async () => {
+    const hire = await seedHire({ suffix: "verify", country: "IN" });
+    const env = await trpcMutation<{ caseId: string }>(
+      "createOnboardingCaseForApplication",
+      { applicationId: hire.applicationId },
+      { jwt },
+    );
+    assert.ok(!isError(env));
+    const caseId = (env as TRPCSuccess<{ caseId: string }>).result.data.caseId;
+    const documentTypeId = await firstDocTypeIdForCase(caseId);
+
+    const up = await uploadDoc({ jwt });
+    const upBody = (await up.json()) as {
+      storageKey: string;
+      sizeBytes: number;
+      contentType: string;
+    };
+    const attach = await trpcMutation<{ documentId: string }>(
+      "attachOnboardingDocument",
+      {
+        caseId,
+        documentTypeId,
+        storageKey: upBody.storageKey,
+        fileName: "id.pdf",
+        mimeType: upBody.contentType,
+        sizeBytes: upBody.sizeBytes,
+      },
+      { jwt },
+    );
+    assert.ok(!isError(attach));
+    const documentId = (attach as TRPCSuccess<{ documentId: string }>).result.data.documentId;
+
+    const verify = await trpcMutation<{ verificationStatus: string; taskStatus: string | null }>(
+      "verifyOnboardingDocument",
+      { documentId },
+      { jwt },
+    );
+    assert.ok(!isError(verify), `verify error: ${JSON.stringify(verify)}`);
+    const vData = (verify as TRPCSuccess<{ verificationStatus: string; taskStatus: string | null }>)
+      .result.data;
+    assert.equal(vData.verificationStatus, "verified");
+    assert.equal(vData.taskStatus, "completed");
+
+    // verified_at + verifier stamped; detail exposes the verifier name.
+    const detail = await trpcQuery<{
+      documents: {
+        id: string;
+        verificationStatus: string;
+        verifiedAt: string | null;
+        verifierName: string | null;
+      }[];
+    }>("getOnboardingCaseDetail", { caseId }, { jwt });
+    assert.ok(!isError(detail));
+    const doc = (
+      detail as TRPCSuccess<{
+        documents: {
+          id: string;
+          verificationStatus: string;
+          verifiedAt: string | null;
+          verifierName: string | null;
+        }[];
+      }>
+    ).result.data.documents.find((d) => d.id === documentId);
+    assert.ok(doc);
+    assert.equal(doc.verificationStatus, "verified");
+    assert.ok(doc.verifiedAt !== null);
+    // verifierName resolves via the piggy-backed membership lookup — the test
+    // user's display_name ("FND-15b Test User") when set, else its email. We
+    // only assert it resolved (non-null), not which of the two.
+    assert.ok(doc.verifierName !== null, "expected the verifier name to resolve");
+  });
+
+  it("15. reject requires a reason (400 without); with one → rejected + task pending", async () => {
+    const hire = await seedHire({ suffix: "reject", country: "IN" });
+    const env = await trpcMutation<{ caseId: string }>(
+      "createOnboardingCaseForApplication",
+      { applicationId: hire.applicationId },
+      { jwt },
+    );
+    assert.ok(!isError(env));
+    const caseId = (env as TRPCSuccess<{ caseId: string }>).result.data.caseId;
+    const documentTypeId = await firstDocTypeIdForCase(caseId);
+
+    const up = await uploadDoc({ jwt });
+    const upBody = (await up.json()) as {
+      storageKey: string;
+      sizeBytes: number;
+      contentType: string;
+    };
+    const attach = await trpcMutation<{ documentId: string }>(
+      "attachOnboardingDocument",
+      {
+        caseId,
+        documentTypeId,
+        storageKey: upBody.storageKey,
+        fileName: "id.pdf",
+        mimeType: upBody.contentType,
+        sizeBytes: upBody.sizeBytes,
+      },
+      { jwt },
+    );
+    assert.ok(!isError(attach));
+    const documentId = (attach as TRPCSuccess<{ documentId: string }>).result.data.documentId;
+
+    // No reason → 400 (zod min(1) rejects the missing field).
+    const noReason = await trpcMutation("rejectOnboardingDocument", { documentId }, { jwt });
+    assert.ok(isError(noReason));
+    assert.equal((noReason as TRPCErrorEnv).error.data.code, "BAD_REQUEST");
+
+    const rejected = await trpcMutation<{ verificationStatus: string; taskStatus: string | null }>(
+      "rejectOnboardingDocument",
+      { documentId, rejectionReason: "Aadhaar photo is blurred — please re-scan." },
+      { jwt },
+    );
+    assert.ok(!isError(rejected), `reject error: ${JSON.stringify(rejected)}`);
+    const rData = (
+      rejected as TRPCSuccess<{ verificationStatus: string; taskStatus: string | null }>
+    ).result.data;
+    assert.equal(rData.verificationStatus, "rejected");
+    assert.equal(rData.taskStatus, "pending");
+  });
+
+  it("16. download streams the blob AND writes a pii_access_log row", async () => {
+    const hire = await seedHire({ suffix: "download", country: "IN" });
+    const env = await trpcMutation<{ caseId: string }>(
+      "createOnboardingCaseForApplication",
+      { applicationId: hire.applicationId },
+      { jwt },
+    );
+    assert.ok(!isError(env));
+    const caseId = (env as TRPCSuccess<{ caseId: string }>).result.data.caseId;
+    const documentTypeId = await firstDocTypeIdForCase(caseId);
+
+    const bytes = Buffer.from("%PDF-1.4 downloadable onboarding blob");
+    const up = await uploadDoc({ jwt, bytes });
+    const upBody = (await up.json()) as {
+      storageKey: string;
+      sizeBytes: number;
+      contentType: string;
+    };
+    const attach = await trpcMutation<{ documentId: string }>(
+      "attachOnboardingDocument",
+      {
+        caseId,
+        documentTypeId,
+        storageKey: upBody.storageKey,
+        fileName: "blob.pdf",
+        mimeType: upBody.contentType,
+        sizeBytes: upBody.sizeBytes,
+      },
+      { jwt },
+    );
+    assert.ok(!isError(attach));
+    const documentId = (attach as TRPCSuccess<{ documentId: string }>).result.data.documentId;
+
+    // Unauthenticated download is rejected.
+    const anon = await app.request(`/api/onboarding-documents/${documentId}/download`);
+    assert.equal(anon.status, 401);
+
+    const res = await app.request(`/api/onboarding-documents/${documentId}/download`, {
+      headers: { Authorization: `Bearer ${jwt}` },
+    });
+    assert.equal(res.status, 200);
+    const body = Buffer.from(await res.arrayBuffer());
+    assert.equal(body.toString(), bytes.toString());
+
+    const piiRows = await waitForDownloadPiiRow(documentId);
+    assert.ok(piiRows >= 1, "expected a pii_access_log row for the download");
+  });
+
+  it("17. attach is tenant-isolated — a cross-tenant case is invisible (404)", async () => {
+    const hire = await seedHire({ suffix: "attach-rls", country: "IN" });
+    const env = await trpcMutation<{ caseId: string }>(
+      "createOnboardingCaseForApplication",
+      { applicationId: hire.applicationId },
+      { jwt },
+    );
+    assert.ok(!isError(env));
+    const caseId = (env as TRPCSuccess<{ caseId: string }>).result.data.caseId;
+    const documentTypeId = await firstDocTypeIdForCase(caseId);
+
+    const up = await uploadDoc({ jwt });
+    const upBody = (await up.json()) as {
+      storageKey: string;
+      sizeBytes: number;
+      contentType: string;
+    };
+
+    // A JWT for THIS tenant cannot attach to a case it can't see — but there is
+    // no second real tenant JWT here, so we assert the inverse: an unknown
+    // caseId (as any other tenant's case would appear) resolves to NOT_FOUND.
+    const bogus = await trpcMutation(
+      "attachOnboardingDocument",
+      {
+        caseId: SYNTH_TENANT, // a well-formed uuid that is not this tenant's case
+        documentTypeId,
+        storageKey: upBody.storageKey,
+        fileName: "id.pdf",
+        mimeType: upBody.contentType,
+        sizeBytes: upBody.sizeBytes,
+      },
+      { jwt },
+    );
+    assert.ok(isError(bogus));
+    assert.equal((bogus as TRPCErrorEnv).error.data.code, "NOT_FOUND");
   });
 });

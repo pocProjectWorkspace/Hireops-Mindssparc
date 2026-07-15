@@ -9,6 +9,7 @@ import { tenantContext, type TenantContextVars } from "./middleware/tenant-conte
 import { optionalAuth, type OptionalAuthVars } from "./middleware/optional-auth";
 import { testRoutes } from "./routes/test";
 import { uploadRoutes } from "./routes/upload";
+import { onboardingDocumentRoutes } from "./routes/onboarding-documents";
 import { linksRoutes } from "./routes/links";
 import { offersRoutes } from "./routes/offers";
 import { appRouter } from "./trpc/router";
@@ -72,6 +73,13 @@ app.route("/test", testRoutes);
 // optionalAuth populates c.var.{log,requestId,tenantId,userId,claims}.
 app.use("/api/upload/*", optionalAuth);
 app.route("/api/upload", uploadRoutes);
+
+// Onboarding document upload + download (ONBOARD-05). Behind the STRICT
+// tenant-context middleware — these carry heavy PII, so unlike the public
+// resume upload they 401 without a recruiter JWT and run RLS-scoped. The
+// download route writes a pii_access_log row per read (PII-01).
+app.use("/api/onboarding-documents/*", tenantContext);
+app.route("/api/onboarding-documents", onboardingDocumentRoutes);
 
 // Signed-link verification is intentionally unauthenticated — the link
 // IS the credential. The handler does its own audit insert.

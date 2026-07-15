@@ -141,6 +141,12 @@ import {
   updateOnboardingCaseOutputSchema,
   createOnboardingCaseForApplicationInputSchema,
   createOnboardingCaseForApplicationOutputSchema,
+  attachOnboardingDocumentInputSchema,
+  attachOnboardingDocumentOutputSchema,
+  verifyOnboardingDocumentInputSchema,
+  verifyOnboardingDocumentOutputSchema,
+  rejectOnboardingDocumentInputSchema,
+  rejectOnboardingDocumentOutputSchema,
   listTenantMembershipsInputSchema,
   listTenantMembershipsOutputSchema,
   type OnboardingCaseListRow,
@@ -4128,6 +4134,9 @@ export const appRouter = router({
           verificationStatus: onboardingDocuments.verificationStatus,
           fileName: onboardingDocuments.fileName,
           mimeType: onboardingDocuments.mimeType,
+          verifiedByMembershipId: onboardingDocuments.verifiedByMembershipId,
+          verifiedAt: onboardingDocuments.verifiedAt,
+          rejectionReason: onboardingDocuments.rejectionReason,
           uploadedAt: onboardingDocuments.uploadedAt,
           createdAt: onboardingDocuments.createdAt,
         })
@@ -4147,9 +4156,16 @@ export const appRouter = router({
       // (ctx.sql) with an explicit tenant_id filter — the same
       // explicit-tenant discipline as onboarding-case.ts. auth.users holds
       // the email; public.users holds the display_name (nullable).
-      const nameTargets = [caseRow.buddyMembershipId, caseRow.managerMembershipId].filter(
-        (id): id is string => id != null,
-      );
+      // Verifier names piggy-back on the SAME service-role membership lookup
+      // (ONBOARD-05) — no extra join, just more ids in the ANY() filter.
+      const verifierMembershipIds = documentRows
+        .map((d) => d.verifiedByMembershipId)
+        .filter((id): id is string => id != null);
+      const nameTargets = [
+        caseRow.buddyMembershipId,
+        caseRow.managerMembershipId,
+        ...verifierMembershipIds,
+      ].filter((id): id is string => id != null);
       const nameById = new Map<string, { displayName: string | null; email: string | null }>();
       if (nameTargets.length > 0) {
         const nameRows = await ctx.sql<
@@ -4186,17 +4202,26 @@ export const appRouter = router({
         updatedAt: toIsoString(t.updatedAt) ?? new Date(0).toISOString(),
       }));
 
-      const documents: OnboardingDocumentRow[] = documentRows.map((d) => ({
-        id: d.id,
-        caseId: d.caseId,
-        documentTypeId: d.documentTypeId,
-        documentTypeName: d.documentTypeName ?? null,
-        verificationStatus: d.verificationStatus,
-        fileName: d.fileName ?? null,
-        mimeType: d.mimeType ?? null,
-        uploadedAt: toIsoString(d.uploadedAt) ?? new Date(0).toISOString(),
-        createdAt: toIsoString(d.createdAt) ?? new Date(0).toISOString(),
-      }));
+      const documents: OnboardingDocumentRow[] = documentRows.map((d) => {
+        const verifier = d.verifiedByMembershipId
+          ? nameById.get(d.verifiedByMembershipId)
+          : undefined;
+        return {
+          id: d.id,
+          caseId: d.caseId,
+          documentTypeId: d.documentTypeId,
+          documentTypeName: d.documentTypeName ?? null,
+          verificationStatus: d.verificationStatus,
+          fileName: d.fileName ?? null,
+          mimeType: d.mimeType ?? null,
+          verifiedByMembershipId: d.verifiedByMembershipId ?? null,
+          verifiedAt: toIsoString(d.verifiedAt),
+          rejectionReason: d.rejectionReason ?? null,
+          verifierName: verifier?.displayName ?? verifier?.email ?? null,
+          uploadedAt: toIsoString(d.uploadedAt) ?? new Date(0).toISOString(),
+          createdAt: toIsoString(d.createdAt) ?? new Date(0).toISOString(),
+        };
+      });
 
       return {
         case: {
@@ -4437,7 +4462,394 @@ export const appRouter = router({
         };
       });
     }),
+
+  /**
+   * attachOnboardingDocument (ONBOARD-05) — records an uploaded blob (opaque
+   * storageKey from POST /api/onboarding-documents/upload) as a document row
+   * for a (case, documentType) and nudges the matching document_collection
+   * task pending → in_progress.
+   *
+   * Re-upload semantics: the schema has NO version / superseded / is_current
+   * column and NO unique(tenant, case, documentType) constraint, so it models
+   * "the current document for this type", not a history. We therefore REPLACE
+   * an existing row for the same type (single current document per type),
+   * resetting it to pending review and clearing any prior verify/reject stamp.
+   * The old storage blob is left in place (no retention/erasure automation this
+   * ticket — flagged as follow-up).
+   */
+  attachOnboardingDocument: protectedProcedure
+    .input(attachOnboardingDocumentInputSchema)
+    .output(attachOnboardingDocumentOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      return withAudit("attach_onboarding_document", ctx, input, async () => {
+        const db = requireDb(ctx);
+        if (!ctx.tenantId) {
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: "protected procedure missing tenantId",
+          });
+        }
+        const tenantId = ctx.tenantId;
+
+        // Case must exist in this tenant (RLS) — turns a missing / cross-tenant
+        // case into a clean 404 rather than an FK error, and is the tenant
+        // isolation gate for the attach.
+        const [caseRow] = await db
+          .select({ id: onboardingCases.id })
+          .from(onboardingCases)
+          .where(and(eq(onboardingCases.tenantId, tenantId), eq(onboardingCases.id, input.caseId)))
+          .limit(1);
+        if (!caseRow) {
+          throw new TRPCError({ code: "NOT_FOUND", message: "Onboarding case not found" });
+        }
+
+        // document_types is a tenant-agnostic reference table with a permissive
+        // read policy — validate the id for a clean 404 instead of an FK error.
+        const [dtRow] = await db
+          .select({ id: documentTypes.id })
+          .from(documentTypes)
+          .where(eq(documentTypes.id, input.documentTypeId))
+          .limit(1);
+        if (!dtRow) {
+          throw new TRPCError({ code: "NOT_FOUND", message: "Document type not found" });
+        }
+
+        const now = new Date();
+        const [existingDoc] = await db
+          .select({ id: onboardingDocuments.id })
+          .from(onboardingDocuments)
+          .where(
+            and(
+              eq(onboardingDocuments.tenantId, tenantId),
+              eq(onboardingDocuments.caseId, input.caseId),
+              eq(onboardingDocuments.documentTypeId, input.documentTypeId),
+            ),
+          )
+          .limit(1);
+
+        let documentId: string;
+        let created: boolean;
+        if (existingDoc) {
+          const [updated] = await db
+            .update(onboardingDocuments)
+            .set({
+              storageRef: input.storageKey,
+              fileName: input.fileName,
+              mimeType: input.mimeType,
+              sizeBytes: BigInt(input.sizeBytes),
+              verificationStatus: "pending",
+              verifiedByMembershipId: null,
+              verifiedAt: null,
+              rejectionReason: null,
+              uploadedAt: now,
+              updatedAt: now,
+            })
+            .where(
+              and(
+                eq(onboardingDocuments.tenantId, tenantId),
+                eq(onboardingDocuments.id, existingDoc.id),
+              ),
+            )
+            .returning({ id: onboardingDocuments.id });
+          if (!updated) {
+            throw new TRPCError({
+              code: "INTERNAL_SERVER_ERROR",
+              message: "attach document update returned no row",
+            });
+          }
+          documentId = updated.id;
+          created = false;
+        } else {
+          const [inserted] = await db
+            .insert(onboardingDocuments)
+            .values({
+              tenantId,
+              caseId: input.caseId,
+              documentTypeId: input.documentTypeId,
+              storageRef: input.storageKey,
+              fileName: input.fileName,
+              mimeType: input.mimeType,
+              sizeBytes: BigInt(input.sizeBytes),
+              verificationStatus: "pending",
+            })
+            .returning({ id: onboardingDocuments.id });
+          if (!inserted) {
+            throw new TRPCError({
+              code: "INTERNAL_SERVER_ERROR",
+              message: "attach document insert returned no row",
+            });
+          }
+          documentId = inserted.id;
+          created = true;
+        }
+
+        // Nudge the matching document_collection task forward, but only from
+        // pending — an already in_progress / completed / blocked task is left
+        // as-is so a re-upload doesn't clobber a recruiter's manual state.
+        const task = await matchDocumentCollectionTask(
+          db,
+          tenantId,
+          input.caseId,
+          input.documentTypeId,
+        );
+        let taskStatus = task?.status ?? null;
+        if (task && task.status === "pending") {
+          const [t] = await db
+            .update(onboardingTasks)
+            .set({ status: "in_progress", updatedAt: now })
+            .where(and(eq(onboardingTasks.tenantId, tenantId), eq(onboardingTasks.id, task.id)))
+            .returning({ status: onboardingTasks.status });
+          taskStatus = t?.status ?? taskStatus;
+        }
+
+        return {
+          documentId,
+          verificationStatus: "pending",
+          created,
+          taskId: task?.id ?? null,
+          taskStatus: taskStatus as OnboardingTaskRow["status"] | null,
+        };
+      });
+    }),
+
+  /**
+   * verifyOnboardingDocument (ONBOARD-05) — recruiter marks a document
+   * verified. Stamps the reviewer membership + verified_at, clears any prior
+   * rejection reason, and auto-completes the matching document_collection task.
+   */
+  verifyOnboardingDocument: protectedProcedure
+    .input(verifyOnboardingDocumentInputSchema)
+    .output(verifyOnboardingDocumentOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      return withAudit("verify_onboarding_document", ctx, input, async () => {
+        const db = requireDb(ctx);
+        if (!ctx.tenantId) {
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: "protected procedure missing tenantId",
+          });
+        }
+        const tenantId = ctx.tenantId;
+
+        const [doc] = await db
+          .select({
+            id: onboardingDocuments.id,
+            caseId: onboardingDocuments.caseId,
+            documentTypeId: onboardingDocuments.documentTypeId,
+          })
+          .from(onboardingDocuments)
+          .where(
+            and(
+              eq(onboardingDocuments.tenantId, tenantId),
+              eq(onboardingDocuments.id, input.documentId),
+            ),
+          )
+          .limit(1);
+        if (!doc) {
+          throw new TRPCError({ code: "NOT_FOUND", message: "Onboarding document not found" });
+        }
+
+        const membershipId = await resolveCallerMembershipId(ctx, tenantId);
+        const now = new Date();
+        const [updated] = await db
+          .update(onboardingDocuments)
+          .set({
+            verificationStatus: "verified",
+            verifiedByMembershipId: membershipId,
+            verifiedAt: now,
+            rejectionReason: null,
+            updatedAt: now,
+          })
+          .where(
+            and(
+              eq(onboardingDocuments.tenantId, tenantId),
+              eq(onboardingDocuments.id, input.documentId),
+            ),
+          )
+          .returning({ verificationStatus: onboardingDocuments.verificationStatus });
+        if (!updated) {
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: "verify document returned no row",
+          });
+        }
+
+        const task = await matchDocumentCollectionTask(
+          db,
+          tenantId,
+          doc.caseId,
+          doc.documentTypeId,
+        );
+        let taskStatus = task?.status ?? null;
+        if (task) {
+          const [t] = await db
+            .update(onboardingTasks)
+            .set({ status: "completed", completedAt: now, updatedAt: now })
+            .where(and(eq(onboardingTasks.tenantId, tenantId), eq(onboardingTasks.id, task.id)))
+            .returning({ status: onboardingTasks.status });
+          taskStatus = t?.status ?? taskStatus;
+        }
+
+        return {
+          documentId: doc.id,
+          verificationStatus: updated.verificationStatus,
+          taskId: task?.id ?? null,
+          taskStatus: taskStatus as OnboardingTaskRow["status"] | null,
+        };
+      });
+    }),
+
+  /**
+   * rejectOnboardingDocument (ONBOARD-05) — recruiter rejects a document with a
+   * REQUIRED reason (400 without). Stamps the reviewer + decision timestamp
+   * (the schema has no rejected_by column, so verified_by doubles as the
+   * decision actor), records the reason, and drops the matching
+   * document_collection task back to pending for re-submission.
+   */
+  rejectOnboardingDocument: protectedProcedure
+    .input(rejectOnboardingDocumentInputSchema)
+    .output(rejectOnboardingDocumentOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      return withAudit("reject_onboarding_document", ctx, input, async () => {
+        const db = requireDb(ctx);
+        if (!ctx.tenantId) {
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: "protected procedure missing tenantId",
+          });
+        }
+        const tenantId = ctx.tenantId;
+
+        const reason = input.rejectionReason.trim();
+        if (reason.length === 0) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: "rejectionReason is required to reject a document",
+          });
+        }
+
+        const [doc] = await db
+          .select({
+            id: onboardingDocuments.id,
+            caseId: onboardingDocuments.caseId,
+            documentTypeId: onboardingDocuments.documentTypeId,
+          })
+          .from(onboardingDocuments)
+          .where(
+            and(
+              eq(onboardingDocuments.tenantId, tenantId),
+              eq(onboardingDocuments.id, input.documentId),
+            ),
+          )
+          .limit(1);
+        if (!doc) {
+          throw new TRPCError({ code: "NOT_FOUND", message: "Onboarding document not found" });
+        }
+
+        const membershipId = await resolveCallerMembershipId(ctx, tenantId);
+        const now = new Date();
+        const [updated] = await db
+          .update(onboardingDocuments)
+          .set({
+            verificationStatus: "rejected",
+            verifiedByMembershipId: membershipId,
+            verifiedAt: now,
+            rejectionReason: reason,
+            updatedAt: now,
+          })
+          .where(
+            and(
+              eq(onboardingDocuments.tenantId, tenantId),
+              eq(onboardingDocuments.id, input.documentId),
+            ),
+          )
+          .returning({
+            verificationStatus: onboardingDocuments.verificationStatus,
+            rejectionReason: onboardingDocuments.rejectionReason,
+          });
+
+        const task = await matchDocumentCollectionTask(
+          db,
+          tenantId,
+          doc.caseId,
+          doc.documentTypeId,
+        );
+        let taskStatus = task?.status ?? null;
+        if (task) {
+          const [t] = await db
+            .update(onboardingTasks)
+            .set({ status: "pending", completedAt: null, updatedAt: now })
+            .where(and(eq(onboardingTasks.tenantId, tenantId), eq(onboardingTasks.id, task.id)))
+            .returning({ status: onboardingTasks.status });
+          taskStatus = t?.status ?? taskStatus;
+        }
+
+        if (!updated) {
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: "reject document returned no row",
+          });
+        }
+        return {
+          documentId: doc.id,
+          verificationStatus: updated.verificationStatus,
+          rejectionReason: updated.rejectionReason ?? null,
+          taskId: task?.id ?? null,
+          taskStatus: taskStatus as OnboardingTaskRow["status"] | null,
+        };
+      });
+    }),
 });
+
+// ─────────────── ONBOARD-05 document helpers ───────────────
+
+/**
+ * Finds the document_collection task for a (case, documentType) — the task the
+ * ONBOARD-02 checklist generator seeded with metadata.documentTypeId. Returns
+ * null when no such task exists (e.g. a document attached for a type outside
+ * the case's geography set). Raw SQL because the match is on a JSONB field.
+ */
+async function matchDocumentCollectionTask(
+  db: NonNullable<HonoTRPCContext["db"]>,
+  tenantId: string,
+  caseId: string,
+  documentTypeId: string,
+): Promise<{ id: string; status: string } | null> {
+  const result = await db.execute(dsql`
+    SELECT id::text AS id, status
+    FROM public.onboarding_tasks
+    WHERE tenant_id = ${tenantId}
+      AND case_id = ${caseId}
+      AND task_type = 'document_collection'
+      AND metadata->>'documentTypeId' = ${documentTypeId}
+    LIMIT 1
+  `);
+  const rows =
+    (result as unknown as { rows?: { id: string; status: string }[] }).rows ??
+    (result as unknown as { id: string; status: string }[]);
+  return rows[0] ?? null;
+}
+
+/**
+ * Resolves the caller's tenant_user_memberships.id for the verifier stamp.
+ * The JWT carries user + tenant but not membership id (see tenant-context.ts),
+ * so we look it up via the service-role client with an explicit tenant filter.
+ * Returns null if the caller has no membership row (defensive — a JWT with a
+ * tid always has one in practice).
+ */
+async function resolveCallerMembershipId(
+  ctx: HonoTRPCContext,
+  tenantId: string,
+): Promise<string | null> {
+  if (!ctx.userId) return null;
+  const rows = await ctx.sql<{ id: string }[]>`
+    SELECT id::text AS id
+    FROM public.tenant_user_memberships
+    WHERE tenant_id = ${tenantId} AND user_id = ${ctx.userId}
+    LIMIT 1
+  `;
+  return rows[0]?.id ?? null;
+}
 
 // ─────────────── ONBOARD-02 case status transition guard ───────────────
 

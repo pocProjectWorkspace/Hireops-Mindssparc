@@ -1,17 +1,19 @@
 "use client";
 
-import { useState } from "react";
-import type { ReactNode } from "react";
+import { useRef, useState } from "react";
+import type { ChangeEvent, ReactNode } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import type {
   GetOnboardingCaseDetailOutput,
   OnboardingCaseDetail,
   OnboardingCaseStatus,
+  OnboardingDocumentRow,
   OnboardingTaskRow,
   OnboardingTaskStatus,
 } from "@hireops/api-types";
 import { Select } from "@hireops/ui";
 import { trpc } from "@/lib/trpc-client";
+import { getSupabaseBrowserClient } from "@/lib/supabase-client";
 import { Badge, Button, Card, EmptyState } from "@/components/ui";
 import {
   CASE_STATUS_META,
@@ -19,6 +21,7 @@ import {
   TASK_GROUPS,
   GEOGRAPHY_OPTIONS,
   caseStatusActions,
+  docVerificationMeta,
   formatDate,
   formatGeography,
   groupForTaskType,
@@ -27,6 +30,28 @@ import {
 
 /** Select sentinel for "no buddy/manager" — Radix Select forbids "" values. */
 const UNASSIGNED = "__unassigned__";
+
+/**
+ * REST API origin for the multipart document upload + download (ONBOARD-05).
+ * Same resolution as the apply form: the tRPC surface runs in-process on the
+ * portal, but multipart bodies + binary downloads go straight to apps/api.
+ */
+const API_BASE =
+  process.env.NEXT_PUBLIC_API_BASE ??
+  process.env.NEXT_PUBLIC_API_BASE_URL?.replace(/\/trpc$/, "") ??
+  "http://localhost:3001";
+
+/** File types the onboarding upload route accepts (PDF / DOCX / JPEG / PNG). */
+const DOC_ACCEPT = ".pdf,.docx,image/jpeg,image/png,application/pdf";
+
+/** Attach the recruiter's Supabase session as a bearer token for a REST call. */
+async function authHeaders(): Promise<Record<string, string>> {
+  const supabase = getSupabaseBrowserClient();
+  const {
+    data: { session },
+  } = await supabase.auth.getSession();
+  return session ? { Authorization: `Bearer ${session.access_token}` } : {};
+}
 
 /**
  * Task shape as delivered by the detail query. `metadata` is a z.unknown()
@@ -111,34 +136,317 @@ export function OnboardingCaseView({
       <Checklist tasks={tasks} />
 
       {/* Documents */}
-      <section className="mt-8">
-        <h3 className="mb-3 text-sm font-semibold text-neutral-800">Documents</h3>
-        {documents.length === 0 ? (
-          <Card>
-            <EmptyState
-              className="py-8"
-              title="No documents collected yet"
-              hint="Collected pre-boarding documents will appear here once uploads are enabled."
-            />
-          </Card>
-        ) : (
-          <Card padded={false}>
-            <ul className="divide-y divide-neutral-100">
-              {documents.map((d) => (
-                <li key={d.id} className="flex items-center justify-between gap-4 px-5 py-3">
-                  <span className="min-w-0 truncate text-sm text-neutral-800">
-                    {d.fileName ?? "Document"}
-                  </span>
-                  <div className="flex shrink-0 items-center gap-3">
-                    <Badge tone="neutral">{d.verificationStatus.replace(/_/g, " ")}</Badge>
-                    <span className="text-xs text-neutral-400">{formatDate(d.uploadedAt)}</span>
-                  </div>
-                </li>
-              ))}
-            </ul>
-          </Card>
-        )}
-      </section>
+      <DocumentsSection caseId={caseId} tasks={tasks} documents={documents} />
+    </div>
+  );
+}
+
+// ─────────────── documents (ONBOARD-05) ───────────────
+
+interface DocumentSlot {
+  documentTypeId: string;
+  name: string;
+  doc?: OnboardingDocumentRow;
+}
+
+function readDocumentTypeId(metadata: unknown): string | null {
+  if (metadata && typeof metadata === "object" && "documentTypeId" in metadata) {
+    const v = (metadata as { documentTypeId?: unknown }).documentTypeId;
+    return typeof v === "string" ? v : null;
+  }
+  return null;
+}
+
+/**
+ * The pre-boarding document surface. Each collectable document type (derived
+ * from the case's document_collection tasks) gets a row: upload if nothing is
+ * attached; otherwise a verification badge, download, and — while pending or
+ * rejected — verify / reject actions. Attaching, verifying and rejecting all
+ * invalidate the detail query, so the checklist task chips above re-render
+ * with their auto-progressed status (pending → in_progress on upload,
+ * → completed on verify, back to pending on reject).
+ */
+function DocumentsSection({
+  caseId,
+  tasks,
+  documents,
+}: {
+  caseId: string;
+  tasks: TaskItem[];
+  documents: OnboardingDocumentRow[];
+}) {
+  const docByType = new Map(documents.map((d) => [d.documentTypeId, d]));
+  const seen = new Set<string>();
+  const slots: DocumentSlot[] = [];
+  for (const t of tasks) {
+    if (t.taskType !== "document_collection") continue;
+    const dtId = readDocumentTypeId(t.metadata);
+    if (!dtId || seen.has(dtId)) continue;
+    seen.add(dtId);
+    slots.push({ documentTypeId: dtId, name: t.title, doc: docByType.get(dtId) });
+  }
+  // Documents whose type no longer has a task (e.g. dropped by a geography
+  // change) still surface, so nothing collected is ever hidden.
+  for (const d of documents) {
+    if (seen.has(d.documentTypeId)) continue;
+    seen.add(d.documentTypeId);
+    slots.push({
+      documentTypeId: d.documentTypeId,
+      name: d.documentTypeName ?? "Document",
+      doc: d,
+    });
+  }
+
+  return (
+    <section className="mt-8">
+      <h3 className="mb-3 text-sm font-semibold text-neutral-800">Documents</h3>
+      {slots.length === 0 ? (
+        <Card>
+          <EmptyState
+            className="py-8"
+            title="No documents required"
+            hint="This case has no document-collection tasks."
+          />
+        </Card>
+      ) : (
+        <Card padded={false}>
+          <ul className="divide-y divide-neutral-100">
+            {slots.map((slot) => (
+              <li key={slot.documentTypeId}>
+                <DocumentSlotRow caseId={caseId} slot={slot} />
+              </li>
+            ))}
+          </ul>
+        </Card>
+      )}
+    </section>
+  );
+}
+
+function DocumentSlotRow({ caseId, slot }: { caseId: string; slot: DocumentSlot }) {
+  const queryClient = useQueryClient();
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const [busy, setBusy] = useState<null | "uploading" | "downloading">(null);
+  const [rejecting, setRejecting] = useState(false);
+  const [reason, setReason] = useState("");
+  const [error, setError] = useState<string | null>(null);
+
+  const invalidate = () => {
+    queryClient.invalidateQueries({ queryKey: [["getOnboardingCaseDetail"]] });
+    queryClient.invalidateQueries({ queryKey: [["listOnboardingCases"]] });
+  };
+
+  const attachMutation = trpc.attachOnboardingDocument.useMutation({
+    onSuccess: invalidate,
+    onError: (e) => setError(e.message),
+  });
+  const verifyMutation = trpc.verifyOnboardingDocument.useMutation({
+    onSuccess: invalidate,
+    onError: (e) => setError(e.message),
+  });
+  const rejectMutation = trpc.rejectOnboardingDocument.useMutation({
+    onSuccess: () => {
+      invalidate();
+      setRejecting(false);
+      setReason("");
+    },
+    onError: (e) => setError(e.message),
+  });
+
+  const doc = slot.doc;
+  const meta = doc ? docVerificationMeta(doc.verificationStatus) : null;
+  const pending = attachMutation.isPending || verifyMutation.isPending || rejectMutation.isPending;
+  const working = busy !== null || pending;
+
+  async function onPickFile(e: ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0] ?? null;
+    // Reset the input so re-selecting the same file re-triggers change.
+    e.target.value = "";
+    if (!file) return;
+    setError(null);
+    setBusy("uploading");
+    try {
+      const fd = new FormData();
+      fd.append("file", file);
+      const res = await fetch(`${API_BASE}/api/onboarding-documents/upload`, {
+        method: "POST",
+        headers: await authHeaders(),
+        body: fd,
+      });
+      if (!res.ok) {
+        const body = (await res.json().catch(() => ({}))) as { error?: string };
+        throw new Error(body.error ?? `Upload failed (${res.status})`);
+      }
+      const json = (await res.json()) as {
+        storageKey: string;
+        sizeBytes: number;
+        contentType: string;
+      };
+      await attachMutation.mutateAsync({
+        caseId,
+        documentTypeId: slot.documentTypeId,
+        storageKey: json.storageKey,
+        fileName: file.name,
+        mimeType: json.contentType,
+        sizeBytes: json.sizeBytes,
+      });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Upload failed");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function onDownload() {
+    if (!doc) return;
+    setError(null);
+    setBusy("downloading");
+    try {
+      const res = await fetch(`${API_BASE}/api/onboarding-documents/${doc.id}/download`, {
+        headers: await authHeaders(),
+      });
+      if (!res.ok) throw new Error(`Download failed (${res.status})`);
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = doc.fileName ?? slot.name;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Download failed");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  function confirmReject() {
+    if (reason.trim().length === 0) {
+      setError("A reason is required to reject a document.");
+      return;
+    }
+    if (!doc) return;
+    setError(null);
+    rejectMutation.mutate({ documentId: doc.id, rejectionReason: reason.trim() });
+  }
+
+  const canReview = doc && doc.verificationStatus !== "verified";
+
+  return (
+    <div className="px-5 py-3.5">
+      <div className="flex items-start justify-between gap-4">
+        <div className="min-w-0">
+          <div className="flex items-center gap-2">
+            <span className="truncate text-sm font-medium text-neutral-900">{slot.name}</span>
+            {meta ? <Badge tone={meta.tone}>{meta.label}</Badge> : null}
+          </div>
+          {doc ? (
+            <>
+              <p className="mt-0.5 truncate text-xs text-neutral-500">
+                {doc.fileName ?? "Uploaded document"}
+                <span className="text-neutral-400"> · uploaded {formatDate(doc.uploadedAt)}</span>
+              </p>
+              {doc.verificationStatus === "verified" && doc.verifiedAt ? (
+                <p className="mt-0.5 text-xs text-status-success-700">
+                  Verified {formatDate(doc.verifiedAt)}
+                  {doc.verifierName ? ` by ${doc.verifierName}` : ""}
+                </p>
+              ) : null}
+              {doc.verificationStatus === "rejected" && doc.rejectionReason ? (
+                <p className="mt-0.5 text-xs text-status-error-700">
+                  Rejected: {doc.rejectionReason}
+                </p>
+              ) : null}
+            </>
+          ) : (
+            <p className="mt-0.5 text-xs text-neutral-400">Not collected yet</p>
+          )}
+        </div>
+
+        <div className="flex shrink-0 items-center gap-1.5">
+          {doc ? (
+            <Button variant="ghost" size="sm" disabled={working} onClick={onDownload}>
+              {busy === "downloading" ? "…" : "Download"}
+            </Button>
+          ) : null}
+          {canReview ? (
+            <Button
+              variant="secondary"
+              size="sm"
+              disabled={working}
+              onClick={() => {
+                if (!doc) return;
+                setError(null);
+                verifyMutation.mutate({ documentId: doc.id });
+              }}
+            >
+              Verify
+            </Button>
+          ) : null}
+          {canReview ? (
+            <Button
+              variant="ghost"
+              size="sm"
+              disabled={working}
+              onClick={() => {
+                setError(null);
+                setRejecting((v) => !v);
+              }}
+            >
+              Reject
+            </Button>
+          ) : null}
+          <Button
+            variant={doc ? "ghost" : "primary"}
+            size="sm"
+            disabled={working}
+            onClick={() => fileInputRef.current?.click()}
+          >
+            {busy === "uploading" ? "Uploading…" : doc ? "Replace" : "Upload"}
+          </Button>
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept={DOC_ACCEPT}
+            className="hidden"
+            onChange={onPickFile}
+          />
+        </div>
+      </div>
+
+      {error ? <p className="mt-2 text-xs text-status-error-700">{error}</p> : null}
+
+      {rejecting && doc ? (
+        <div className="mt-3 space-y-2">
+          <textarea
+            value={reason}
+            onChange={(e) => setReason(e.target.value)}
+            disabled={pending}
+            rows={2}
+            placeholder="Why is this document rejected? (required — recorded in the audit log)"
+            className="w-full resize-y rounded-md border border-neutral-300 bg-white px-3 py-2 text-sm text-neutral-900 transition-colors focus:border-brand-600 focus:outline-none focus:ring-1 focus:ring-brand-600 disabled:bg-neutral-100"
+          />
+          <div className="flex gap-2">
+            <Button variant="primary" size="sm" disabled={pending} onClick={confirmReject}>
+              Confirm reject
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              disabled={pending}
+              onClick={() => {
+                setRejecting(false);
+                setReason("");
+                setError(null);
+              }}
+            >
+              Cancel
+            </Button>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }
