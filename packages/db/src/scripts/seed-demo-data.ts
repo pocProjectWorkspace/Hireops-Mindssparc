@@ -1644,14 +1644,21 @@ async function main() {
     const probationEnds = onbDateStr(spec.expectedStartOffsetDays + ONB_PROBATION_DAYS);
     const buddyId = spec.buddy ? onbMemberByRole[spec.buddy] : null;
     const managerId = spec.manager ? onbMemberByRole[spec.manager] : null;
+    // ONBOARD-06 follow-up: cases past pre_boarding have been "hired in
+    // Workday" (simulated) — pre-stamp a deterministic Worker ID (a58x
+    // namespace) so the "Hired in Workday" badge shows on a fresh seed.
+    // The live path (day_zero advance → outbox → sim drain write-back)
+    // only fires for cases advanced through updateOnboardingCase.
+    const workdayWorkerId =
+      spec.status === "pre_boarding" ? null : `00000000-0000-4000-8000-00000000a58${spec.idx}`;
     await poolSql`
       INSERT INTO public.onboarding_cases
         (id, tenant_id, application_id, candidate_id, status, geography_code,
          expected_start_date, actual_start_date, probation_days, probation_ends_at,
-         buddy_membership_id, manager_membership_id, created_at, updated_at)
+         buddy_membership_id, manager_membership_id, workday_worker_id, created_at, updated_at)
       VALUES (${caseId}, ${tid}, ${appId}, ${candidateId}, ${spec.status}, ${spec.country},
               ${expectedStart}::date, ${actualStart}::date, ${ONB_PROBATION_DAYS}, ${probationEnds}::date,
-              ${buddyId}, ${managerId},
+              ${buddyId}, ${managerId}, ${workdayWorkerId},
               ${onbIso(-spec.createdOffsetDays)}::timestamptz, ${onbIso(-spec.createdOffsetDays)}::timestamptz)
     `;
 
