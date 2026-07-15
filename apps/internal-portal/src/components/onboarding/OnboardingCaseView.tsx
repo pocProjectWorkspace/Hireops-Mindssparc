@@ -129,6 +129,8 @@ export function OnboardingCaseView({
 
         <CaseDetailsEditor caseId={caseId} c={c} />
 
+        <WorkdayHireStatus c={c} />
+
         <CaseStatusActions caseId={caseId} status={c.status} />
       </Card>
 
@@ -621,6 +623,39 @@ function CaseDetailsEditor({ caseId, c }: { caseId: string; c: OnboardingCaseDet
       ) : null}
     </div>
   );
+}
+
+// ─────────────── Day-0 Workday hire (ONBOARD-06) ───────────────
+
+/**
+ * The Day-0 hire moment. Once the sim drain has written the Workday Worker ID
+ * back onto the case, show it as a chip — honest that it's simulated, matching
+ * the Integration Health voice. While the case is at day_zero but the write-
+ * back hasn't landed yet (the live worker drains within a few seconds), a
+ * quiet in-progress line stands in. The detail query refetches on window
+ * focus, so returning to the tab (or a manual refresh) surfaces the wid with
+ * no polling.
+ */
+function WorkdayHireStatus({ c }: { c: OnboardingCaseDetail }) {
+  if (c.workdayWorkerId) {
+    return (
+      <div className="mt-5 flex flex-wrap items-center gap-2 border-t border-neutral-100 pt-4">
+        <Badge tone="success">Hired in Workday</Badge>
+        <span className="text-xs text-neutral-500">
+          Worker ID <span className="font-mono text-neutral-800">{c.workdayWorkerId}</span>
+          <span className="text-neutral-400"> · simulated</span>
+        </span>
+      </div>
+    );
+  }
+  if (c.status === "day_zero") {
+    return (
+      <p className="mt-5 border-t border-neutral-100 pt-4 text-xs text-neutral-500">
+        Workday hire in progress… <span className="text-neutral-400">(simulated)</span>
+      </p>
+    );
+  }
+  return null;
 }
 
 // ─────────────── case status action ───────────────

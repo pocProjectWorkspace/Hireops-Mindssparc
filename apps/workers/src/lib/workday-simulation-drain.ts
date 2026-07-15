@@ -34,6 +34,14 @@ interface ClaimedSync {
 
 const DEFAULT_BATCH = 10;
 
+/**
+ * ONBOARD-06 — the Day-0 hire event type. Mirrors DAY_ZERO_HIRE_EVENT_TYPE in
+ * apps/api/src/lib/onboarding-case.ts (kept as a literal here to avoid a
+ * cross-package import). Its payload carries `onboarding_case_id`; after a
+ * successful simulation we write the mock Worker ID back onto that case.
+ */
+const DAY_ZERO_HIRE_EVENT_TYPE = "hire_employee_day_zero";
+
 export async function drainWorkdayOutboxOnce(opts: SimulationDrainOpts): Promise<{
   claimed: number;
   simulated: number;
@@ -80,10 +88,32 @@ export async function drainWorkdayOutboxOnce(opts: SimulationDrainOpts): Promise
         WHERE id = ${row.id}
       `;
       simulated += 1;
-      child.info(
-        { wid: (response as { workday_reference?: { wid?: string } }).workday_reference?.wid },
-        "workday.simulated",
-      );
+      const wid = (response as { workday_reference?: { wid?: string } }).workday_reference?.wid;
+      child.info({ wid }, "workday.simulated");
+
+      // ONBOARD-06 write-back: a hire event carrying an onboarding_case_id
+      // stamps its mock Worker ID onto the case. Its own try/catch so a
+      // write-back miss never un-simulates the (already committed) row.
+      const caseId = (row.payload as { onboarding_case_id?: unknown }).onboarding_case_id;
+      if (typeof caseId === "string" && caseId.length > 0 && typeof wid === "string") {
+        try {
+          const { written } = await writeBackWorkerIdForCase({
+            tenantId: row.tenant_id,
+            caseId,
+            wid,
+          });
+          child.info(
+            { onboarding_case_id: caseId, wid, written },
+            written ? "workday.worker_id_written_back" : "workday.worker_id_already_linked",
+          );
+        } catch (wbErr) {
+          const wbMsg = wbErr instanceof Error ? wbErr.message : String(wbErr);
+          child.error(
+            { err: wbMsg, onboarding_case_id: caseId },
+            "workday.worker_id_writeback_failed",
+          );
+        }
+      }
     } catch (err) {
       const errMsg = err instanceof Error ? err.message : String(err);
       await poolSql`
@@ -100,6 +130,29 @@ export async function drainWorkdayOutboxOnce(opts: SimulationDrainOpts): Promise
 
 function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
+}
+
+/**
+ * ONBOARD-06 — write the simulated Workday Worker ID back onto its onboarding
+ * case. **Permanent linkage** (requirements.md §7.2): the tenant-scoped UPDATE
+ * only fires while `workday_worker_id IS NULL`, so an already-linked case is
+ * never overwritten by a later re-hire simulation. Returns whether a row was
+ * written (`false` = already linked, or the case is gone / cross-tenant).
+ */
+export async function writeBackWorkerIdForCase(opts: {
+  tenantId: string;
+  caseId: string;
+  wid: string;
+}): Promise<{ written: boolean }> {
+  const linked = await poolSql`
+    UPDATE public.onboarding_cases
+    SET workday_worker_id = ${opts.wid}, updated_at = now()
+    WHERE tenant_id = ${opts.tenantId}
+      AND id = ${opts.caseId}
+      AND workday_worker_id IS NULL
+    RETURNING id
+  `;
+  return { written: linked.length > 0 };
 }
 
 /**
@@ -123,6 +176,24 @@ export function generateMockWorkdayResponse(
         type: "Pre-Hire",
         wid: randomUUID(),
         descriptor: `Pre-Hire: ${preHire.full_name ?? "Unknown"}`,
+      },
+      effective_date: effectiveDate ?? null,
+      simulated_at: new Date().toISOString(),
+      simulation_notes:
+        "This is a simulated response. In production, this would be the actual Workday SOAP response.",
+    };
+  }
+  if (eventType === DAY_ZERO_HIRE_EVENT_TYPE) {
+    // Day-0 Hire_Employee: the pre-hire becomes an active Worker with a
+    // permanent Worker ID. That `wid` is written back onto the onboarding case.
+    const preHire = (payload.pre_hire ?? {}) as { full_name?: string };
+    const effectiveDate = payload.effective_date as string | undefined;
+    return {
+      status: "success",
+      workday_reference: {
+        type: "Worker",
+        wid: randomUUID(),
+        descriptor: `Worker: ${preHire.full_name ?? "Unknown"}`,
       },
       effective_date: effectiveDate ?? null,
       simulated_at: new Date().toISOString(),

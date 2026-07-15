@@ -39,6 +39,18 @@ import {
 } from "@hireops/db";
 import { and, eq } from "drizzle-orm";
 import { signLink, hashToken } from "@hireops/notifications";
+import { createLogger } from "@hireops/observability";
+import {
+  writeBackWorkerIdForCase,
+  generateMockWorkdayResponse,
+} from "../../../apps/workers/src/lib/workday-simulation-drain.js";
+import {
+  enqueueDayZeroWorkdayHire,
+  dayZeroHireBusinessKey,
+  DAY_ZERO_HIRE_EVENT_TYPE,
+} from "../src/lib/onboarding-case.js";
+
+const wdLog = createLogger({ level: "error" });
 
 const TEST_EMAIL = "test-fnd15b@hireops-dev.local";
 const TEST_PASSWORD = "fnd15b-test-password-do-not-reuse";
@@ -202,6 +214,15 @@ async function waitForDownloadPiiRow(documentId: string): Promise<number> {
     await new Promise((r) => setTimeout(r, 100));
   }
   return 0;
+}
+
+/** Count this tenant's outbox rows for a business key (idempotency probe). */
+async function outboxRowsByBusinessKey(businessKey: string): Promise<number> {
+  const [row] = await poolSql<{ n: number }[]>`
+    SELECT count(*)::int AS n FROM public.workday_sync_outbox
+    WHERE tenant_id = ${testTenantId} AND business_key = ${businessKey}
+  `;
+  return Number(row?.n ?? 0);
 }
 
 async function cleanup(): Promise<void> {
@@ -950,5 +971,128 @@ describe("ONBOARD-02 — onboarding case lifecycle", () => {
     );
     assert.ok(isError(bogus));
     assert.equal((bogus as TRPCErrorEnv).error.data.code, "NOT_FOUND");
+  });
+
+  // ─────────────── ONBOARD-06 — the Day-0 hire moment ───────────────
+
+  it("18. advancing to day_zero stamps actual start + enqueues one idempotent Workday hire", async () => {
+    const start = new Date(Date.now() + 14 * 86_400_000).toISOString().slice(0, 10);
+    const hire = await seedHire({ suffix: "day-zero", country: "IN", acceptedJoiningDate: start });
+    const env = await trpcMutation<{ caseId: string }>(
+      "createOnboardingCaseForApplication",
+      { applicationId: hire.applicationId },
+      { jwt },
+    );
+    assert.ok(!isError(env));
+    const caseId = (env as TRPCSuccess<{ caseId: string }>).result.data.caseId;
+
+    const businessKey = dayZeroHireBusinessKey(caseId);
+    assert.equal(await outboxRowsByBusinessKey(businessKey), 0);
+
+    // pre_boarding → day_zero.
+    const adv = await trpcMutation<{ status: string }>(
+      "updateOnboardingCase",
+      { caseId, status: "day_zero" },
+      { jwt },
+    );
+    assert.ok(!isError(adv), `advance error: ${JSON.stringify(adv)}`);
+    assert.equal((adv as TRPCSuccess<{ status: string }>).result.data.status, "day_zero");
+
+    // actual_start_date stamped to today (was null); status is day_zero.
+    const today = new Date().toISOString().slice(0, 10);
+    const [caseRow] = await poolDb
+      .select({ actualStartDate: onboardingCases.actualStartDate, status: onboardingCases.status })
+      .from(onboardingCases)
+      .where(eq(onboardingCases.id, caseId));
+    assert.equal(caseRow?.actualStartDate, today);
+    assert.equal(caseRow?.status, "day_zero");
+
+    // Exactly one outbox row with the per-case idempotent key, the day-zero
+    // event type, carrying the case id in its payload (the write-back signal).
+    const rows = await poolSql<{ event_type: string; payload: { onboarding_case_id?: string } }[]>`
+      SELECT event_type, payload FROM public.workday_sync_outbox
+      WHERE tenant_id = ${testTenantId} AND business_key = ${businessKey}
+    `;
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0]?.event_type, DAY_ZERO_HIRE_EVENT_TYPE);
+    assert.equal(rows[0]?.payload.onboarding_case_id, caseId);
+
+    // A second enqueue for the same case (a race, or a concurrent re-advance)
+    // is collapsed by the unique(tenant, business_key) index — still one row.
+    await enqueueDayZeroWorkdayHire(poolSql, { tenantId: testTenantId, caseId, log: wdLog });
+    assert.equal(await outboxRowsByBusinessKey(businessKey), 1);
+  }, 30_000);
+
+  it("19. the drain's write-back stamps the Worker ID and never overwrites it", async () => {
+    // NOTE: the write-back seam is tested by calling the drain's exported
+    // `writeBackWorkerIdForCase` directly — the same code the drain runs after
+    // a hire simulation — rather than racing the live Railway worker for the
+    // outbox claim. The live worker (currently on the pre-ONBOARD-06 main
+    // build) will claim day_zero rows first and simulate them WITHOUT the
+    // write-back, so an end-to-end outbox→drain→case assertion cannot be made
+    // deterministic until this code is deployed (flagged in the hand-back).
+    const hire = await seedHire({ suffix: "writeback", country: "IN" });
+    const env = await trpcMutation<{ caseId: string }>(
+      "createOnboardingCaseForApplication",
+      { applicationId: hire.applicationId },
+      { jwt },
+    );
+    assert.ok(!isError(env));
+    const caseId = (env as TRPCSuccess<{ caseId: string }>).result.data.caseId;
+
+    // A brand-new case has no Worker ID.
+    const [before] = await poolDb
+      .select({ wid: onboardingCases.workdayWorkerId })
+      .from(onboardingCases)
+      .where(eq(onboardingCases.id, caseId));
+    assert.equal(before?.wid, null);
+
+    // First simulated hire → the wid lands (tenant-scoped, only-if-null).
+    const wid1 = randomUUID();
+    const first = await writeBackWorkerIdForCase({ tenantId: testTenantId, caseId, wid: wid1 });
+    assert.equal(first.written, true);
+
+    // It surfaces in the case-detail payload the UI reads (getOnboardingCaseDetail).
+    const detail = await trpcQuery<{ case: { workdayWorkerId: string | null } }>(
+      "getOnboardingCaseDetail",
+      { caseId },
+      { jwt },
+    );
+    assert.ok(!isError(detail), `detail error: ${JSON.stringify(detail)}`);
+    assert.equal(
+      (detail as TRPCSuccess<{ case: { workdayWorkerId: string | null } }>).result.data.case
+        .workdayWorkerId,
+      wid1,
+    );
+
+    // Permanent linkage: a later re-hire simulation must NOT overwrite the wid.
+    const wid2 = randomUUID();
+    const second = await writeBackWorkerIdForCase({ tenantId: testTenantId, caseId, wid: wid2 });
+    assert.equal(second.written, false);
+    const [after] = await poolDb
+      .select({ wid: onboardingCases.workdayWorkerId })
+      .from(onboardingCases)
+      .where(eq(onboardingCases.id, caseId));
+    assert.equal(after?.wid, wid1, "the Worker ID must not be overwritten once set");
+
+    // Cross-tenant / missing case is a no-op (never a false positive).
+    const miss = await writeBackWorkerIdForCase({
+      tenantId: SYNTH_TENANT,
+      caseId,
+      wid: randomUUID(),
+    });
+    assert.equal(miss.written, false);
+  });
+
+  it("20. the day-zero hire mock yields a Worker reference carrying a wid", () => {
+    const resp = generateMockWorkdayResponse(DAY_ZERO_HIRE_EVENT_TYPE, {
+      pre_hire: { full_name: "Meera K" },
+      effective_date: "2026-08-01",
+      onboarding_case_id: randomUUID(),
+    });
+    const ref = (resp as { workday_reference?: { type?: string; wid?: string } }).workday_reference;
+    assert.equal(ref?.type, "Worker");
+    assert.ok(typeof ref?.wid === "string" && ref.wid.length > 0);
+    assert.ok((resp as { simulation_notes?: string }).simulation_notes?.includes("simulated"));
   });
 });

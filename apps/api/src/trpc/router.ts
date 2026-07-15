@@ -169,6 +169,7 @@ import { withAudit } from "./with-audit";
 import {
   createOnboardingCaseForApplication as createOnboardingCase,
   ensureDocumentCollectionTasks,
+  enqueueDayZeroWorkdayHire,
   resolveGeographyCode,
 } from "../lib/onboarding-case";
 import { getStorageClient } from "../lib/storage";
@@ -4346,6 +4347,7 @@ export const appRouter = router({
           .select({
             status: onboardingCases.status,
             geographyCode: onboardingCases.geographyCode,
+            actualStartDate: onboardingCases.actualStartDate,
           })
           .from(onboardingCases)
           .where(and(eq(onboardingCases.tenantId, tenantId), eq(onboardingCases.id, input.caseId)))
@@ -4356,6 +4358,12 @@ export const appRouter = router({
 
         const setFields: Record<string, unknown> = { updatedAt: new Date() };
 
+        // ONBOARD-06 — the Day-0 moment. Advancing a case to `day_zero` stamps
+        // the actual start date (today, if not already set) and enqueues the
+        // Workday Hire_Employee outbox event below. Guarded to a genuine
+        // transition, so re-issuing day_zero (a no-op) never re-fires it.
+        let advancingToDayZero = false;
+
         if (input.status !== undefined && input.status !== existing.status) {
           const allowed = ALLOWED_CASE_TRANSITIONS[existing.status] ?? [];
           if (!allowed.includes(input.status)) {
@@ -4365,6 +4373,13 @@ export const appRouter = router({
             });
           }
           setFields.status = input.status;
+          if (input.status === "day_zero") {
+            advancingToDayZero = true;
+            if (existing.actualStartDate == null) {
+              // date column — 'YYYY-MM-DD' (UTC today).
+              setFields.actualStartDate = new Date().toISOString().slice(0, 10);
+            }
+          }
         }
 
         let nextGeography = existing.geographyCode;
@@ -4407,6 +4422,18 @@ export const appRouter = router({
             tenantId,
             caseId: input.caseId,
             geographyCode: nextGeography,
+          });
+        }
+
+        // ONBOARD-06 — fire the Day-0 Workday hire. Best-effort (never throws),
+        // idempotent per case via its business key, so the transition stands
+        // even if the enqueue races or has already fired. Runs after the case
+        // row is committed and the doc-task soft-add above.
+        if (advancingToDayZero) {
+          await enqueueDayZeroWorkdayHire(ctx.sql, {
+            tenantId,
+            caseId: input.caseId,
+            log: ctx.log,
           });
         }
 

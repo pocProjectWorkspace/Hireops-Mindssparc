@@ -23,9 +23,32 @@
  */
 
 import { sql as poolSql } from "@hireops/db";
+import type { Logger } from "@hireops/observability";
 
 /** postgres.js tagged-template client (same shape as ctx.sql / poolSql). */
 type PgSqlClient = typeof poolSql;
+
+/**
+ * ONBOARD-06 — the Day-0 hire event type. Distinct from the accept-path
+ * `hire_employee` event (offers.ts), which models the Workday **Pre-Hire**
+ * creation fired on offer-accept (requirements.md §7.2 — "Put_Applicant").
+ * This is the later **Hire_Employee** transaction (§7.2) that converts the
+ * pre-hire into an active Worker and yields the permanent Worker ID. The
+ * two are deliberately separate outbox events; this one carries the
+ * onboarding case id so the drain can write the Worker ID back to it.
+ */
+export const DAY_ZERO_HIRE_EVENT_TYPE = "hire_employee_day_zero";
+
+/**
+ * Idempotency key for the Day-0 hire — one per case. A re-advance or a race
+ * (two concurrent transitions both reading `pre_boarding`) collapses to a
+ * single outbox row via the unique(tenant_id, business_key) index. Uses a
+ * `day_zero_hire:case:` prefix so it can never collide with the accept
+ * path's `hire:application:` pre-hire key on the same application.
+ */
+export function dayZeroHireBusinessKey(caseId: string): string {
+  return `day_zero_hire:case:${caseId}`;
+}
 
 /** requirements.md §7.3 — probation defaults to 90 days (configurable to 180). */
 const DEFAULT_PROBATION_DAYS = 90;
@@ -283,4 +306,101 @@ export async function createOnboardingCaseForApplication(
   await createStandardTasks(sql, { tenantId, caseId, expectedStartDate, probationDays });
 
   return { caseId, created: true, geographyCode };
+}
+
+/**
+ * ONBOARD-06 — enqueue the Day-0 Workday **hire** (Hire_Employee) outbox event
+ * for a case that has just advanced to `day_zero`. Best-effort, mirroring the
+ * accept-path `enqueueWorkdayHire` in offers.ts: a duplicate business key
+ * (already queued) or any other failure is logged, never thrown — the status
+ * transition must not roll back on a sync-enqueue hiccup.
+ *
+ * The payload carries `onboarding_case_id`, which is the signal the workers'
+ * simulation drain uses to write the resulting mock Worker ID back onto the
+ * case (permanent linkage, requirements.md §7.2). Runs through the caller's
+ * explicit-tenant `sql` client (ctx.sql), same discipline as the rest of this
+ * module.
+ */
+export async function enqueueDayZeroWorkdayHire(
+  sql: PgSqlClient,
+  args: { tenantId: string; caseId: string; log: Logger },
+): Promise<void> {
+  const { tenantId, caseId, log } = args;
+
+  const [row] = await sql<
+    {
+      application_id: string;
+      full_name: string | null;
+      email: string | null;
+      expected_start_date: string | null;
+      actual_start_date: string | null;
+      title: string | null;
+      business_unit_name: string | null;
+      location: string | null;
+    }[]
+  >`
+    SELECT
+      oc.application_id,
+      p.full_name,
+      p.email_primary AS email,
+      oc.expected_start_date::text AS expected_start_date,
+      oc.actual_start_date::text AS actual_start_date,
+      pos.title,
+      bu.name AS business_unit_name,
+      pos.location_type AS location
+    FROM public.onboarding_cases oc
+    JOIN public.candidates c ON c.id = oc.candidate_id AND c.tenant_id = oc.tenant_id
+    JOIN public.persons p ON p.id = c.person_id AND p.tenant_id = oc.tenant_id
+    JOIN public.applications a ON a.id = oc.application_id AND a.tenant_id = oc.tenant_id
+    JOIN public.requisitions r ON r.id = a.requisition_id AND r.tenant_id = oc.tenant_id
+    JOIN public.positions pos ON pos.id = r.position_id AND pos.tenant_id = oc.tenant_id
+    JOIN public.business_units bu ON bu.id = pos.business_unit_id AND bu.tenant_id = oc.tenant_id
+    WHERE oc.tenant_id = ${tenantId} AND oc.id = ${caseId}
+    LIMIT 1
+  `;
+  if (!row) {
+    log.error({ case_id: caseId }, "onboarding.day_zero_hire_payload_lookup_failed");
+    return;
+  }
+
+  const effectiveDate = row.actual_start_date ?? row.expected_start_date;
+  const payload = {
+    pre_hire: {
+      full_name: row.full_name,
+      email: row.email,
+    },
+    position: {
+      title: row.title,
+      business_unit_name: row.business_unit_name,
+      location: row.location,
+    },
+    effective_date: effectiveDate,
+    onboarding_case_id: caseId,
+    source: {
+      application_id: row.application_id,
+      onboarding_case_id: caseId,
+      hired_at: new Date().toISOString(),
+    },
+  };
+
+  const businessKey = dayZeroHireBusinessKey(caseId);
+  try {
+    await sql`
+      INSERT INTO public.workday_sync_outbox
+        (tenant_id, event_type, business_key, subject_application_id, payload)
+      VALUES (${tenantId}, ${DAY_ZERO_HIRE_EVENT_TYPE}, ${businessKey},
+              ${row.application_id}, ${JSON.stringify(payload)}::jsonb)
+    `;
+    log.info({ case_id: caseId, business_key: businessKey }, "onboarding.day_zero_hire_enqueued");
+  } catch (err) {
+    const e = err as { code?: string; constraint_name?: string };
+    if (e.code === "23505" || e.constraint_name === "uniq_workday_sync_outbox_business_key") {
+      log.info(
+        { case_id: caseId, business_key: businessKey },
+        "onboarding.day_zero_hire_already_queued",
+      );
+      return;
+    }
+    log.error({ err, case_id: caseId }, "onboarding.day_zero_hire_enqueue_failed");
+  }
 }
