@@ -36,6 +36,8 @@ const defaultDevOrigins = [
   "http://localhost:3000",
   "http://localhost:3002",
   "http://localhost:3003",
+  // PARTNER-01: the partner portal dev server (see apps/partner-portal).
+  "http://localhost:3005",
 ];
 const allowedOrigins = corsOrigins.length > 0 ? corsOrigins : defaultDevOrigins;
 app.use(

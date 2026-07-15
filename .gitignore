@@ -42,3 +42,4 @@ Thumbs.db
 packages/db/drizzle/migrations/meta.bak/
 apps/internal-portal/tsconfig.tsbuildinfo
 .vercel
+*.tsbuildinfo

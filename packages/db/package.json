@@ -21,6 +21,7 @@
     "db:provision:dev-dek": "tsx src/scripts/provision-dev-dek.ts",
     "db:seed:test-users": "tsx src/scripts/seed-test-users.ts",
     "db:seed:demo-data": "tsx src/scripts/seed-demo-data.ts",
+    "db:seed:partner-demo": "tsx src/scripts/seed-partner-demo.ts",
     "db:groom:demo-data": "tsx src/scripts/groom-demo-data.ts",
     "db:store:demo-ai-credential": "tsx src/scripts/store-demo-ai-credential.ts"
   },

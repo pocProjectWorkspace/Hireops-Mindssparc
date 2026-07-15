@@ -24,6 +24,7 @@
     "db:provision:dev-dek": "pnpm --filter @hireops/db db:provision:dev-dek",
     "db:seed:test-users": "pnpm --filter @hireops/db db:seed:test-users",
     "db:seed:demo-data": "pnpm --filter @hireops/db db:seed:demo-data",
+    "db:seed:partner-demo": "pnpm --filter @hireops/db db:seed:partner-demo",
     "db:groom:demo-data": "pnpm --filter @hireops/db db:groom:demo-data",
     "api:dev": "pnpm --filter @hireops/api dev",
     "api:start": "pnpm --filter @hireops/api start",

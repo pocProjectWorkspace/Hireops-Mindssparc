@@ -31,6 +31,8 @@ import {
   applicationStateTransitions,
   requisitions,
   requisitionKnockouts,
+  partnerAssignments,
+  candidateOwnershipClaims,
   tenantUserMemberships,
   offers,
   workdaySyncOutbox,
@@ -149,6 +151,13 @@ import {
   rejectOnboardingDocumentOutputSchema,
   listTenantMembershipsInputSchema,
   listTenantMembershipsOutputSchema,
+  partnerGetMeOutputSchema,
+  partnerListAssignedRequisitionsInputSchema,
+  partnerListAssignedRequisitionsOutputSchema,
+  partnerListMySubmissionsInputSchema,
+  partnerListMySubmissionsOutputSchema,
+  type PartnerAssignedRequisitionRow,
+  type PartnerSubmissionRow,
   type OnboardingCaseListRow,
   type OnboardingTaskRow,
   type OnboardingDocumentRow,
@@ -164,7 +173,13 @@ import {
 import { parseResume } from "@hireops/ai-client";
 import { enqueueNotification, signLink, hashToken } from "@hireops/notifications";
 import { assertRuleAttachable, IncompatibleApprovalRuleError } from "@hireops/agent-actions";
-import { router, publicProcedure, protectedProcedure, type HonoTRPCContext } from "./trpc-core";
+import {
+  router,
+  publicProcedure,
+  protectedProcedure,
+  partnerProcedure,
+  type HonoTRPCContext,
+} from "./trpc-core";
 import { withAudit } from "./with-audit";
 import {
   createOnboardingCaseForApplication as createOnboardingCase,
@@ -4825,6 +4840,170 @@ export const appRouter = router({
           taskStatus: taskStatus as OnboardingTaskRow["status"] | null,
         };
       });
+    }),
+
+  // ─────────────── PARTNER-01 — partner-portal surface ───────────────
+  // All three are partnerProcedure: the tenant is resolved from
+  // partner_users (NOT the JWT), and every query filters by the resolved
+  // partnerOrgId on top of the tenant_isolation RLS the tx applies —
+  // org-scoping is explicit because the partner tables carry only a
+  // tenant-level policy.
+
+  /**
+   * partnerGetMe — org + role + display identity for the shell header.
+   * Pure read of the already-resolved partner context; no DB round-trip.
+   */
+  partnerGetMe: partnerProcedure.output(partnerGetMeOutputSchema).query(({ ctx }) => {
+    const p = ctx.partner;
+    return {
+      partnerUserId: p.partnerUserId,
+      partnerOrgId: p.partnerOrgId,
+      tenantId: p.tenantId,
+      orgName: p.orgName,
+      displayName: p.displayName,
+      email: p.email,
+      role: p.role === "partner_admin" ? ("partner_admin" as const) : ("partner_user" as const),
+    };
+  }),
+
+  /**
+   * partnerListAssignedRequisitions — the reqs Kyndryl has opened to this
+   * partner org (partner_assignments status='active'), joined to
+   * requisitions + positions for the dashboard cards. Capped for POC scale.
+   */
+  partnerListAssignedRequisitions: partnerProcedure
+    .input(partnerListAssignedRequisitionsInputSchema)
+    .output(partnerListAssignedRequisitionsOutputSchema)
+    .query(async ({ ctx, input }) => {
+      const db = ctx.db;
+      if (!db) {
+        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "partner ctx.db missing" });
+      }
+      const cap = input?.limit ?? 100;
+      const rows = await db
+        .select({
+          requisitionId: requisitions.id,
+          assignmentId: partnerAssignments.id,
+          title: positions.title,
+          location: positions.primaryLocation,
+          requisitionStatus: requisitions.status,
+          numberOfOpenings: requisitions.numberOfOpenings,
+          postedAt: requisitions.postedAt,
+          targetStartDate: requisitions.targetStartDate,
+          assignedAt: partnerAssignments.assignedAt,
+        })
+        .from(partnerAssignments)
+        .innerJoin(
+          requisitions,
+          and(
+            eq(requisitions.tenantId, partnerAssignments.tenantId),
+            eq(requisitions.id, partnerAssignments.requisitionId),
+          ),
+        )
+        .innerJoin(
+          positions,
+          and(
+            eq(positions.tenantId, requisitions.tenantId),
+            eq(positions.id, requisitions.positionId),
+          ),
+        )
+        .where(
+          and(
+            eq(partnerAssignments.tenantId, ctx.partner.tenantId),
+            eq(partnerAssignments.partnerOrgId, ctx.partner.partnerOrgId),
+            eq(partnerAssignments.status, "active"),
+          ),
+        )
+        .orderBy(desc(partnerAssignments.assignedAt))
+        .limit(cap + 1);
+      const capped = rows.length > cap;
+      const items: PartnerAssignedRequisitionRow[] = rows.slice(0, cap).map((r) => ({
+        requisitionId: r.requisitionId,
+        assignmentId: r.assignmentId,
+        title: r.title,
+        location: r.location ?? null,
+        requisitionStatus: r.requisitionStatus,
+        numberOfOpenings: r.numberOfOpenings,
+        postedAt: r.postedAt ? r.postedAt.toISOString() : null,
+        targetStartDate: r.targetStartDate ?? null,
+        assignedAt: r.assignedAt.toISOString(),
+      }));
+      return { items, capped };
+    }),
+
+  /**
+   * partnerListMySubmissions — the org's candidate submissions, read from
+   * candidate_ownership_claims (the Wave-1 submission model per
+   * partner-data-model.md), joined through the claiming application to the
+   * requisition + position for the role title, and to persons for the
+   * candidate name. Returns [] until partner submission flow ships — the
+   * shell renders an explicit empty/coming-soon state in that case.
+   */
+  partnerListMySubmissions: partnerProcedure
+    .input(partnerListMySubmissionsInputSchema)
+    .output(partnerListMySubmissionsOutputSchema)
+    .query(async ({ ctx, input }) => {
+      const db = ctx.db;
+      if (!db) {
+        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "partner ctx.db missing" });
+      }
+      const cap = input?.limit ?? 100;
+      const rows = await db
+        .select({
+          claimId: candidateOwnershipClaims.id,
+          candidateName: persons.fullName,
+          requisitionTitle: positions.title,
+          status: candidateOwnershipClaims.status,
+          claimedAt: candidateOwnershipClaims.claimedAt,
+          expiresAt: candidateOwnershipClaims.expiresAt,
+        })
+        .from(candidateOwnershipClaims)
+        .leftJoin(
+          persons,
+          and(
+            eq(persons.tenantId, candidateOwnershipClaims.tenantId),
+            eq(persons.id, candidateOwnershipClaims.personId),
+          ),
+        )
+        .leftJoin(
+          applications,
+          and(
+            eq(applications.tenantId, candidateOwnershipClaims.tenantId),
+            eq(applications.id, candidateOwnershipClaims.claimedViaApplicationId),
+          ),
+        )
+        .leftJoin(
+          requisitions,
+          and(
+            eq(requisitions.tenantId, applications.tenantId),
+            eq(requisitions.id, applications.requisitionId),
+          ),
+        )
+        .leftJoin(
+          positions,
+          and(
+            eq(positions.tenantId, requisitions.tenantId),
+            eq(positions.id, requisitions.positionId),
+          ),
+        )
+        .where(
+          and(
+            eq(candidateOwnershipClaims.tenantId, ctx.partner.tenantId),
+            eq(candidateOwnershipClaims.partnerOrgId, ctx.partner.partnerOrgId),
+          ),
+        )
+        .orderBy(desc(candidateOwnershipClaims.claimedAt))
+        .limit(cap + 1);
+      const capped = rows.length > cap;
+      const items: PartnerSubmissionRow[] = rows.slice(0, cap).map((r) => ({
+        claimId: r.claimId,
+        candidateName: r.candidateName ?? null,
+        requisitionTitle: r.requisitionTitle ?? null,
+        status: r.status,
+        claimedAt: r.claimedAt.toISOString(),
+        expiresAt: r.expiresAt.toISOString(),
+      }));
+      return { items, capped };
     }),
 });
 

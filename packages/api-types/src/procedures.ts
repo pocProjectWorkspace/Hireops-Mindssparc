@@ -1495,3 +1495,82 @@ export const listTenantMembershipsOutputSchema = z.object({
 });
 export type ListTenantMembershipsInput = z.infer<typeof listTenantMembershipsInputSchema>;
 export type ListTenantMembershipsOutput = z.infer<typeof listTenantMembershipsOutputSchema>;
+
+// ─────────── PARTNER-01 — partner-portal procedures ───────────
+
+/**
+ * Partner identity + org for the shell. Resolved from the partner_users
+ * row (via the api's partnerProcedure) — never from tenant_user_memberships.
+ * `role` is the partner-side RBAC role ('partner_admin' | 'partner_user').
+ */
+export const partnerGetMeOutputSchema = z.object({
+  partnerUserId: z.string().uuid(),
+  partnerOrgId: z.string().uuid(),
+  tenantId: z.string().uuid(),
+  orgName: z.string(),
+  displayName: z.string(),
+  email: z.string(),
+  role: z.enum(["partner_admin", "partner_user"]),
+});
+export type PartnerGetMeOutput = z.infer<typeof partnerGetMeOutputSchema>;
+
+/**
+ * One assigned-req card. Columns the dashboard needs — title + location +
+ * status + dates + openings. Assignment scoping (partner_org_id) is applied
+ * server-side; the partner never sees other orgs' assignments or the full
+ * candidate pipeline count.
+ */
+export const partnerAssignedRequisitionRowSchema = z.object({
+  requisitionId: z.string().uuid(),
+  assignmentId: z.string().uuid(),
+  title: z.string(),
+  location: z.string().nullable(),
+  requisitionStatus: z.string(),
+  numberOfOpenings: z.number().int(),
+  postedAt: z.string().nullable(),
+  targetStartDate: z.string().nullable(),
+  assignedAt: z.string(),
+});
+export type PartnerAssignedRequisitionRow = z.infer<typeof partnerAssignedRequisitionRowSchema>;
+
+export const partnerListAssignedRequisitionsInputSchema = z
+  .object({ limit: z.number().int().min(1).max(200).optional() })
+  .optional();
+export const partnerListAssignedRequisitionsOutputSchema = z.object({
+  items: z.array(partnerAssignedRequisitionRowSchema),
+  capped: z.boolean(),
+});
+export type PartnerListAssignedRequisitionsInput = z.infer<
+  typeof partnerListAssignedRequisitionsInputSchema
+>;
+export type PartnerListAssignedRequisitionsOutput = z.infer<
+  typeof partnerListAssignedRequisitionsOutputSchema
+>;
+
+/**
+ * One submission row, read from candidate_ownership_claims (the honest
+ * Wave-1 submission model per partner-data-model.md — `submissions` is an
+ * alias for applications+ownership claims). The partner sees stage/status +
+ * date only, never internal scoring or feedback (partner-wireflows §3.7/3.8).
+ * At POC scale nothing seeds partner claims yet, so this returns [] and the
+ * shell renders an explicit empty state.
+ */
+export const partnerSubmissionRowSchema = z.object({
+  claimId: z.string().uuid(),
+  candidateName: z.string().nullable(),
+  requisitionTitle: z.string().nullable(),
+  status: z.string(),
+  claimedAt: z.string(),
+  expiresAt: z.string(),
+});
+export type PartnerSubmissionRow = z.infer<typeof partnerSubmissionRowSchema>;
+
+export const partnerListMySubmissionsInputSchema = z
+  .object({ limit: z.number().int().min(1).max(200).optional() })
+  .optional();
+export const partnerListMySubmissionsOutputSchema = z.object({
+  items: z.array(partnerSubmissionRowSchema),
+  capped: z.boolean(),
+});
+export type PartnerListMySubmissionsInput = z.infer<typeof partnerListMySubmissionsInputSchema>;
+export type PartnerListMySubmissionsOutput = z.infer<typeof partnerListMySubmissionsOutputSchema>;
