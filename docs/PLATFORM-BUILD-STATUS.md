@@ -19,6 +19,10 @@
 - France/Germany targets put **GDPR + FR/DE i18n** (currently 0%) on the future radar — flagged, not current work.
 - Active pillar: **onboarding** (ONBOARD-01, schema first). Revised §6 order: onboarding → partner portal + commercials → offboarding → cross-cutting hardening.
 
+**Update 15 July 2026 (main @ `a3f38be` + local): ONBOARDING PILLAR COMPLETE — ONBOARD-01→06 shipped in ~24h.** Schema (8 tables, migrations 0045–0049) → case lifecycle (accept-hook auto-creation, geography-filtered checklist, 5 procedures) → `/onboarding` surface (list + deep-linkable case detail) → names/assignment/editable header + groom classes + 6-case demo seed → document upload/verify/reject with PII-logged proxied downloads (blob envelope encryption deferred; Supabase at-rest meanwhile) → Day-0 sim-Workday hire (`hire_employee_day_zero` outbox event, idempotent per case) with Worker-ID write-back in the sim drain + "Hired in Workday · simulated" badge. `onboarding.test.ts` (20 tests) is in the test:gate list. Seed pre-stamps wids (a58x) on advanced cases. **PARTNER-01 (portal shell) in flight.**
+
+**Staging deploy reality (learned 15 July, cost a staging bug):** Vercel auto-deploys main; **Railway does NOT** — both services were silently 2 days stale (`listOnboardingCases` 404'd from the browser → the "/onboarding filter shows nothing" bug; unfiltered view worked because the portal server-renders in-process, reality #116). `railway redeploy --from-source` re-pulls the OLD uploaded snapshot (a no-op); the correct command after any push touching apps/api, apps/workers, or shared packages is `railway up --service api --detach -y && railway up --service workers --detach -y` from a clean repo root. Fix permanently by connecting both services to GitHub auto-deploy (dashboard → service → Settings → Source). Also learned: executor gates must include `pnpm format:check` (prettier drift broke CI twice: 9f00545, 9fa9519) and executors must never park on background waiters (three watchdog kills on 14–15 July; gate = one foreground tee'd command).
+
 **Pre-demo runbook (3 commands + 1 check):**
 1. `pnpm db:groom:demo-data --execute` (sweeps any test residue since the last CI run)
 2. `pnpm db:seed:demo-data` (fresh timestamps: Rohan 7d stale + pending approval a599, Meera 6d live-fire target)
@@ -32,7 +36,8 @@
 4. Local-dev-only pino thread-stream crash in next dev (drawer detail errors in dev only; production unaffected) — annoyance, not a defect.
 5. Multi-application deep-links select >1 row (test-data pattern; mostly moot post-grooming).
 6. HANDOVER.md ticket log: add DESIGN-01→04, UX-01, GROOM-01, staging-deploy entries (docs debt; commit messages are canonical meanwhile).
-7. Then the post-demo roadmap per §6 **as revised 14 July**: onboarding pillar (ACTIVE) → partner portal + commercials → offboarding → cross-cutting. Real Workday: deferred to a post-deal work package.
+7. Then the post-demo roadmap per §6 **as revised 14 July**: ~~onboarding pillar~~ **DONE 15 July (ONBOARD-01→06)** → partner portal + commercials (ACTIVE — PARTNER-01 shell in flight) → offboarding → cross-cutting. Real Workday: deferred to a post-deal work package.
+8. New follow-ups from the onboarding sprint: blob envelope encryption for onboarding documents (Supabase at-rest meanwhile); candidate-facing document upload page (signed-link pattern exists); membership-picker `@hireops/ui` Input `date` variant; Railway GitHub auto-deploy (kills the stale-staging class); HANDOVER ticket log now also owes ONBOARD-01→06 + PARTNER-01 entries.
 
 **Read alongside this doc:**
 - `docs/requirements.md` — the full product requirements (the denominator for §5 below).
