@@ -24,6 +24,7 @@ import { TRPCError } from "@trpc/server";
 import { and, desc, eq, gte, inArray, lt, lte, sql as dsql } from "drizzle-orm";
 import {
   db as poolDb,
+  tenants,
   persons,
   candidates,
   candidateDedupAttempts,
@@ -31,6 +32,13 @@ import {
   applicationStateTransitions,
   requisitions,
   requisitionKnockouts,
+  requisitionStateTransitions,
+  positions,
+  businessUnits,
+  jdVersions,
+  jdSkills,
+  approvalChains,
+  approvalMatrices,
   partnerAssignments,
   candidateOwnershipClaims,
   tenantUserMemberships,
@@ -75,6 +83,18 @@ import {
   listRequisitionSummariesOutputSchema,
   listRequisitionApprovalsInputSchema,
   listRequisitionApprovalsOutputSchema,
+  createRequisitionDraftInputSchema,
+  createRequisitionDraftOutputSchema,
+  generateJdDraftInputSchema,
+  generateJdDraftOutputSchema,
+  updateRequisitionDraftInputSchema,
+  updateRequisitionDraftOutputSchema,
+  submitRequisitionForApprovalInputSchema,
+  submitRequisitionForApprovalOutputSchema,
+  getRequisitionDetailInputSchema,
+  getRequisitionDetailOutputSchema,
+  jdSectionsSchema,
+  type RequisitionKnockoutInput,
   listApplicationsInputSchema,
   listApplicationsOutputSchema,
   advanceApplicationInputSchema,
@@ -179,7 +199,17 @@ import {
   type PendingApprovalItem,
   type GetApprovalRequestOutput,
 } from "@hireops/api-types";
-import { parseResume } from "@hireops/ai-client";
+import { parseResume, getAIClient } from "@hireops/ai-client";
+import {
+  buildJdGenerationPrompt,
+  jdGenerationResponseJsonSchema,
+  jdGenerationResponseSchema,
+  composeJdText,
+  JD_GENERATION_PROMPT_VERSION,
+  JD_GENERATION_SCHEMA_NAME,
+  JD_GENERATION_FEATURE,
+  type JdGenerationResponse,
+} from "../lib/jd-generation";
 import { enqueueNotification, signLink, hashToken } from "@hireops/notifications";
 import { assertRuleAttachable, IncompatibleApprovalRuleError } from "@hireops/agent-actions";
 import {
@@ -197,7 +227,6 @@ import {
   resolveGeographyCode,
 } from "../lib/onboarding-case";
 import { getStorageClient } from "../lib/storage";
-import { tenants, positions } from "@hireops/db";
 
 /**
  * Lowercase, drop +suffix in the local part. Gmail dot-stripping is
@@ -242,6 +271,11 @@ function requireDb(ctx: HonoTRPCContext) {
 // are the persona-visibility layer on top.
 const REQUISITION_READ_ROLES = new Set(["admin", "hiring_manager", "recruiter"]);
 const REQUISITION_APPROVAL_READ_ROLES = new Set(["admin", "hr_head"]);
+// REQ-02 creation mutations. hiring_manager (the requirement owner) + admin.
+// NOT recruiter: recruiters request reqs via a different flow later (Wave A
+// note in the ticket); a recruiter hitting a mutation gets FORBIDDEN. RLS
+// still scopes rows to the tenant on top of this persona gate.
+const REQUISITION_WRITE_ROLES = new Set(["admin", "hiring_manager"]);
 
 /**
  * Throws FORBIDDEN unless the caller holds any role in `allowed`. Same
@@ -1195,16 +1229,35 @@ export const appRouter = router({
         "Requisition-approval access requires the hr_head or admin role",
       );
       const db = requireDb(ctx);
+      // REQ-02: enrich the skeleton with the requisition title via an
+      // app-layer join subject_id → requisitions → positions. subject_id is
+      // deliberately not FK'd, so this is a left join keyed on (tenant, id);
+      // RLS scopes every table to the caller's tenant.
       const rows = await db
         .select({
           id: approvalRequests.id,
           subjectId: approvalRequests.subjectId,
+          title: positions.title,
           status: approvalRequests.status,
           currentStepIndex: approvalRequests.currentStepIndex,
           requestedAt: approvalRequests.requestedAt,
           createdAt: approvalRequests.createdAt,
         })
         .from(approvalRequests)
+        .leftJoin(
+          requisitions,
+          and(
+            eq(approvalRequests.tenantId, requisitions.tenantId),
+            eq(approvalRequests.subjectId, requisitions.id),
+          ),
+        )
+        .leftJoin(
+          positions,
+          and(
+            eq(requisitions.tenantId, positions.tenantId),
+            eq(requisitions.positionId, positions.id),
+          ),
+        )
         .where(eq(approvalRequests.subjectType, "requisition"))
         .orderBy(desc(approvalRequests.createdAt))
         .limit(input.limit);
@@ -1212,11 +1265,710 @@ export const appRouter = router({
         rows: rows.map((r) => ({
           id: r.id,
           subjectId: r.subjectId,
+          title: r.title ?? null,
           status: r.status,
           currentStepIndex: r.currentStepIndex,
           requestedAt: r.requestedAt.toISOString(),
           createdAt: r.createdAt.toISOString(),
         })),
+      };
+    }),
+
+  // ═══════════ REQ-02: requisition creation (draft → JD → skills → submit) ═══════════
+
+  /**
+   * createRequisitionDraft — the wizard "Basics" step. Creates the
+   * position (resolving-or-creating the department business_unit), a draft
+   * jd_version placeholder (the JD step fills it), the requisition (status
+   * draft, self-assigned to the creating hiring manager as the placeholder
+   * recruiter — recruiter reassignment is a later flow), and the first
+   * requisition_state_transition (→ draft). Transactional: any throw rolls
+   * back the whole chain (protectedProcedure's per-call tx). hiring_manager
+   * + admin only.
+   */
+  createRequisitionDraft: protectedProcedure
+    .input(createRequisitionDraftInputSchema)
+    .output(createRequisitionDraftOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      return withAudit("create_requisition_draft", ctx, input, async () => {
+        requireAnyRole(
+          ctx,
+          REQUISITION_WRITE_ROLES,
+          "Creating a requisition requires the hiring_manager or admin role",
+        );
+        const db = requireDb(ctx);
+        if (!ctx.tenantId) {
+          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
+        }
+        const tenantId = ctx.tenantId;
+        const membershipId = await resolveActorMembership(db, ctx);
+        if (!membershipId) {
+          throw new TRPCError({
+            code: "FORBIDDEN",
+            message: "Creating membership not found for this tenant",
+          });
+        }
+
+        // Resolve-or-create the department business_unit by slug.
+        const buSlug = slugifyDepartment(input.department);
+        const [existingBu] = await db
+          .select({ id: businessUnits.id })
+          .from(businessUnits)
+          .where(and(eq(businessUnits.tenantId, tenantId), eq(businessUnits.slug, buSlug)))
+          .limit(1);
+        let businessUnitId = existingBu?.id;
+        if (!businessUnitId) {
+          const [createdBu] = await db
+            .insert(businessUnits)
+            .values({ tenantId, name: input.department.trim(), slug: buSlug })
+            .returning({ id: businessUnits.id });
+          businessUnitId = createdBu?.id;
+        }
+        if (!businessUnitId) {
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: "business_unit resolution returned no row",
+          });
+        }
+
+        // Create the position. An active position can't share a title in
+        // the same BU (partial unique) — surface a clean 400 rather than a
+        // raw 23505 so the hiring manager can pick a more specific title.
+        let positionId: string;
+        try {
+          const [pos] = await db
+            .insert(positions)
+            .values({
+              tenantId,
+              businessUnitId,
+              title: input.title.trim(),
+              level: input.seniority ?? null,
+              locationType: input.locationType,
+              primaryLocation: input.primaryLocation ?? null,
+              compBandMin: input.compBandMin !== undefined ? String(input.compBandMin) : null,
+              compBandMax: input.compBandMax !== undefined ? String(input.compBandMax) : null,
+              compCurrency: input.compCurrency ?? null,
+              hiringManagerId: membershipId,
+              createdBy: membershipId,
+            })
+            .returning({ id: positions.id });
+          if (!pos) {
+            throw new TRPCError({
+              code: "INTERNAL_SERVER_ERROR",
+              message: "position insert returned no row",
+            });
+          }
+          positionId = pos.id;
+        } catch (err) {
+          if (isUniqueViolation(err)) {
+            throw new TRPCError({
+              code: "BAD_REQUEST",
+              message: `An active position titled "${input.title.trim()}" already exists in ${input.department.trim()}. Pick a more specific title.`,
+            });
+          }
+          throw err;
+        }
+
+        // Draft JD version — placeholder body; the JD step fills it. jd_text
+        // is NOT NULL, so seed a sentinel we can detect as "not yet drafted".
+        const [jd] = await db
+          .insert(jdVersions)
+          .values({
+            tenantId,
+            positionId,
+            versionNumber: 1,
+            status: "draft",
+            jdText: JD_DRAFT_PLACEHOLDER,
+            summary: null,
+            aiMetadata: {},
+            createdBy: membershipId,
+          })
+          .returning({ id: jdVersions.id });
+        if (!jd) {
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: "jd_version insert returned no row",
+          });
+        }
+
+        // The requisition — status draft, self-assigned to the creating
+        // hiring manager. headcount_envelope_id stays NULL (envelope/budget
+        // governance is out of REQ-02 scope; the FK is nullable). public_slug
+        // uses the DB default (uuid-keyed) — a human slug is set at posting.
+        const [req] = await db
+          .insert(requisitions)
+          .values({
+            tenantId,
+            positionId,
+            jdVersionId: jd.id,
+            primaryRecruiterId: membershipId,
+            hiringManagerId: membershipId,
+            status: "draft",
+            numberOfOpenings: input.numberOfOpenings,
+            targetStartDate: input.targetStartDate ?? null,
+            isPublic: false,
+            createdBy: membershipId,
+          })
+          .returning({ id: requisitions.id });
+        if (!req) {
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: "requisition insert returned no row",
+          });
+        }
+
+        await db.insert(requisitionStateTransitions).values({
+          tenantId,
+          requisitionId: req.id,
+          fromStatus: null,
+          toStatus: "draft",
+          transitionedBy: membershipId,
+          reason: "Requisition draft created",
+        });
+
+        return { requisitionId: req.id };
+      });
+    }),
+
+  /**
+   * generateJdDraft — the wizard "JD" step. Calls the tenant's configured
+   * LLM through @hireops/ai-client (the same pluggable path AI scoring uses;
+   * NODE_ENV=test / AI_CLIENT_MODE=local → LocalAIClient fixtures) to produce
+   * structured JD sections, renders them into jd_text, and updates the
+   * requisition's draft jd_version. The AI client writes the ai_usage_logs
+   * row itself (success + failure). Regeneration allowed while draft — it
+   * overwrites the same version row. hiring_manager + admin only.
+   */
+  generateJdDraft: protectedProcedure
+    .input(generateJdDraftInputSchema)
+    .output(generateJdDraftOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      return withAudit("generate_jd_draft", ctx, input, async () => {
+        requireAnyRole(
+          ctx,
+          REQUISITION_WRITE_ROLES,
+          "Generating a JD requires the hiring_manager or admin role",
+        );
+        const db = requireDb(ctx);
+        if (!ctx.tenantId) {
+          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
+        }
+        const tenantId = ctx.tenantId;
+        const membershipId = await resolveActorMembership(db, ctx);
+
+        const facet = await loadDraftRequisitionFacet(db, input.requisitionId);
+        if (facet.status !== "draft") {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: "JD can only be generated while the requisition is a draft",
+          });
+        }
+
+        const skillRows = await db
+          .select({
+            skillName: jdSkills.skillName,
+            weight: jdSkills.weight,
+            isRequired: jdSkills.isRequired,
+          })
+          .from(jdSkills)
+          .where(and(eq(jdSkills.tenantId, tenantId), eq(jdSkills.jdVersionId, facet.jdVersionId)));
+
+        const companyName = await resolveTenantDisplayName(tenantId);
+        const { system, user } = buildJdGenerationPrompt({
+          positionTitle: facet.title,
+          locationType: facet.locationType,
+          primaryLocation: facet.primaryLocation,
+          seniority: facet.level,
+          employmentType: null,
+          companyName,
+          skills: skillRows.map((s) => ({
+            skillName: s.skillName,
+            weight: Number(s.weight),
+            isRequired: s.isRequired,
+          })),
+          extraContext: input.extraContext ?? null,
+        });
+
+        const client = await getAIClient(tenantId);
+        const raw = await client.completeStructured<JdGenerationResponse>({
+          prompt: user,
+          system,
+          schema: jdGenerationResponseJsonSchema,
+          schemaName: JD_GENERATION_SCHEMA_NAME,
+          feature: JD_GENERATION_FEATURE,
+          requestId: ctx.requestId,
+          actorMembershipId: membershipId,
+        });
+        // Trust-but-verify: the AI client guarantees schema-shaped output,
+        // but we re-parse so a provider quirk can't smuggle a bad shape into
+        // the DB.
+        const sections = jdGenerationResponseSchema.parse(raw);
+        const jdText = composeJdText(sections, facet.title);
+
+        await db
+          .update(jdVersions)
+          .set({
+            jdText,
+            summary: sections.summary,
+            aiMetadata: {
+              sections,
+              prompt_version: JD_GENERATION_PROMPT_VERSION,
+              model: client.provider,
+              generated_at: new Date().toISOString(),
+            },
+            updatedAt: new Date(),
+          })
+          .where(and(eq(jdVersions.tenantId, tenantId), eq(jdVersions.id, facet.jdVersionId)));
+
+        return {
+          jdVersionId: facet.jdVersionId,
+          sections,
+          promptVersion: JD_GENERATION_PROMPT_VERSION,
+          model: client.provider,
+        };
+      });
+    }),
+
+  /**
+   * updateRequisitionDraft — the wizard "JD edits + Skills & knockouts"
+   * step. Replace-set semantics while draft: supplied sections overwrite the
+   * JD version's text/summary; supplied skills / knockouts are
+   * delete-all-then-insert. Omitted fields are untouched. Rejects non-draft
+   * requisitions (edit-after-submit is out of scope). hiring_manager + admin.
+   */
+  updateRequisitionDraft: protectedProcedure
+    .input(updateRequisitionDraftInputSchema)
+    .output(updateRequisitionDraftOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      return withAudit("update_requisition_draft", ctx, input, async () => {
+        requireAnyRole(
+          ctx,
+          REQUISITION_WRITE_ROLES,
+          "Editing a requisition draft requires the hiring_manager or admin role",
+        );
+        const db = requireDb(ctx);
+        if (!ctx.tenantId) {
+          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
+        }
+        const tenantId = ctx.tenantId;
+
+        const facet = await loadDraftRequisitionFacet(db, input.requisitionId);
+        if (facet.status !== "draft") {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: "A requisition can only be edited while it is a draft",
+          });
+        }
+
+        // JD section edits → recompose jd_text, keep sections in ai_metadata.
+        if (input.sections) {
+          const jdText = composeJdText(input.sections, facet.title);
+          await db
+            .update(jdVersions)
+            .set({
+              jdText,
+              summary: input.sections.summary,
+              aiMetadata: {
+                sections: input.sections,
+                edited_at: new Date().toISOString(),
+              },
+              updatedAt: new Date(),
+            })
+            .where(and(eq(jdVersions.tenantId, tenantId), eq(jdVersions.id, facet.jdVersionId)));
+        }
+
+        // Skills → replace-set on the JD version.
+        if (input.skills) {
+          await db
+            .delete(jdSkills)
+            .where(
+              and(eq(jdSkills.tenantId, tenantId), eq(jdSkills.jdVersionId, facet.jdVersionId)),
+            );
+          if (input.skills.length > 0) {
+            await db.insert(jdSkills).values(
+              input.skills.map((s) => ({
+                tenantId,
+                jdVersionId: facet.jdVersionId,
+                skillName: s.skillName.trim(),
+                weight: String(s.weight),
+                isRequired: s.isRequired,
+              })),
+            );
+          }
+        }
+
+        // Knockouts → replace-set on the requisition. threshold_value carries
+        // the field_path the apply-flow evaluator walks, plus the typed
+        // threshold — so these rows are directly consumable by
+        // evaluateKnockouts (@hireops/ai-scoring).
+        if (input.knockouts) {
+          await db
+            .delete(requisitionKnockouts)
+            .where(
+              and(
+                eq(requisitionKnockouts.tenantId, tenantId),
+                eq(requisitionKnockouts.requisitionId, input.requisitionId),
+              ),
+            );
+          if (input.knockouts.length > 0) {
+            await db.insert(requisitionKnockouts).values(
+              input.knockouts.map((k, i) => ({
+                tenantId,
+                requisitionId: input.requisitionId,
+                questionText: k.questionText.trim(),
+                type: k.type,
+                thresholdValue: buildKnockoutThreshold(k),
+                source: k.source,
+                orderIndex: i,
+              })),
+            );
+          }
+        }
+
+        const [{ value: skillCount } = { value: 0 }] = await db
+          .select({ value: dsql<number>`count(*)::int` })
+          .from(jdSkills)
+          .where(and(eq(jdSkills.tenantId, tenantId), eq(jdSkills.jdVersionId, facet.jdVersionId)));
+        const [{ value: knockoutCount } = { value: 0 }] = await db
+          .select({ value: dsql<number>`count(*)::int` })
+          .from(requisitionKnockouts)
+          .where(
+            and(
+              eq(requisitionKnockouts.tenantId, tenantId),
+              eq(requisitionKnockouts.requisitionId, input.requisitionId),
+            ),
+          );
+
+        return { ok: true as const, skillCount, knockoutCount };
+      });
+    }),
+
+  /**
+   * submitRequisitionForApproval — the wizard "Review & submit" step.
+   * Validates a small honest checklist (title, a generated/edited JD, ≥1
+   * skill), resolves-or-creates the single-step "HR Head approval" chain,
+   * raises the approval_request (idempotent via the partial unique — a
+   * second submit returns a clean alreadySubmitted), and transitions the
+   * requisition draft → pending_approval with a state-transition row. After
+   * this the req appears in the HR-head queue. hiring_manager + admin only.
+   */
+  submitRequisitionForApproval: protectedProcedure
+    .input(submitRequisitionForApprovalInputSchema)
+    .output(submitRequisitionForApprovalOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      return withAudit("submit_requisition_for_approval", ctx, input, async () => {
+        requireAnyRole(
+          ctx,
+          REQUISITION_WRITE_ROLES,
+          "Submitting a requisition requires the hiring_manager or admin role",
+        );
+        const db = requireDb(ctx);
+        if (!ctx.tenantId) {
+          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
+        }
+        const tenantId = ctx.tenantId;
+        const membershipId = await resolveActorMembership(db, ctx);
+
+        const facet = await loadDraftRequisitionFacet(db, input.requisitionId);
+
+        // Idempotency: if it's already left draft and a pending request
+        // exists, that's a clean re-submit — surface it, don't error.
+        if (facet.status !== "draft") {
+          const [pending] = await db
+            .select({
+              id: approvalRequests.id,
+              status: approvalRequests.status,
+            })
+            .from(approvalRequests)
+            .where(
+              and(
+                eq(approvalRequests.tenantId, tenantId),
+                eq(approvalRequests.subjectType, "requisition"),
+                eq(approvalRequests.subjectId, input.requisitionId),
+                eq(approvalRequests.status, "pending"),
+              ),
+            )
+            .limit(1);
+          if (pending) {
+            return {
+              approvalRequestId: pending.id,
+              status: pending.status,
+              alreadySubmitted: true,
+            };
+          }
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: `Requisition is ${facet.status}, not a draft — nothing to submit`,
+          });
+        }
+
+        // Completeness checklist — small + honest.
+        const problems: string[] = [];
+        if (!facet.title || facet.title.trim().length === 0) problems.push("a title");
+        if (facet.jdText === JD_DRAFT_PLACEHOLDER || !facet.jdSummary) {
+          problems.push("a job description (generate or write one)");
+        }
+        const [{ value: skillCount } = { value: 0 }] = await db
+          .select({ value: dsql<number>`count(*)::int` })
+          .from(jdSkills)
+          .where(and(eq(jdSkills.tenantId, tenantId), eq(jdSkills.jdVersionId, facet.jdVersionId)));
+        if (skillCount < 1) problems.push("at least one skill");
+        if (problems.length > 0) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: `Cannot submit — the requisition still needs ${problems.join(", ")}.`,
+          });
+        }
+
+        // Resolve-or-create the single-step requisition approval matrix,
+        // then a fresh immutable chain per submission.
+        const chainId = await resolveRequisitionApprovalChain(db, tenantId, membershipId);
+
+        // Raise the approval request idempotently: the partial unique
+        // (tenant, subject_type, subject_id) WHERE status='pending' is the
+        // backstop. ON CONFLICT DO NOTHING → empty result means a pending
+        // request already exists (race with a concurrent submit).
+        const inserted = await db
+          .insert(approvalRequests)
+          .values({
+            tenantId,
+            chainId,
+            subjectType: "requisition",
+            subjectId: input.requisitionId,
+            status: "pending",
+            currentStepIndex: 0,
+            requestedByMembershipId: membershipId,
+            context: { requisition_title: facet.title },
+          })
+          .onConflictDoNothing()
+          .returning({ id: approvalRequests.id });
+
+        if (inserted.length === 0) {
+          const [pending] = await db
+            .select({ id: approvalRequests.id, status: approvalRequests.status })
+            .from(approvalRequests)
+            .where(
+              and(
+                eq(approvalRequests.tenantId, tenantId),
+                eq(approvalRequests.subjectType, "requisition"),
+                eq(approvalRequests.subjectId, input.requisitionId),
+                eq(approvalRequests.status, "pending"),
+              ),
+            )
+            .limit(1);
+          if (!pending) {
+            throw new TRPCError({
+              code: "INTERNAL_SERVER_ERROR",
+              message: "approval_request conflict but no pending row found",
+            });
+          }
+          return {
+            approvalRequestId: pending.id,
+            status: pending.status,
+            alreadySubmitted: true,
+          };
+        }
+        const approvalRow = inserted[0];
+        if (!approvalRow) {
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: "approval_request insert returned no row",
+          });
+        }
+
+        // Transition the requisition draft → pending_approval.
+        await db
+          .update(requisitions)
+          .set({ status: "pending_approval", updatedAt: new Date() })
+          .where(
+            and(eq(requisitions.tenantId, tenantId), eq(requisitions.id, input.requisitionId)),
+          );
+        await db.insert(requisitionStateTransitions).values({
+          tenantId,
+          requisitionId: input.requisitionId,
+          fromStatus: "draft",
+          toStatus: "pending_approval",
+          transitionedBy: membershipId,
+          reason: "Submitted for HR-head approval",
+          metadata: { approval_request_id: approvalRow.id },
+        });
+
+        return {
+          approvalRequestId: approvalRow.id,
+          status: "pending",
+          alreadySubmitted: false,
+        };
+      });
+    }),
+
+  /**
+   * getRequisitionDetail — the full read for the /requisitions/[id] detail
+   * page: requisition + position + current JD (text/summary/sections) +
+   * skills + knockouts + latest approval state. REQUISITION_READ_ROLES.
+   */
+  getRequisitionDetail: protectedProcedure
+    .input(getRequisitionDetailInputSchema)
+    .output(getRequisitionDetailOutputSchema)
+    .query(async ({ ctx, input }) => {
+      requireAnyRole(
+        ctx,
+        REQUISITION_READ_ROLES,
+        "Requisition access requires the hiring_manager, recruiter, or admin role",
+      );
+      const db = requireDb(ctx);
+      if (!ctx.tenantId) {
+        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
+      }
+      const tenantId = ctx.tenantId;
+
+      const [row] = await db
+        .select({
+          id: requisitions.id,
+          status: requisitions.status,
+          numberOfOpenings: requisitions.numberOfOpenings,
+          targetStartDate: requisitions.targetStartDate,
+          publicSlug: requisitions.publicSlug,
+          createdAt: requisitions.createdAt,
+          positionId: positions.id,
+          title: positions.title,
+          department: businessUnits.name,
+          locationType: positions.locationType,
+          primaryLocation: positions.primaryLocation,
+          seniority: positions.level,
+          compBandMin: positions.compBandMin,
+          compBandMax: positions.compBandMax,
+          compCurrency: positions.compCurrency,
+          jdVersionId: jdVersions.id,
+          jdText: jdVersions.jdText,
+          jdSummary: jdVersions.summary,
+          jdMetadata: jdVersions.aiMetadata,
+          jdStatus: jdVersions.status,
+        })
+        .from(requisitions)
+        .innerJoin(
+          positions,
+          and(
+            eq(requisitions.tenantId, positions.tenantId),
+            eq(requisitions.positionId, positions.id),
+          ),
+        )
+        .leftJoin(
+          businessUnits,
+          and(
+            eq(positions.tenantId, businessUnits.tenantId),
+            eq(positions.businessUnitId, businessUnits.id),
+          ),
+        )
+        .innerJoin(
+          jdVersions,
+          and(
+            eq(requisitions.tenantId, jdVersions.tenantId),
+            eq(requisitions.jdVersionId, jdVersions.id),
+          ),
+        )
+        .where(and(eq(requisitions.tenantId, tenantId), eq(requisitions.id, input.requisitionId)))
+        .limit(1);
+      if (!row) {
+        throw new TRPCError({ code: "NOT_FOUND", message: "Requisition not found" });
+      }
+
+      const skills = await db
+        .select({
+          id: jdSkills.id,
+          skillName: jdSkills.skillName,
+          weight: jdSkills.weight,
+          isRequired: jdSkills.isRequired,
+        })
+        .from(jdSkills)
+        .where(and(eq(jdSkills.tenantId, tenantId), eq(jdSkills.jdVersionId, row.jdVersionId)))
+        .orderBy(desc(jdSkills.isRequired));
+
+      const knockouts = await db
+        .select({
+          id: requisitionKnockouts.id,
+          questionText: requisitionKnockouts.questionText,
+          type: requisitionKnockouts.type,
+          source: requisitionKnockouts.source,
+          thresholdValue: requisitionKnockouts.thresholdValue,
+          orderIndex: requisitionKnockouts.orderIndex,
+        })
+        .from(requisitionKnockouts)
+        .where(
+          and(
+            eq(requisitionKnockouts.tenantId, tenantId),
+            eq(requisitionKnockouts.requisitionId, row.id),
+          ),
+        )
+        .orderBy(requisitionKnockouts.orderIndex);
+
+      const [approval] = await db
+        .select({
+          id: approvalRequests.id,
+          status: approvalRequests.status,
+          currentStepIndex: approvalRequests.currentStepIndex,
+          requestedAt: approvalRequests.requestedAt,
+          decidedAt: approvalRequests.decidedAt,
+        })
+        .from(approvalRequests)
+        .where(
+          and(
+            eq(approvalRequests.tenantId, tenantId),
+            eq(approvalRequests.subjectType, "requisition"),
+            eq(approvalRequests.subjectId, row.id),
+          ),
+        )
+        .orderBy(desc(approvalRequests.createdAt))
+        .limit(1);
+
+      const meta = (row.jdMetadata ?? {}) as Record<string, unknown>;
+      const rawSections = meta.sections;
+      const parsedSections = jdSectionsSchema.safeParse(rawSections);
+
+      return {
+        id: row.id,
+        status: row.status,
+        numberOfOpenings: row.numberOfOpenings,
+        targetStartDate: row.targetStartDate ?? null,
+        publicSlug: row.publicSlug ?? null,
+        createdAt: row.createdAt.toISOString(),
+        positionId: row.positionId,
+        title: row.title,
+        department: row.department ?? null,
+        locationType: row.locationType,
+        primaryLocation: row.primaryLocation ?? null,
+        seniority: row.seniority ?? null,
+        compBandMin: row.compBandMin ?? null,
+        compBandMax: row.compBandMax ?? null,
+        compCurrency: row.compCurrency ?? null,
+        jdVersionId: row.jdVersionId,
+        jdText: row.jdText,
+        jdSummary: row.jdSummary ?? null,
+        jdSections: parsedSections.success ? parsedSections.data : null,
+        jdStatus: row.jdStatus,
+        skills: skills.map((s) => ({
+          id: s.id,
+          skillName: s.skillName,
+          weight: Number(s.weight),
+          isRequired: s.isRequired,
+        })),
+        knockouts: knockouts.map((k) => ({
+          id: k.id,
+          questionText: k.questionText,
+          type: k.type,
+          source: k.source,
+          thresholdValue: k.thresholdValue,
+          orderIndex: k.orderIndex,
+        })),
+        approval: approval
+          ? {
+              id: approval.id,
+              status: approval.status,
+              currentStepIndex: approval.currentStepIndex,
+              requestedAt: approval.requestedAt.toISOString(),
+              decidedAt: approval.decidedAt ? approval.decidedAt.toISOString() : null,
+            }
+          : null,
+        isDraft: row.status === "draft",
       };
     }),
 
@@ -6093,6 +6845,208 @@ async function resolveActorMembership(
     )
     .limit(1);
   return row?.id ?? null;
+}
+
+// ─────────── REQ-02: requisition-creation helpers ───────────
+
+/**
+ * Sentinel jd_text for a freshly-created draft JD version. Detected at submit
+ * time to require the hiring manager to actually generate/write a JD before
+ * submission. jd_text is NOT NULL, so we can't leave it empty.
+ */
+const JD_DRAFT_PLACEHOLDER = "(draft — generate or write the job description)";
+
+/** Slugify a free-text department into a business_unit slug. */
+function slugifyDepartment(name: string): string {
+  const slug = name
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 60);
+  return slug.length >= 2 ? slug : `bu-${slug}`;
+}
+
+/** Postgres unique-violation detector (SQLSTATE 23505), driver-tolerant. */
+function isUniqueViolation(err: unknown): boolean {
+  if (!err || typeof err !== "object") return false;
+  const e = err as { code?: string; cause?: { code?: string } };
+  return e.code === "23505" || e.cause?.code === "23505";
+}
+
+interface DraftRequisitionFacet {
+  requisitionId: string;
+  status: string;
+  positionId: string;
+  title: string;
+  locationType: string;
+  primaryLocation: string | null;
+  level: string | null;
+  jdVersionId: string;
+  jdText: string;
+  jdSummary: string | null;
+}
+
+/**
+ * Load the requisition + its position + its locked draft JD version in one
+ * shot. Throws NOT_FOUND if the requisition doesn't exist (RLS-scoped).
+ */
+async function loadDraftRequisitionFacet(
+  db: NonNullable<HonoTRPCContext["db"]>,
+  requisitionId: string,
+): Promise<DraftRequisitionFacet> {
+  const [row] = await db
+    .select({
+      requisitionId: requisitions.id,
+      status: requisitions.status,
+      positionId: positions.id,
+      title: positions.title,
+      locationType: positions.locationType,
+      primaryLocation: positions.primaryLocation,
+      level: positions.level,
+      jdVersionId: jdVersions.id,
+      jdText: jdVersions.jdText,
+      jdSummary: jdVersions.summary,
+    })
+    .from(requisitions)
+    .innerJoin(
+      positions,
+      and(eq(requisitions.tenantId, positions.tenantId), eq(requisitions.positionId, positions.id)),
+    )
+    .innerJoin(
+      jdVersions,
+      and(
+        eq(requisitions.tenantId, jdVersions.tenantId),
+        eq(requisitions.jdVersionId, jdVersions.id),
+      ),
+    )
+    .where(eq(requisitions.id, requisitionId))
+    .limit(1);
+  if (!row) {
+    throw new TRPCError({ code: "NOT_FOUND", message: "Requisition not found" });
+  }
+  return {
+    requisitionId: row.requisitionId,
+    status: row.status,
+    positionId: row.positionId,
+    title: row.title,
+    locationType: row.locationType,
+    primaryLocation: row.primaryLocation ?? null,
+    level: row.level ?? null,
+    jdVersionId: row.jdVersionId,
+    jdText: row.jdText,
+    jdSummary: row.jdSummary ?? null,
+  };
+}
+
+/** Read the tenant's display name for the JD prompt (service-role pool). */
+async function resolveTenantDisplayName(tenantId: string): Promise<string> {
+  const [row] = await poolDb
+    .select({ name: tenants.displayName })
+    .from(tenants)
+    .where(eq(tenants.id, tenantId))
+    .limit(1);
+  return row?.name ?? "the company";
+}
+
+/**
+ * Compose a requisition_knockouts.threshold_value jsonb that the apply-flow
+ * evaluator (@hireops/ai-scoring evaluateKnockouts) accepts: a `field_path`
+ * plus the type-specific threshold key. Unknown/malformed inputs still
+ * produce a shape the evaluator resolves to "not evaluable" (null) rather
+ * than throwing.
+ */
+function buildKnockoutThreshold(k: RequisitionKnockoutInput): Record<string, unknown> {
+  const base: Record<string, unknown> = { field_path: k.fieldPath };
+  switch (k.type) {
+    case "boolean":
+      return { ...base, required: true };
+    case "numeric_min":
+      return { ...base, min: k.min ?? 0 };
+    case "numeric_max":
+      return { ...base, max: k.max ?? 0 };
+    case "enum":
+      return { ...base, allowed: k.allowed ?? [] };
+    default:
+      return base;
+  }
+}
+
+/**
+ * Resolve-or-create the tenant's single-step "HR Head approval" matrix for
+ * requisitions, then create a fresh immutable chain from it and return the
+ * chain id. Each submission gets its own chain (chains are immutable per
+ * instance); the matrix is the reusable config. No matrices/chains are
+ * seeded, so this is the honest minimal shape REQ-03 will decide against.
+ */
+async function resolveRequisitionApprovalChain(
+  db: NonNullable<HonoTRPCContext["db"]>,
+  tenantId: string,
+  createdByMembershipId: string | null,
+): Promise<string> {
+  const RULES = {
+    version: 1,
+    steps: [{ approver_kind: "role", approver_ref: "hr_head", required: true }],
+  };
+  const RESOLVED_STEPS = [
+    {
+      step_index: 0,
+      approver_kind: "role",
+      approver_ref: "hr_head",
+      required: true,
+      order_index: 0,
+    },
+  ];
+
+  const [existing] = await db
+    .select({ id: approvalMatrices.id, rules: approvalMatrices.rules })
+    .from(approvalMatrices)
+    .where(
+      and(eq(approvalMatrices.tenantId, tenantId), eq(approvalMatrices.subjectType, "requisition")),
+    )
+    .orderBy(desc(approvalMatrices.effectiveFrom))
+    .limit(1);
+
+  let matrixId = existing?.id;
+  let matrixRules: unknown = existing?.rules;
+  if (!matrixId) {
+    const [created] = await db
+      .insert(approvalMatrices)
+      .values({
+        tenantId,
+        subjectType: "requisition",
+        name: "Requisition approval — HR Head",
+        rules: RULES,
+        effectiveFrom: new Date(),
+        createdByMembershipId,
+      })
+      .returning({ id: approvalMatrices.id, rules: approvalMatrices.rules });
+    matrixId = created?.id;
+    matrixRules = created?.rules;
+  }
+  if (!matrixId) {
+    throw new TRPCError({
+      code: "INTERNAL_SERVER_ERROR",
+      message: "approval_matrix resolution returned no row",
+    });
+  }
+
+  const [chain] = await db
+    .insert(approvalChains)
+    .values({
+      tenantId,
+      matrixId,
+      matrixVersionSnapshot: matrixRules ?? RULES,
+      resolvedSteps: RESOLVED_STEPS,
+    })
+    .returning({ id: approvalChains.id });
+  if (!chain) {
+    throw new TRPCError({
+      code: "INTERNAL_SERVER_ERROR",
+      message: "approval_chain insert returned no row",
+    });
+  }
+  return chain.id;
 }
 
 // ─────────── Module 4: offer helpers ───────────

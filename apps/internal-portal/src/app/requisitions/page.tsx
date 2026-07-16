@@ -95,7 +95,7 @@ export default async function RequisitionsPage() {
         {rows.length === 0 ? (
           <EmptyState
             title="No requisitions yet"
-            hint="When a hiring manager creates a requisition it appears here. The creation flow arrives with REQ-02 — for now, seeded requisitions show once they exist."
+            hint="When a hiring manager creates a requisition it appears here. Start one with the button below."
             action={<LinkButton href="/requisitions/new">New requisition</LinkButton>}
           />
         ) : (
@@ -111,7 +111,11 @@ export default async function RequisitionsPage() {
               <Tbody>
                 {rows.map((r) => (
                   <Tr key={r.id}>
-                    <Td className="font-medium text-neutral-900">{r.title ?? "Untitled role"}</Td>
+                    <Td className="font-medium text-neutral-900">
+                      <a href={`/requisitions/${r.id}`} className="text-brand-700 hover:underline">
+                        {r.title ?? "Untitled role"}
+                      </a>
+                    </Td>
                     <Td>
                       <Badge tone={STATUS_TONE[r.status] ?? "neutral"}>
                         {statusLabel(r.status)}
@@ -124,10 +128,6 @@ export default async function RequisitionsPage() {
                 ))}
               </Tbody>
             </TableShell>
-            <p className="mt-3 text-xs text-neutral-500">
-              Rows aren&apos;t clickable yet — a requisition detail view arrives with the creation
-              flow (REQ-02).
-            </p>
           </>
         )}
       </div>

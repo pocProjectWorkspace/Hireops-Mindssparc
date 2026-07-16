@@ -252,6 +252,10 @@ export type ListRequisitionSummariesOutput = z.infer<typeof listRequisitionSumma
 export const requisitionApprovalRowSchema = z.object({
   id: z.string().uuid(),
   subjectId: z.string().uuid(),
+  // REQ-02 enriches the skeleton read with the requisition title via an
+  // app-layer join (subject_id → requisitions → positions). Null when the
+  // subject row can't be resolved (should not happen for requisition rows).
+  title: z.string().nullable(),
   status: z.string(),
   currentStepIndex: z.number().int(),
   requestedAt: z.string(),
@@ -269,6 +273,208 @@ export const listRequisitionApprovalsOutputSchema = z.object({
 export type RequisitionApprovalRow = z.infer<typeof requisitionApprovalRowSchema>;
 export type ListRequisitionApprovalsInput = z.infer<typeof listRequisitionApprovalsInputSchema>;
 export type ListRequisitionApprovalsOutput = z.infer<typeof listRequisitionApprovalsOutputSchema>;
+
+// ═══════════════ REQ-02: requisition creation (draft → JD → skills → submit) ═══════════════
+//
+// The requirement-owner creation flow. Five procedures gate-checked in the
+// router to hiring_manager + admin (mutations) / REQUISITION_READ_ROLES
+// (detail read). See docs/prototype-gap-audit.md Wave A / REQ-02.
+
+/** The 4 requisition location types (mirrors the db location_type enum). */
+export const requisitionLocationTypeSchema = z.enum(["remote", "hybrid", "onsite", "multi"]);
+export type RequisitionLocationType = z.infer<typeof requisitionLocationTypeSchema>;
+
+/**
+ * Structured JD sections. Stored in jd_versions.ai_metadata.sections and
+ * rendered down into the canonical jd_text blob. Kept deliberately simple —
+ * summary + responsibilities + requirements is what the apply page and AI
+ * scoring actually consume; no psychometrics, no section theatre.
+ */
+export const jdSectionsSchema = z.object({
+  summary: z.string(),
+  responsibilities: z.array(z.string()),
+  requirements: z.array(z.string()),
+});
+export type JdSections = z.infer<typeof jdSectionsSchema>;
+
+/**
+ * A JD skill row (name / weight / must-have). Maps to jd_skills
+ * (skill_name / weight / is_required). Note: the prototype's "min years"
+ * per skill has NO home in jd_skills (no such column) — a minimum-years
+ * requirement is expressed as a numeric_min knockout on
+ * total_years_experience instead, which is what the apply-flow evaluator
+ * actually consumes. See REQ-02 design notes.
+ */
+export const requisitionSkillInputSchema = z.object({
+  skillName: z.string().min(1).max(120),
+  weight: z.number().min(0).max(10).default(1),
+  isRequired: z.boolean().default(false),
+});
+export type RequisitionSkillInput = z.infer<typeof requisitionSkillInputSchema>;
+
+/**
+ * A knockout the recruiter defines on the requisition. Produces a
+ * requisition_knockouts row whose threshold_value carries the `field_path`
+ * the apply-flow evaluator (@hireops/ai-scoring evaluateKnockouts) walks into
+ * the parsed CV, plus the type-specific threshold. Only source='parsed_cv' is
+ * evaluated in Wave 1; the other sources persist but are skipped by the
+ * evaluator (documented contract).
+ */
+export const requisitionKnockoutInputSchema = z.object({
+  questionText: z.string().min(1).max(500),
+  type: z.enum(["boolean", "numeric_min", "numeric_max", "enum"]),
+  source: z.enum(["parsed_cv", "candidate_asserted", "partner_asserted"]).default("parsed_cv"),
+  /** Dot-path into the parsed-CV shape, e.g. "total_years_experience". */
+  fieldPath: z.string().min(1).max(200),
+  /** For numeric_min. */
+  min: z.number().optional(),
+  /** For numeric_max. */
+  max: z.number().optional(),
+  /** For enum. */
+  allowed: z.array(z.string().min(1)).optional(),
+});
+export type RequisitionKnockoutInput = z.infer<typeof requisitionKnockoutInputSchema>;
+
+// ─────────────── createRequisitionDraft ───────────────
+
+export const createRequisitionDraftInputSchema = z.object({
+  title: z.string().min(2).max(200),
+  /** Free-text department/BU name — resolved-or-created to a business_unit. */
+  department: z.string().min(1).max(120),
+  locationType: requisitionLocationTypeSchema,
+  primaryLocation: z.string().max(200).optional(),
+  seniority: z.string().max(120).optional(),
+  employmentType: z.string().max(120).optional(),
+  numberOfOpenings: z.number().int().min(1).max(999).default(1),
+  /** ISO date (yyyy-mm-dd). */
+  targetStartDate: z.string().optional(),
+  compBandMin: z.number().nonnegative().optional(),
+  compBandMax: z.number().nonnegative().optional(),
+  compCurrency: z.string().length(3).optional(),
+});
+export const createRequisitionDraftOutputSchema = z.object({
+  requisitionId: z.string().uuid(),
+});
+export type CreateRequisitionDraftInput = z.infer<typeof createRequisitionDraftInputSchema>;
+export type CreateRequisitionDraftOutput = z.infer<typeof createRequisitionDraftOutputSchema>;
+
+// ─────────────── generateJdDraft ───────────────
+
+export const generateJdDraftInputSchema = z.object({
+  requisitionId: z.string().uuid(),
+  /** Optional free-text steer from the hiring manager. */
+  extraContext: z.string().max(2000).optional(),
+});
+export const generateJdDraftOutputSchema = z.object({
+  jdVersionId: z.string().uuid(),
+  sections: jdSectionsSchema,
+  promptVersion: z.string(),
+  model: z.string(),
+});
+export type GenerateJdDraftInput = z.infer<typeof generateJdDraftInputSchema>;
+export type GenerateJdDraftOutput = z.infer<typeof generateJdDraftOutputSchema>;
+
+// ─────────────── updateRequisitionDraft ───────────────
+//
+// Replace-set semantics while the req is draft: whichever of sections /
+// skills / knockouts is supplied is fully replaced (skills + knockouts are
+// delete-all-then-insert for the req's JD version). Omitted fields are left
+// untouched. Rejects non-draft requisitions (edit-after-submit is out of
+// scope — the req locks on submission).
+
+export const updateRequisitionDraftInputSchema = z.object({
+  requisitionId: z.string().uuid(),
+  sections: jdSectionsSchema.optional(),
+  skills: z.array(requisitionSkillInputSchema).max(50).optional(),
+  knockouts: z.array(requisitionKnockoutInputSchema).max(30).optional(),
+});
+export const updateRequisitionDraftOutputSchema = z.object({
+  ok: z.literal(true),
+  skillCount: z.number().int(),
+  knockoutCount: z.number().int(),
+});
+export type UpdateRequisitionDraftInput = z.infer<typeof updateRequisitionDraftInputSchema>;
+export type UpdateRequisitionDraftOutput = z.infer<typeof updateRequisitionDraftOutputSchema>;
+
+// ─────────────── submitRequisitionForApproval ───────────────
+
+export const submitRequisitionForApprovalInputSchema = z.object({
+  requisitionId: z.string().uuid(),
+});
+export const submitRequisitionForApprovalOutputSchema = z.object({
+  approvalRequestId: z.string().uuid(),
+  status: z.string(),
+  /** True when the req was already pending (idempotent re-submit). */
+  alreadySubmitted: z.boolean(),
+});
+export type SubmitRequisitionForApprovalInput = z.infer<
+  typeof submitRequisitionForApprovalInputSchema
+>;
+export type SubmitRequisitionForApprovalOutput = z.infer<
+  typeof submitRequisitionForApprovalOutputSchema
+>;
+
+// ─────────────── getRequisitionDetail ───────────────
+
+export const requisitionDetailSkillSchema = z.object({
+  id: z.string().uuid(),
+  skillName: z.string(),
+  weight: z.number(),
+  isRequired: z.boolean(),
+});
+
+export const requisitionDetailKnockoutSchema = z.object({
+  id: z.string().uuid(),
+  questionText: z.string(),
+  type: z.string(),
+  source: z.string(),
+  thresholdValue: z.unknown(),
+  orderIndex: z.number().int(),
+});
+
+export const requisitionDetailApprovalSchema = z.object({
+  id: z.string().uuid(),
+  status: z.string(),
+  currentStepIndex: z.number().int(),
+  requestedAt: z.string(),
+  decidedAt: z.string().nullable(),
+});
+
+export const getRequisitionDetailInputSchema = z.object({
+  requisitionId: z.string().uuid(),
+});
+export const getRequisitionDetailOutputSchema = z.object({
+  id: z.string().uuid(),
+  status: z.string(),
+  numberOfOpenings: z.number().int(),
+  targetStartDate: z.string().nullable(),
+  publicSlug: z.string().nullable(),
+  createdAt: z.string(),
+  // Position facet.
+  positionId: z.string().uuid(),
+  title: z.string(),
+  department: z.string().nullable(),
+  locationType: z.string(),
+  primaryLocation: z.string().nullable(),
+  seniority: z.string().nullable(),
+  compBandMin: z.string().nullable(),
+  compBandMax: z.string().nullable(),
+  compCurrency: z.string().nullable(),
+  // JD facet.
+  jdVersionId: z.string().uuid(),
+  jdText: z.string(),
+  jdSummary: z.string().nullable(),
+  jdSections: jdSectionsSchema.nullable(),
+  jdStatus: z.string(),
+  skills: z.array(requisitionDetailSkillSchema),
+  knockouts: z.array(requisitionDetailKnockoutSchema),
+  // Approval facet — the latest approval_request for this requisition.
+  approval: requisitionDetailApprovalSchema.nullable(),
+  /** True when the caller may still edit + submit (status === 'draft'). */
+  isDraft: z.boolean(),
+});
+export type GetRequisitionDetailInput = z.infer<typeof getRequisitionDetailInputSchema>;
+export type GetRequisitionDetailOutput = z.infer<typeof getRequisitionDetailOutputSchema>;
 
 // ─────────────── listApplications ───────────────
 

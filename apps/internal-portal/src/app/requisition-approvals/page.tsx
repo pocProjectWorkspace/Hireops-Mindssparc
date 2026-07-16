@@ -91,8 +91,13 @@ export default async function RequisitionApprovalsPage() {
               <Tbody>
                 {rows.map((r) => (
                   <Tr key={r.id}>
-                    <Td className="font-mono text-xs text-neutral-600">
-                      {r.subjectId.slice(0, 8)}…
+                    <Td className="font-medium text-neutral-900">
+                      <a
+                        href={`/requisitions/${r.subjectId}`}
+                        className="text-brand-700 hover:underline"
+                      >
+                        {r.title ?? `${r.subjectId.slice(0, 8)}…`}
+                      </a>
                     </Td>
                     <Td>
                       <Badge tone={STATUS_TONE[r.status] ?? "neutral"}>
