@@ -27,6 +27,8 @@ import {
   IconTriage,
   IconApprovals,
   IconOnboarding,
+  IconRequisitions,
+  IconReqApprovals,
   IconWorkflows,
   IconAudit,
   IconCosts,
@@ -39,6 +41,8 @@ export type PortalNavKey =
   | "triage"
   | "approvals"
   | "onboarding"
+  | "requisitions"
+  | "requisition-approvals"
   | "workflows"
   | "audit"
   | "costs"
@@ -50,13 +54,46 @@ interface NavItem {
   label: string;
   href: string;
   icon: ReactNode;
+  /**
+   * Persona gate (REQ-01). Omitted → visible to everyone (the pre-existing
+   * recruiter surfaces keep their current always-on visibility). When set,
+   * the item shows only if the session carries ANY of these roles — or the
+   * session is admin, the super-role that sees everything.
+   */
+  roles?: string[];
 }
 
 const MAIN_NAV: NavItem[] = [
   { key: "triage", label: "Triage", href: "/triage", icon: <IconTriage /> },
   { key: "approvals", label: "Approvals", href: "/approvals", icon: <IconApprovals /> },
   { key: "onboarding", label: "Onboarding", href: "/onboarding", icon: <IconOnboarding /> },
+  {
+    key: "requisitions",
+    label: "Requisitions",
+    href: "/requisitions",
+    icon: <IconRequisitions />,
+    roles: ["hiring_manager", "recruiter", "admin"],
+  },
+  {
+    key: "requisition-approvals",
+    label: "Req approvals",
+    href: "/requisition-approvals",
+    icon: <IconReqApprovals />,
+    roles: ["hr_head", "admin"],
+  },
 ];
+
+/**
+ * Filter a nav group to the items this session may see. Un-gated items are
+ * always visible; gated items need an admin session or a role overlap.
+ */
+function visibleNav(items: NavItem[], isAdmin: boolean, roles: string[]): NavItem[] {
+  return items.filter((item) => {
+    if (!item.roles) return true;
+    if (isAdmin) return true;
+    return item.roles.some((r) => roles.includes(r));
+  });
+}
 
 const ADMIN_NAV: NavItem[] = [
   { key: "workflows", label: "Workflows", href: "/admin/workflows", icon: <IconWorkflows /> },
@@ -79,6 +116,13 @@ export interface AppShellUser {
 export interface AppShellProps {
   title: string;
   isAdmin: boolean;
+  /**
+   * The session's tenant roles, used to show persona-gated nav items
+   * (REQ-01). Optional + defaults to []: pages that don't pass it simply
+   * show the un-gated items (+ the full Admin group when isAdmin) exactly
+   * as before — no regression for the existing recruiter surfaces.
+   */
+  roles?: string[];
   active?: PortalNavKey;
   user: AppShellUser;
   /** Page-level actions rendered on the right of the page-header row. */
@@ -171,10 +215,12 @@ function UserChip({ user }: { user: AppShellUser }) {
 
 function Sidebar({
   isAdmin,
+  roles,
   active,
   user,
 }: {
   isAdmin: boolean;
+  roles: string[];
   active?: PortalNavKey;
   user: AppShellUser;
 }) {
@@ -182,7 +228,7 @@ function Sidebar({
     <aside className="flex w-60 shrink-0 flex-col border-r border-neutral-200 bg-white">
       <Wordmark />
       <div className="flex-1 overflow-y-auto pb-4">
-        <NavGroup items={MAIN_NAV} active={active} />
+        <NavGroup items={visibleNav(MAIN_NAV, isAdmin, roles)} active={active} />
         {isAdmin ? <NavGroup heading="Admin" items={ADMIN_NAV} active={active} /> : null}
       </div>
       <UserChip user={user} />
@@ -204,6 +250,7 @@ function PageHeader({ title, actions }: { title: string; actions?: ReactNode }) 
 export function AppShell({
   title,
   isAdmin,
+  roles = [],
   active,
   user,
   actions,
@@ -212,7 +259,7 @@ export function AppShell({
 }: AppShellProps) {
   return (
     <div className="flex h-screen overflow-hidden bg-neutral-50 text-neutral-900">
-      <Sidebar isAdmin={isAdmin} active={active} user={user} />
+      <Sidebar isAdmin={isAdmin} roles={roles} active={active} user={user} />
       <div className="flex min-w-0 flex-1 flex-col">
         <PageHeader title={title} actions={actions} />
         {fill ? (

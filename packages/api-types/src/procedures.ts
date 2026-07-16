@@ -210,6 +210,66 @@ export const listRequisitionsOutputSchema = z.object({
 export type ListRequisitionsInput = z.infer<typeof listRequisitionsInputSchema>;
 export type ListRequisitionsOutput = z.infer<typeof listRequisitionsOutputSchema>;
 
+// ─────────────── listRequisitionSummaries (REQ-01) ───────────────
+//
+// The requirement-owner /requisitions surface. Richer than the thin
+// listRequisitions read (which returns only id/positionId/jdVersionId and
+// no join): this joins positions for the human title + location and carries
+// openings, so the skeleton list can render title / status / location /
+// openings / created without a second round-trip. Role-gated in the router
+// to hiring_manager / recruiter / admin. Capped, no cursor — a skeleton
+// surface, not a paginated feed (pagination arrives with REQ-02).
+
+export const requisitionSummarySchema = z.object({
+  id: z.string().uuid(),
+  title: z.string().nullable(),
+  status: z.string(),
+  location: z.string().nullable(),
+  openings: z.number().int(),
+  createdAt: z.string(),
+});
+
+export const listRequisitionSummariesInputSchema = z.object({
+  limit: z.number().int().min(1).max(100).default(50),
+});
+
+export const listRequisitionSummariesOutputSchema = z.object({
+  rows: z.array(requisitionSummarySchema),
+});
+
+export type RequisitionSummary = z.infer<typeof requisitionSummarySchema>;
+export type ListRequisitionSummariesInput = z.infer<typeof listRequisitionSummariesInputSchema>;
+export type ListRequisitionSummariesOutput = z.infer<typeof listRequisitionSummariesOutputSchema>;
+
+// ─────────────── listRequisitionApprovals (REQ-01) ───────────────
+//
+// The HR-head /requisition-approvals surface. Reads approval_requests rows
+// with subject_type='requisition' (the table is real but likely empty until
+// REQ-02/03 wire submission). Role-gated in the router to hr_head / admin.
+// A read-only skeleton: no decision fields yet (approve/send-back/reject
+// arrive with REQ-03).
+
+export const requisitionApprovalRowSchema = z.object({
+  id: z.string().uuid(),
+  subjectId: z.string().uuid(),
+  status: z.string(),
+  currentStepIndex: z.number().int(),
+  requestedAt: z.string(),
+  createdAt: z.string(),
+});
+
+export const listRequisitionApprovalsInputSchema = z.object({
+  limit: z.number().int().min(1).max(100).default(50),
+});
+
+export const listRequisitionApprovalsOutputSchema = z.object({
+  rows: z.array(requisitionApprovalRowSchema),
+});
+
+export type RequisitionApprovalRow = z.infer<typeof requisitionApprovalRowSchema>;
+export type ListRequisitionApprovalsInput = z.infer<typeof listRequisitionApprovalsInputSchema>;
+export type ListRequisitionApprovalsOutput = z.infer<typeof listRequisitionApprovalsOutputSchema>;
+
 // ─────────────── listApplications ───────────────
 
 export const listApplicationsInputSchema = z.object({

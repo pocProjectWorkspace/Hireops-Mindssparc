@@ -48,6 +48,19 @@ const TEST_USERS = [
     displayName: "Test Admin",
     roles: ["admin"] as const,
   },
+  {
+    // REQ-01 (Wave A): the requisition-owner persona. The prototype's
+    // "requirement_owner" = our hiring_manager role.
+    email: "hiringmanager1@kyndryl-poc.test",
+    displayName: "Test Hiring Manager",
+    roles: ["hiring_manager"] as const,
+  },
+  {
+    // REQ-01 (Wave A): the HR-head approval persona (REQ-03 wires the queue).
+    email: "hrhead1@kyndryl-poc.test",
+    displayName: "Test HR Head",
+    roles: ["hr_head"] as const,
+  },
 ] as const;
 
 async function main() {

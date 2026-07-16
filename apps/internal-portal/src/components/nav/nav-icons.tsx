@@ -52,6 +52,27 @@ export function IconOnboarding() {
   );
 }
 
+export function IconRequisitions() {
+  return (
+    <Svg>
+      <path d="M8 4h9a2 2 0 0 1 2 2v13a2 2 0 0 1-2 2H8" />
+      <path d="M8 4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2" />
+      <line x1="11" y1="9" x2="16" y2="9" />
+      <line x1="11" y1="13" x2="16" y2="13" />
+    </Svg>
+  );
+}
+
+export function IconReqApprovals() {
+  return (
+    <Svg>
+      <path d="M9 4h6a1 1 0 0 1 1 1v1a1 1 0 0 1-1 1H9a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1z" />
+      <path d="M8 6H6a2 2 0 0 0-2 2v11a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-2" />
+      <path d="M9 14l2 2 4-4" />
+    </Svg>
+  );
+}
+
 export function IconWorkflows() {
   return (
     <Svg>

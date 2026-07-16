@@ -50,6 +50,7 @@ import {
   onboardingTasks,
   onboardingDocuments,
   documentTypes,
+  approvalRequests,
   recordPiiAccess,
   applicationStageEnum,
   type ApplicationStage,
@@ -70,6 +71,10 @@ import {
   getRequisitionByIdOutputSchema,
   listRequisitionsInputSchema,
   listRequisitionsOutputSchema,
+  listRequisitionSummariesInputSchema,
+  listRequisitionSummariesOutputSchema,
+  listRequisitionApprovalsInputSchema,
+  listRequisitionApprovalsOutputSchema,
   listApplicationsInputSchema,
   listApplicationsOutputSchema,
   advanceApplicationInputSchema,
@@ -227,6 +232,26 @@ function requireDb(ctx: HonoTRPCContext) {
     });
   }
   return ctx.db;
+}
+
+// REQ-01 (Wave A) role gates. admin is the super-role everywhere in this
+// codebase (mirrors RECRUITER_RESOLVE_ROLES / HR_TEAM_RESOLVE_ROLES below).
+// The requisition list is the requirement-owner surface (hiring_manager)
+// shared with recruiters; the requisition-approval queue is the HR-head
+// surface. RLS still scopes rows to the tenant regardless — these gates
+// are the persona-visibility layer on top.
+const REQUISITION_READ_ROLES = new Set(["admin", "hiring_manager", "recruiter"]);
+const REQUISITION_APPROVAL_READ_ROLES = new Set(["admin", "hr_head"]);
+
+/**
+ * Throws FORBIDDEN unless the caller holds any role in `allowed`. Same
+ * explicit-set idiom the approval-resolution gates use — kept a tiny local
+ * helper rather than a framework so each call site reads plainly.
+ */
+function requireAnyRole(ctx: HonoTRPCContext, allowed: Set<string>, message: string): void {
+  if (!ctx.roles.some((r) => allowed.has(r))) {
+    throw new TRPCError({ code: "FORBIDDEN", message });
+  }
 }
 
 function firstOrThrow<T>(rows: T[], label: string): T {
@@ -1098,6 +1123,100 @@ export const appRouter = router({
           createdAt: r.createdAt.toISOString(),
         })),
         nextCursor: hasMore ? lastCursor(out) : null,
+      };
+    }),
+
+  // ─────────── REQ-01: requirement-owner + HR-head reads ───────────
+
+  /**
+   * Requirement-owner requisition list (/requisitions). Role-gated to
+   * hiring_manager / recruiter / admin. Joins positions for the human
+   * title + location; RLS scopes rows to the caller's tenant. Read-only
+   * skeleton — creation + detail arrive with REQ-02.
+   */
+  listRequisitionSummaries: protectedProcedure
+    .input(listRequisitionSummariesInputSchema)
+    .output(listRequisitionSummariesOutputSchema)
+    .query(async ({ ctx, input }) => {
+      requireAnyRole(
+        ctx,
+        REQUISITION_READ_ROLES,
+        "Requisition access requires the hiring_manager, recruiter, or admin role",
+      );
+      const db = requireDb(ctx);
+      const rows = await db
+        .select({
+          id: requisitions.id,
+          status: requisitions.status,
+          openings: requisitions.numberOfOpenings,
+          createdAt: requisitions.createdAt,
+          title: positions.title,
+          primaryLocation: positions.primaryLocation,
+          locationType: positions.locationType,
+        })
+        .from(requisitions)
+        .leftJoin(
+          positions,
+          and(
+            eq(requisitions.tenantId, positions.tenantId),
+            eq(requisitions.positionId, positions.id),
+          ),
+        )
+        .orderBy(desc(requisitions.createdAt))
+        .limit(input.limit);
+      return {
+        rows: rows.map((r) => ({
+          id: r.id,
+          title: r.title ?? null,
+          status: r.status,
+          // Prefer the concrete location; fall back to the location type
+          // (remote/hybrid/onsite/multi) so a row is never blank.
+          location: r.primaryLocation ?? r.locationType ?? null,
+          openings: r.openings,
+          createdAt: r.createdAt.toISOString(),
+        })),
+      };
+    }),
+
+  /**
+   * HR-head requisition-approval queue (/requisition-approvals). Role-gated
+   * to hr_head / admin — recruiter/hiring_manager get FORBIDDEN. Reads
+   * approval_requests rows with subject_type='requisition'. The table is
+   * real but empty until REQ-02/03 wire submission; the UI owns the empty
+   * state. Read-only skeleton — decisions arrive with REQ-03.
+   */
+  listRequisitionApprovals: protectedProcedure
+    .input(listRequisitionApprovalsInputSchema)
+    .output(listRequisitionApprovalsOutputSchema)
+    .query(async ({ ctx, input }) => {
+      requireAnyRole(
+        ctx,
+        REQUISITION_APPROVAL_READ_ROLES,
+        "Requisition-approval access requires the hr_head or admin role",
+      );
+      const db = requireDb(ctx);
+      const rows = await db
+        .select({
+          id: approvalRequests.id,
+          subjectId: approvalRequests.subjectId,
+          status: approvalRequests.status,
+          currentStepIndex: approvalRequests.currentStepIndex,
+          requestedAt: approvalRequests.requestedAt,
+          createdAt: approvalRequests.createdAt,
+        })
+        .from(approvalRequests)
+        .where(eq(approvalRequests.subjectType, "requisition"))
+        .orderBy(desc(approvalRequests.createdAt))
+        .limit(input.limit);
+      return {
+        rows: rows.map((r) => ({
+          id: r.id,
+          subjectId: r.subjectId,
+          status: r.status,
+          currentStepIndex: r.currentStepIndex,
+          requestedAt: r.requestedAt.toISOString(),
+          createdAt: r.createdAt.toISOString(),
+        })),
       };
     }),
 

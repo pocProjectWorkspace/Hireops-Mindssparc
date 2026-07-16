@@ -1,9 +1,12 @@
 /**
  * Platform-level tenant role enum. Mirrors the CREATE TYPE in
- * 0004_db01_identity.sql.
+ * 0004_db01_identity.sql, extended by 0050_req_01_hr_head_role.sql
+ * (adds `hr_head`).
  *
- * Wave 1 uses these 11 fixed roles only. Custom tenant-defined roles are
- * deferred to Wave 2+.
+ * Wave 1 used 11 fixed roles; REQ-01 (Wave A) adds `hr_head` for the
+ * HR-head approval persona — 12 now. The prototype's "requirement_owner"
+ * persona maps to the existing `hiring_manager` role, not a new one.
+ * Custom tenant-defined roles are deferred to Wave 2+.
  *
  * Roles are tenant-scoped: a user can be admin in tenant A and candidate
  * in tenant B. The active tenant from JWT 'tid' determines which roles
@@ -26,6 +29,9 @@ export const TENANT_ROLES = [
   "partner_user",
   "candidate",
   "employee",
+  // Appended by 0050 (ALTER TYPE ADD VALUE appends at the enum's end, so
+  // the TS order mirrors the live DB order — keeps drizzle-kit honest).
+  "hr_head",
 ] as const;
 
 export type TenantRole = (typeof TENANT_ROLES)[number];

@@ -27,6 +27,7 @@ export default async function OnboardingPage() {
     <AppShell
       title="Onboarding"
       isAdmin={session.roles.includes("admin")}
+      roles={session.roles}
       active="onboarding"
       user={sessionUserChip(session)}
     >

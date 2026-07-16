@@ -48,6 +48,7 @@ export default async function TriagePage() {
       <AppShell
         title="Triage"
         isAdmin={session.roles.includes("admin")}
+        roles={session.roles}
         active="triage"
         user={sessionUserChip(session)}
         fill

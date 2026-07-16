@@ -39,6 +39,7 @@ export default async function OnboardingCaseDetailPage({
     <AppShell
       title="Onboarding"
       isAdmin={session.roles.includes("admin")}
+      roles={session.roles}
       active="onboarding"
       user={sessionUserChip(session)}
     >

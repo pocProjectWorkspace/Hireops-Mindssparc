@@ -27,6 +27,7 @@ export default async function ApprovalsPage() {
     <AppShell
       title="Approvals"
       isAdmin={session.roles.includes("admin")}
+      roles={session.roles}
       active="approvals"
       user={sessionUserChip(session)}
       fill

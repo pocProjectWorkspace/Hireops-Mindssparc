@@ -330,6 +330,13 @@
       "when": 1784011464947,
       "tag": "0049_onboard_02_case_application_unique",
       "breakpoints": true
+    },
+    {
+      "idx": 50,
+      "version": "7",
+      "when": 1784100000000,
+      "tag": "0050_req_01_hr_head_role",
+      "breakpoints": true
     }
   ]
 }
