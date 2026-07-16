@@ -59,6 +59,7 @@ import {
   onboardingDocuments,
   documentTypes,
   approvalRequests,
+  approvalDecisions,
   recordPiiAccess,
   applicationStageEnum,
   type ApplicationStage,
@@ -93,6 +94,10 @@ import {
   submitRequisitionForApprovalOutputSchema,
   getRequisitionDetailInputSchema,
   getRequisitionDetailOutputSchema,
+  decideRequisitionApprovalInputSchema,
+  decideRequisitionApprovalOutputSchema,
+  postRequisitionInputSchema,
+  postRequisitionOutputSchema,
   jdSectionsSchema,
   type RequisitionKnockoutInput,
   listApplicationsInputSchema,
@@ -269,8 +274,18 @@ function requireDb(ctx: HonoTRPCContext) {
 // shared with recruiters; the requisition-approval queue is the HR-head
 // surface. RLS still scopes rows to the tenant regardless — these gates
 // are the persona-visibility layer on top.
-const REQUISITION_READ_ROLES = new Set(["admin", "hiring_manager", "recruiter"]);
+// REQ-03 added hr_head: the HR head reviews the full requisition (summary,
+// JD, skills) on the shared /requisitions/[id] detail view to make an approval
+// decision, so they need the read. RLS still scopes rows to the tenant.
+const REQUISITION_READ_ROLES = new Set(["admin", "hiring_manager", "recruiter", "hr_head"]);
 const REQUISITION_APPROVAL_READ_ROLES = new Set(["admin", "hr_head"]);
+// REQ-03 decision mutation. hr_head (the approver) + admin. recruiter /
+// hiring_manager get FORBIDDEN.
+const REQUISITION_APPROVAL_DECIDE_ROLES = new Set(["admin", "hr_head"]);
+// REQ-03 posting mutation. The recruiter/hiring-manager side takes an approved
+// req live. recruiter is included here (unlike the creation gate) because
+// posting is a recruiter action.
+const REQUISITION_POST_ROLES = new Set(["admin", "hiring_manager", "recruiter"]);
 // REQ-02 creation mutations. hiring_manager (the requirement owner) + admin.
 // NOT recruiter: recruiters request reqs via a different flow later (Wave A
 // note in the ticket); a recruiter hitting a mutation gets FORBIDDEN. RLS
@@ -1828,6 +1843,7 @@ export const appRouter = router({
           numberOfOpenings: requisitions.numberOfOpenings,
           targetStartDate: requisitions.targetStartDate,
           publicSlug: requisitions.publicSlug,
+          tenantSlug: tenants.slug,
           createdAt: requisitions.createdAt,
           positionId: positions.id,
           title: positions.title,
@@ -1845,6 +1861,7 @@ export const appRouter = router({
           jdStatus: jdVersions.status,
         })
         .from(requisitions)
+        .innerJoin(tenants, eq(tenants.id, requisitions.tenantId))
         .innerJoin(
           positions,
           and(
@@ -1920,6 +1937,42 @@ export const appRouter = router({
         .orderBy(desc(approvalRequests.createdAt))
         .limit(1);
 
+      // Latest HR-head decision across ALL of this requisition's approval
+      // requests (REQ-03). A send_back's decision lives on the now-cancelled
+      // prior request, so we join through subject_id rather than the latest
+      // request. Powers the "Sent back / Rejected by HR Head: <reason>" banner.
+      const [decisionRow] = await db
+        .select({
+          outcome: approvalDecisions.outcome,
+          comment: approvalDecisions.comment,
+          decidedAt: approvalDecisions.decidedAt,
+        })
+        .from(approvalDecisions)
+        .innerJoin(
+          approvalRequests,
+          and(
+            eq(approvalDecisions.tenantId, approvalRequests.tenantId),
+            eq(approvalDecisions.requestId, approvalRequests.id),
+          ),
+        )
+        .where(
+          and(
+            eq(approvalDecisions.tenantId, tenantId),
+            eq(approvalRequests.subjectType, "requisition"),
+            eq(approvalRequests.subjectId, row.id),
+          ),
+        )
+        .orderBy(desc(approvalDecisions.decidedAt))
+        .limit(1);
+      const latestDecision = decisionRow
+        ? {
+            kind: decisionOutcomeToKind(decisionRow.outcome),
+            outcome: decisionRow.outcome,
+            reason: decisionRow.comment ?? null,
+            decidedAt: toIsoString(decisionRow.decidedAt) ?? new Date(0).toISOString(),
+          }
+        : null;
+
       const meta = (row.jdMetadata ?? {}) as Record<string, unknown>;
       const rawSections = meta.sections;
       const parsedSections = jdSectionsSchema.safeParse(rawSections);
@@ -1930,6 +1983,7 @@ export const appRouter = router({
         numberOfOpenings: row.numberOfOpenings,
         targetStartDate: row.targetStartDate ?? null,
         publicSlug: row.publicSlug ?? null,
+        tenantSlug: row.tenantSlug,
         createdAt: row.createdAt.toISOString(),
         positionId: row.positionId,
         title: row.title,
@@ -1968,8 +2022,314 @@ export const appRouter = router({
               decidedAt: approval.decidedAt ? approval.decidedAt.toISOString() : null,
             }
           : null,
+        latestDecision,
         isDraft: row.status === "draft",
       };
+    }),
+
+  /**
+   * decideRequisitionApproval — the HR head's verdict on a pending
+   * requisition approval (REQ-03). This makes real the "Submit Decision"
+   * button the prototype left dead. hr_head + admin only, audited, and
+   * transactional (the whole procedure runs in one tenant-bound tx —
+   * HANDOVER: withTenantContext wraps each request).
+   *
+   * Records an append-only approval_decisions row against step 0, moves the
+   * approval_request off `pending`, and drives the requisition state machine:
+   *   - approve   → request approved  · requisition pending_approval→approved
+   *   - send_back → request cancelled · requisition pending_approval→draft
+   *                 (frees the one-pending-per-subject partial unique so the
+   *                  hiring manager can revise + resubmit a fresh request)
+   *   - reject    → request rejected  · requisition pending_approval→cancelled
+   *                 (no 'rejected' value in the requisition vocabulary; the
+   *                  error-toned terminal is 'cancelled')
+   * reason is REQUIRED for send_back and reject (clean 400 without). A
+   * non-pending request is a clean CONFLICT (already decided / withdrawn).
+   */
+  decideRequisitionApproval: protectedProcedure
+    .input(decideRequisitionApprovalInputSchema)
+    .output(decideRequisitionApprovalOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      return withAudit("decide_requisition_approval", ctx, input, async () => {
+        requireAnyRole(
+          ctx,
+          REQUISITION_APPROVAL_DECIDE_ROLES,
+          "Deciding a requisition approval requires the hr_head or admin role",
+        );
+        const db = requireDb(ctx);
+        if (!ctx.tenantId) {
+          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
+        }
+        const tenantId = ctx.tenantId;
+        const membershipId = await resolveActorMembership(db, ctx);
+        if (!membershipId) {
+          throw new TRPCError({
+            code: "FORBIDDEN",
+            message: "Deciding membership not found for this tenant",
+          });
+        }
+
+        const reason = input.reason?.trim() ?? "";
+        if (
+          (input.decision === "send_back" || input.decision === "reject") &&
+          reason.length === 0
+        ) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message:
+              input.decision === "reject"
+                ? "A reason is required to reject a requisition."
+                : "A reason is required to send a requisition back.",
+          });
+        }
+
+        // Load the pending request. subject_type guard keeps this endpoint to
+        // requisition approvals only (agent approvals live elsewhere).
+        const [request] = await db
+          .select({
+            id: approvalRequests.id,
+            status: approvalRequests.status,
+            subjectId: approvalRequests.subjectId,
+            currentStepIndex: approvalRequests.currentStepIndex,
+          })
+          .from(approvalRequests)
+          .where(
+            and(
+              eq(approvalRequests.tenantId, tenantId),
+              eq(approvalRequests.id, input.approvalRequestId),
+              eq(approvalRequests.subjectType, "requisition"),
+            ),
+          )
+          .limit(1);
+        if (!request) {
+          throw new TRPCError({ code: "NOT_FOUND", message: "Approval request not found" });
+        }
+        if (request.status !== "pending") {
+          throw new TRPCError({
+            code: "CONFLICT",
+            message: `This approval is already ${request.status} — nothing to decide.`,
+          });
+        }
+
+        const requisitionId = request.subjectId;
+        // The requisition should be pending_approval; guard defensively so a
+        // stray state doesn't get silently overwritten.
+        const [req] = await db
+          .select({ status: requisitions.status })
+          .from(requisitions)
+          .where(and(eq(requisitions.tenantId, tenantId), eq(requisitions.id, requisitionId)))
+          .limit(1);
+        if (!req) {
+          throw new TRPCError({ code: "NOT_FOUND", message: "Requisition not found" });
+        }
+        if (req.status !== "pending_approval") {
+          throw new TRPCError({
+            code: "CONFLICT",
+            message: `Requisition is ${req.status}, not awaiting approval.`,
+          });
+        }
+
+        const stepIndex = request.currentStepIndex;
+        const outcome = DECISION_TO_OUTCOME[input.decision];
+        const requestStatus = DECISION_TO_REQUEST_STATUS[input.decision];
+        const requisitionStatus = DECISION_TO_REQUISITION_STATUS[input.decision];
+        const decidedAt = new Date();
+
+        // 1) Append-only decision row (step 0, this decider).
+        const [decision] = await db
+          .insert(approvalDecisions)
+          .values({
+            tenantId,
+            requestId: request.id,
+            stepIndex,
+            outcome,
+            approverMembershipId: membershipId,
+            decidedAt,
+            comment: reason.length > 0 ? reason : null,
+            metadata: { decision: input.decision },
+          })
+          .returning({ id: approvalDecisions.id });
+        if (!decision) {
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: "approval_decision insert returned no row",
+          });
+        }
+
+        // 2) Move the request off pending + stamp decided_at.
+        await db
+          .update(approvalRequests)
+          .set({ status: requestStatus, decidedAt, updatedAt: decidedAt })
+          .where(and(eq(approvalRequests.tenantId, tenantId), eq(approvalRequests.id, request.id)));
+
+        // 3) Drive the requisition state machine + record the transition.
+        await db
+          .update(requisitions)
+          .set({ status: requisitionStatus, updatedAt: decidedAt })
+          .where(and(eq(requisitions.tenantId, tenantId), eq(requisitions.id, requisitionId)));
+        await db.insert(requisitionStateTransitions).values({
+          tenantId,
+          requisitionId,
+          fromStatus: "pending_approval",
+          toStatus: requisitionStatus,
+          transitionedBy: membershipId,
+          reason:
+            reason.length > 0
+              ? `HR-head ${input.decision}: ${reason}`
+              : `HR-head ${input.decision}`,
+          metadata: { approval_request_id: request.id, decision_id: decision.id },
+        });
+
+        return {
+          approvalRequestId: request.id,
+          requisitionId,
+          decision: input.decision,
+          requestStatus,
+          requisitionStatus,
+          decisionId: decision.id,
+        };
+      });
+    }),
+
+  /**
+   * postRequisition — take an APPROVED requisition live (REQ-03).
+   * hiring_manager + recruiter + admin, audited. Sets a human, collision-safe
+   * public_slug (slugified title + short suffix) so the public apply URL
+   * `/t/<tenant>/apply/<slug>` is presentable, flips approved→posted, stamps
+   * posted_at + is_public, and records the transition. Only from `approved`
+   * (a clean CONFLICT otherwise). The apply page (resolvePublicRequisition)
+   * accepts approved|posted, so the URL is live the moment posting completes.
+   */
+  postRequisition: protectedProcedure
+    .input(postRequisitionInputSchema)
+    .output(postRequisitionOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      return withAudit("post_requisition", ctx, input, async () => {
+        requireAnyRole(
+          ctx,
+          REQUISITION_POST_ROLES,
+          "Posting a requisition requires the recruiter, hiring_manager, or admin role",
+        );
+        const db = requireDb(ctx);
+        if (!ctx.tenantId) {
+          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
+        }
+        const tenantId = ctx.tenantId;
+        const membershipId = await resolveActorMembership(db, ctx);
+
+        const [row] = await db
+          .select({
+            status: requisitions.status,
+            publicSlug: requisitions.publicSlug,
+            title: positions.title,
+          })
+          .from(requisitions)
+          .innerJoin(
+            positions,
+            and(
+              eq(requisitions.tenantId, positions.tenantId),
+              eq(requisitions.positionId, positions.id),
+            ),
+          )
+          .where(and(eq(requisitions.tenantId, tenantId), eq(requisitions.id, input.requisitionId)))
+          .limit(1);
+        if (!row) {
+          throw new TRPCError({ code: "NOT_FOUND", message: "Requisition not found" });
+        }
+        if (row.status === "posted") {
+          // Idempotent: already live — hand back the existing slug.
+          return {
+            requisitionId: input.requisitionId,
+            status: "posted",
+            publicSlug: row.publicSlug,
+          };
+        }
+        if (row.status !== "approved") {
+          throw new TRPCError({
+            code: "CONFLICT",
+            message: `Requisition is ${row.status}, not approved — only approved requisitions can be posted.`,
+          });
+        }
+
+        // Human, collision-safe slug: slugified title + short suffix, retried
+        // on the (tenant, public_slug) unique. Bounded attempts; the uuid
+        // default already guarantees a working URL if we somehow exhaust them.
+        const postedAt = new Date();
+        let publicSlug = row.publicSlug;
+        let posted = false;
+        for (let attempt = 0; attempt < 5 && !posted; attempt++) {
+          const candidateSlug = buildRequisitionSlug(row.title);
+          try {
+            const updated = await db
+              .update(requisitions)
+              .set({
+                status: "posted",
+                publicSlug: candidateSlug,
+                postedAt,
+                isPublic: true,
+                updatedAt: postedAt,
+              })
+              .where(
+                and(
+                  eq(requisitions.tenantId, tenantId),
+                  eq(requisitions.id, input.requisitionId),
+                  eq(requisitions.status, "approved"),
+                ),
+              )
+              .returning({ id: requisitions.id, publicSlug: requisitions.publicSlug });
+            const updatedRow = updated[0];
+            if (!updatedRow) {
+              // Lost the approved→posted race (concurrent post). Re-read.
+              const [now] = await db
+                .select({ status: requisitions.status, publicSlug: requisitions.publicSlug })
+                .from(requisitions)
+                .where(
+                  and(
+                    eq(requisitions.tenantId, tenantId),
+                    eq(requisitions.id, input.requisitionId),
+                  ),
+                )
+                .limit(1);
+              if (now?.status === "posted") {
+                return {
+                  requisitionId: input.requisitionId,
+                  status: "posted",
+                  publicSlug: now.publicSlug,
+                };
+              }
+              throw new TRPCError({
+                code: "CONFLICT",
+                message: "Requisition is no longer approved.",
+              });
+            }
+            publicSlug = updatedRow.publicSlug;
+            posted = true;
+          } catch (err) {
+            if (isUniqueViolation(err)) {
+              continue; // slug collision — try a fresh suffix
+            }
+            throw err;
+          }
+        }
+        if (!posted) {
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: "Could not allocate a unique public slug for the requisition.",
+          });
+        }
+
+        await db.insert(requisitionStateTransitions).values({
+          tenantId,
+          requisitionId: input.requisitionId,
+          fromStatus: "approved",
+          toStatus: "posted",
+          transitionedBy: membershipId,
+          reason: "Requisition posted — public apply page live",
+          metadata: { public_slug: publicSlug },
+        });
+
+        return { requisitionId: input.requisitionId, status: "posted", publicSlug };
+      });
     }),
 
   // ─────────── protected: application reads ───────────
@@ -6865,6 +7225,73 @@ function slugifyDepartment(name: string): string {
     .replace(/^-+|-+$/g, "")
     .slice(0, 60);
   return slug.length >= 2 ? slug : `bu-${slug}`;
+}
+
+// ─────────────── REQ-03: decision + posting helpers ───────────────
+
+/**
+ * Product decision → append-only approval_decision_outcome enum. The schema
+ * enum is (approved | rejected | abstained); send_back has no first-class
+ * outcome, so it maps to `abstained` ("declines to act without rejecting") and
+ * the product-level intent is preserved in approval_decisions.metadata.decision.
+ */
+const DECISION_TO_OUTCOME: Record<
+  "approve" | "send_back" | "reject",
+  "approved" | "rejected" | "abstained"
+> = { approve: "approved", send_back: "abstained", reject: "rejected" };
+
+/**
+ * Product decision → approval_request terminal status. send_back → `cancelled`
+ * (the request is withdrawn/set-aside so the one-pending-per-subject partial
+ * unique frees up and the hiring manager can resubmit a fresh request);
+ * reject → `rejected`; approve → `approved`.
+ */
+const DECISION_TO_REQUEST_STATUS: Record<
+  "approve" | "send_back" | "reject",
+  "approved" | "rejected" | "cancelled"
+> = { approve: "approved", send_back: "cancelled", reject: "rejected" };
+
+/**
+ * Product decision → requisition status. The requisition vocabulary has no
+ * 'rejected'; a rejected req terminalises to `cancelled` (the error-toned
+ * terminal in the status vocabulary — 'closed' is the neutral "hiring
+ * completed" terminal, which is the wrong semantics for a rejection).
+ * send_back returns the req to `draft` for revision.
+ */
+const DECISION_TO_REQUISITION_STATUS: Record<
+  "approve" | "send_back" | "reject",
+  "approved" | "draft" | "cancelled"
+> = { approve: "approved", send_back: "draft", reject: "cancelled" };
+
+/** Inverse of DECISION_TO_OUTCOME for read paths (getRequisitionDetail). REQ-03
+ *  only ever writes these three outcomes against requisition approvals. */
+function decisionOutcomeToKind(outcome: string): "approve" | "send_back" | "reject" {
+  if (outcome === "approved") return "approve";
+  if (outcome === "rejected") return "reject";
+  return "send_back"; // abstained
+}
+
+/**
+ * Build a human, URL-safe public_slug for a posted requisition: slugified
+ * title + a short random suffix for uniqueness. Satisfies the requisitions
+ * public_slug CHECK (`^[a-z0-9-]+$`, length 3–80). The suffix makes blind
+ * collisions vanishingly unlikely; the caller still retries on the unique.
+ */
+function buildRequisitionSlug(title: string): string {
+  const base = title
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 60)
+    .replace(/-+$/g, "");
+  const suffix = Math.random()
+    .toString(36)
+    .slice(2, 8)
+    .replace(/[^a-z0-9]/g, "");
+  const safeSuffix = suffix.length >= 4 ? suffix : `${suffix}0000`.slice(0, 4);
+  const stem = base.length >= 2 ? base : "req";
+  return `${stem}-${safeSuffix}`.slice(0, 80);
 }
 
 /** Postgres unique-violation detector (SQLSTATE 23505), driver-tolerant. */

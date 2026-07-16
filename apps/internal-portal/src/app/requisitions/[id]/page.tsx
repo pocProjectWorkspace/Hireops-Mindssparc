@@ -19,8 +19,12 @@ export const dynamic = "force-dynamic"; // Auth-gated + reads live requisition s
  * 404s (the procedure throws NOT_FOUND under RLS).
  */
 
-const READ_ROLES = ["hiring_manager", "recruiter", "admin"];
+const READ_ROLES = ["hiring_manager", "recruiter", "admin", "hr_head"];
 const WRITE_ROLES = ["hiring_manager", "admin"];
+// REQ-03: the HR head decides (approve / send back / reject); the recruiter /
+// hiring-manager side posts an approved req live.
+const DECIDE_ROLES = ["hr_head", "admin"];
+const POST_ROLES = ["hiring_manager", "recruiter", "admin"];
 
 export default async function RequisitionDetailPage({
   params,
@@ -32,6 +36,8 @@ export default async function RequisitionDetailPage({
   const isAdmin = session.roles.includes("admin");
   const allowed = session.roles.some((r) => READ_ROLES.includes(r));
   const canWrite = session.roles.some((r) => WRITE_ROLES.includes(r));
+  const canDecide = session.roles.some((r) => DECIDE_ROLES.includes(r));
+  const canPost = session.roles.some((r) => POST_ROLES.includes(r));
 
   if (!allowed) {
     return (
@@ -69,7 +75,13 @@ export default async function RequisitionDetailPage({
       active="requisitions"
       user={sessionUserChip(session)}
     >
-      <RequisitionDetailView requisitionId={id} initial={initial} canWrite={canWrite} />
+      <RequisitionDetailView
+        requisitionId={id}
+        initial={initial}
+        canWrite={canWrite}
+        canDecide={canDecide}
+        canPost={canPost}
+      />
     </AppShell>
   );
 }

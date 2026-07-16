@@ -64,6 +64,37 @@ export default async function RequisitionApprovalsPage() {
 
   const caller = createServerTRPCCaller(session);
   const { rows } = await caller.listRequisitionApprovals({ limit: 50 });
+  const pending = rows.filter((r) => r.status === "pending");
+  const decided = rows.filter((r) => r.status !== "pending");
+
+  function ApprovalTable({ items }: { items: typeof rows }) {
+    return (
+      <TableShell>
+        <Thead>
+          <Th>Requisition</Th>
+          <Th>Status</Th>
+          <Th numeric>Step</Th>
+          <Th>Requested</Th>
+        </Thead>
+        <Tbody>
+          {items.map((r) => (
+            <Tr key={r.id}>
+              <Td className="font-medium text-neutral-900">
+                <a href={`/requisitions/${r.subjectId}`} className="text-brand-700 hover:underline">
+                  {r.title ?? `${r.subjectId.slice(0, 8)}…`}
+                </a>
+              </Td>
+              <Td>
+                <Badge tone={STATUS_TONE[r.status] ?? "neutral"}>{statusLabel(r.status)}</Badge>
+              </Td>
+              <Td numeric>{r.currentStepIndex + 1}</Td>
+              <Td>{formatDate(r.requestedAt)}</Td>
+            </Tr>
+          ))}
+        </Tbody>
+      </TableShell>
+    );
+  }
 
   return (
     <AppShell
@@ -73,46 +104,35 @@ export default async function RequisitionApprovalsPage() {
       active="requisition-approvals"
       user={sessionUserChip(session)}
     >
-      <div className="mx-auto w-full max-w-5xl px-8 py-6">
+      <div className="mx-auto w-full max-w-5xl space-y-8 px-8 py-6">
         {rows.length === 0 ? (
           <EmptyState
             title="No requisitions awaiting approval"
-            hint="When a hiring manager submits a requisition for approval it lands here for the HR head to approve, send back, or reject. Submission (REQ-02) and the decision flow (REQ-03) are being built next."
+            hint="When a hiring manager submits a requisition for approval it lands here for you to approve, send back, or reject. Open a row to review the requisition and decide."
           />
         ) : (
           <>
-            <TableShell>
-              <Thead>
-                <Th>Requisition</Th>
-                <Th>Status</Th>
-                <Th numeric>Step</Th>
-                <Th>Requested</Th>
-              </Thead>
-              <Tbody>
-                {rows.map((r) => (
-                  <Tr key={r.id}>
-                    <Td className="font-medium text-neutral-900">
-                      <a
-                        href={`/requisitions/${r.subjectId}`}
-                        className="text-brand-700 hover:underline"
-                      >
-                        {r.title ?? `${r.subjectId.slice(0, 8)}…`}
-                      </a>
-                    </Td>
-                    <Td>
-                      <Badge tone={STATUS_TONE[r.status] ?? "neutral"}>
-                        {statusLabel(r.status)}
-                      </Badge>
-                    </Td>
-                    <Td numeric>{r.currentStepIndex + 1}</Td>
-                    <Td>{formatDate(r.requestedAt)}</Td>
-                  </Tr>
-                ))}
-              </Tbody>
-            </TableShell>
-            <p className="mt-3 text-xs text-neutral-500">
-              Read-only for now — approve / send-back / reject controls arrive with REQ-03.
-            </p>
+            <section>
+              <h2 className="mb-3 text-sm font-semibold text-neutral-900">
+                Awaiting your decision
+              </h2>
+              {pending.length === 0 ? (
+                <p className="text-sm text-neutral-500">Nothing awaiting a decision right now.</p>
+              ) : (
+                <>
+                  <ApprovalTable items={pending} />
+                  <p className="mt-3 text-xs text-neutral-500">
+                    Open a requisition to review it and approve, send back, or reject.
+                  </p>
+                </>
+              )}
+            </section>
+            {decided.length > 0 ? (
+              <section>
+                <h2 className="mb-3 text-sm font-semibold text-neutral-900">Decided</h2>
+                <ApprovalTable items={decided} />
+              </section>
+            ) : null}
           </>
         )}
       </div>

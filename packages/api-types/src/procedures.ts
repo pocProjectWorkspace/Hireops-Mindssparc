@@ -440,6 +440,22 @@ export const requisitionDetailApprovalSchema = z.object({
   decidedAt: z.string().nullable(),
 });
 
+/**
+ * The most recent decision recorded against ANY approval request for this
+ * requisition (REQ-03). Surfaces the HR-head outcome + reason so the hiring
+ * manager sees "Sent back by HR Head: <reason>" / "Rejected by HR Head:
+ * <reason>". `kind` is the product-level decision derived from the schema
+ * outcome: approved→approve, rejected→reject, abstained→send_back (REQ-03
+ * only ever writes those three). Null until the first decision.
+ */
+export const requisitionLatestDecisionSchema = z.object({
+  kind: z.enum(["approve", "send_back", "reject"]),
+  outcome: z.string(),
+  reason: z.string().nullable(),
+  decidedAt: z.string(),
+});
+export type RequisitionLatestDecision = z.infer<typeof requisitionLatestDecisionSchema>;
+
 export const getRequisitionDetailInputSchema = z.object({
   requisitionId: z.string().uuid(),
 });
@@ -449,6 +465,9 @@ export const getRequisitionDetailOutputSchema = z.object({
   numberOfOpenings: z.number().int(),
   targetStartDate: z.string().nullable(),
   publicSlug: z.string().nullable(),
+  /** Tenant slug — with publicSlug, forms the public apply URL
+   *  `/t/<tenantSlug>/apply/<publicSlug>` shown once the req is posted. */
+  tenantSlug: z.string(),
   createdAt: z.string(),
   // Position facet.
   positionId: z.string().uuid(),
@@ -470,11 +489,63 @@ export const getRequisitionDetailOutputSchema = z.object({
   knockouts: z.array(requisitionDetailKnockoutSchema),
   // Approval facet — the latest approval_request for this requisition.
   approval: requisitionDetailApprovalSchema.nullable(),
+  // Latest HR-head decision across this requisition's approval requests (REQ-03).
+  latestDecision: requisitionLatestDecisionSchema.nullable(),
   /** True when the caller may still edit + submit (status === 'draft'). */
   isDraft: z.boolean(),
 });
 export type GetRequisitionDetailInput = z.infer<typeof getRequisitionDetailInputSchema>;
 export type GetRequisitionDetailOutput = z.infer<typeof getRequisitionDetailOutputSchema>;
+
+// ═══════════════ REQ-03: HR-head approval decisions + posting ═══════════════
+//
+// decideRequisitionApproval (hr_head + admin) records the HR-head verdict on a
+// pending requisition approval and drives both the approval_request and the
+// requisition state machine. postRequisition (hiring_manager + recruiter +
+// admin) takes an approved requisition live with a human public_slug. See
+// docs/prototype-gap-audit.md Wave A / REQ-03 — this makes real the "Submit
+// Decision" button the prototype left dead.
+
+// ─────────────── decideRequisitionApproval ───────────────
+
+/** The three HR-head verdicts. Maps to the approval_decision_outcome enum:
+ *  approve→approved, reject→rejected, send_back→abstained (the request is set
+ *  aside so the hiring manager can revise + resubmit). */
+export const requisitionDecisionSchema = z.enum(["approve", "send_back", "reject"]);
+export type RequisitionDecision = z.infer<typeof requisitionDecisionSchema>;
+
+export const decideRequisitionApprovalInputSchema = z.object({
+  approvalRequestId: z.string().uuid(),
+  decision: requisitionDecisionSchema,
+  /** REQUIRED for send_back and reject (validated in the router — a clean
+   *  400 without it); ignored/optional for approve. */
+  reason: z.string().max(2000).optional(),
+});
+export const decideRequisitionApprovalOutputSchema = z.object({
+  approvalRequestId: z.string().uuid(),
+  requisitionId: z.string().uuid(),
+  decision: requisitionDecisionSchema,
+  /** New approval_request status (approved | rejected | cancelled). */
+  requestStatus: z.string(),
+  /** New requisition status (approved | draft | cancelled). */
+  requisitionStatus: z.string(),
+  decisionId: z.string().uuid(),
+});
+export type DecideRequisitionApprovalInput = z.infer<typeof decideRequisitionApprovalInputSchema>;
+export type DecideRequisitionApprovalOutput = z.infer<typeof decideRequisitionApprovalOutputSchema>;
+
+// ─────────────── postRequisition ───────────────
+
+export const postRequisitionInputSchema = z.object({
+  requisitionId: z.string().uuid(),
+});
+export const postRequisitionOutputSchema = z.object({
+  requisitionId: z.string().uuid(),
+  status: z.string(),
+  publicSlug: z.string(),
+});
+export type PostRequisitionInput = z.infer<typeof postRequisitionInputSchema>;
+export type PostRequisitionOutput = z.infer<typeof postRequisitionOutputSchema>;
 
 // ─────────────── listApplications ───────────────
 
