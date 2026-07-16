@@ -58,16 +58,12 @@ function AssignedReqCard({ req }: { req: PartnerAssignedRequisitionRow }) {
         <dd className="text-right text-neutral-800 tabular-nums">{fmtDate(req.assignedAt)}</dd>
       </dl>
       <div className="flex items-center justify-end border-t border-neutral-100 pt-3">
-        <span
-          aria-disabled
-          title="Coming soon"
-          className="inline-flex cursor-not-allowed items-center gap-1.5 rounded-button px-3 py-1.5 text-sm text-neutral-400"
+        <a
+          href={`/submit?req=${req.requisitionId}`}
+          className="inline-flex items-center gap-1.5 rounded-button bg-brand-600 px-3 py-1.5 text-sm font-medium text-white transition-colors hover:bg-brand-700"
         >
           Submit candidate
-          <Badge tone="neutral" className="text-[10px]">
-            Soon
-          </Badge>
-        </span>
+        </a>
       </div>
     </Card>
   );
@@ -181,9 +177,16 @@ export function PartnerDashboard({
                       {s.requisitionTitle ?? "Speculative"} · submitted {fmtDate(s.claimedAt)}
                     </p>
                   </div>
-                  <Badge tone="neutral" className="shrink-0 capitalize">
-                    {s.status.replace(/_/g, " ")}
-                  </Badge>
+                  <div className="flex shrink-0 items-center gap-2">
+                    {s.stage ? (
+                      <Badge tone="info" className="capitalize">
+                        {s.stage.replace(/_/g, " ")}
+                      </Badge>
+                    ) : null}
+                    <Badge tone="neutral" className="capitalize">
+                      {s.status.replace(/_/g, " ")}
+                    </Badge>
+                  </div>
                 </li>
               ))}
             </ul>
@@ -194,11 +197,7 @@ export function PartnerDashboard({
       {/* Coming-soon surface map */}
       <section className="flex flex-col gap-3">
         <h2 className="text-base font-semibold tracking-tight text-neutral-900">Coming soon</h2>
-        <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
-          <ComingSoonPanel
-            title="Submit candidate"
-            blurb="Upload a CV, confirm parsed details, attest consent, submit against a req."
-          />
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
           <ComingSoonPanel
             title="Messages"
             blurb="Message your submitted candidates directly, with content logged and monitored."

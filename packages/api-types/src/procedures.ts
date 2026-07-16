@@ -1562,8 +1562,95 @@ export const partnerSubmissionRowSchema = z.object({
   status: z.string(),
   claimedAt: z.string(),
   expiresAt: z.string(),
+  // PARTNER-02 — the submission's live pipeline stage, read through the
+  // claiming application. The partner sees the stage label only (never the
+  // internal AI score or feedback); wireflows §3.7/3.8.
+  applicationId: z.string().uuid().nullable(),
+  requisitionId: z.string().uuid().nullable(),
+  stage: z.string().nullable(),
 });
 export type PartnerSubmissionRow = z.infer<typeof partnerSubmissionRowSchema>;
+
+// ─────────── PARTNER-02 — partner candidate submission ───────────
+
+/**
+ * Candidate fields a partner submits. Shape mirrors the public apply form's
+ * applicant (submitApplicationApplicantSchema) so partner-sourced candidates
+ * land in the SAME pipeline, plus the partner-only optional context columns
+ * (current company/title) and the note-to-recruiter the wireflows' step-2
+ * form collects (partner-wireflows §3.5).
+ */
+export const partnerSubmitCandidateFieldsSchema = z.object({
+  fullName: z.string().min(1).max(200),
+  email: z.string().email(),
+  phone: z.string().min(3).max(40),
+  locationCountry: z.string().length(2).optional(),
+  linkedinUrl: z.string().url().max(500).optional(),
+  currentCompany: z.string().max(200).optional(),
+  currentTitle: z.string().max(200).optional(),
+  noteToRecruiter: z.string().max(500).optional(),
+});
+
+/**
+ * partnerSubmitCandidate input. `consentAttested` collapses the wireflows'
+ * three DPDPA/accuracy checkboxes; `ownershipAcknowledged` is the ownership-
+ * claim attestation ("By submitting, you claim ownership … the 90-day
+ * exclusivity window starts now"). Both are z.literal(true) so a submission
+ * that didn't tick them fails validation server-side, not just in the UI.
+ */
+export const partnerSubmitCandidateInputSchema = z.object({
+  requisitionId: z.string().uuid(),
+  resumeUploadKey: z.string().min(1).max(500),
+  candidate: partnerSubmitCandidateFieldsSchema,
+  consentAttested: z.literal(true),
+  ownershipAcknowledged: z.literal(true),
+  consentVersion: z.string().min(1).max(40),
+});
+export type PartnerSubmitCandidateInput = z.infer<typeof partnerSubmitCandidateInputSchema>;
+
+/**
+ * Discriminated outcome of a partner submission — the three branches of the
+ * wireflows' dedup decision tree (§3.5). The UI renders faithful copy per
+ * outcome; the data each branch carries is exactly what that copy needs.
+ *
+ *  - created:          no active claim → new candidate + application + claim.
+ *  - duplicate_blocked: an active claim owned by ANOTHER partner → rejected.
+ *                       Carries only `blockedDaysAgo` — never the owning
+ *                       partner's identity (requirements.md §6.4 non-disclosure).
+ *  - added_to_existing: an active claim owned by THIS partner on another req →
+ *                       a second application is added under the same claim.
+ *                       `alreadyOnThisReq` is true when the candidate was
+ *                       already submitted for THIS req (idempotent re-submit).
+ */
+const partnerSubmitCreatedSchema = z.object({
+  outcome: z.literal("created"),
+  applicationId: z.string().uuid(),
+  candidateId: z.string().uuid(),
+  claimId: z.string().uuid(),
+  personId: z.string().uuid(),
+  parseStatus: z.enum(["received", "parse_failed"]),
+  claimExpiresAt: z.string(),
+});
+const partnerSubmitDuplicateBlockedSchema = z.object({
+  outcome: z.literal("duplicate_blocked"),
+  blockedDaysAgo: z.number().int().nonnegative(),
+});
+const partnerSubmitAddedToExistingSchema = z.object({
+  outcome: z.literal("added_to_existing"),
+  applicationId: z.string().uuid(),
+  candidateId: z.string().uuid(),
+  claimId: z.string().uuid(),
+  alreadyOnThisReq: z.boolean(),
+  priorRequisitionTitle: z.string().nullable(),
+  priorClaimedAt: z.string(),
+  parseStatus: z.enum(["received", "parse_failed"]),
+});
+export const partnerSubmitCandidateOutputSchema = z.discriminatedUnion("outcome", [
+  partnerSubmitCreatedSchema,
+  partnerSubmitDuplicateBlockedSchema,
+  partnerSubmitAddedToExistingSchema,
+]);
+export type PartnerSubmitCandidateOutput = z.infer<typeof partnerSubmitCandidateOutputSchema>;
 
 export const partnerListMySubmissionsInputSchema = z
   .object({ limit: z.number().int().min(1).max(200).optional() })

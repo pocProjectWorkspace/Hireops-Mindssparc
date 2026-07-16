@@ -11,9 +11,10 @@ import { cn, Badge } from "@/components/ui";
  * inside the dashboard server component that already resolved the session.
  *
  * The surface map (partner-wireflows §2) has Dashboard / Reqs / Submit
- * Candidate / Messages / Commercials. Only the dashboard ships in this shell;
- * the rest carry an honest "Soon" badge and are non-interactive, so the nav
- * tells the true story of what's built without pretending.
+ * Candidate / Messages / Commercials. Dashboard + Submit candidate ship
+ * (PARTNER-01 + PARTNER-02); the rest carry an honest "Soon" badge and are
+ * non-interactive, so the nav tells the true story of what's built without
+ * pretending.
  */
 
 export type PartnerNavKey = "dashboard" | "submit" | "messages" | "commercials";
@@ -27,7 +28,7 @@ interface NavItem {
 
 const NAV: NavItem[] = [
   { key: "dashboard", label: "Dashboard", href: "/" },
-  { key: "submit", label: "Submit candidate", soon: true },
+  { key: "submit", label: "Submit candidate", href: "/submit" },
   { key: "messages", label: "Messages", soon: true },
   { key: "commercials", label: "Commercials", soon: true },
 ];

@@ -53,6 +53,7 @@ import {
   recordPiiAccess,
   applicationStageEnum,
   type ApplicationStage,
+  type TenantBoundDb,
 } from "@hireops/db";
 import { evaluateKnockouts, type KnockoutInput } from "@hireops/ai-scoring";
 import { SLA_THRESHOLDS_HOURS } from "../lib/sla-thresholds";
@@ -156,8 +157,11 @@ import {
   partnerListAssignedRequisitionsOutputSchema,
   partnerListMySubmissionsInputSchema,
   partnerListMySubmissionsOutputSchema,
+  partnerSubmitCandidateInputSchema,
+  partnerSubmitCandidateOutputSchema,
   type PartnerAssignedRequisitionRow,
   type PartnerSubmissionRow,
+  type PartnerSubmitCandidateOutput,
   type OnboardingCaseListRow,
   type OnboardingTaskRow,
   type OnboardingDocumentRow,
@@ -285,6 +289,212 @@ const PUBLIC_APPLY_ACCEPTING_STATUSES = new Set<string>(["approved", "posted"]);
  * the AI-03 v1 threshold; tunable here, not per-tenant.
  */
 const PARSER_CONFIDENCE_SCORING_FLOOR = 0.5;
+
+/**
+ * Partner ownership-claim exclusivity window. 90 days per partner-msa's
+ * `exclusivity_window_days` default for empanelled partners
+ * (partner-data-model.md) and the wireflows' consent copy ("The 90-day
+ * exclusivity window starts now"). Reading the real per-org window from
+ * partner_msa is a commercials concern (out of PARTNER-02 scope) — the
+ * Wave-1 empanelled default is the honest stand-in.
+ */
+const PARTNER_CLAIM_WINDOW_DAYS = 90;
+
+/**
+ * Decide the scoring fields an application row should carry at insert time,
+ * shared by the public apply path (submitApplication) and the partner
+ * submission path (partnerSubmitCandidate) so both get IDENTICAL downstream
+ * treatment. Returns the synchronous ai_score_explanation for the skipped
+ * cases (knockouts failed, parser confidence below floor) and whether an
+ * ai_score_outbox row should be enqueued (only when eligible). Pure — no DB.
+ */
+function computeInitialScoringState(
+  knockoutPassed: boolean | null,
+  parserConfidence: number | null,
+  evaluatedAt: Date,
+): { initialAiScoreExplanation: Record<string, unknown> | null; outboxEligible: boolean } {
+  if (knockoutPassed === false) {
+    return {
+      initialAiScoreExplanation: {
+        scored_by: "skipped",
+        reason: "knockouts_failed",
+        skipped_at: evaluatedAt.toISOString(),
+      },
+      outboxEligible: false,
+    };
+  }
+  if (parserConfidence !== null && parserConfidence < PARSER_CONFIDENCE_SCORING_FLOOR) {
+    return {
+      initialAiScoreExplanation: {
+        scored_by: "skipped",
+        reason: "parser_confidence_below_threshold",
+        confidence: parserConfidence,
+        skipped_at: evaluatedAt.toISOString(),
+      },
+      outboxEligible: false,
+    };
+  }
+  return { initialAiScoreExplanation: null, outboxEligible: true };
+}
+
+/**
+ * Materialise a partner-sourced candidate into the recruitment pipeline:
+ * parse the CV, evaluate knockouts, upsert the candidate (one per person per
+ * tenant), upsert the application for this req, and enqueue AI scoring when
+ * eligible — the same downstream steps submitApplication runs, so a
+ * partner-sourced candidate is indistinguishable from a direct applicant to
+ * the recruiter (triage, scoring, knockouts all apply). Runs on the partner
+ * procedure's tenant-bound tx (ctx.db) so it commits/rolls back atomically
+ * with the ownership-claim decision the caller wraps around it.
+ *
+ * Attribution: application.source = 'partner_empanelled', plus the
+ * source_partner_id / submitted_by_partner_user_id / partner_submission_metadata
+ * columns the schema pre-wired for exactly this.
+ */
+async function ingestPartnerApplication(
+  db: TenantBoundDb,
+  args: {
+    tenantId: string;
+    requisitionId: string;
+    personId: string;
+    resumeUploadKey: string;
+    consentVersion: string;
+    partnerOrgId: string;
+    partnerUserId: string;
+    partnerSubmissionMetadata: Record<string, unknown>;
+    log: HonoTRPCContext["log"];
+    requestId: string;
+  },
+): Promise<{
+  candidateId: string;
+  applicationId: string;
+  wasNewApplication: boolean;
+  parseStatus: "received" | "parse_failed";
+}> {
+  const { tenantId, requisitionId, personId } = args;
+
+  // Parse the CV (same parser the apply path uses).
+  const storage = getStorageClient();
+  let parseStatus: "received" | "parse_failed" = "received";
+  let parsedSkills: unknown = null;
+  let parserConfidence: number | null = null;
+  let yearsOfExperience: number | null = null;
+  try {
+    const obj = await storage.get(args.resumeUploadKey);
+    const parsed = await parseResume(obj.buffer, obj.contentType, { tenantId });
+    parsedSkills = parsed;
+    yearsOfExperience = parsed.total_years_experience;
+    parserConfidence = parsed.parse_metadata.confidence_score;
+    if (parsed.parse_metadata.confidence_score === 0) parseStatus = "parse_failed";
+  } catch (err) {
+    args.log.error({ err, request_id: args.requestId }, "partnerSubmit: parseResume threw");
+    parseStatus = "parse_failed";
+  }
+
+  // Knockout evaluation (deterministic, no AI call) — identical to apply.
+  const knockoutRows = await db
+    .select({
+      id: requisitionKnockouts.id,
+      type: requisitionKnockouts.type,
+      source: requisitionKnockouts.source,
+      questionText: requisitionKnockouts.questionText,
+      thresholdValue: requisitionKnockouts.thresholdValue,
+    })
+    .from(requisitionKnockouts)
+    .where(
+      and(
+        eq(requisitionKnockouts.tenantId, tenantId),
+        eq(requisitionKnockouts.requisitionId, requisitionId),
+      ),
+    )
+    .orderBy(requisitionKnockouts.orderIndex);
+  const knockoutInputs: KnockoutInput[] = knockoutRows.map((r) => ({
+    id: r.id,
+    type: r.type,
+    source: r.source,
+    questionText: r.questionText,
+    thresholdValue: r.thresholdValue,
+  }));
+  const knockoutEval = evaluateKnockouts(parsedSkills, knockoutInputs);
+  const knockoutEvaluatedAt = new Date();
+
+  // Upsert candidate by (tenant, person).
+  const [existingCandidate] = await db
+    .select({ id: candidates.id })
+    .from(candidates)
+    .where(and(eq(candidates.tenantId, tenantId), eq(candidates.personId, personId)))
+    .limit(1);
+  const candidateId = existingCandidate?.id
+    ? existingCandidate.id
+    : await db
+        .insert(candidates)
+        .values({
+          tenantId,
+          personId,
+          source: "partner_empanelled",
+          consentGrantedAt: new Date(),
+          consentVersion: args.consentVersion,
+          currentResumeUrl: args.resumeUploadKey,
+          parsedSkills,
+          yearsOfExperience: yearsOfExperience !== null ? yearsOfExperience.toFixed(1) : null,
+        })
+        .returning({ id: candidates.id })
+        .then((rows) => firstOrThrow(rows, "partner candidate insert").id);
+
+  // Upsert application by (tenant, candidate, req).
+  const [existingApp] = await db
+    .select({ id: applications.id })
+    .from(applications)
+    .where(
+      and(
+        eq(applications.tenantId, tenantId),
+        eq(applications.candidateId, candidateId),
+        eq(applications.requisitionId, requisitionId),
+      ),
+    )
+    .limit(1);
+
+  const { initialAiScoreExplanation, outboxEligible } = computeInitialScoringState(
+    knockoutEval.passed,
+    parserConfidence,
+    knockoutEvaluatedAt,
+  );
+
+  const wasNewApplication = !existingApp?.id;
+  const applicationId = existingApp?.id
+    ? existingApp.id
+    : await db
+        .insert(applications)
+        .values({
+          tenantId,
+          candidateId,
+          requisitionId,
+          source: "partner_empanelled",
+          knockoutPassed: knockoutEval.passed,
+          knockoutFailures: knockoutEval.failures.length > 0 ? knockoutEval.failures : null,
+          knockoutEvaluatedAt,
+          aiScoreExplanation: initialAiScoreExplanation,
+          sourcePartnerId: args.partnerOrgId,
+          submittedByPartnerUserId: args.partnerUserId,
+          partnerSubmissionMetadata: args.partnerSubmissionMetadata,
+        })
+        .returning({ id: applications.id })
+        .then((rows) => firstOrThrow(rows, "partner application insert").id);
+
+  // Enqueue AI scoring only on first apply + eligibility — same rule as apply.
+  if (wasNewApplication && outboxEligible) {
+    try {
+      await db.insert(aiScoreOutbox).values({ tenantId, applicationId });
+    } catch (err) {
+      args.log.warn(
+        { err, request_id: args.requestId, application_id: applicationId },
+        "partnerSubmit: ai_score_outbox enqueue failed",
+      );
+    }
+  }
+
+  return { candidateId, applicationId, wasNewApplication, parseStatus };
+}
 
 export const appRouter = router({
   // ─────────── public: apply form ───────────
@@ -532,27 +742,11 @@ export const appRouter = router({
           // ai_score_explanation IS populated synchronously here for
           // the skipped cases so the recruiter drawer can render the
           // reason without a second query.
-          let initialAiScoreExplanation: Record<string, unknown> | null = null;
-          let outboxEligible = false;
-          if (knockoutEval.passed === false) {
-            initialAiScoreExplanation = {
-              scored_by: "skipped",
-              reason: "knockouts_failed",
-              skipped_at: knockoutEvaluatedAt.toISOString(),
-            };
-          } else if (
-            parserConfidence !== null &&
-            parserConfidence < PARSER_CONFIDENCE_SCORING_FLOOR
-          ) {
-            initialAiScoreExplanation = {
-              scored_by: "skipped",
-              reason: "parser_confidence_below_threshold",
-              confidence: parserConfidence,
-              skipped_at: knockoutEvaluatedAt.toISOString(),
-            };
-          } else {
-            outboxEligible = true;
-          }
+          const { initialAiScoreExplanation, outboxEligible } = computeInitialScoringState(
+            knockoutEval.passed,
+            parserConfidence,
+            knockoutEvaluatedAt,
+          );
 
           const wasNewApplication = !existingApp?.id;
           const applicationId = existingApp?.id
@@ -4932,6 +5126,324 @@ export const appRouter = router({
     }),
 
   /**
+   * partnerSubmitCandidate — the partner submits a candidate against an
+   * assigned req (PARTNER-02). The req being ASSIGNED to the caller's partner
+   * org is the authorization (FORBIDDEN otherwise). Runs the wireflows' dedup
+   * decision tree (§3.5) inside the partnerProcedure tenant-bound tx so the
+   * whole thing commits or rolls back atomically:
+   *
+   *   (a) no active claim → create candidate + application + ownership claim
+   *       (90-day window) + dedup-attempt(accepted). The candidate enters the
+   *       SAME recruiter pipeline as a direct applicant (parse/knockout/score).
+   *   (b) active claim owned by ANOTHER partner → reject; record a
+   *       dedup-attempt(block_active_claim). The response reveals only how many
+   *       days ago it was claimed — never the owner (requirements.md §6.4).
+   *   (c) active claim owned by THIS partner (another req) → add a second
+   *       application for this req under the existing claim; no new claim.
+   *
+   * Race guard: the partial-unique index one_active_claim_per_person on
+   * (tenant_id, person_id) WHERE status='active' is the DB-level guarantee that
+   * two partners racing the SAME resolved person can't both create a claim —
+   * the loser's INSERT violates the constraint, aborting its tx (→ CONFLICT).
+   * See the hand-back note on the residual brand-new-email window.
+   */
+  partnerSubmitCandidate: partnerProcedure
+    .input(partnerSubmitCandidateInputSchema)
+    .output(partnerSubmitCandidateOutputSchema)
+    .mutation(async ({ ctx, input }): Promise<PartnerSubmitCandidateOutput> => {
+      const db = ctx.db;
+      if (!db) {
+        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "partner ctx.db missing" });
+      }
+      const { tenantId, partnerOrgId, partnerUserId } = ctx.partner;
+
+      return withAudit(
+        "partner_submit_candidate",
+        ctx,
+        input,
+        async (): Promise<PartnerSubmitCandidateOutput> => {
+          // 1. Authorization: the req MUST be actively assigned to this org.
+          //    Assignment IS the authorization — no assignment, no submission.
+          const [assignment] = await db
+            .select({ reqStatus: requisitions.status })
+            .from(partnerAssignments)
+            .innerJoin(
+              requisitions,
+              and(
+                eq(requisitions.tenantId, partnerAssignments.tenantId),
+                eq(requisitions.id, partnerAssignments.requisitionId),
+              ),
+            )
+            .where(
+              and(
+                eq(partnerAssignments.tenantId, tenantId),
+                eq(partnerAssignments.partnerOrgId, partnerOrgId),
+                eq(partnerAssignments.requisitionId, input.requisitionId),
+                eq(partnerAssignments.status, "active"),
+              ),
+            )
+            .limit(1);
+          if (!assignment) {
+            throw new TRPCError({ code: "FORBIDDEN", message: "requisition_not_assigned" });
+          }
+          if (!PUBLIC_APPLY_ACCEPTING_STATUSES.has(assignment.reqStatus)) {
+            throw new TRPCError({
+              code: "BAD_REQUEST",
+              message: `Requisition not accepting submissions (status=${assignment.reqStatus})`,
+            });
+          }
+
+          const emailNorm = normaliseEmail(input.candidate.email);
+          const phoneNorm = normalisePhone(input.candidate.phone);
+          const submissionMetadata: Record<string, unknown> = {
+            source: "partner_portal_submit",
+            requisitionId: input.requisitionId,
+            currentCompany: input.candidate.currentCompany ?? null,
+            currentTitle: input.candidate.currentTitle ?? null,
+            noteToRecruiter: input.candidate.noteToRecruiter ?? null,
+            consentVersion: input.consentVersion,
+          };
+
+          // 2. Resolve an EXISTING person by exact normalised email (the
+          //    Wave-1 dedup pivot per partner-data-model.md), falling back to
+          //    phone so we reuse a person a direct applicant already created.
+          //    No fuzzy matching. Lookup only — creation is deferred to the
+          //    "created" branch so a blocked submission creates nothing.
+          const [emailMatch] = await db
+            .select({ id: persons.id, linkedinUrl: persons.linkedinUrl })
+            .from(persons)
+            .where(and(eq(persons.tenantId, tenantId), eq(persons.emailNormalised, emailNorm)))
+            .limit(1);
+          const [phoneMatch] = emailMatch
+            ? [undefined]
+            : await db
+                .select({ id: persons.id, linkedinUrl: persons.linkedinUrl })
+                .from(persons)
+                .where(and(eq(persons.tenantId, tenantId), eq(persons.phoneNormalised, phoneNorm)))
+                .limit(1);
+          const existingPerson = emailMatch ?? phoneMatch ?? null;
+
+          // 3. If the person already exists, inspect their active claim.
+          if (existingPerson) {
+            const [claim] = await db
+              .select({
+                id: candidateOwnershipClaims.id,
+                partnerOrgId: candidateOwnershipClaims.partnerOrgId,
+                claimedAt: candidateOwnershipClaims.claimedAt,
+                claimedViaApplicationId: candidateOwnershipClaims.claimedViaApplicationId,
+              })
+              .from(candidateOwnershipClaims)
+              .where(
+                and(
+                  eq(candidateOwnershipClaims.tenantId, tenantId),
+                  eq(candidateOwnershipClaims.personId, existingPerson.id),
+                  eq(candidateOwnershipClaims.status, "active"),
+                ),
+              )
+              .limit(1);
+
+            if (claim && claim.partnerOrgId !== partnerOrgId) {
+              // (b) owned by ANOTHER partner → reject. Record the block; do
+              // NOT create person/candidate/application/claim.
+              await db.insert(candidateDedupAttempts).values({
+                tenantId,
+                attemptedByPartnerUserId: partnerUserId,
+                submittedEmail: input.candidate.email,
+                submittedPhone: input.candidate.phone,
+                matchedPersonId: existingPerson.id,
+                decision: "block_active_claim",
+                decisionReason: "owned_by_other_partner",
+                submissionMetadata,
+              });
+              const blockedDaysAgo = Math.max(
+                0,
+                Math.floor((Date.now() - claim.claimedAt.getTime()) / 86_400_000),
+              );
+              return { outcome: "duplicate_blocked", blockedDaysAgo };
+            }
+
+            if (claim && claim.partnerOrgId === partnerOrgId) {
+              // (c) owned by THIS partner → add a second application for this
+              // req under the existing claim (no new claim — the partial
+              // unique already holds one active claim for this person).
+              const ingest = await ingestPartnerApplication(db, {
+                tenantId,
+                requisitionId: input.requisitionId,
+                personId: existingPerson.id,
+                resumeUploadKey: input.resumeUploadKey,
+                consentVersion: input.consentVersion,
+                partnerOrgId,
+                partnerUserId,
+                partnerSubmissionMetadata: submissionMetadata,
+                log: ctx.log,
+                requestId: ctx.requestId,
+              });
+              await db.insert(candidateDedupAttempts).values({
+                tenantId,
+                attemptedByPartnerUserId: partnerUserId,
+                submittedEmail: input.candidate.email,
+                submittedPhone: input.candidate.phone,
+                matchedPersonId: existingPerson.id,
+                decision: "link_existing",
+                decisionReason: ingest.wasNewApplication
+                  ? "added_to_existing_claim"
+                  : "already_on_this_req",
+                submissionMetadata,
+              });
+              // The req the original claim was made against, for the copy.
+              let priorRequisitionTitle: string | null = null;
+              if (claim.claimedViaApplicationId) {
+                const [prior] = await db
+                  .select({ title: positions.title })
+                  .from(applications)
+                  .innerJoin(
+                    requisitions,
+                    and(
+                      eq(requisitions.tenantId, applications.tenantId),
+                      eq(requisitions.id, applications.requisitionId),
+                    ),
+                  )
+                  .innerJoin(
+                    positions,
+                    and(
+                      eq(positions.tenantId, requisitions.tenantId),
+                      eq(positions.id, requisitions.positionId),
+                    ),
+                  )
+                  .where(
+                    and(
+                      eq(applications.tenantId, tenantId),
+                      eq(applications.id, claim.claimedViaApplicationId),
+                    ),
+                  )
+                  .limit(1);
+                priorRequisitionTitle = prior?.title ?? null;
+              }
+              return {
+                outcome: "added_to_existing",
+                applicationId: ingest.applicationId,
+                candidateId: ingest.candidateId,
+                claimId: claim.id,
+                alreadyOnThisReq: !ingest.wasNewApplication,
+                priorRequisitionTitle,
+                priorClaimedAt: claim.claimedAt.toISOString(),
+                parseStatus: ingest.parseStatus,
+              };
+            }
+            // Person exists but has NO active claim (expired/released) →
+            // falls through to the "created" branch to make a fresh claim.
+          }
+
+          // 4. (a) create. Resolve or create the person first.
+          let personId: string;
+          let dedupDecision: "allow_new" | "link_existing";
+          let dedupReason: string;
+          if (existingPerson) {
+            personId = existingPerson.id;
+            dedupDecision = "link_existing";
+            dedupReason = "reclaimed_no_active_claim";
+            if (!existingPerson.linkedinUrl && input.candidate.linkedinUrl) {
+              await db
+                .update(persons)
+                .set({ linkedinUrl: input.candidate.linkedinUrl, updatedAt: new Date() })
+                .where(and(eq(persons.tenantId, tenantId), eq(persons.id, personId)));
+            }
+          } else {
+            personId = await db
+              .insert(persons)
+              .values({
+                tenantId,
+                fullName: input.candidate.fullName,
+                emailPrimary: input.candidate.email,
+                emailNormalised: emailNorm,
+                phonePrimary: input.candidate.phone,
+                phoneNormalised: phoneNorm,
+                locationCountry: input.candidate.locationCountry ?? null,
+                linkedinUrl: input.candidate.linkedinUrl ?? null,
+              })
+              .returning({ id: persons.id })
+              .then((rows) => firstOrThrow(rows, "partner person insert").id);
+            dedupDecision = "allow_new";
+            dedupReason = "no_match";
+          }
+
+          const ingest = await ingestPartnerApplication(db, {
+            tenantId,
+            requisitionId: input.requisitionId,
+            personId,
+            resumeUploadKey: input.resumeUploadKey,
+            consentVersion: input.consentVersion,
+            partnerOrgId,
+            partnerUserId,
+            partnerSubmissionMetadata: submissionMetadata,
+            log: ctx.log,
+            requestId: ctx.requestId,
+          });
+
+          // The ownership claim — 90-day exclusivity window from now. The
+          // partial-unique index is the race guard: a concurrent claim for the
+          // same person makes this INSERT throw, rolling the whole tx back.
+          const claimedAt = new Date();
+          const expiresAt = new Date(claimedAt.getTime() + PARTNER_CLAIM_WINDOW_DAYS * 86_400_000);
+          let claimId: string;
+          try {
+            claimId = await db
+              .insert(candidateOwnershipClaims)
+              .values({
+                tenantId,
+                personId,
+                partnerOrgId,
+                claimedViaPartnerUserId: partnerUserId,
+                claimedViaApplicationId: ingest.applicationId,
+                claimedAt,
+                expiresAt,
+                status: "active",
+                releasedReason: null,
+              })
+              .returning({ id: candidateOwnershipClaims.id })
+              .then((rows) => firstOrThrow(rows, "ownership claim insert").id);
+          } catch (err) {
+            // 23505 = unique_violation — another submission claimed this person
+            // first (the partial-unique race guard fired). The tx rolls back.
+            const code =
+              typeof err === "object" && err !== null && "code" in err
+                ? (err as { code?: string }).code
+                : undefined;
+            if (code === "23505") {
+              throw new TRPCError({
+                code: "CONFLICT",
+                message: "candidate_claimed_concurrently",
+              });
+            }
+            throw err;
+          }
+
+          await db.insert(candidateDedupAttempts).values({
+            tenantId,
+            attemptedByPartnerUserId: partnerUserId,
+            submittedEmail: input.candidate.email,
+            submittedPhone: input.candidate.phone,
+            matchedPersonId: dedupDecision === "link_existing" ? personId : null,
+            decision: dedupDecision,
+            decisionReason: dedupReason,
+            submissionMetadata,
+          });
+
+          return {
+            outcome: "created",
+            applicationId: ingest.applicationId,
+            candidateId: ingest.candidateId,
+            claimId,
+            personId,
+            parseStatus: ingest.parseStatus,
+            claimExpiresAt: expiresAt.toISOString(),
+          };
+        },
+        { tenantIdOverride: tenantId },
+      );
+    }),
+
+  /**
    * partnerListMySubmissions — the org's candidate submissions, read from
    * candidate_ownership_claims (the Wave-1 submission model per
    * partner-data-model.md), joined through the claiming application to the
@@ -4956,6 +5468,9 @@ export const appRouter = router({
           status: candidateOwnershipClaims.status,
           claimedAt: candidateOwnershipClaims.claimedAt,
           expiresAt: candidateOwnershipClaims.expiresAt,
+          applicationId: applications.id,
+          requisitionId: applications.requisitionId,
+          stage: applications.currentStage,
         })
         .from(candidateOwnershipClaims)
         .leftJoin(
@@ -5002,6 +5517,9 @@ export const appRouter = router({
         status: r.status,
         claimedAt: r.claimedAt.toISOString(),
         expiresAt: r.expiresAt.toISOString(),
+        applicationId: r.applicationId ?? null,
+        requisitionId: r.requisitionId ?? null,
+        stage: r.stage ?? null,
       }));
       return { items, capped };
     }),
