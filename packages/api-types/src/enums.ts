@@ -37,3 +37,17 @@ export const applicationSourceSchema = z.enum([
   "whatsapp",
 ]);
 export type ApplicationSource = z.infer<typeof applicationSourceSchema>;
+
+/**
+ * Interview mode + scorecard template + status (Wave B, INT-01/02). Mirror
+ * the text + CHECK constraints on interview_plans / interviews. KEEP IN SYNC
+ * with packages/db/src/schema/interview-plans.ts + interviews.ts.
+ */
+export const interviewModeSchema = z.enum(["video", "onsite", "phone"]);
+export type InterviewMode = z.infer<typeof interviewModeSchema>;
+
+export const interviewScorecardTemplateSchema = z.enum(["technical", "manager", "hr", "general"]);
+export type InterviewScorecardTemplate = z.infer<typeof interviewScorecardTemplateSchema>;
+
+export const interviewStatusSchema = z.enum(["scheduled", "completed", "cancelled", "no_show"]);
+export type InterviewStatus = z.infer<typeof interviewStatusSchema>;

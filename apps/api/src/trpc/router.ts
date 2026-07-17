@@ -21,7 +21,7 @@
 
 import { z } from "zod";
 import { TRPCError } from "@trpc/server";
-import { and, desc, eq, gte, inArray, lt, lte, sql as dsql } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, lt, lte, sql as dsql, type SQL } from "drizzle-orm";
 import {
   db as poolDb,
   tenants,
@@ -42,7 +42,11 @@ import {
   partnerAssignments,
   candidateOwnershipClaims,
   tenantUserMemberships,
+  users,
   offers,
+  interviewPlans,
+  interviews,
+  interviewPanelists,
   workdaySyncOutbox,
   aiScoreOutbox,
   automationAgents,
@@ -118,6 +122,21 @@ import {
   listOffersByApplicationOutputSchema,
   listWorkdaySyncsInputSchema,
   listWorkdaySyncsOutputSchema,
+  upsertInterviewPlanInputSchema,
+  upsertInterviewPlanOutputSchema,
+  getInterviewPlanInputSchema,
+  getInterviewPlanOutputSchema,
+  listInterviewsByApplicationInputSchema,
+  listInterviewsByApplicationOutputSchema,
+  scheduleInterviewInputSchema,
+  scheduleInterviewOutputSchema,
+  rescheduleInterviewInputSchema,
+  rescheduleInterviewOutputSchema,
+  cancelInterviewInputSchema,
+  cancelInterviewOutputSchema,
+  listUpcomingInterviewsInputSchema,
+  listUpcomingInterviewsOutputSchema,
+  type InterviewRow,
   createFollowUpAgentInputSchema,
   createFollowUpAgentOutputSchema,
   updateFollowUpAgentInputSchema,
@@ -291,6 +310,13 @@ const REQUISITION_POST_ROLES = new Set(["admin", "hiring_manager", "recruiter"])
 // note in the ticket); a recruiter hitting a mutation gets FORBIDDEN. RLS
 // still scopes rows to the tenant on top of this persona gate.
 const REQUISITION_WRITE_ROLES = new Set(["admin", "hiring_manager"]);
+
+// INT-02 interview scheduling. Plan editing + scheduling is the
+// recruiter/hiring-manager surface (admin super-role always). Plan READ
+// piggybacks on REQUISITION_READ_ROLES (the plan lives on the req detail
+// view, which hr_head also reads). A partner/candidate-less identity is
+// FORBIDDEN. RLS still scopes rows to the tenant on top of these gates.
+const INTERVIEW_MANAGE_ROLES = new Set(["admin", "hiring_manager", "recruiter"]);
 
 /**
  * Throws FORBIDDEN unless the caller holds any role in `allowed`. Same
@@ -2808,6 +2834,242 @@ export const appRouter = router({
           createdAt: r.createdAt.toISOString(),
         })),
       };
+    }),
+
+  // ─────────────────────── interviews (INT-02) ───────────────────────
+  //
+  // Interview scheduling: plan rounds on a requisition, schedule a
+  // candidate's round with a panel, mint a candidate confirm signed link,
+  // and enqueue the invitation email. Panel-side surfaces + scorecards are
+  // INT-03/04. Flat naming per HANDOVER #31.
+
+  upsertInterviewPlan: protectedProcedure
+    .input(upsertInterviewPlanInputSchema)
+    .output(upsertInterviewPlanOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      requireAnyRole(
+        ctx,
+        INTERVIEW_MANAGE_ROLES,
+        "Only hiring managers, recruiters and admins can edit an interview plan.",
+      );
+      return withAudit("upsert_interview_plan", ctx, input, async () => {
+        const db = requireDb(ctx);
+
+        // Round numbers must be unique within the replace-set.
+        const seen = new Set<number>();
+        for (const r of input.rounds) {
+          if (seen.has(r.roundNumber)) {
+            throw new TRPCError({
+              code: "BAD_REQUEST",
+              message: `Duplicate round_number ${r.roundNumber} in the plan.`,
+            });
+          }
+          seen.add(r.roundNumber);
+        }
+
+        const [req] = await db
+          .select({ tenantId: requisitions.tenantId })
+          .from(requisitions)
+          .where(eq(requisitions.id, input.requisitionId))
+          .limit(1);
+        if (!req) throw new TRPCError({ code: "NOT_FOUND", message: "Requisition not found" });
+
+        // Validate every advisory default-panel membership is a real active
+        // membership in this tenant before persisting the plan.
+        const defaultPanelIds = [
+          ...new Set(input.rounds.flatMap((r) => r.defaultPanelMembershipIds)),
+        ];
+        await assertActiveMemberships(db, req.tenantId, defaultPanelIds);
+
+        // Replace-set: drop the requisition's existing rounds, insert these.
+        await db
+          .delete(interviewPlans)
+          .where(eq(interviewPlans.requisitionId, input.requisitionId));
+
+        if (input.rounds.length > 0) {
+          await db.insert(interviewPlans).values(
+            input.rounds.map((r) => ({
+              tenantId: req.tenantId,
+              requisitionId: input.requisitionId,
+              roundNumber: r.roundNumber,
+              roundName: r.roundName,
+              durationMinutes: r.durationMinutes,
+              mode: r.mode,
+              scorecardTemplate: r.scorecardTemplate,
+              competencyFocus: r.competencyFocus,
+              defaultPanelMembershipIds: r.defaultPanelMembershipIds,
+            })),
+          );
+        }
+
+        return { requisitionId: input.requisitionId, roundCount: input.rounds.length };
+      });
+    }),
+
+  getInterviewPlan: protectedProcedure
+    .input(getInterviewPlanInputSchema)
+    .output(getInterviewPlanOutputSchema)
+    .query(async ({ ctx, input }) => {
+      requireAnyRole(ctx, REQUISITION_READ_ROLES, "You don't have access to interview plans.");
+      const db = requireDb(ctx);
+      const requisitionId = await resolveRequisitionId(db, input);
+      const rows = await db
+        .select()
+        .from(interviewPlans)
+        .where(eq(interviewPlans.requisitionId, requisitionId))
+        .orderBy(interviewPlans.roundNumber);
+      return {
+        requisitionId,
+        rounds: rows.map((r) => ({
+          id: r.id,
+          roundNumber: r.roundNumber,
+          roundName: r.roundName,
+          durationMinutes: r.durationMinutes,
+          mode: r.mode as "video" | "onsite" | "phone",
+          scorecardTemplate: r.scorecardTemplate as "technical" | "manager" | "hr" | "general",
+          competencyFocus: Array.isArray(r.competencyFocus) ? (r.competencyFocus as string[]) : [],
+          defaultPanelMembershipIds: r.defaultPanelMembershipIds ?? [],
+        })),
+      };
+    }),
+
+  listInterviewsByApplication: protectedProcedure
+    .input(listInterviewsByApplicationInputSchema)
+    .output(listInterviewsByApplicationOutputSchema)
+    .query(async ({ ctx, input }) => {
+      requireAnyRole(ctx, INTERVIEW_MANAGE_ROLES, "You don't have access to interviews.");
+      const db = requireDb(ctx);
+      const [app] = await db
+        .select({ requisitionId: applications.requisitionId })
+        .from(applications)
+        .where(eq(applications.id, input.applicationId))
+        .limit(1);
+      if (!app) throw new TRPCError({ code: "NOT_FOUND", message: "Application not found" });
+
+      const rows = await selectInterviewRows(db, [
+        eq(interviews.applicationId, input.applicationId),
+      ]);
+      return { requisitionId: app.requisitionId, rows };
+    }),
+
+  scheduleInterview: protectedProcedure
+    .input(scheduleInterviewInputSchema)
+    .output(scheduleInterviewOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      requireAnyRole(
+        ctx,
+        INTERVIEW_MANAGE_ROLES,
+        "Only hiring managers, recruiters and admins can schedule interviews.",
+      );
+      return withAudit("schedule_interview", ctx, input, async () => {
+        const db = requireDb(ctx);
+        return doScheduleRound(db, ctx, input);
+      });
+    }),
+
+  rescheduleInterview: protectedProcedure
+    .input(rescheduleInterviewInputSchema)
+    .output(rescheduleInterviewOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      requireAnyRole(
+        ctx,
+        INTERVIEW_MANAGE_ROLES,
+        "Only hiring managers, recruiters and admins can reschedule interviews.",
+      );
+      return withAudit("reschedule_interview", ctx, input, async () => {
+        const db = requireDb(ctx);
+
+        const [app] = await db
+          .select({ id: applications.id })
+          .from(applications)
+          .where(eq(applications.id, input.applicationId))
+          .limit(1);
+        if (!app) throw new TRPCError({ code: "NOT_FOUND", message: "Application not found" });
+
+        // Cancel the existing non-cancelled round first so the replacement
+        // insert clears the partial-unique (one non-cancelled per round).
+        const [existing] = await db
+          .select({ id: interviews.id })
+          .from(interviews)
+          .where(
+            and(
+              eq(interviews.applicationId, input.applicationId),
+              eq(interviews.roundNumber, input.roundNumber),
+              dsql`${interviews.status} <> 'cancelled'`,
+            ),
+          )
+          .limit(1);
+
+        let cancelledInterviewId: string | null = null;
+        if (existing) {
+          await db
+            .update(interviews)
+            .set({ status: "cancelled", updatedAt: new Date() })
+            .where(eq(interviews.id, existing.id));
+          cancelledInterviewId = existing.id;
+        }
+
+        const created = await doScheduleRound(db, ctx, input);
+        return { ...created, cancelledInterviewId };
+      });
+    }),
+
+  cancelInterview: protectedProcedure
+    .input(cancelInterviewInputSchema)
+    .output(cancelInterviewOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      requireAnyRole(
+        ctx,
+        INTERVIEW_MANAGE_ROLES,
+        "Only hiring managers, recruiters and admins can cancel interviews.",
+      );
+      return withAudit("cancel_interview", ctx, input, async () => {
+        const db = requireDb(ctx);
+        const [row] = await db
+          .select({ id: interviews.id, status: interviews.status })
+          .from(interviews)
+          .where(eq(interviews.id, input.interviewId))
+          .limit(1);
+        if (!row) throw new TRPCError({ code: "NOT_FOUND", message: "Interview not found" });
+        if (row.status === "cancelled") {
+          return { interviewId: row.id };
+        }
+        // Cancel-notification email is a flagged INT-02 follow-up; no email here.
+        await db
+          .update(interviews)
+          .set({ status: "cancelled", updatedAt: new Date() })
+          .where(eq(interviews.id, row.id));
+        return { interviewId: row.id };
+      });
+    }),
+
+  listUpcomingInterviews: protectedProcedure
+    .input(listUpcomingInterviewsInputSchema)
+    .output(listUpcomingInterviewsOutputSchema)
+    .query(async ({ ctx, input }) => {
+      requireAnyRole(ctx, INTERVIEW_MANAGE_ROLES, "You don't have access to interviews.");
+      const db = requireDb(ctx);
+      const limit = input.limit;
+      const decoded = decodeInterviewCursor(input.cursor);
+
+      const conds = [
+        ...(input.status ? [eq(interviews.status, input.status)] : []),
+        ...(decoded
+          ? [
+              dsql`(${interviews.scheduledStart}, ${interviews.id}) < (${decoded.scheduledStart}::timestamptz, ${decoded.id}::uuid)`,
+            ]
+          : []),
+      ];
+
+      const rows = await selectInterviewRows(db, conds, limit + 1);
+      const hasMore = rows.length > limit;
+      const out = rows.slice(0, limit);
+      const last = out[out.length - 1];
+      const nextCursor =
+        hasMore && last
+          ? encodeInterviewCursor(last.scheduledStart ?? new Date(0).toISOString(), last.id)
+          : null;
+      return { rows: out, nextCursor };
     }),
 
   // ─────────── protected: integration health (admin) ───────────
@@ -7544,6 +7806,364 @@ function toIsoString(val: Date | string | null | undefined): string | null {
 export function formatPaiseAsInr(paise: bigint | number): string {
   const rupees = Number(BigInt(paise) / 100n);
   return `₹${rupees.toLocaleString("en-IN")}`;
+}
+
+// ─────────────────────── INT-02: interview helpers ───────────────────────
+
+const INTERVIEW_MODE_LABEL: Record<string, string> = {
+  video: "Video",
+  onsite: "On-site",
+  phone: "Phone",
+};
+
+/** UTC date-time → "2026-07-20 at 14:30 UTC" for the invitation email. */
+function formatInterviewWhen(start: Date): string {
+  const iso = start.toISOString();
+  return `${iso.slice(0, 10)} at ${iso.slice(11, 16)} UTC`;
+}
+
+/**
+ * Fail BAD_REQUEST unless every id is an active membership in the tenant.
+ * Used for both the plan's advisory default panel and a schedule's concrete
+ * panel — the advisory uuid[] on interview_plans is intentionally NOT
+ * FK-enforced, so validation happens here at write time.
+ */
+async function assertActiveMemberships(
+  db: NonNullable<HonoTRPCContext["db"]>,
+  tenantId: string,
+  ids: string[],
+): Promise<void> {
+  if (ids.length === 0) return;
+  const found = await db
+    .select({ id: tenantUserMemberships.id })
+    .from(tenantUserMemberships)
+    .where(
+      and(
+        eq(tenantUserMemberships.tenantId, tenantId),
+        inArray(tenantUserMemberships.id, ids),
+        eq(tenantUserMemberships.status, "active"),
+      ),
+    );
+  const foundIds = new Set(found.map((r) => r.id));
+  const missing = ids.filter((id) => !foundIds.has(id));
+  if (missing.length > 0) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: `Not active memberships in this tenant: ${missing.join(", ")}`,
+    });
+  }
+}
+
+async function resolveRequisitionId(
+  db: NonNullable<HonoTRPCContext["db"]>,
+  input: { requisitionId?: string; applicationId?: string },
+): Promise<string> {
+  if (input.requisitionId) return input.requisitionId;
+  const [app] = await db
+    .select({ requisitionId: applications.requisitionId })
+    .from(applications)
+    .where(eq(applications.id, input.applicationId ?? ""))
+    .limit(1);
+  if (!app) throw new TRPCError({ code: "NOT_FOUND", message: "Application not found" });
+  return app.requisitionId;
+}
+
+/** interview panel → {membershipId, name, isLead}[] keyed by interviewId. */
+async function fetchInterviewPanels(
+  db: NonNullable<HonoTRPCContext["db"]>,
+  interviewIds: string[],
+): Promise<Map<string, { membershipId: string; name: string | null; isLead: boolean }[]>> {
+  const map = new Map<string, { membershipId: string; name: string | null; isLead: boolean }[]>();
+  if (interviewIds.length === 0) return map;
+  const rows = await db
+    .select({
+      interviewId: interviewPanelists.interviewId,
+      membershipId: interviewPanelists.membershipId,
+      isLead: interviewPanelists.isLead,
+      name: users.displayName,
+    })
+    .from(interviewPanelists)
+    .leftJoin(tenantUserMemberships, eq(tenantUserMemberships.id, interviewPanelists.membershipId))
+    .leftJoin(users, eq(users.id, tenantUserMemberships.userId))
+    .where(inArray(interviewPanelists.interviewId, interviewIds));
+  for (const r of rows) {
+    const list = map.get(r.interviewId) ?? [];
+    list.push({ membershipId: r.membershipId, name: r.name ?? null, isLead: r.isLead });
+    map.set(r.interviewId, list);
+  }
+  return map;
+}
+
+/**
+ * Shared read for the interview list surfaces (byApplication + upcoming).
+ * Joins candidate name + role title and attaches the relational panel.
+ * Ordered scheduled_start DESC, id DESC (keyset-compatible).
+ */
+async function selectInterviewRows(
+  db: NonNullable<HonoTRPCContext["db"]>,
+  conds: SQL[],
+  limit = 200,
+): Promise<InterviewRow[]> {
+  const rows = await db
+    .select({
+      id: interviews.id,
+      applicationId: interviews.applicationId,
+      candidateId: applications.candidateId,
+      requisitionId: interviews.requisitionId,
+      roundNumber: interviews.roundNumber,
+      roundName: interviews.roundName,
+      status: interviews.status,
+      scheduledStart: interviews.scheduledStart,
+      scheduledEnd: interviews.scheduledEnd,
+      durationMinutes: interviews.durationMinutes,
+      mode: interviews.mode,
+      meetingUrl: interviews.meetingUrl,
+      candidateConfirmedAt: interviews.candidateConfirmedAt,
+      createdAt: interviews.createdAt,
+      candidateName: persons.fullName,
+      positionTitle: positions.title,
+    })
+    .from(interviews)
+    .innerJoin(applications, eq(applications.id, interviews.applicationId))
+    .innerJoin(candidates, eq(candidates.id, applications.candidateId))
+    .innerJoin(persons, eq(persons.id, candidates.personId))
+    .innerJoin(requisitions, eq(requisitions.id, interviews.requisitionId))
+    .innerJoin(positions, eq(positions.id, requisitions.positionId))
+    .where(conds.length ? and(...conds) : undefined)
+    .orderBy(desc(interviews.scheduledStart), desc(interviews.id))
+    .limit(limit);
+
+  const panels = await fetchInterviewPanels(
+    db,
+    rows.map((r) => r.id),
+  );
+  return rows.map((r) => ({
+    id: r.id,
+    applicationId: r.applicationId,
+    candidateId: r.candidateId,
+    requisitionId: r.requisitionId,
+    roundNumber: r.roundNumber,
+    roundName: r.roundName,
+    status: r.status as "scheduled" | "completed" | "cancelled" | "no_show",
+    scheduledStart: toIsoString(r.scheduledStart),
+    scheduledEnd: toIsoString(r.scheduledEnd),
+    durationMinutes: r.durationMinutes,
+    mode: r.mode as "video" | "onsite" | "phone",
+    meetingUrl: r.meetingUrl,
+    candidateConfirmedAt: toIsoString(r.candidateConfirmedAt),
+    candidateName: r.candidateName,
+    positionTitle: r.positionTitle,
+    panel: panels.get(r.id) ?? [],
+    createdAt: r.createdAt.toISOString(),
+  }));
+}
+
+/**
+ * Core scheduling: insert the interview from its plan round (with overrides),
+ * mint the candidate confirm signed link (hash on the row, raw token only in
+ * the email), insert the panel, and enqueue the invitation. A pre-existing
+ * non-cancelled round for (application, round_number) surfaces as CONFLICT via
+ * the partial-unique index — the caller should reschedule instead. Runs inside
+ * the procedure's tenant-bound tx so link + panel + email commit atomically
+ * with the interview (an email-enqueue failure is logged, not fatal).
+ */
+async function doScheduleRound(
+  db: NonNullable<HonoTRPCContext["db"]>,
+  ctx: HonoTRPCContext,
+  input: {
+    applicationId: string;
+    roundNumber: number;
+    scheduledStart: string;
+    scheduledEnd?: string;
+    durationMinutes?: number;
+    mode?: "video" | "onsite" | "phone";
+    meetingUrl?: string;
+    panelMembershipIds: string[];
+    leadMembershipId?: string;
+  },
+): Promise<{ interviewId: string; roundNumber: number; invitationSentTo: string | null }> {
+  const [app] = await db
+    .select({ tenantId: applications.tenantId, requisitionId: applications.requisitionId })
+    .from(applications)
+    .where(eq(applications.id, input.applicationId))
+    .limit(1);
+  if (!app) throw new TRPCError({ code: "NOT_FOUND", message: "Application not found" });
+
+  const [plan] = await db
+    .select()
+    .from(interviewPlans)
+    .where(
+      and(
+        eq(interviewPlans.requisitionId, app.requisitionId),
+        eq(interviewPlans.roundNumber, input.roundNumber),
+      ),
+    )
+    .limit(1);
+  if (!plan) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: `No interview plan round ${input.roundNumber} on this requisition. Define the plan first.`,
+    });
+  }
+
+  const panelIds = [...new Set(input.panelMembershipIds)];
+  await assertActiveMemberships(db, app.tenantId, panelIds);
+
+  const createdByMembershipId = await resolveActorMembership(db, ctx);
+  if (!createdByMembershipId) {
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: "Scheduling membership not found for this tenant",
+    });
+  }
+
+  // Pre-check the "one non-cancelled round per (application, round)" rule so
+  // a clean CONFLICT is returned deterministically. The partial-unique index
+  // is the race backstop below — but a failed insert poisons the surrounding
+  // tx (postgres aborts it), which would mask a CONFLICT thrown afterwards, so
+  // we catch the common case here first.
+  const [clash] = await db
+    .select({ id: interviews.id })
+    .from(interviews)
+    .where(
+      and(
+        eq(interviews.applicationId, input.applicationId),
+        eq(interviews.roundNumber, input.roundNumber),
+        dsql`${interviews.status} <> 'cancelled'`,
+      ),
+    )
+    .limit(1);
+  if (clash) {
+    throw new TRPCError({
+      code: "CONFLICT",
+      message: `A non-cancelled interview already exists for round ${input.roundNumber}. Reschedule it instead.`,
+    });
+  }
+
+  const mode = input.mode ?? (plan.mode as "video" | "onsite" | "phone");
+  const durationMinutes = input.durationMinutes ?? plan.durationMinutes;
+  const scheduledStart = new Date(input.scheduledStart);
+  const scheduledEnd = input.scheduledEnd
+    ? new Date(input.scheduledEnd)
+    : new Date(scheduledStart.getTime() + durationMinutes * 60_000);
+
+  let interviewId: string;
+  try {
+    const [created] = await db
+      .insert(interviews)
+      .values({
+        tenantId: app.tenantId,
+        applicationId: input.applicationId,
+        requisitionId: app.requisitionId,
+        roundNumber: input.roundNumber,
+        roundName: plan.roundName,
+        status: "scheduled",
+        scheduledStart,
+        scheduledEnd,
+        durationMinutes,
+        mode,
+        meetingUrl: input.meetingUrl ?? null,
+        createdByMembershipId,
+      })
+      .returning({ id: interviews.id });
+    if (!created) {
+      throw new TRPCError({
+        code: "INTERNAL_SERVER_ERROR",
+        message: "interview insert returned no row",
+      });
+    }
+    interviewId = created.id;
+  } catch (err) {
+    // Drizzle wraps the driver error in DrizzleQueryError, so the pg SQLSTATE
+    // lands on `.cause` — isUniqueViolation checks both levels.
+    if (isUniqueViolation(err)) {
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: `A non-cancelled interview already exists for round ${input.roundNumber}. Reschedule it instead.`,
+      });
+    }
+    throw err;
+  }
+
+  // Mint the confirm link AFTER the insert so subjectId is the real row id.
+  // Expires 24h past the interview start (and always in the future).
+  const expiresAt = new Date(Math.max(scheduledStart.getTime(), Date.now()) + 24 * 60 * 60 * 1000);
+  const token = signLink({
+    action: "candidate.confirm_interview",
+    subjectId: interviewId,
+    expiresAt,
+  });
+  const tokenHash = hashToken(token);
+  await db
+    .update(interviews)
+    .set({ confirmSignedLinkTokenHash: tokenHash, updatedAt: new Date() })
+    .where(eq(interviews.id, interviewId));
+
+  await db.insert(interviewPanelists).values(
+    panelIds.map((membershipId) => ({
+      tenantId: app.tenantId,
+      interviewId,
+      membershipId,
+      isLead: membershipId === input.leadMembershipId,
+    })),
+  );
+
+  let invitationSentTo: string | null = null;
+  const meta = await fetchOfferEmailContext(db, input.applicationId);
+  if (meta) {
+    const portalBase = process.env.NEXT_PUBLIC_SITE_URL ?? "http://localhost:3002";
+    const confirmUrl = `${portalBase}/interviews/confirm/${token}`;
+    try {
+      await enqueueNotification(db, {
+        tenantId: app.tenantId,
+        recipientType: "candidate",
+        recipientEmail: meta.candidateEmail,
+        recipientCandidateId: meta.candidateId,
+        templateKey: "candidate.interview_invitation",
+        templateData: {
+          candidateName: meta.candidateName,
+          companyName: meta.companyName,
+          positionTitle: meta.positionTitle,
+          roundName: plan.roundName,
+          interviewWhenFormatted: formatInterviewWhen(scheduledStart),
+          modeLabel: INTERVIEW_MODE_LABEL[mode] ?? mode,
+          durationMinutes,
+          meetingUrl: input.meetingUrl ?? "",
+          confirmUrl,
+        },
+        dedupKey: `interview_invitation:${interviewId}`,
+      });
+      invitationSentTo = meta.candidateEmail;
+    } catch (err) {
+      ctx.log.warn(
+        { err, request_id: ctx.requestId, interview_id: interviewId },
+        "doScheduleRound: enqueueNotification failed",
+      );
+    }
+  }
+
+  return { interviewId, roundNumber: input.roundNumber, invitationSentTo };
+}
+
+/**
+ * Keyset cursor for listUpcomingInterviews — (scheduled_start, id) of the
+ * page's last row. Same base64url codec shape as the audit cursor.
+ */
+function encodeInterviewCursor(scheduledStartIso: string, id: string): string {
+  return Buffer.from(`${scheduledStartIso}|${id}`, "utf8").toString("base64url");
+}
+function decodeInterviewCursor(
+  cursor: string | undefined,
+): { scheduledStart: string; id: string } | null {
+  if (!cursor) return null;
+  try {
+    const raw = Buffer.from(cursor, "base64url").toString("utf8");
+    const sep = raw.lastIndexOf("|");
+    if (sep === -1) return null;
+    return { scheduledStart: raw.slice(0, sep), id: raw.slice(sep + 1) };
+  } catch {
+    return null;
+  }
 }
 
 export type AppRouter = typeof appRouter;

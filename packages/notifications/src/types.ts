@@ -26,6 +26,7 @@ export type TemplateKey =
   | "candidate.application_received"
   | "candidate.stage_advanced"
   | "candidate.offer_extended"
+  | "candidate.interview_invitation"
   | "candidate.agent_message"
   | "recruiter.sla_breach_imminent"
   | "recruiter.offer_accepted"

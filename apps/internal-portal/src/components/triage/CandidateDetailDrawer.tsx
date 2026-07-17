@@ -8,6 +8,7 @@ import { trpc } from "@/lib/trpc-client";
 import { useDrawerRouting } from "@/lib/use-drawer-routing";
 import { useUndoToast } from "./UndoToastProvider";
 import { OfferSection } from "@/components/offers/OfferSection";
+import { InterviewScheduleSection } from "@/components/interviews/InterviewScheduleSection";
 
 /**
  * Slide-in drawer at 60vw with backdrop, Esc-to-close, click-backdrop-
@@ -253,6 +254,8 @@ export function CandidateDetailDrawer() {
               </ol>
             </section>
           ) : null}
+
+          {applicationId ? <InterviewScheduleSection applicationId={applicationId} /> : null}
 
           {applicationId ? <OfferSection applicationId={applicationId} /> : null}
 

@@ -1,5 +1,11 @@
 import { z } from "zod";
-import { applicationStageSchema, applicationSourceSchema } from "./enums";
+import {
+  applicationStageSchema,
+  applicationSourceSchema,
+  interviewModeSchema,
+  interviewScorecardTemplateSchema,
+  interviewStatusSchema,
+} from "./enums";
 
 /**
  * Input + output schemas for the initial six tRPC procedures (API-01).
@@ -1832,6 +1838,207 @@ export const listTenantMembershipsOutputSchema = z.object({
 });
 export type ListTenantMembershipsInput = z.infer<typeof listTenantMembershipsInputSchema>;
 export type ListTenantMembershipsOutput = z.infer<typeof listTenantMembershipsOutputSchema>;
+
+// ─────────── INT-02 — interview scheduling ───────────
+
+/**
+ * One round in an interview plan (the blueprint). `defaultPanelMembershipIds`
+ * are advisory: memberships that typically staff this round, pre-filling the
+ * scheduling modal's panel picker. Validated server-side as real active
+ * memberships on upsert.
+ */
+export const interviewPlanRoundSchema = z.object({
+  roundNumber: z.number().int().min(1).max(20),
+  roundName: z.string().min(1).max(120),
+  durationMinutes: z.number().int().min(15).max(480),
+  mode: interviewModeSchema,
+  scorecardTemplate: interviewScorecardTemplateSchema,
+  competencyFocus: z.array(z.string().min(1).max(80)).max(20).default([]),
+  defaultPanelMembershipIds: z.array(z.string().uuid()).max(20).default([]),
+});
+export type InterviewPlanRound = z.infer<typeof interviewPlanRoundSchema>;
+
+/**
+ * Replace-set the plan rounds for a requisition. The whole ordered loop is
+ * sent every time; the server deletes the requisition's existing plan rows
+ * and re-inserts these (round_number must be unique within the array). An
+ * empty array clears the plan.
+ */
+export const upsertInterviewPlanInputSchema = z.object({
+  requisitionId: z.string().uuid(),
+  rounds: z.array(interviewPlanRoundSchema).max(20),
+});
+export const upsertInterviewPlanOutputSchema = z.object({
+  requisitionId: z.string().uuid(),
+  roundCount: z.number().int().nonnegative(),
+});
+export type UpsertInterviewPlanInput = z.infer<typeof upsertInterviewPlanInputSchema>;
+export type UpsertInterviewPlanOutput = z.infer<typeof upsertInterviewPlanOutputSchema>;
+
+/**
+ * Read the plan for a requisition — by requisitionId directly, or by an
+ * applicationId (the scheduling modal in the triage drawer only knows the
+ * application; the server resolves its requisition). Exactly one is required.
+ */
+export const getInterviewPlanInputSchema = z
+  .object({
+    requisitionId: z.string().uuid().optional(),
+    applicationId: z.string().uuid().optional(),
+  })
+  .refine((v) => Boolean(v.requisitionId) !== Boolean(v.applicationId), {
+    message: "Provide exactly one of requisitionId or applicationId",
+  });
+export const getInterviewPlanOutputSchema = z.object({
+  requisitionId: z.string().uuid(),
+  rounds: z.array(
+    interviewPlanRoundSchema.extend({
+      id: z.string().uuid(),
+    }),
+  ),
+});
+export type GetInterviewPlanInput = z.infer<typeof getInterviewPlanInputSchema>;
+export type GetInterviewPlanOutput = z.infer<typeof getInterviewPlanOutputSchema>;
+
+const isoDateTimeSchema = z
+  .string()
+  .datetime({ offset: true })
+  .or(z.string().regex(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2})?$/, "Expected an ISO date-time"));
+
+/**
+ * Schedule one round for an application. `roundNumber` selects the plan
+ * round; mode / duration / panel default from that round but each can be
+ * overridden. `panelMembershipIds` (≥1) is the concrete panel; `leadMembershipId`
+ * (optional) must be one of them. A meeting URL is optional (video rounds).
+ */
+export const scheduleInterviewInputSchema = z
+  .object({
+    applicationId: z.string().uuid(),
+    roundNumber: z.number().int().min(1).max(20),
+    scheduledStart: isoDateTimeSchema,
+    scheduledEnd: isoDateTimeSchema.optional(),
+    durationMinutes: z.number().int().min(15).max(480).optional(),
+    mode: interviewModeSchema.optional(),
+    meetingUrl: z.string().url().max(2000).optional(),
+    panelMembershipIds: z.array(z.string().uuid()).min(1).max(20),
+    leadMembershipId: z.string().uuid().optional(),
+  })
+  .refine((v) => !v.leadMembershipId || v.panelMembershipIds.includes(v.leadMembershipId), {
+    message: "leadMembershipId must be one of panelMembershipIds",
+    path: ["leadMembershipId"],
+  });
+export const scheduleInterviewOutputSchema = z.object({
+  interviewId: z.string().uuid(),
+  roundNumber: z.number().int(),
+  invitationSentTo: z.string().email().nullable(),
+});
+export type ScheduleInterviewInput = z.infer<typeof scheduleInterviewInputSchema>;
+export type ScheduleInterviewOutput = z.infer<typeof scheduleInterviewOutputSchema>;
+
+/**
+ * Reschedule: cancel the existing (non-cancelled) round for this application +
+ * round_number and create a replacement in one transaction (new signed link,
+ * new invitation email). Same override surface as scheduleInterview.
+ */
+export const rescheduleInterviewInputSchema = scheduleInterviewInputSchema;
+export const rescheduleInterviewOutputSchema = z.object({
+  interviewId: z.string().uuid(),
+  cancelledInterviewId: z.string().uuid().nullable(),
+  roundNumber: z.number().int(),
+  invitationSentTo: z.string().email().nullable(),
+});
+export type RescheduleInterviewInput = z.infer<typeof rescheduleInterviewInputSchema>;
+export type RescheduleInterviewOutput = z.infer<typeof rescheduleInterviewOutputSchema>;
+
+export const cancelInterviewInputSchema = z.object({
+  interviewId: z.string().uuid(),
+  reason: z.string().min(1).max(500),
+});
+export const cancelInterviewOutputSchema = z.object({ interviewId: z.string().uuid() });
+export type CancelInterviewInput = z.infer<typeof cancelInterviewInputSchema>;
+export type CancelInterviewOutput = z.infer<typeof cancelInterviewOutputSchema>;
+
+/** One panelist on an interview (name for display, lead flag). */
+export const interviewPanelistViewSchema = z.object({
+  membershipId: z.string().uuid(),
+  name: z.string().nullable(),
+  isLead: z.boolean(),
+});
+export type InterviewPanelistView = z.infer<typeof interviewPanelistViewSchema>;
+
+export const interviewRowSchema = z.object({
+  id: z.string().uuid(),
+  applicationId: z.string().uuid(),
+  candidateId: z.string().uuid(),
+  requisitionId: z.string().uuid(),
+  roundNumber: z.number().int(),
+  roundName: z.string(),
+  status: interviewStatusSchema,
+  scheduledStart: z.string().nullable(),
+  scheduledEnd: z.string().nullable(),
+  durationMinutes: z.number().int(),
+  mode: interviewModeSchema,
+  meetingUrl: z.string().nullable(),
+  candidateConfirmedAt: z.string().nullable(),
+  candidateName: z.string().nullable(),
+  positionTitle: z.string(),
+  panel: z.array(interviewPanelistViewSchema),
+  createdAt: z.string(),
+});
+export type InterviewRow = z.infer<typeof interviewRowSchema>;
+
+/** Rounds already scheduled for a single application (triage drawer). */
+export const listInterviewsByApplicationInputSchema = z.object({
+  applicationId: z.string().uuid(),
+});
+export const listInterviewsByApplicationOutputSchema = z.object({
+  requisitionId: z.string().uuid(),
+  rows: z.array(interviewRowSchema),
+});
+export type ListInterviewsByApplicationInput = z.infer<
+  typeof listInterviewsByApplicationInputSchema
+>;
+export type ListInterviewsByApplicationOutput = z.infer<
+  typeof listInterviewsByApplicationOutputSchema
+>;
+
+/** Recruiter upcoming-interviews list (the /interviews page). Keyset on
+ * (scheduled_start, id); status filter defaults to scheduled. */
+export const listUpcomingInterviewsInputSchema = z.object({
+  status: interviewStatusSchema.optional(),
+  limit: z.number().int().min(1).max(100).default(50),
+  cursor: z.string().optional(),
+});
+export const listUpcomingInterviewsOutputSchema = z.object({
+  rows: z.array(interviewRowSchema),
+  nextCursor: z.string().nullable(),
+});
+export type ListUpcomingInterviewsInput = z.infer<typeof listUpcomingInterviewsInputSchema>;
+export type ListUpcomingInterviewsOutput = z.infer<typeof listUpcomingInterviewsOutputSchema>;
+
+// ─── Public interview-confirm route (REST, mirrors offer accept) ───
+
+export const interviewConfirmPreviewResponseSchema = z.object({
+  ok: z.literal(true),
+  interviewId: z.string().uuid(),
+  status: interviewStatusSchema,
+  candidateName: z.string(),
+  companyName: z.string(),
+  positionTitle: z.string(),
+  roundName: z.string(),
+  scheduledStart: z.string().nullable(),
+  durationMinutes: z.number().int(),
+  mode: interviewModeSchema,
+  meetingUrl: z.string().nullable(),
+  alreadyConfirmedAt: z.string().nullable(),
+});
+export type InterviewConfirmPreviewResponse = z.infer<typeof interviewConfirmPreviewResponseSchema>;
+
+export const interviewConfirmResponseSchema = z.object({
+  ok: z.literal(true),
+  interviewId: z.string().uuid(),
+  confirmedAt: z.string(),
+});
+export type InterviewConfirmResponse = z.infer<typeof interviewConfirmResponseSchema>;
 
 // ─────────── PARTNER-01 — partner-portal procedures ───────────
 

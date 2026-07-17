@@ -12,6 +12,7 @@ import { uploadRoutes } from "./routes/upload";
 import { onboardingDocumentRoutes } from "./routes/onboarding-documents";
 import { linksRoutes } from "./routes/links";
 import { offersRoutes } from "./routes/offers";
+import { interviewsRoutes } from "./routes/interviews";
 import { appRouter } from "./trpc/router";
 import type { HonoTRPCContext } from "./trpc/trpc-core";
 import { baseLog, sentry } from "./lib/observability";
@@ -90,6 +91,10 @@ app.route("/api/links", linksRoutes);
 // Public candidate offer accept/decline — signed-link gated, same
 // reasoning as /api/links. Handlers do their own signed_link_uses inserts.
 app.route("/api/offers", offersRoutes);
+
+// Public candidate interview-confirm (INT-02) — signed-link gated, same
+// reasoning as /api/offers. Handlers do their own signed_link_uses inserts.
+app.route("/api/interviews", interviewsRoutes);
 
 app.use("/trpc/*", optionalAuth);
 app.use(

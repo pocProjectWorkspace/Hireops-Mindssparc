@@ -6,6 +6,7 @@ import type { GetRequisitionDetailOutput } from "@hireops/api-types";
 import { trpc, handleTRPCError } from "@/lib/trpc-client";
 import { Badge, Button, Card } from "@/components/ui";
 import type { BadgeTone } from "@/components/ui";
+import { InterviewPlanSection } from "@/components/interviews/InterviewPlanSection";
 
 /**
  * REQ-02 — requisition detail view. Renders the requisition summary, JD,
@@ -49,12 +50,14 @@ export function RequisitionDetailView({
   canWrite,
   canDecide,
   canPost,
+  canManageInterviews,
 }: {
   requisitionId: string;
   initial: GetRequisitionDetailOutput;
   canWrite: boolean;
   canDecide: boolean;
   canPost: boolean;
+  canManageInterviews: boolean;
 }) {
   const router = useRouter();
   const [error, setError] = useState<string | null>(null);
@@ -378,6 +381,12 @@ export function RequisitionDetailView({
           </ul>
         )}
       </Card>
+
+      {/* Interview rounds (INT-02). Editable while the req isn't terminal. */}
+      <InterviewPlanSection
+        requisitionId={requisitionId}
+        canManage={canManageInterviews && !["cancelled", "closed"].includes(r.status)}
+      />
     </div>
   );
 }

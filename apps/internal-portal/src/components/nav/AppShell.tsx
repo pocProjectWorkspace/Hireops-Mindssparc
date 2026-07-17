@@ -29,6 +29,7 @@ import {
   IconOnboarding,
   IconRequisitions,
   IconReqApprovals,
+  IconInterviews,
   IconWorkflows,
   IconAudit,
   IconCosts,
@@ -43,6 +44,7 @@ export type PortalNavKey =
   | "onboarding"
   | "requisitions"
   | "requisition-approvals"
+  | "interviews"
   | "workflows"
   | "audit"
   | "costs"
@@ -80,6 +82,13 @@ const MAIN_NAV: NavItem[] = [
     href: "/requisition-approvals",
     icon: <IconReqApprovals />,
     roles: ["hr_head", "admin"],
+  },
+  {
+    key: "interviews",
+    label: "Interviews",
+    href: "/interviews",
+    icon: <IconInterviews />,
+    roles: ["hiring_manager", "recruiter", "admin"],
   },
 ];
 

@@ -7,6 +7,10 @@ export { StageAdvanced, type StageAdvancedProps } from "./templates/stage-advanc
 export { SlaBreachImminent, type SlaBreachImminentProps } from "./templates/sla-breach-imminent";
 export { OfferExtended, type OfferExtendedProps } from "./templates/offer-extended";
 export {
+  InterviewInvitation,
+  type InterviewInvitationProps,
+} from "./templates/interview-invitation";
+export {
   OfferAcceptedRecruiter,
   type OfferAcceptedRecruiterProps,
 } from "./templates/offer-accepted-recruiter";

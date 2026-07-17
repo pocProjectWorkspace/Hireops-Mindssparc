@@ -19,7 +19,9 @@ const PUBLIC_PATHS = new Set<string>(["/login", "/logout", "/privacy"]);
 
 // Path prefixes that are always public (candidate-side flows). Each
 // entry must end with "/" so a literal segment match doesn't bleed.
-const PUBLIC_PREFIXES = ["/offer/", "/t/"];
+// `/interviews/confirm/` is public (candidate confirm link) while the
+// `/interviews` recruiter list stays auth-gated.
+const PUBLIC_PREFIXES = ["/offer/", "/t/", "/interviews/confirm/"];
 
 export async function middleware(req: NextRequest) {
   if (PUBLIC_PATHS.has(req.nextUrl.pathname)) {

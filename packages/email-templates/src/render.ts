@@ -8,6 +8,10 @@ import { StageAdvanced, type StageAdvancedProps } from "./templates/stage-advanc
 import { SlaBreachImminent, type SlaBreachImminentProps } from "./templates/sla-breach-imminent";
 import { OfferExtended, type OfferExtendedProps } from "./templates/offer-extended";
 import {
+  InterviewInvitation,
+  type InterviewInvitationProps,
+} from "./templates/interview-invitation";
+import {
   OfferAcceptedRecruiter,
   type OfferAcceptedRecruiterProps,
 } from "./templates/offer-accepted-recruiter";
@@ -74,6 +78,15 @@ export async function renderTemplate(
       const element = OfferExtended(props);
       return {
         subject: `Your offer of employment — ${props.positionTitle} at ${props.companyName}`,
+        html: await render(element),
+        text: await render(element, { plainText: true }),
+      };
+    }
+    case "candidate.interview_invitation": {
+      const props = data as unknown as InterviewInvitationProps;
+      const element = InterviewInvitation(props);
+      return {
+        subject: `Interview invitation — ${props.roundName} for ${props.positionTitle}`,
         html: await render(element),
         text: await render(element, { plainText: true }),
       };

@@ -52,6 +52,18 @@ export function IconOnboarding() {
   );
 }
 
+export function IconInterviews() {
+  return (
+    <Svg>
+      <rect x="3" y="4" width="18" height="16" rx="2" />
+      <line x1="8" y1="2" x2="8" y2="6" />
+      <line x1="16" y1="2" x2="16" y2="6" />
+      <line x1="3" y1="10" x2="21" y2="10" />
+      <path d="M9 15l2 2 4-4" />
+    </Svg>
+  );
+}
+
 export function IconRequisitions() {
   return (
     <Svg>

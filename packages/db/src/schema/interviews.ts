@@ -68,6 +68,10 @@ export const interviews = pgTable(
     // Calendar-provider / Cal.diy seam — opaque external booking reference.
     externalBookingRef: text("external_booking_ref"),
     candidateConfirmedAt: timestamp("candidate_confirmed_at", { withTimezone: true }),
+    // INT-02: SHA-256 of the candidate confirmation signed link. The raw
+    // token lives only in the invitation email; the public confirm route
+    // looks the interview up by this hash. Added by migration 0054.
+    confirmSignedLinkTokenHash: text("confirm_signed_link_token_hash"),
 
     createdByMembershipId: uuid("created_by_membership_id").notNull(),
 
@@ -88,6 +92,10 @@ export const interviews = pgTable(
     index("idx_interviews_status").on(table.tenantId, table.status),
     // Upcoming-interviews sweep / calendar ordering.
     index("idx_interviews_scheduled_start").on(table.tenantId, table.scheduledStart),
+    // INT-02: public confirm route looks up by hash (migration 0054).
+    index("idx_interviews_confirm_token_hash")
+      .on(table.confirmSignedLinkTokenHash)
+      .where(sql`confirm_signed_link_token_hash IS NOT NULL`),
 
     check(
       "interviews_status_check",
