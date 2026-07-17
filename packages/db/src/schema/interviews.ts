@@ -58,6 +58,13 @@ export const interviews = pgTable(
     roundNumber: integer("round_number").notNull(),
     roundName: text("round_name").notNull(),
     status: text("status").notNull().default("scheduled"),
+    // INT-04: scorecard-template snapshot, stamped at schedule time from the
+    // plan round this interview instantiates from (migration 0055). The INT-03
+    // read paths (brief + save) prefer this over the LIVE plan round so a plan
+    // edit after scheduling can't drift the criteria a panelist is scored
+    // against. Nullable: rows scheduled before 0055 whose plan round was
+    // already removed have no snapshot and fall back to 'general', as before.
+    scorecardTemplate: text("scorecard_template"),
 
     scheduledStart: timestamp("scheduled_start", { withTimezone: true }),
     scheduledEnd: timestamp("scheduled_end", { withTimezone: true }),

@@ -104,7 +104,11 @@ export function InterviewsListView() {
                 </Td>
                 <Td>
                   {iv.status === "scheduled" ? (
-                    <div className="flex gap-2">
+                    <div className="flex items-center gap-2">
+                      {iv.panel.length > 0 &&
+                      iv.panel.every((p) => p.feedbackState === "submitted") ? (
+                        <Badge tone="success">Ready to complete</Badge>
+                      ) : null}
                       <a
                         href={`/triage?candidateId=${iv.candidateId}&applicationId=${iv.applicationId}`}
                         className="text-sm text-brand-700 hover:underline"

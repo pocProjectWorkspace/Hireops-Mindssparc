@@ -149,6 +149,17 @@ import {
   type GetPanelInterviewBriefOutput,
   type SaveInterviewFeedbackOutput,
   type PriorRoundFeedback,
+  completeInterviewInputSchema,
+  completeInterviewOutputSchema,
+  markInterviewNoShowInputSchema,
+  markInterviewNoShowOutputSchema,
+  advanceApplicationAfterInterviewInputSchema,
+  advanceApplicationAfterInterviewOutputSchema,
+  getInterviewDecisionSummaryInputSchema,
+  getInterviewDecisionSummaryOutputSchema,
+  type GetInterviewDecisionSummaryOutput,
+  type DecisionPanelist,
+  type InterviewRecommendation,
   createFollowUpAgentInputSchema,
   createFollowUpAgentOutputSchema,
   updateFollowUpAgentInputSchema,
@@ -3159,6 +3170,8 @@ export const appRouter = router({
             durationMinutes: interviews.durationMinutes,
             meetingUrl: interviews.meetingUrl,
             candidateConfirmedAt: interviews.candidateConfirmedAt,
+            // INT-04: prefer this snapshot over the live plan round below.
+            scorecardTemplateSnapshot: interviews.scorecardTemplate,
             candidateId: applications.candidateId,
             currentStage: applications.currentStage,
             positionTitle: positions.title,
@@ -3209,9 +3222,11 @@ export const appRouter = router({
           });
         }
 
-        // Plan round → scorecard template + competency focus. Looked up live
-        // (plans are replace-set) — fall back to 'general' if the round was
-        // removed after scheduling.
+        // Plan round → competency focus (advisory display) is looked up live.
+        // The scorecard TEMPLATE prefers the interview's snapshot (INT-04,
+        // migration 0055) so a plan edit after scheduling can't drift the
+        // criteria this panelist is scored against; the live plan round is the
+        // fallback only for pre-snapshot rows.
         const [planRound] = await db
           .select({
             scorecardTemplate: interviewPlans.scorecardTemplate,
@@ -3225,11 +3240,9 @@ export const appRouter = router({
             ),
           )
           .limit(1);
-        const scorecardTemplate = (planRound?.scorecardTemplate ?? "general") as
-          | "technical"
-          | "manager"
-          | "hr"
-          | "general";
+        const scorecardTemplate = (iv.scorecardTemplateSnapshot ??
+          planRound?.scorecardTemplate ??
+          "general") as "technical" | "manager" | "hr" | "general";
         const competencyFocus = Array.isArray(planRound?.competencyFocus)
           ? (planRound.competencyFocus as string[])
           : [];
@@ -3333,6 +3346,7 @@ export const appRouter = router({
             tenantId: interviews.tenantId,
             requisitionId: interviews.requisitionId,
             roundNumber: interviews.roundNumber,
+            scorecardTemplateSnapshot: interviews.scorecardTemplate,
           })
           .from(interviews)
           .where(eq(interviews.id, input.interviewId))
@@ -3351,7 +3365,10 @@ export const appRouter = router({
 
         // Validate the scorecard against the round template's criteria set:
         // every key must be known, every value an integer 1..5 (zod already
-        // enforced the range; here we reject unknown/extra keys).
+        // enforced the range; here we reject unknown/extra keys). Prefer the
+        // interview's SNAPSHOT template (INT-04, migration 0055) so a plan edit
+        // after scheduling can't change the criteria a panelist is validated
+        // against mid-loop; the live plan round is only a pre-snapshot fallback.
         const [planRound] = await db
           .select({ scorecardTemplate: interviewPlans.scorecardTemplate })
           .from(interviewPlans)
@@ -3362,7 +3379,7 @@ export const appRouter = router({
             ),
           )
           .limit(1);
-        const template = planRound?.scorecardTemplate ?? "general";
+        const template = iv.scorecardTemplateSnapshot ?? planRound?.scorecardTemplate ?? "general";
         const validKeys = new Set(scorecardCriteriaFor(template).map((c) => c.key));
         const badKeys = Object.keys(input.scorecard).filter((k) => !validKeys.has(k));
         if (badKeys.length > 0) {
@@ -3421,6 +3438,218 @@ export const appRouter = router({
           submittedAt: isSubmit ? now.toISOString() : null,
         };
       });
+    }),
+
+  // ─────────────────── interview completion (INT-04) ───────────────────
+  //
+  // Closes the loop: complete an interview (default gate = every panelist
+  // submitted; force+reason is the no-show escape hatch), advance the
+  // application via the EXISTING stage-transition discipline (human-in-the-loop,
+  // never silent), and give recruiters the full decision picture the panel
+  // brief hides. Recruiter / hiring_manager / admin — NOT the panel.
+
+  completeInterview: protectedProcedure
+    .input(completeInterviewInputSchema)
+    .output(completeInterviewOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      requireAnyRole(
+        ctx,
+        INTERVIEW_MANAGE_ROLES,
+        "Only recruiters, hiring managers and admins can complete an interview.",
+      );
+      return withAudit("complete_interview", ctx, input, async () => {
+        const db = requireDb(ctx);
+
+        const [iv] = await db
+          .select({
+            id: interviews.id,
+            status: interviews.status,
+            scorecardTemplate: interviews.scorecardTemplate,
+          })
+          .from(interviews)
+          .where(eq(interviews.id, input.interviewId))
+          .limit(1);
+        if (!iv) throw new TRPCError({ code: "NOT_FOUND", message: "Interview not found" });
+        if (iv.status !== "scheduled") {
+          throw new TRPCError({
+            code: "CONFLICT",
+            message: `Interview is ${iv.status} and can't be completed.`,
+          });
+        }
+
+        // Full-submission is the default gate: every panelist must have
+        // submitted their scorecard. A no-panel interview (count 0) also fails
+        // the gate — completing it needs the explicit force path.
+        const [counts] = await db
+          .select({
+            panelistCount: dsql<number>`count(*)::int`,
+            submittedCount: dsql<number>`count(${interviewFeedback.submittedAt})::int`,
+          })
+          .from(interviewPanelists)
+          .leftJoin(
+            interviewFeedback,
+            and(
+              eq(interviewFeedback.interviewId, interviewPanelists.interviewId),
+              eq(interviewFeedback.membershipId, interviewPanelists.membershipId),
+            ),
+          )
+          .where(eq(interviewPanelists.interviewId, input.interviewId));
+        const panelistCount = counts?.panelistCount ?? 0;
+        const submittedCount = counts?.submittedCount ?? 0;
+        const allSubmitted = panelistCount > 0 && submittedCount === panelistCount;
+
+        if (!allSubmitted) {
+          if (!input.force) {
+            throw new TRPCError({
+              code: "PRECONDITION_FAILED",
+              message: `Not every panelist has submitted (${submittedCount}/${panelistCount}). Pass force + a reason to complete anyway.`,
+            });
+          }
+          if (!input.reason || input.reason.trim().length === 0) {
+            throw new TRPCError({
+              code: "BAD_REQUEST",
+              message:
+                "A reason is required to force-complete before all panelists have submitted.",
+            });
+          }
+        }
+
+        await db
+          .update(interviews)
+          .set({ status: "completed", updatedAt: new Date() })
+          .where(eq(interviews.id, input.interviewId));
+
+        const stageCtx = interviewStageContext(iv.scorecardTemplate);
+        return {
+          interviewId: input.interviewId,
+          status: "completed" as const,
+          forced: !allSubmitted,
+          panelistCount,
+          submittedCount,
+          belongsToStage: stageCtx.belongsToStage,
+          suggestedNextStage: stageCtx.suggestedNextStage,
+        };
+      });
+    }),
+
+  markInterviewNoShow: protectedProcedure
+    .input(markInterviewNoShowInputSchema)
+    .output(markInterviewNoShowOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      requireAnyRole(
+        ctx,
+        INTERVIEW_MANAGE_ROLES,
+        "Only recruiters, hiring managers and admins can mark an interview no-show.",
+      );
+      return withAudit("mark_interview_no_show", ctx, input, async () => {
+        const db = requireDb(ctx);
+        const [iv] = await db
+          .select({ id: interviews.id, status: interviews.status })
+          .from(interviews)
+          .where(eq(interviews.id, input.interviewId))
+          .limit(1);
+        if (!iv) throw new TRPCError({ code: "NOT_FOUND", message: "Interview not found" });
+        if (iv.status !== "scheduled") {
+          throw new TRPCError({
+            code: "CONFLICT",
+            message: `Interview is ${iv.status} and can't be marked no-show.`,
+          });
+        }
+        await db
+          .update(interviews)
+          .set({ status: "no_show", updatedAt: new Date() })
+          .where(eq(interviews.id, input.interviewId));
+        return { interviewId: input.interviewId, status: "no_show" as const };
+      });
+    }),
+
+  advanceApplicationAfterInterview: protectedProcedure
+    .input(advanceApplicationAfterInterviewInputSchema)
+    .output(advanceApplicationAfterInterviewOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      requireAnyRole(
+        ctx,
+        INTERVIEW_MANAGE_ROLES,
+        "Only recruiters, hiring managers and admins can advance the application.",
+      );
+      return withAudit("advance_application_after_interview", ctx, input, async () => {
+        const db = requireDb(ctx);
+
+        const [iv] = await db
+          .select({
+            id: interviews.id,
+            status: interviews.status,
+            applicationId: interviews.applicationId,
+            scorecardTemplate: interviews.scorecardTemplate,
+          })
+          .from(interviews)
+          .where(eq(interviews.id, input.interviewId))
+          .limit(1);
+        if (!iv) throw new TRPCError({ code: "NOT_FOUND", message: "Interview not found" });
+        if (iv.status !== "completed") {
+          throw new TRPCError({
+            code: "PRECONDITION_FAILED",
+            message: "Complete the interview before advancing the application.",
+          });
+        }
+
+        const stageCtx = interviewStageContext(iv.scorecardTemplate);
+        if (!stageCtx.suggestedNextStage) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: `No forward stage defined for an interview in ${stageCtx.belongsToStage}.`,
+          });
+        }
+
+        const [app] = await db
+          .select({ currentStage: applications.currentStage })
+          .from(applications)
+          .where(eq(applications.id, iv.applicationId))
+          .limit(1);
+        if (!app) throw new TRPCError({ code: "NOT_FOUND", message: "Application not found" });
+        // Only advance FROM the stage this interview belongs to — never skip a
+        // stage or double-advance a candidate already moved on.
+        if (app.currentStage !== stageCtx.belongsToStage) {
+          throw new TRPCError({
+            code: "CONFLICT",
+            message: `This interview belongs to the ${stageCtx.belongsToStage} stage but the application is at ${app.currentStage}.`,
+          });
+        }
+
+        // Roll-up (counts + lead rec) written into the transition metadata so
+        // the append-only history records WHY the stage advanced.
+        const summary = await fetchInterviewDecisionSummary(db, input.interviewId);
+        const metadata = {
+          source: "advance_application_after_interview",
+          interviewId: input.interviewId,
+          roundNumber: summary?.roundNumber ?? null,
+          rollup: summary?.rollup ?? null,
+        };
+
+        return transitionApplicationStage(
+          db,
+          ctx,
+          iv.applicationId,
+          stageCtx.suggestedNextStage,
+          input.reason ?? null,
+          metadata,
+        );
+      });
+    }),
+
+  getInterviewDecisionSummary: protectedProcedure
+    .input(getInterviewDecisionSummaryInputSchema)
+    .output(getInterviewDecisionSummaryOutputSchema)
+    .query(async ({ ctx, input }): Promise<GetInterviewDecisionSummaryOutput> => {
+      requireAnyRole(
+        ctx,
+        INTERVIEW_MANAGE_ROLES,
+        "Only recruiters, hiring managers and admins can view the decision summary.",
+      );
+      const db = requireDb(ctx);
+      const summary = await fetchInterviewDecisionSummary(db, input.interviewId);
+      if (!summary) throw new TRPCError({ code: "NOT_FOUND", message: "Interview not found" });
+      return summary;
     }),
 
   // ─────────── protected: integration health (admin) ───────────
@@ -7627,6 +7856,7 @@ async function transitionApplicationStage(
   applicationId: string,
   targetStage: ApplicationStage,
   reason: string | null,
+  metadata: Record<string, unknown> | null = null,
 ) {
   const [app] = await db
     .select({
@@ -7657,6 +7887,7 @@ async function transitionApplicationStage(
       toStage: targetStage,
       actorMembershipId: membershipId,
       reason,
+      metadata,
     })
     .returning({ id: applicationStateTransitions.id });
 
@@ -8410,6 +8641,142 @@ async function fetchPriorRoundFeedback(
 }
 
 /**
+ * INT-04 — the stage an interview belongs to, and the natural next stage the
+ * recruiter is invited to advance to, both derived from the REAL
+ * application_stage enum (no invented stages). The interview's stage is read
+ * from its scorecard template: an `hr` round belongs to the hr_round stage,
+ * every other template (technical / manager / general) to the tech_interview
+ * stage. Forward step follows the enum's documented progression:
+ *   tech_interview → hr_round → offer_drafted (the "offer-ready" stage; the
+ *   offer itself stays a manual recruiter action from triage — out of scope).
+ */
+function interviewStageContext(scorecardTemplate: string | null): {
+  belongsToStage: ApplicationStage;
+  suggestedNextStage: ApplicationStage | null;
+} {
+  if (scorecardTemplate === "hr") {
+    return { belongsToStage: "hr_round", suggestedNextStage: "offer_drafted" };
+  }
+  return { belongsToStage: "tech_interview", suggestedNextStage: "hr_round" };
+}
+
+/**
+ * INT-04 — the recruiter decision summary for ONE interview: per-panelist FULL
+ * scorecards (every criterion score — the read the panel brief hides across
+ * rounds), recommendations, lead flags, and an honest computed roll-up (counts
+ * per recommendation among submitted scorecards + the lead's recommendation as
+ * the headline). Returns null when the interview doesn't exist. RLS scopes the
+ * reads to the tenant; the caller's persona gate is enforced at the procedure.
+ */
+async function fetchInterviewDecisionSummary(
+  db: NonNullable<HonoTRPCContext["db"]>,
+  interviewId: string,
+): Promise<GetInterviewDecisionSummaryOutput | null> {
+  const [iv] = await db
+    .select({
+      id: interviews.id,
+      requisitionId: interviews.requisitionId,
+      roundNumber: interviews.roundNumber,
+      roundName: interviews.roundName,
+      status: interviews.status,
+      scorecardTemplateSnapshot: interviews.scorecardTemplate,
+    })
+    .from(interviews)
+    .where(eq(interviews.id, interviewId))
+    .limit(1);
+  if (!iv) return null;
+
+  // Resolve the template (snapshot preferred; live plan round fallback) so the
+  // criteria labels match what the panelist was scored against.
+  let template = iv.scorecardTemplateSnapshot;
+  if (!template) {
+    const [planRound] = await db
+      .select({ scorecardTemplate: interviewPlans.scorecardTemplate })
+      .from(interviewPlans)
+      .where(
+        and(
+          eq(interviewPlans.requisitionId, iv.requisitionId),
+          eq(interviewPlans.roundNumber, iv.roundNumber),
+        ),
+      )
+      .limit(1);
+    template = planRound?.scorecardTemplate ?? "general";
+  }
+  const criteriaDefs = scorecardCriteriaFor(template);
+
+  const rows = await db
+    .select({
+      membershipId: interviewPanelists.membershipId,
+      isLead: interviewPanelists.isLead,
+      name: users.displayName,
+      feedbackId: interviewFeedback.id,
+      scorecard: interviewFeedback.scorecard,
+      strengths: interviewFeedback.strengths,
+      concerns: interviewFeedback.concerns,
+      notes: interviewFeedback.notes,
+      recommendation: interviewFeedback.recommendation,
+      submittedAt: interviewFeedback.submittedAt,
+    })
+    .from(interviewPanelists)
+    .leftJoin(tenantUserMemberships, eq(tenantUserMemberships.id, interviewPanelists.membershipId))
+    .leftJoin(users, eq(users.id, tenantUserMemberships.userId))
+    .leftJoin(
+      interviewFeedback,
+      and(
+        eq(interviewFeedback.interviewId, interviewPanelists.interviewId),
+        eq(interviewFeedback.membershipId, interviewPanelists.membershipId),
+      ),
+    )
+    .where(eq(interviewPanelists.interviewId, interviewId));
+
+  const counts = { strong_yes: 0, yes: 0, hold: 0, no: 0 };
+  let submittedCount = 0;
+  let leadRecommendation: InterviewRecommendation | null = null;
+
+  const panelists: DecisionPanelist[] = rows.map((r) => {
+    const saved =
+      r.scorecard && typeof r.scorecard === "object" ? (r.scorecard as Record<string, number>) : {};
+    const rec = (r.recommendation as InterviewRecommendation | null) ?? null;
+    const state = deriveFeedbackState(r.feedbackId, r.submittedAt);
+    if (state === "submitted") {
+      submittedCount += 1;
+      if (rec && rec in counts) counts[rec] += 1;
+      if (r.isLead) leadRecommendation = rec;
+    }
+    return {
+      membershipId: r.membershipId,
+      name: r.name ?? null,
+      isLead: r.isLead,
+      feedbackState: state,
+      recommendation: rec,
+      scorecard: criteriaDefs.map((c) => {
+        const score = saved[c.key];
+        return { key: c.key, label: c.label, score: typeof score === "number" ? score : null };
+      }),
+      strengths: r.strengths ?? null,
+      concerns: r.concerns ?? null,
+      notes: r.notes ?? null,
+      submittedAt: toIsoString(r.submittedAt),
+    };
+  });
+
+  return {
+    interviewId: iv.id,
+    roundNumber: iv.roundNumber,
+    roundName: iv.roundName,
+    status: iv.status as "scheduled" | "completed" | "cancelled" | "no_show",
+    scorecardTemplate: template as "technical" | "manager" | "hr" | "general",
+    panelists,
+    rollup: {
+      panelistCount: rows.length,
+      submittedCount,
+      counts,
+      leadRecommendation,
+    },
+  };
+}
+
+/**
  * Shared read for the interview list surfaces (byApplication + upcoming).
  * Joins candidate name + role title and attaches the relational panel.
  * Ordered scheduled_start DESC, id DESC (keyset-compatible).
@@ -8573,6 +8940,10 @@ async function doScheduleRound(
         roundNumber: input.roundNumber,
         roundName: plan.roundName,
         status: "scheduled",
+        // INT-04: snapshot the scorecard template from the plan round at
+        // schedule time (migration 0055) so a later plan edit can't drift the
+        // criteria this interview is scored against.
+        scorecardTemplate: plan.scorecardTemplate,
         scheduledStart,
         scheduledEnd,
         durationMinutes,

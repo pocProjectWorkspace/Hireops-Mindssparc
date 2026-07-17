@@ -2241,6 +2241,138 @@ export const saveInterviewFeedbackOutputSchema = z.object({
 export type SaveInterviewFeedbackInput = z.infer<typeof saveInterviewFeedbackInputSchema>;
 export type SaveInterviewFeedbackOutput = z.infer<typeof saveInterviewFeedbackOutputSchema>;
 
+// ─────────── INT-04 — completion + stage transitions ───────────
+
+/**
+ * Complete an interview. Recruiter / hiring_manager / admin surface.
+ *
+ * Default policy: allowed only when EVERY panelist on the interview has
+ * SUBMITTED their scorecard. `force: true` (with a required `reason`) is the
+ * honest escape hatch for no-show panelists — it records WHY the loop is being
+ * closed early into the audited input. There is no silent auto-advance: the
+ * mutation returns `suggestedNextStage` and the UI offers the advance as an
+ * explicit, human-in-the-loop action (consistent with the product's approval
+ * philosophy). CONFLICT if the interview isn't `scheduled` (already
+ * completed / cancelled / no_show).
+ */
+export const completeInterviewInputSchema = z.object({
+  interviewId: z.string().uuid(),
+  force: z.boolean().optional(),
+  reason: z.string().max(500).optional(),
+});
+export const completeInterviewOutputSchema = z.object({
+  interviewId: z.string().uuid(),
+  status: z.literal("completed"),
+  forced: z.boolean(),
+  panelistCount: z.number().int(),
+  submittedCount: z.number().int(),
+  // The stage this interview belongs to (derived from its scorecard template)
+  // and the natural next stage the recruiter is invited to advance to. Null
+  // suggestion when the interview's stage has no defined forward step.
+  belongsToStage: applicationStageSchema,
+  suggestedNextStage: applicationStageSchema.nullable(),
+});
+export type CompleteInterviewInput = z.infer<typeof completeInterviewInputSchema>;
+export type CompleteInterviewOutput = z.infer<typeof completeInterviewOutputSchema>;
+
+/** Mark a scheduled interview as no-show (candidate didn't attend). Reason
+ * optional. CONFLICT if the interview isn't `scheduled`. */
+export const markInterviewNoShowInputSchema = z.object({
+  interviewId: z.string().uuid(),
+  reason: z.string().max(500).optional(),
+});
+export const markInterviewNoShowOutputSchema = z.object({
+  interviewId: z.string().uuid(),
+  status: z.literal("no_show"),
+});
+export type MarkInterviewNoShowInput = z.infer<typeof markInterviewNoShowInputSchema>;
+export type MarkInterviewNoShowOutput = z.infer<typeof markInterviewNoShowOutputSchema>;
+
+/**
+ * Advance the application after a completed interview. Recruiter /
+ * hiring_manager / admin. Guarded: the interview must be `completed`, and the
+ * application's current_stage must equal the stage the interview belongs to
+ * (only advance FROM the interview's own stage — never skip or double-advance).
+ * The round's recommendation roll-up is written into the transition metadata.
+ * Reuses the existing stage-transition discipline (transitionApplicationStage),
+ * so the append-only transition row + candidate-facing email fire exactly as a
+ * manual triage advance does.
+ */
+export const advanceApplicationAfterInterviewInputSchema = z.object({
+  interviewId: z.string().uuid(),
+  reason: z.string().max(500).optional(),
+});
+export const advanceApplicationAfterInterviewOutputSchema = z.object({
+  applicationId: z.string().uuid(),
+  fromStage: applicationStageSchema,
+  toStage: applicationStageSchema,
+  transitionId: z.string().uuid(),
+});
+export type AdvanceApplicationAfterInterviewInput = z.infer<
+  typeof advanceApplicationAfterInterviewInputSchema
+>;
+export type AdvanceApplicationAfterInterviewOutput = z.infer<
+  typeof advanceApplicationAfterInterviewOutputSchema
+>;
+
+/**
+ * Recruiter-side decision summary for one interview (getInterviewDecisionSummary
+ * — recruiter / hiring_manager / admin, NOT the panel). This is the read the
+ * panel brief deliberately HIDES: per-panelist FULL scorecards (every criterion
+ * score), recommendations, lead flags, plus an honest computed roll-up (counts
+ * per recommendation + the lead's recommendation surfaced as the headline). No
+ * AI, no weighting — counts + lead, labelled plainly.
+ */
+export const decisionPanelistSchema = z.object({
+  membershipId: z.string().uuid(),
+  name: z.string().nullable(),
+  isLead: z.boolean(),
+  feedbackState: feedbackStateSchema,
+  recommendation: interviewRecommendationSchema.nullable(),
+  // FULL per-criterion scores — the panel brief never exposes these across
+  // rounds; the recruiter decision view does.
+  scorecard: z.array(panelScorecardCriterionSchema),
+  strengths: z.string().nullable(),
+  concerns: z.string().nullable(),
+  notes: z.string().nullable(),
+  submittedAt: z.string().nullable(),
+});
+export type DecisionPanelist = z.infer<typeof decisionPanelistSchema>;
+
+export const decisionRollupSchema = z.object({
+  panelistCount: z.number().int(),
+  submittedCount: z.number().int(),
+  counts: z.object({
+    strong_yes: z.number().int(),
+    yes: z.number().int(),
+    hold: z.number().int(),
+    no: z.number().int(),
+  }),
+  // The lead panelist's recommendation — the honest headline. Null when the
+  // lead hasn't submitted (or there is no lead).
+  leadRecommendation: interviewRecommendationSchema.nullable(),
+});
+export type DecisionRollup = z.infer<typeof decisionRollupSchema>;
+
+export const getInterviewDecisionSummaryInputSchema = z.object({
+  interviewId: z.string().uuid(),
+});
+export const getInterviewDecisionSummaryOutputSchema = z.object({
+  interviewId: z.string().uuid(),
+  roundNumber: z.number().int(),
+  roundName: z.string(),
+  status: interviewStatusSchema,
+  scorecardTemplate: interviewScorecardTemplateSchema,
+  panelists: z.array(decisionPanelistSchema),
+  rollup: decisionRollupSchema,
+});
+export type GetInterviewDecisionSummaryInput = z.infer<
+  typeof getInterviewDecisionSummaryInputSchema
+>;
+export type GetInterviewDecisionSummaryOutput = z.infer<
+  typeof getInterviewDecisionSummaryOutputSchema
+>;
+
 // ─────────── PARTNER-01 — partner-portal procedures ───────────
 
 /**

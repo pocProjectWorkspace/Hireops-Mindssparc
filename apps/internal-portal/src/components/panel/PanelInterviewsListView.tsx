@@ -87,6 +87,7 @@ function PanelSection({
               <Th>Role</Th>
               <Th>Round</Th>
               <Th>When</Th>
+              <Th>Status</Th>
               <Th>My scorecard</Th>
               <Th> </Th>
             </Tr>
@@ -103,6 +104,9 @@ function PanelSection({
                   </span>
                 </Td>
                 <Td>{formatWhen(iv.scheduledStart)}</Td>
+                <Td>
+                  <Badge tone={statusTone(iv.status)}>{iv.status.replace(/_/g, " ")}</Badge>
+                </Td>
                 <Td>
                   <Badge tone={feedbackTone(iv.myFeedbackState)}>
                     {feedbackLabel(iv.myFeedbackState)}
@@ -123,6 +127,20 @@ function PanelSection({
       )}
     </section>
   );
+}
+
+function statusTone(status: string): BadgeTone {
+  switch (status) {
+    case "scheduled":
+      return "info";
+    case "completed":
+      return "success";
+    case "no_show":
+    case "cancelled":
+      return "warning";
+    default:
+      return "neutral";
+  }
 }
 
 function feedbackTone(state: FeedbackState): BadgeTone {

@@ -6,6 +6,7 @@ import { Button, Select } from "@hireops/ui";
 import { Badge } from "@/components/ui";
 import type { BadgeTone } from "@/components/ui";
 import { trpc } from "@/lib/trpc-client";
+import { InterviewDecisionControls } from "./InterviewDecisionControls";
 
 /**
  * Interview scheduling inside the CandidateDetailDrawer (INT-02). Mirrors
@@ -139,6 +140,9 @@ export function InterviewScheduleSection({ applicationId }: Props) {
                   Cancel
                 </Button>
               </div>
+            ) : null}
+            {iv.status === "scheduled" || iv.status === "completed" ? (
+              <InterviewDecisionControls interview={iv} onChanged={invalidate} />
             ) : null}
           </li>
         ))}
