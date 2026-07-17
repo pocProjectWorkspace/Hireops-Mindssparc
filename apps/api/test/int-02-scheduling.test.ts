@@ -320,6 +320,37 @@ describe("INT-02 interview scheduling", () => {
     assert.equal(notif[0]?.n, 1);
   });
 
+  it("2b. cross-member panel validates via service role (INT-04 discovery regression)", async () => {
+    // assertActiveMemberships used to run under caller RLS, where
+    // tenant_user_memberships is self-select-only — so paneling any OTHER
+    // member spuriously failed BAD_REQUEST. Fixed to a service-role read
+    // with an explicit tenant filter; this test pins it.
+    await resetSchedulingState();
+    await ensurePlan();
+    const [other] = await poolSql<{ id: string }[]>`
+      SELECT tum.id FROM public.tenant_user_memberships tum
+      JOIN auth.users u ON u.id = tum.user_id
+      WHERE tum.tenant_id = ${tenantId} AND u.email = 'panel1@kyndryl-poc.test'
+    `;
+    assert.ok(other?.id, "panel1 membership must exist (seed-test-users)");
+    const res = await trpcMutation<{ interviewId: string }>(
+      "scheduleInterview",
+      {
+        applicationId: I2_APP,
+        roundNumber: 1,
+        scheduledStart: futureStart(3),
+        panelMembershipIds: [recruiterMembershipId, other.id],
+        leadMembershipId: recruiterMembershipId,
+      },
+      recruiterJwt,
+    );
+    const panel = await poolSql<{ n: number }[]>`
+      SELECT count(*)::int AS n FROM public.interview_panelists
+      WHERE interview_id = ${data(res).interviewId}
+    `;
+    assert.equal(panel[0]?.n, 2);
+  });
+
   it("3. Double-schedule the same round → CONFLICT", async () => {
     await resetSchedulingState();
     await ensurePlan();

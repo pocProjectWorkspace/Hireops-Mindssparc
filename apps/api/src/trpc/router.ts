@@ -2910,7 +2910,7 @@ export const appRouter = router({
         const defaultPanelIds = [
           ...new Set(input.rounds.flatMap((r) => r.defaultPanelMembershipIds)),
         ];
-        await assertActiveMemberships(db, req.tenantId, defaultPanelIds);
+        await assertActiveMemberships(ctx.sql, req.tenantId, defaultPanelIds);
 
         // Replace-set: drop the requisition's existing rounds, insert these.
         await db
@@ -8411,21 +8411,23 @@ function formatInterviewWhen(start: Date): string {
  * FK-enforced, so validation happens here at write time.
  */
 async function assertActiveMemberships(
-  db: NonNullable<HonoTRPCContext["db"]>,
+  sql: HonoTRPCContext["sql"],
   tenantId: string,
   ids: string[],
 ): Promise<void> {
   if (ids.length === 0) return;
-  const found = await db
-    .select({ id: tenantUserMemberships.id })
-    .from(tenantUserMemberships)
-    .where(
-      and(
-        eq(tenantUserMemberships.tenantId, tenantId),
-        inArray(tenantUserMemberships.id, ids),
-        eq(tenantUserMemberships.status, "active"),
-      ),
-    );
+  // Service-role read with an explicit tenant filter. The RLS-scoped tx
+  // must NOT be used here: tenant_user_memberships only carries a
+  // self-select policy, so under caller RLS this helper could only ever
+  // see the caller's own membership — paneling any OTHER member failed
+  // with a spurious BAD_REQUEST (INT-04 discovery). Same discipline as
+  // listTenantMemberships.
+  const found = await sql<{ id: string }[]>`
+    SELECT id FROM public.tenant_user_memberships
+    WHERE tenant_id = ${tenantId}
+      AND id = ANY(${ids}::uuid[])
+      AND status = 'active'
+  `;
   const foundIds = new Set(found.map((r) => r.id));
   const missing = ids.filter((id) => !foundIds.has(id));
   if (missing.length > 0) {
@@ -8889,7 +8891,7 @@ async function doScheduleRound(
   }
 
   const panelIds = [...new Set(input.panelMembershipIds)];
-  await assertActiveMemberships(db, app.tenantId, panelIds);
+  await assertActiveMemberships(ctx.sql, app.tenantId, panelIds);
 
   const createdByMembershipId = await resolveActorMembership(db, ctx);
   if (!createdByMembershipId) {
