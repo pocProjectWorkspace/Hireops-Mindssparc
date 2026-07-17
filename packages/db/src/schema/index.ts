@@ -70,3 +70,8 @@ export * from "./bgv-runs";
 export * from "./bgv-results";
 export * from "./it-provisioning-requests";
 export * from "./asset-assignments";
+// Interview loop (Wave B, INT-01)
+export * from "./interview-plans";
+export * from "./interviews";
+export * from "./interview-panelists";
+export * from "./interview-feedback";
