@@ -32,8 +32,12 @@ export type { OpenAIAIClientOpts } from "./openai";
 export { getAIClient, resetAIClientCache, resolveProvider } from "./factory";
 export type { GetAIClientOpts } from "./factory";
 
-export { resolveTenantAiSettings, resolveTenantAiSettingsDb } from "./tenant-settings";
-export type { AiSettings } from "./tenant-settings";
+export {
+  resolveTenantAiSettings,
+  resolveTenantAiSettingsDb,
+  resolveTenantBiasLexiconDb,
+} from "./tenant-settings";
+export type { AiSettings, BiasLexicon } from "./tenant-settings";
 
 export { maskPii, maskPiiIf, REDACTED_EMAIL, REDACTED_PHONE, REDACTED_URL } from "./pii-mask";
 

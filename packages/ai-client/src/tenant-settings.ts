@@ -19,9 +19,14 @@
 
 import { db as poolDb, sql as poolSqlDefault, tenants } from "@hireops/db";
 import { eq } from "drizzle-orm";
-import { resolveAiSettings, type AiSettings } from "@hireops/api-types";
+import {
+  resolveAiSettings,
+  resolveBiasLexicon,
+  type AiSettings,
+  type BiasLexicon,
+} from "@hireops/api-types";
 
-export type { AiSettings } from "@hireops/api-types";
+export type { AiSettings, BiasLexicon } from "@hireops/api-types";
 
 /**
  * Resolve the effective AI settings for a tenant via a postgres-js `sql`
@@ -55,4 +60,23 @@ export async function resolveTenantAiSettingsDb(
     .limit(1);
   const settings = (row?.settings ?? {}) as Record<string, unknown>;
   return resolveAiSettings(settings["aiSettings"]);
+}
+
+/**
+ * Resolve the effective JD bias lexicon for a tenant (CONF-02) — the sibling
+ * `biasLexicon` key in `tenants.settings`, defaults merged. Absent/malformed
+ * blocks fall back to the seeded DEFAULT lexicon inside `resolveBiasLexicon`.
+ * Same unscoped-pool read as the AI-settings resolver.
+ */
+export async function resolveTenantBiasLexiconDb(
+  tenantId: string,
+  client: typeof poolDb = poolDb,
+): Promise<BiasLexicon> {
+  const [row] = await client
+    .select({ settings: tenants.settings })
+    .from(tenants)
+    .where(eq(tenants.id, tenantId))
+    .limit(1);
+  const settings = (row?.settings ?? {}) as Record<string, unknown>;
+  return resolveBiasLexicon(settings["biasLexicon"]);
 }

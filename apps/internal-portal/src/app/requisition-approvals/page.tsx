@@ -83,6 +83,23 @@ export default async function RequisitionApprovalsPage() {
                 <a href={`/requisitions/${r.subjectId}`} className="text-brand-700 hover:underline">
                   {r.title ?? `${r.subjectId.slice(0, 8)}…`}
                 </a>
+                {r.biasFlags.length > 0 ? (
+                  <div className="mt-1 flex flex-wrap gap-1">
+                    {r.biasFlags.map((f) => (
+                      <span
+                        key={`${f.term}-${f.category}`}
+                        title={f.suggestion ?? undefined}
+                        className={`inline-flex items-center rounded-full border px-2 py-0.5 text-[11px] font-normal ${
+                          f.severity === "block"
+                            ? "border-status-error-200 bg-status-error-50 text-status-error-700"
+                            : "border-status-warning-200 bg-status-warning-50 text-status-warning-700"
+                        }`}
+                      >
+                        {f.term}
+                      </span>
+                    ))}
+                  </div>
+                ) : null}
               </Td>
               <Td>
                 <Badge tone={STATUS_TONE[r.status] ?? "neutral"}>{statusLabel(r.status)}</Badge>

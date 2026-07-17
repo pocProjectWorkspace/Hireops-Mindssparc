@@ -82,8 +82,13 @@ function featureDefault(): AiFeatureSettings {
   };
 }
 
-/** The three real consumers this surface governs. */
-export const AI_FEATURE_KEYS = ["ai_scoring", "jd_generation", "agent_drafts"] as const;
+/** The real consumers this surface governs (jd_bias_review added in CONF-02). */
+export const AI_FEATURE_KEYS = [
+  "ai_scoring",
+  "jd_generation",
+  "agent_drafts",
+  "jd_bias_review",
+] as const;
 export type AiFeatureKey = (typeof AI_FEATURE_KEYS)[number];
 
 /** Human-legible labels + honest copy for the admin UI. */
@@ -109,6 +114,12 @@ export const AI_FEATURE_META: Record<
     description:
       "Drafts candidate follow-up messages for the approval queue. Disabling makes agent draft runs stop with a clear error rather than calling the model.",
   },
+  jd_bias_review: {
+    label: "JD bias review (AI-assisted)",
+    usageFeatures: ["jd_bias_review"],
+    description:
+      "An optional, advisory inclusive-language review of a draft JD, run on demand from the wizard. Never blocks a submission — it only adds observations. Disabling hides the 'Review with AI' button and refuses the call.",
+  },
 };
 
 export const aiSettingsSchema = z.object({
@@ -116,6 +127,7 @@ export const aiSettingsSchema = z.object({
   ai_scoring: aiFeatureSettingsSchema.default(featureDefault),
   jd_generation: aiFeatureSettingsSchema.default(featureDefault),
   agent_drafts: aiFeatureSettingsSchema.default(featureDefault),
+  jd_bias_review: aiFeatureSettingsSchema.default(featureDefault),
   /**
    * Global deterministic PII redaction. When on, candidate-derived prompt
    * text going into scoring + agent-draft calls has emails / phone numbers /

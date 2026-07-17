@@ -7,6 +7,7 @@ import {
   interviewStatusSchema,
   type InterviewScorecardTemplate,
 } from "./enums";
+import { jdBiasScanSchema, biasCategorySchema, biasSeveritySchema } from "./bias-lexicon";
 
 /**
  * Input + output schemas for the initial six tRPC procedures (API-01).
@@ -256,6 +257,19 @@ export type ListRequisitionSummariesOutput = z.infer<typeof listRequisitionSumma
 // A read-only skeleton: no decision fields yet (approve/send-back/reject
 // arrive with REQ-03).
 
+/**
+ * CONF-02: a coded-language flag recorded on the requisition's JD at submit
+ * time (enforcement `warn`/`block`). Distinct terms only. The HR head sees
+ * these in the queue before deciding.
+ */
+export const requisitionApprovalBiasFlagSchema = z.object({
+  term: z.string(),
+  category: biasCategorySchema,
+  severity: biasSeveritySchema,
+  suggestion: z.string().nullable(),
+});
+export type RequisitionApprovalBiasFlag = z.infer<typeof requisitionApprovalBiasFlagSchema>;
+
 export const requisitionApprovalRowSchema = z.object({
   id: z.string().uuid(),
   subjectId: z.string().uuid(),
@@ -267,6 +281,8 @@ export const requisitionApprovalRowSchema = z.object({
   currentStepIndex: z.number().int(),
   requestedAt: z.string(),
   createdAt: z.string(),
+  /** CONF-02: coded-language flags recorded from the submit-time bias scan. */
+  biasFlags: z.array(requisitionApprovalBiasFlagSchema),
 });
 
 export const listRequisitionApprovalsInputSchema = z.object({
@@ -377,6 +393,11 @@ export const generateJdDraftOutputSchema = z.object({
   sections: jdSectionsSchema,
   promptVersion: z.string(),
   model: z.string(),
+  /**
+   * CONF-02: the bias scan of the freshly-composed JD, so the wizard can
+   * highlight coded language the instant generation returns.
+   */
+  scan: jdBiasScanSchema,
 });
 export type GenerateJdDraftInput = z.infer<typeof generateJdDraftInputSchema>;
 export type GenerateJdDraftOutput = z.infer<typeof generateJdDraftOutputSchema>;

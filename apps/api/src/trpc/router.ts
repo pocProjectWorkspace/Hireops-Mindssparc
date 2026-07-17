@@ -197,6 +197,18 @@ import {
   updateTenantAiSettingsInputSchema,
   updateTenantAiSettingsOutputSchema,
   resolveAiSettings,
+  getBiasLexiconInputSchema,
+  getBiasLexiconOutputSchema,
+  updateTenantBiasLexiconInputSchema,
+  updateTenantBiasLexiconOutputSchema,
+  reviewJdWithAiInputSchema,
+  reviewJdWithAiOutputSchema,
+  resolveBiasLexicon,
+  summarizeScan,
+  scanBlocksSubmit,
+  type BiasLexicon,
+  type JdBiasScan,
+  type RequisitionApprovalBiasFlag,
   getRecruitmentReportInputSchema,
   getRecruitmentReportOutputSchema,
   approveApprovalInputSchema,
@@ -268,7 +280,12 @@ import {
   type GetApprovalRequestOutput,
 } from "@hireops/api-types";
 import { createClient } from "@supabase/supabase-js";
-import { parseResume, getAIClient, resolveTenantAiSettingsDb } from "@hireops/ai-client";
+import {
+  parseResume,
+  getAIClient,
+  resolveTenantAiSettingsDb,
+  resolveTenantBiasLexiconDb,
+} from "@hireops/ai-client";
 import {
   buildJdGenerationPrompt,
   jdGenerationResponseJsonSchema,
@@ -279,6 +296,14 @@ import {
   JD_GENERATION_FEATURE,
   type JdGenerationResponse,
 } from "../lib/jd-generation";
+import {
+  buildJdBiasReviewPrompt,
+  jdBiasReviewResponseJsonSchema,
+  jdBiasReviewResponseSchema,
+  JD_BIAS_REVIEW_SCHEMA_NAME,
+  JD_BIAS_REVIEW_FEATURE,
+  type JdBiasReviewResponse,
+} from "../lib/jd-bias-review";
 import { enqueueNotification, signLink, hashToken, verifyLink } from "@hireops/notifications";
 import { assertRuleAttachable, IncompatibleApprovalRuleError } from "@hireops/agent-actions";
 import {
@@ -423,6 +448,69 @@ const PANEL_SURFACE_ROLES = new Set(["admin", "panel_member"]);
 // the gate themselves because the write changes real AI call behaviour and
 // the read exposes config an admin owns.
 const AI_SETTINGS_ADMIN_ROLES = new Set(["admin"]);
+
+/**
+ * CONF-02 bias-gate helpers.
+ *
+ * `distinctBiasFlags` collapses a scan's raw matches (which can repeat a term)
+ * into distinct {term, category, severity, suggestion} flags in first-seen
+ * order — what the HR head and the block error need. `biasScanContext`
+ * produces the fragment merged into an approval request's `context` jsonb at
+ * submit time (empty when enforcement is `off` or there's nothing to record,
+ * so clean submissions carry no bias noise). `readBiasFlagsFromContext` is the
+ * inverse: it reads that fragment back for the queue.
+ */
+function distinctBiasFlags(scan: JdBiasScan): RequisitionApprovalBiasFlag[] {
+  const seen = new Set<string>();
+  const flags: RequisitionApprovalBiasFlag[] = [];
+  for (const m of scan.matches) {
+    const key = `${m.term.toLowerCase()}|${m.category}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    flags.push({
+      term: m.term,
+      category: m.category,
+      severity: m.severity,
+      suggestion: m.suggestion,
+    });
+  }
+  return flags;
+}
+
+function biasScanContext(scan: JdBiasScan): Record<string, unknown> {
+  if (scan.enforcement === "off" || scan.matches.length === 0) return {};
+  return {
+    bias_scan: {
+      enforcement: scan.enforcement,
+      blockingCount: scan.blockingCount,
+      warningCount: scan.warningCount,
+      flags: distinctBiasFlags(scan),
+    },
+  };
+}
+
+function readBiasFlagsFromContext(context: unknown): RequisitionApprovalBiasFlag[] {
+  if (!context || typeof context !== "object") return [];
+  const scan = (context as Record<string, unknown>)["bias_scan"];
+  if (!scan || typeof scan !== "object") return [];
+  const flags = (scan as Record<string, unknown>)["flags"];
+  if (!Array.isArray(flags)) return [];
+  const out: RequisitionApprovalBiasFlag[] = [];
+  for (const f of flags) {
+    if (!f || typeof f !== "object") continue;
+    const r = f as Record<string, unknown>;
+    if (typeof r["term"] === "string" && typeof r["category"] === "string") {
+      out.push({
+        term: r["term"] as string,
+        category: r["category"] as RequisitionApprovalBiasFlag["category"],
+        severity:
+          r["severity"] === "block" ? "block" : ("warn" as RequisitionApprovalBiasFlag["severity"]),
+        suggestion: typeof r["suggestion"] === "string" ? (r["suggestion"] as string) : null,
+      });
+    }
+  }
+  return out;
+}
 
 /**
  * Throws FORBIDDEN unless the caller holds any role in `allowed`. Same
@@ -1421,6 +1509,7 @@ export const appRouter = router({
           currentStepIndex: approvalRequests.currentStepIndex,
           requestedAt: approvalRequests.requestedAt,
           createdAt: approvalRequests.createdAt,
+          context: approvalRequests.context,
         })
         .from(approvalRequests)
         .leftJoin(
@@ -1449,6 +1538,7 @@ export const appRouter = router({
           currentStepIndex: r.currentStepIndex,
           requestedAt: r.requestedAt.toISOString(),
           createdAt: r.createdAt.toISOString(),
+          biasFlags: readBiasFlagsFromContext(r.context),
         })),
       };
     }),
@@ -1718,11 +1808,19 @@ export const appRouter = router({
           })
           .where(and(eq(jdVersions.tenantId, tenantId), eq(jdVersions.id, facet.jdVersionId)));
 
+        // CONF-02: scan the freshly-composed JD so the wizard can highlight
+        // coded language the instant generation returns (the SAME scanner the
+        // submit gate runs — the composed jd_text is exactly what the gate
+        // scans, so client + server agree).
+        const lexicon = await resolveTenantBiasLexiconDb(tenantId);
+        const scan = summarizeScan(jdText, lexicon);
+
         return {
           jdVersionId: facet.jdVersionId,
           sections,
           promptVersion: JD_GENERATION_PROMPT_VERSION,
           model: client.provider,
+          scan,
         };
       });
     }),
@@ -1918,6 +2016,26 @@ export const appRouter = router({
           });
         }
 
+        // CONF-02: the configurable JD bias gate. Scan the SAME composed
+        // jd_text the wizard sees. enforcement `off` → nothing recorded;
+        // `block` → refuse when any block-severity term is present (with
+        // inclusive-rewrite suggestions the wizard renders inline); `warn`
+        // (and non-blocking `block`) → record the flags into the approval
+        // request context so the HR head sees them in the queue.
+        const lexicon = await resolveTenantBiasLexiconDb(tenantId);
+        const scan = summarizeScan(facet.jdText, lexicon);
+        if (scanBlocksSubmit(scan)) {
+          const blocking = distinctBiasFlags(scan).filter((f) => f.severity === "block");
+          const detail = blocking
+            .map((f) => (f.suggestion ? `"${f.term}" → ${f.suggestion}` : `"${f.term}"`))
+            .join("; ");
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: `Cannot submit — the job description contains language that must be revised: ${detail}`,
+          });
+        }
+        const biasContext = biasScanContext(scan);
+
         // Resolve-or-create the single-step requisition approval matrix,
         // then a fresh immutable chain per submission.
         const chainId = await resolveRequisitionApprovalChain(db, tenantId, membershipId);
@@ -1936,7 +2054,7 @@ export const appRouter = router({
             status: "pending",
             currentStepIndex: 0,
             requestedByMembershipId: membershipId,
-            context: { requisition_title: facet.title },
+            context: { requisition_title: facet.title, ...biasContext },
           })
           .onConflictDoNothing()
           .returning({ id: approvalRequests.id });
@@ -4513,6 +4631,150 @@ export const appRouter = router({
         }
 
         return { ok: true as const, settings: nextBlock };
+      });
+    }),
+
+  // ─────────────────────── getBiasLexicon (CONF-02) ───────────────────────
+  //
+  // The effective per-tenant JD bias lexicon (enforcement + entries), defaults
+  // merged. Readable by REQUISITION_READ_ROLES — the wizard (hiring_manager)
+  // scans against the SAME lexicon the server gate uses, and the admin surface
+  // (admin) reads it to edit. Read-only, no withAudit (matches
+  // getTenantAiSettings). WRITE is admin-only (updateTenantBiasLexicon).
+  getBiasLexicon: protectedProcedure
+    .input(getBiasLexiconInputSchema)
+    .output(getBiasLexiconOutputSchema)
+    .query(async ({ ctx }) => {
+      requireAnyRole(
+        ctx,
+        REQUISITION_READ_ROLES,
+        "Bias lexicon access requires the hiring_manager, recruiter, hr_head or admin role",
+      );
+      if (!ctx.tenantId) {
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: "protected procedure missing tenantId",
+        });
+      }
+      return resolveTenantBiasLexiconDb(ctx.tenantId);
+    }),
+
+  // ─────────────────────── updateTenantBiasLexicon (CONF-02) ───────────────────────
+  //
+  // Admin write of the per-tenant bias lexicon block. Admin-gated + audited.
+  // Merges the validated block into tenants.settings under the `biasLexicon`
+  // key, preserving every OTHER key (aiSettings, ai_provider, cosmetic config)
+  // verbatim via a single atomic top-level jsonb `||` merge — the same
+  // service-role discipline updateTenantAiSettings uses (tenants is FORCE RLS
+  // SELECT-only). A SIBLING mutation rather than an extension of
+  // updateTenantAiSettings because the lexicon is a sibling block, not an AI
+  // feature — the two surfaces save independently.
+  updateTenantBiasLexicon: protectedProcedure
+    .input(updateTenantBiasLexiconInputSchema)
+    .output(updateTenantBiasLexiconOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      return withAudit("update_tenant_bias_lexicon", ctx, input, async () => {
+        requireAnyRole(ctx, AI_SETTINGS_ADMIN_ROLES, "The bias lexicon is admin-only");
+        if (!ctx.tenantId) {
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: "protected procedure missing tenantId",
+          });
+        }
+        const tenantId = ctx.tenantId;
+        const nextBlock: BiasLexicon = resolveBiasLexicon(input);
+
+        const res = await poolDb.execute(dsql`
+          UPDATE public.tenants
+          SET settings = COALESCE(settings, '{}'::jsonb)
+              || jsonb_build_object('biasLexicon', ${JSON.stringify(nextBlock)}::jsonb)
+          WHERE id = ${tenantId}::uuid
+          RETURNING id
+        `);
+        const updated = (res as { rows?: unknown[] }).rows ?? (res as unknown[]);
+        if (updated.length !== 1) {
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: "tenant settings update affected an unexpected number of rows",
+          });
+        }
+
+        return { ok: true as const, lexicon: nextBlock };
+      });
+    }),
+
+  // ─────────────────────── reviewJdWithAi (CONF-02) ───────────────────────
+  //
+  // Optional, advisory AI inclusive-language review of a DRAFT requisition's
+  // JD — beyond the deterministic lexicon. hiring_manager + admin, draft-only.
+  // Honours the per-tenant jd_bias_review AI switch (disabled → clean
+  // BAD_REQUEST, no model call, no usage row). NEVER blocks anything; the
+  // wizard renders the observations as labelled "AI-assisted" cards. The JD
+  // text carries no candidate PII, so masking does not apply (same as
+  // generateJdDraft). The AI client writes the ai_usage_logs row itself
+  // (feature=jd_bias_review).
+  reviewJdWithAi: protectedProcedure
+    .input(reviewJdWithAiInputSchema)
+    .output(reviewJdWithAiOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      return withAudit("review_jd_with_ai", ctx, input, async () => {
+        requireAnyRole(
+          ctx,
+          REQUISITION_WRITE_ROLES,
+          "Reviewing a JD with AI requires the hiring_manager or admin role",
+        );
+        const db = requireDb(ctx);
+        if (!ctx.tenantId) {
+          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
+        }
+        const tenantId = ctx.tenantId;
+        const membershipId = await resolveActorMembership(db, ctx);
+
+        const facet = await loadDraftRequisitionFacet(db, input.requisitionId);
+        if (facet.status !== "draft") {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: "A JD can only be reviewed while the requisition is a draft",
+          });
+        }
+        if (facet.jdText === JD_DRAFT_PLACEHOLDER || !facet.jdSummary) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: "Generate or write the JD before requesting an AI review",
+          });
+        }
+
+        const aiSettings = await resolveTenantAiSettingsDb(tenantId);
+        const reviewSettings = aiSettings.jd_bias_review;
+        if (!reviewSettings.enabled) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message:
+              "AI JD review is disabled for this tenant. An admin can re-enable it in Admin → AI settings.",
+          });
+        }
+
+        const { system, user } = buildJdBiasReviewPrompt({
+          positionTitle: facet.title,
+          jdText: facet.jdText,
+        });
+
+        const client = await getAIClient(tenantId);
+        const raw = await client.completeStructured<JdBiasReviewResponse>({
+          prompt: user,
+          system,
+          model: reviewSettings.model,
+          temperature: reviewSettings.temperature,
+          maxTokens: reviewSettings.maxTokens,
+          schema: jdBiasReviewResponseJsonSchema,
+          schemaName: JD_BIAS_REVIEW_SCHEMA_NAME,
+          feature: JD_BIAS_REVIEW_FEATURE,
+          requestId: ctx.requestId,
+          actorMembershipId: membershipId,
+        });
+        const parsed = jdBiasReviewResponseSchema.parse(raw);
+
+        return { observations: parsed.observations, model: client.provider };
       });
     }),
 

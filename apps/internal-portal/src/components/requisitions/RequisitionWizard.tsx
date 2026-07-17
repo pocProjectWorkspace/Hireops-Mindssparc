@@ -1,12 +1,18 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import type {
-  JdSections,
-  RequisitionLocationType,
-  RequisitionSkillInput,
-  RequisitionKnockoutInput,
+import {
+  summarizeScan,
+  scanBlocksSubmit,
+  BIAS_CATEGORY_META,
+  type JdSections,
+  type JdBiasScan,
+  type JdBiasMatch,
+  type JdAiObservation,
+  type RequisitionLocationType,
+  type RequisitionSkillInput,
+  type RequisitionKnockoutInput,
 } from "@hireops/api-types";
 import { trpc, handleTRPCError } from "@/lib/trpc-client";
 import { Button, Card } from "@/components/ui";
@@ -108,8 +114,36 @@ export function RequisitionWizard({ initialRid }: { initialRid: string | null })
   const updateDraft = trpc.updateRequisitionDraft.useMutation();
   const submit = trpc.submitRequisitionForApproval.useMutation();
 
+  // CONF-02: the tenant's effective bias lexicon, scanned client-side over the
+  // live JD (debounced) — the SAME scanner the submit gate runs server-side.
+  const lexiconQuery = trpc.getBiasLexicon.useQuery({});
+  const reviewJd = trpc.reviewJdWithAi.useMutation();
+  const [aiObservations, setAiObservations] = useState<JdAiObservation[] | null>(null);
+  const [aiReviewError, setAiReviewError] = useState<string | null>(null);
+
   const busy =
-    createDraft.isPending || generateJd.isPending || updateDraft.isPending || submit.isPending;
+    createDraft.isPending ||
+    generateJd.isPending ||
+    updateDraft.isPending ||
+    submit.isPending ||
+    reviewJd.isPending;
+
+  const composedJd = useMemo(
+    () =>
+      [basics.title, sections.summary, ...sections.responsibilities, ...sections.requirements]
+        .filter((s) => s && s.trim().length > 0)
+        .join("\n"),
+    [basics.title, sections],
+  );
+  const [debouncedJd, setDebouncedJd] = useState("");
+  useEffect(() => {
+    const t = setTimeout(() => setDebouncedJd(composedJd), 300);
+    return () => clearTimeout(t);
+  }, [composedJd]);
+  const scan: JdBiasScan | null = useMemo(
+    () => (lexiconQuery.data ? summarizeScan(debouncedJd, lexiconQuery.data) : null),
+    [debouncedJd, lexiconQuery.data],
+  );
 
   function setRidInUrl(newRid: string) {
     const params = new URLSearchParams(searchParams.toString());
@@ -151,6 +185,23 @@ export function RequisitionWizard({ initialRid }: { initialRid: string | null })
       setJdGenerated(true);
     } catch (err) {
       setError(errorMessage(err));
+      handleTRPCError(err, { onMessage: () => undefined });
+    }
+  }
+
+  async function onReviewJd() {
+    if (!rid) return;
+    setAiReviewError(null);
+    setError(null);
+    try {
+      // Persist the current sections first so the AI reviews exactly what the
+      // author sees (generateJdDraft persisted its own output; local edits
+      // since then would otherwise be invisible to the server read).
+      await updateDraft.mutateAsync({ requisitionId: rid, sections });
+      const res = await reviewJd.mutateAsync({ requisitionId: rid });
+      setAiObservations(res.observations);
+    } catch (err) {
+      setAiReviewError(errorMessage(err));
       handleTRPCError(err, { onMessage: () => undefined });
     }
   }
@@ -316,13 +367,21 @@ export function RequisitionWizard({ initialRid }: { initialRid: string | null })
               placeholder="Team is building the payments platform; needs event-streaming depth."
             />
           </Field>
-          <div className="mt-3 flex gap-2">
+          <div className="mt-3 flex flex-wrap gap-2">
             <Button variant="secondary" onClick={onGenerateJd} disabled={busy}>
               {generateJd.isPending
                 ? "Generating…"
                 : jdGenerated
                   ? "Regenerate with AI"
                   : "Generate with AI"}
+            </Button>
+            <Button
+              variant="ghost"
+              onClick={onReviewJd}
+              disabled={busy || sections.summary.trim().length === 0}
+              title="Optional AI inclusive-language review — advisory, never blocks"
+            >
+              {reviewJd.isPending ? "Reviewing…" : "Review with AI"}
             </Button>
           </div>
 
@@ -346,6 +405,15 @@ export function RequisitionWizard({ initialRid }: { initialRid: string | null })
               onChange={(requirements) => setSections({ ...sections, requirements })}
             />
           </div>
+
+          <BiasFlagsPanel scan={scan} />
+
+          {aiReviewError ? (
+            <div className="mt-4 rounded-lg border border-status-error-200 bg-status-error-50 px-4 py-3 text-sm text-status-error-700">
+              {aiReviewError}
+            </div>
+          ) : null}
+          {aiObservations ? <AiReviewCards observations={aiObservations} /> : null}
 
           <div className="mt-6 flex justify-between">
             <Button variant="ghost" onClick={() => setStep(1)} disabled={busy}>
@@ -580,6 +648,9 @@ export function RequisitionWizard({ initialRid }: { initialRid: string | null })
             <Row label="Skills" value={skills.map((s) => s.skillName).join(", ") || "—"} />
             <Row label="Knockouts" value={String(knockouts.length)} />
           </dl>
+
+          <GateStatus scan={scan} />
+
           <p className="mt-4 text-xs text-neutral-500">
             Submitting sends this requisition to the HR head for approval. You can&rsquo;t edit it
             after submission.
@@ -709,4 +780,118 @@ function errorMessage(err: unknown): string {
     return String((err as { message: unknown }).message);
   }
   return "Something went wrong. Please try again.";
+}
+
+const SEVERITY_CHIP: Record<JdBiasMatch["severity"], string> = {
+  block: "border-status-error-200 bg-status-error-50 text-status-error-700",
+  warn: "border-status-warning-200 bg-status-warning-50 text-status-warning-700",
+};
+
+/** Distinct matches by term+category, first-seen order (mirrors the server). */
+function distinctMatches(matches: JdBiasMatch[]): JdBiasMatch[] {
+  const seen = new Set<string>();
+  const out: JdBiasMatch[] = [];
+  for (const m of matches) {
+    const key = `${m.term.toLowerCase()}|${m.category}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(m);
+  }
+  return out;
+}
+
+/** Live inclusive-language flags in the JD step. Chips + suggestions. */
+function BiasFlagsPanel({ scan }: { scan: JdBiasScan | null }) {
+  if (!scan || scan.enforcement === "off" || scan.matches.length === 0) return null;
+  const flags = distinctMatches(scan.matches);
+  return (
+    <div className="mt-5 rounded-lg border border-neutral-200 bg-neutral-50 p-4">
+      <p className="mb-2 text-xs font-medium text-neutral-700">
+        Inclusive-language check — {flags.length} {flags.length === 1 ? "flag" : "flags"}
+        {scan.enforcement === "block" && scan.blockingCount > 0
+          ? ` (${scan.blockingCount} must be revised before submit)`
+          : ""}
+      </p>
+      <div className="space-y-1.5">
+        {flags.map((m) => (
+          <div key={`${m.term}-${m.category}`} className="flex flex-wrap items-baseline gap-2">
+            <span
+              className={`inline-flex items-center rounded-full border px-2 py-0.5 text-[11px] ${SEVERITY_CHIP[m.severity]}`}
+            >
+              {m.matchedText}
+            </span>
+            <span className="text-[11px] text-neutral-500">
+              {BIAS_CATEGORY_META[m.category].label}
+            </span>
+            {m.suggestion ? (
+              <span className="text-xs text-neutral-600">— {m.suggestion}</span>
+            ) : null}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/** Advisory AI-assisted observations. Clearly labelled, never blocking. */
+function AiReviewCards({ observations }: { observations: JdAiObservation[] }) {
+  return (
+    <div className="mt-4">
+      <p className="mb-2 text-xs font-medium text-brand-700">
+        AI-assisted review — advisory only, does not block submission
+      </p>
+      {observations.length === 0 ? (
+        <p className="text-sm text-neutral-500">
+          The AI reviewer flagged nothing beyond the lexicon check.
+        </p>
+      ) : (
+        <div className="space-y-2">
+          {observations.map((o, i) => (
+            <div key={i} className="rounded-lg border border-brand-200 bg-brand-50/40 p-3">
+              <p className="text-xs italic text-neutral-500">&ldquo;{o.excerpt}&rdquo;</p>
+              <p className="mt-1 text-sm text-neutral-800">{o.issue}</p>
+              <p className="mt-1 text-sm text-brand-700">Suggestion: {o.suggestion}</p>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** Review-step gate status: clean / warnings / blocked. */
+function GateStatus({ scan }: { scan: JdBiasScan | null }) {
+  if (!scan || scan.enforcement === "off") return null;
+  const blocked = scanBlocksSubmit(scan);
+  if (blocked) {
+    const blocking = distinctMatches(scan.matches.filter((m) => m.severity === "block"));
+    return (
+      <div className="mt-4 rounded-lg border border-status-error-200 bg-status-error-50 px-4 py-3 text-sm text-status-error-700">
+        <p className="font-medium">
+          Bias gate: blocked — {blocking.length} {blocking.length === 1 ? "term" : "terms"} must be
+          revised before you can submit.
+        </p>
+        <ul className="mt-1 list-inside list-disc">
+          {blocking.map((m) => (
+            <li key={m.term}>
+              &ldquo;{m.matchedText}&rdquo;{m.suggestion ? ` — ${m.suggestion}` : ""}
+            </li>
+          ))}
+        </ul>
+      </div>
+    );
+  }
+  if (scan.matches.length > 0) {
+    return (
+      <div className="mt-4 rounded-lg border border-status-warning-200 bg-status-warning-50 px-4 py-3 text-sm text-status-warning-700">
+        Bias gate: {scan.matches.length} flagged {scan.matches.length === 1 ? "phrase" : "phrases"}{" "}
+        — submission is allowed; the HR head will see the flags in the approval queue.
+      </div>
+    );
+  }
+  return (
+    <div className="mt-4 rounded-lg border border-status-success-200 bg-status-success-50 px-4 py-3 text-sm text-status-success-700">
+      Bias gate: clean — no coded language found.
+    </div>
+  );
 }
