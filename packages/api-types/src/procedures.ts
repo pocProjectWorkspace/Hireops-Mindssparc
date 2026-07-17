@@ -5,6 +5,7 @@ import {
   interviewModeSchema,
   interviewScorecardTemplateSchema,
   interviewStatusSchema,
+  type InterviewScorecardTemplate,
 } from "./enums";
 
 /**
@@ -1957,11 +1958,23 @@ export const cancelInterviewOutputSchema = z.object({ interviewId: z.string().uu
 export type CancelInterviewInput = z.infer<typeof cancelInterviewInputSchema>;
 export type CancelInterviewOutput = z.infer<typeof cancelInterviewOutputSchema>;
 
-/** One panelist on an interview (name for display, lead flag). */
+/**
+ * Per-panelist feedback state (INT-03). `none` = no interview_feedback row;
+ * `draft` = row exists, submitted_at NULL; `submitted` = submitted_at stamped.
+ * This is the single vocabulary the recruiter chips and the panel "my
+ * feedback" badge both read.
+ */
+export const feedbackStateSchema = z.enum(["none", "draft", "submitted"]);
+export type FeedbackState = z.infer<typeof feedbackStateSchema>;
+
+/** One panelist on an interview (name for display, lead flag, feedback state).
+ * `feedbackState` (INT-03) surfaces each panelist's scorecard progress on the
+ * recruiter interview rows — 'none' until INT-03 reads populate it. */
 export const interviewPanelistViewSchema = z.object({
   membershipId: z.string().uuid(),
   name: z.string().nullable(),
   isLead: z.boolean(),
+  feedbackState: feedbackStateSchema,
 });
 export type InterviewPanelistView = z.infer<typeof interviewPanelistViewSchema>;
 
@@ -2039,6 +2052,194 @@ export const interviewConfirmResponseSchema = z.object({
   confirmedAt: z.string(),
 });
 export type InterviewConfirmResponse = z.infer<typeof interviewConfirmResponseSchema>;
+
+// ─────────── INT-03 — the panel persona (scorecards) ───────────
+
+/**
+ * THE scorecard rubric (INT-03). One fixed criteria set per scorecard_template
+ * — 5 criteria each, every score an integer 1..5. The gap audit (§5) rejected
+ * the prototype's three conflicting point-splits: one rubric system,
+ * parameterised by template. These keys are the contract between the API
+ * validator and the panel scorecard form; changing a key is a breaking change
+ * to any stored scorecard, so treat this as append-mostly.
+ *
+ * Recommendation is separate (strong_yes|yes|hold|no) and required only on
+ * submit — see saveInterviewFeedbackInputSchema.
+ */
+export interface ScorecardCriterion {
+  key: string;
+  label: string;
+}
+export const SCORECARD_CRITERIA: Record<InterviewScorecardTemplate, readonly ScorecardCriterion[]> =
+  {
+    technical: [
+      { key: "problem_solving", label: "Problem solving" },
+      { key: "technical_depth", label: "Technical depth" },
+      { key: "code_quality", label: "Code quality & craft" },
+      { key: "system_design", label: "System design" },
+      { key: "communication", label: "Communication" },
+    ],
+    manager: [
+      { key: "ownership", label: "Ownership & drive" },
+      { key: "stakeholder_management", label: "Stakeholder management" },
+      { key: "delivery_track_record", label: "Delivery track record" },
+      { key: "strategic_thinking", label: "Strategic thinking" },
+      { key: "communication", label: "Communication" },
+    ],
+    hr: [
+      { key: "culture_alignment", label: "Culture alignment" },
+      { key: "motivation", label: "Motivation & intent" },
+      { key: "communication", label: "Communication" },
+      { key: "integrity", label: "Integrity & professionalism" },
+      { key: "growth_mindset", label: "Growth mindset" },
+    ],
+    general: [
+      { key: "role_competence", label: "Role competence" },
+      { key: "problem_solving", label: "Problem solving" },
+      { key: "communication", label: "Communication" },
+      { key: "collaboration", label: "Collaboration" },
+      { key: "motivation", label: "Motivation" },
+    ],
+  };
+
+/** Criteria set for a template, defaulting to `general` for an unknown/missing
+ * template (e.g. the interview's plan round was removed after scheduling). */
+export function scorecardCriteriaFor(
+  template: string | null | undefined,
+): readonly ScorecardCriterion[] {
+  if (template && template in SCORECARD_CRITERIA) {
+    return SCORECARD_CRITERIA[template as InterviewScorecardTemplate] ?? SCORECARD_CRITERIA.general;
+  }
+  return SCORECARD_CRITERIA.general;
+}
+
+export const interviewRecommendationSchema = z.enum(["strong_yes", "yes", "hold", "no"]);
+export type InterviewRecommendation = z.infer<typeof interviewRecommendationSchema>;
+
+/**
+ * "My interviews" — the interviews the caller is a panelist on. Reuses the
+ * interviewRow shape (candidate name, role, round, when, mode, meeting URL,
+ * panel) and adds `myFeedbackState` so the list can badge each row. Split into
+ * upcoming/past client-side by scheduledStart.
+ */
+export const panelInterviewRowSchema = interviewRowSchema.extend({
+  myFeedbackState: feedbackStateSchema,
+});
+export type PanelInterviewRow = z.infer<typeof panelInterviewRowSchema>;
+
+export const listMyPanelInterviewsInputSchema = z
+  .object({
+    status: interviewStatusSchema.optional(),
+    limit: z.number().int().min(1).max(200).default(100),
+  })
+  .default({ limit: 100 });
+export const listMyPanelInterviewsOutputSchema = z.object({
+  rows: z.array(panelInterviewRowSchema),
+});
+export type ListMyPanelInterviewsInput = z.infer<typeof listMyPanelInterviewsInputSchema>;
+export type ListMyPanelInterviewsOutput = z.infer<typeof listMyPanelInterviewsOutputSchema>;
+
+/** A criterion presented to the panelist for THIS interview's template, with
+ * the score they've saved so far (null = unscored). */
+export const panelScorecardCriterionSchema = z.object({
+  key: z.string(),
+  label: z.string(),
+  score: z.number().int().min(1).max(5).nullable(),
+});
+export type PanelScorecardCriterion = z.infer<typeof panelScorecardCriterionSchema>;
+
+/** A prior-round feedback summary shown on the brief. DELIBERATE partial
+ * disclosure (gap-audit): recommendation + strengths + concerns only — NO
+ * per-criterion scores, so a later panelist isn't anchored on numbers. */
+export const priorRoundFeedbackSchema = z.object({
+  interviewId: z.string().uuid(),
+  roundNumber: z.number().int(),
+  roundName: z.string(),
+  panelistName: z.string().nullable(),
+  recommendation: interviewRecommendationSchema.nullable(),
+  strengths: z.string().nullable(),
+  concerns: z.string().nullable(),
+  submittedAt: z.string().nullable(),
+});
+export type PriorRoundFeedback = z.infer<typeof priorRoundFeedbackSchema>;
+
+export const getPanelInterviewBriefInputSchema = z.object({
+  interviewId: z.string().uuid(),
+});
+export const getPanelInterviewBriefOutputSchema = z.object({
+  interview: z.object({
+    id: z.string().uuid(),
+    applicationId: z.string().uuid(),
+    roundNumber: z.number().int(),
+    roundName: z.string(),
+    status: interviewStatusSchema,
+    mode: interviewModeSchema,
+    scheduledStart: z.string().nullable(),
+    scheduledEnd: z.string().nullable(),
+    durationMinutes: z.number().int(),
+    meetingUrl: z.string().nullable(),
+    candidateConfirmedAt: z.string().nullable(),
+    positionTitle: z.string(),
+  }),
+  candidate: z.object({
+    candidateId: z.string().uuid(),
+    name: z.string().nullable(),
+    currentStage: applicationStageSchema,
+    locationCountry: z.string().nullable(),
+    // resume-derived summary — the parsed skills already read for the drawer;
+    // no new PII join beyond what getCandidateById exposes.
+    parsedSkills: z.array(z.string()),
+  }),
+  round: z.object({
+    scorecardTemplate: interviewScorecardTemplateSchema,
+    competencyFocus: z.array(z.string()),
+  }),
+  coPanelists: z.array(
+    z.object({
+      membershipId: z.string().uuid(),
+      name: z.string().nullable(),
+      isLead: z.boolean(),
+      isMe: z.boolean(),
+    }),
+  ),
+  priorRoundFeedback: z.array(priorRoundFeedbackSchema),
+  myFeedback: z.object({
+    state: feedbackStateSchema,
+    criteria: z.array(panelScorecardCriterionSchema),
+    strengths: z.string().nullable(),
+    concerns: z.string().nullable(),
+    notes: z.string().nullable(),
+    recommendation: interviewRecommendationSchema.nullable(),
+    submittedAt: z.string().nullable(),
+  }),
+});
+export type GetPanelInterviewBriefInput = z.infer<typeof getPanelInterviewBriefInputSchema>;
+export type GetPanelInterviewBriefOutput = z.infer<typeof getPanelInterviewBriefOutputSchema>;
+
+/**
+ * Save MY scorecard for an interview I'm on. `scorecard` is a
+ * criterion-key → 1..5 map; keys are validated against the round template's
+ * criteria set and values must be integers 1..5 (extra/unknown keys rejected).
+ * `action` 'draft' leaves submitted_at NULL (partial allowed); 'submit' stamps
+ * submitted_at, REQUIRES recommendation, and freezes the row (further saves →
+ * CONFLICT).
+ */
+export const saveInterviewFeedbackInputSchema = z.object({
+  interviewId: z.string().uuid(),
+  scorecard: z.record(z.string(), z.number().int().min(1).max(5)).default({}),
+  strengths: z.string().max(4000).nullish(),
+  concerns: z.string().max(4000).nullish(),
+  notes: z.string().max(4000).nullish(),
+  recommendation: interviewRecommendationSchema.nullish(),
+  action: z.enum(["draft", "submit"]),
+});
+export const saveInterviewFeedbackOutputSchema = z.object({
+  interviewId: z.string().uuid(),
+  state: feedbackStateSchema,
+  submittedAt: z.string().nullable(),
+});
+export type SaveInterviewFeedbackInput = z.infer<typeof saveInterviewFeedbackInputSchema>;
+export type SaveInterviewFeedbackOutput = z.infer<typeof saveInterviewFeedbackOutputSchema>;
 
 // ─────────── PARTNER-01 — partner-portal procedures ───────────
 

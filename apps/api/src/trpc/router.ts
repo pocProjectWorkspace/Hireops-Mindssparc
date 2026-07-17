@@ -47,6 +47,7 @@ import {
   interviewPlans,
   interviews,
   interviewPanelists,
+  interviewFeedback,
   workdaySyncOutbox,
   aiScoreOutbox,
   automationAgents,
@@ -137,6 +138,17 @@ import {
   listUpcomingInterviewsInputSchema,
   listUpcomingInterviewsOutputSchema,
   type InterviewRow,
+  listMyPanelInterviewsInputSchema,
+  listMyPanelInterviewsOutputSchema,
+  getPanelInterviewBriefInputSchema,
+  getPanelInterviewBriefOutputSchema,
+  saveInterviewFeedbackInputSchema,
+  saveInterviewFeedbackOutputSchema,
+  scorecardCriteriaFor,
+  type FeedbackState,
+  type GetPanelInterviewBriefOutput,
+  type SaveInterviewFeedbackOutput,
+  type PriorRoundFeedback,
   createFollowUpAgentInputSchema,
   createFollowUpAgentOutputSchema,
   updateFollowUpAgentInputSchema,
@@ -317,6 +329,14 @@ const REQUISITION_WRITE_ROLES = new Set(["admin", "hiring_manager"]);
 // view, which hr_head also reads). A partner/candidate-less identity is
 // FORBIDDEN. RLS still scopes rows to the tenant on top of these gates.
 const INTERVIEW_MANAGE_ROLES = new Set(["admin", "hiring_manager", "recruiter"]);
+
+// INT-03 panel persona. The "my interviews" + brief + scorecard surface is the
+// interviewer's. panel_member is the role; admin is the super-role. NOTE this
+// is only the coarse persona gate — every panel procedure ADDITIONALLY enforces
+// that the caller is a panelist ON that specific interview (a panel_member who
+// is not on the interview gets FORBIDDEN), so the role set alone is not the
+// authorisation boundary. RLS still scopes rows to the tenant on top.
+const PANEL_SURFACE_ROLES = new Set(["admin", "panel_member"]);
 
 /**
  * Throws FORBIDDEN unless the caller holds any role in `allowed`. Same
@@ -3070,6 +3090,337 @@ export const appRouter = router({
           ? encodeInterviewCursor(last.scheduledStart ?? new Date(0).toISOString(), last.id)
           : null;
       return { rows: out, nextCursor };
+    }),
+
+  // ─────────────────────── panel persona (INT-03) ───────────────────────
+  //
+  // The interviewer's surface: the interviews I'm on, a candidate brief per
+  // interview, and ONE scorecard per interview (draft-capable, immutable once
+  // submitted). Every procedure enforces panelist-membership on the specific
+  // interview beyond the coarse persona gate. Completion / stage transitions
+  // are INT-04 — nothing here flips interview status or application stage.
+
+  listMyPanelInterviews: protectedProcedure
+    .input(listMyPanelInterviewsInputSchema)
+    .output(listMyPanelInterviewsOutputSchema)
+    .query(async ({ ctx, input }) => {
+      requireAnyRole(ctx, PANEL_SURFACE_ROLES, "This surface is for interview panellists.");
+      const db = requireDb(ctx);
+      const membershipId = await resolveActorMembership(db, ctx);
+      // No membership in this tenant → no interviews (not an error). An admin
+      // with no membership legitimately sees an empty panel list.
+      if (!membershipId) return { rows: [] };
+
+      const conds = [
+        dsql`EXISTS (SELECT 1 FROM public.interview_panelists ip
+             WHERE ip.interview_id = ${interviews.id}
+               AND ip.membership_id = ${membershipId})`,
+        ...(input.status ? [eq(interviews.status, input.status)] : []),
+      ];
+      const rows = await selectInterviewRows(db, conds, input.limit);
+
+      // Decorate each row with MY feedback state (the panel chip is per-panelist;
+      // here we want the caller's own state, not the whole panel's).
+      const myStates = await fetchMyFeedbackStates(
+        db,
+        membershipId,
+        rows.map((r) => r.id),
+      );
+      return {
+        rows: rows.map((r) => ({
+          ...r,
+          myFeedbackState: myStates.get(r.id) ?? "none",
+        })),
+      };
+    }),
+
+  getPanelInterviewBrief: protectedProcedure
+    .input(getPanelInterviewBriefInputSchema)
+    .output(getPanelInterviewBriefOutputSchema)
+    .query(async ({ ctx, input }): Promise<GetPanelInterviewBriefOutput> => {
+      requireAnyRole(ctx, PANEL_SURFACE_ROLES, "This surface is for interview panellists.");
+      return withAudit("get_panel_interview_brief", ctx, input, async () => {
+        const db = requireDb(ctx);
+        const membershipId = await resolveActorMembership(db, ctx);
+        const isAdmin = ctx.roles.includes("admin");
+
+        // The interview + candidate facet + role/plan, in one read.
+        const [iv] = await db
+          .select({
+            id: interviews.id,
+            applicationId: interviews.applicationId,
+            requisitionId: interviews.requisitionId,
+            roundNumber: interviews.roundNumber,
+            roundName: interviews.roundName,
+            status: interviews.status,
+            mode: interviews.mode,
+            scheduledStart: interviews.scheduledStart,
+            scheduledEnd: interviews.scheduledEnd,
+            durationMinutes: interviews.durationMinutes,
+            meetingUrl: interviews.meetingUrl,
+            candidateConfirmedAt: interviews.candidateConfirmedAt,
+            candidateId: applications.candidateId,
+            currentStage: applications.currentStage,
+            positionTitle: positions.title,
+            candidateName: persons.fullName,
+            locationCountry: persons.locationCountry,
+            parsedSkills: candidates.parsedSkills,
+          })
+          .from(interviews)
+          .innerJoin(applications, eq(applications.id, interviews.applicationId))
+          .innerJoin(candidates, eq(candidates.id, applications.candidateId))
+          .innerJoin(persons, eq(persons.id, candidates.personId))
+          .innerJoin(requisitions, eq(requisitions.id, interviews.requisitionId))
+          .innerJoin(positions, eq(positions.id, requisitions.positionId))
+          .where(eq(interviews.id, input.interviewId))
+          .limit(1);
+        if (!iv) throw new TRPCError({ code: "NOT_FOUND", message: "Interview not found" });
+
+        // ENFORCED: a panel_member who is not on THIS interview gets FORBIDDEN.
+        // admin bypasses (super-role). This is the real authorisation boundary.
+        const myPanelist = membershipId
+          ? await findPanelistRow(db, input.interviewId, membershipId)
+          : null;
+        if (!isAdmin && !myPanelist) {
+          throw new TRPCError({
+            code: "FORBIDDEN",
+            message: "You are not a panellist on this interview.",
+          });
+        }
+
+        // ADR-002 §7 — the brief reads candidate PII (name/location) + the
+        // resume-derived skills, exactly the fields getCandidateById logs.
+        // Mirror that record so the panel read is accountable too.
+        if (ctx.tenantId) {
+          recordPiiAccess({
+            tenantId: ctx.tenantId,
+            actorUserId: ctx.userId,
+            actorMembershipId: membershipId,
+            actorLabel: "user",
+            entityType: "candidate",
+            entityId: iv.candidateId,
+            fieldsAccessed: [
+              "persons.full_name",
+              "persons.location_country",
+              "candidates.parsed_skills",
+            ],
+            reason: "get_panel_interview_brief",
+            requestId: ctx.requestId,
+          });
+        }
+
+        // Plan round → scorecard template + competency focus. Looked up live
+        // (plans are replace-set) — fall back to 'general' if the round was
+        // removed after scheduling.
+        const [planRound] = await db
+          .select({
+            scorecardTemplate: interviewPlans.scorecardTemplate,
+            competencyFocus: interviewPlans.competencyFocus,
+          })
+          .from(interviewPlans)
+          .where(
+            and(
+              eq(interviewPlans.requisitionId, iv.requisitionId),
+              eq(interviewPlans.roundNumber, iv.roundNumber),
+            ),
+          )
+          .limit(1);
+        const scorecardTemplate = (planRound?.scorecardTemplate ?? "general") as
+          | "technical"
+          | "manager"
+          | "hr"
+          | "general";
+        const competencyFocus = Array.isArray(planRound?.competencyFocus)
+          ? (planRound.competencyFocus as string[])
+          : [];
+
+        // Co-panelists (whole panel, self flagged).
+        const panel = await fetchInterviewPanels(db, [input.interviewId]);
+        const coPanelists = (panel.get(input.interviewId) ?? []).map((p) => ({
+          membershipId: p.membershipId,
+          name: p.name,
+          isLead: p.isLead,
+          isMe: membershipId != null && p.membershipId === membershipId,
+        }));
+
+        // Prior-round SUBMITTED feedback across OTHER interviews of the same
+        // application — recommendation + strengths + concerns only. NO scores.
+        const priorRoundFeedback = await fetchPriorRoundFeedback(
+          db,
+          iv.applicationId,
+          input.interviewId,
+        );
+
+        // My own feedback (hydrates the form). Criteria are always the full
+        // template set; saved scores fill in where present.
+        const myFeedbackRow = membershipId
+          ? await findMyFeedbackRow(db, input.interviewId, membershipId)
+          : null;
+        const savedScores: Record<string, number> =
+          myFeedbackRow && myFeedbackRow.scorecard && typeof myFeedbackRow.scorecard === "object"
+            ? (myFeedbackRow.scorecard as Record<string, number>)
+            : {};
+        const criteria = scorecardCriteriaFor(scorecardTemplate).map((c) => {
+          const saved = savedScores[c.key];
+          return {
+            key: c.key,
+            label: c.label,
+            score: typeof saved === "number" ? saved : null,
+          };
+        });
+
+        return {
+          interview: {
+            id: iv.id,
+            applicationId: iv.applicationId,
+            roundNumber: iv.roundNumber,
+            roundName: iv.roundName,
+            status: iv.status as "scheduled" | "completed" | "cancelled" | "no_show",
+            mode: iv.mode as "video" | "onsite" | "phone",
+            scheduledStart: toIsoString(iv.scheduledStart),
+            scheduledEnd: toIsoString(iv.scheduledEnd),
+            durationMinutes: iv.durationMinutes,
+            meetingUrl: iv.meetingUrl,
+            candidateConfirmedAt: toIsoString(iv.candidateConfirmedAt),
+            positionTitle: iv.positionTitle,
+          },
+          candidate: {
+            candidateId: iv.candidateId,
+            name: iv.candidateName,
+            currentStage: iv.currentStage,
+            locationCountry: iv.locationCountry,
+            parsedSkills: Array.isArray(iv.parsedSkills) ? (iv.parsedSkills as string[]) : [],
+          },
+          round: { scorecardTemplate, competencyFocus },
+          coPanelists,
+          priorRoundFeedback,
+          myFeedback: {
+            state: deriveFeedbackState(
+              myFeedbackRow?.id ?? null,
+              myFeedbackRow?.submittedAt ?? null,
+            ),
+            criteria,
+            strengths: myFeedbackRow?.strengths ?? null,
+            concerns: myFeedbackRow?.concerns ?? null,
+            notes: myFeedbackRow?.notes ?? null,
+            recommendation:
+              (myFeedbackRow?.recommendation as "strong_yes" | "yes" | "hold" | "no" | null) ??
+              null,
+            submittedAt: toIsoString(myFeedbackRow?.submittedAt ?? null),
+          },
+        };
+      });
+    }),
+
+  saveInterviewFeedback: protectedProcedure
+    .input(saveInterviewFeedbackInputSchema)
+    .output(saveInterviewFeedbackOutputSchema)
+    .mutation(async ({ ctx, input }): Promise<SaveInterviewFeedbackOutput> => {
+      requireAnyRole(ctx, PANEL_SURFACE_ROLES, "This surface is for interview panellists.");
+      return withAudit("save_interview_feedback", ctx, input, async () => {
+        const db = requireDb(ctx);
+        const membershipId = await resolveActorMembership(db, ctx);
+        if (!membershipId) {
+          throw new TRPCError({
+            code: "FORBIDDEN",
+            message: "You are not a panellist on this interview.",
+          });
+        }
+
+        // The interview + its tenant + plan round (for the template).
+        const [iv] = await db
+          .select({
+            tenantId: interviews.tenantId,
+            requisitionId: interviews.requisitionId,
+            roundNumber: interviews.roundNumber,
+          })
+          .from(interviews)
+          .where(eq(interviews.id, input.interviewId))
+          .limit(1);
+        if (!iv) throw new TRPCError({ code: "NOT_FOUND", message: "Interview not found" });
+
+        // ENFORCED: caller must be a panelist on THIS interview (writes are
+        // never admin-on-behalf — only the interviewer authors their scorecard).
+        const myPanelist = await findPanelistRow(db, input.interviewId, membershipId);
+        if (!myPanelist) {
+          throw new TRPCError({
+            code: "FORBIDDEN",
+            message: "You are not a panellist on this interview.",
+          });
+        }
+
+        // Validate the scorecard against the round template's criteria set:
+        // every key must be known, every value an integer 1..5 (zod already
+        // enforced the range; here we reject unknown/extra keys).
+        const [planRound] = await db
+          .select({ scorecardTemplate: interviewPlans.scorecardTemplate })
+          .from(interviewPlans)
+          .where(
+            and(
+              eq(interviewPlans.requisitionId, iv.requisitionId),
+              eq(interviewPlans.roundNumber, iv.roundNumber),
+            ),
+          )
+          .limit(1);
+        const template = planRound?.scorecardTemplate ?? "general";
+        const validKeys = new Set(scorecardCriteriaFor(template).map((c) => c.key));
+        const badKeys = Object.keys(input.scorecard).filter((k) => !validKeys.has(k));
+        if (badKeys.length > 0) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: `Unknown scorecard criteria for the '${template}' template: ${badKeys.join(", ")}`,
+          });
+        }
+
+        // Immutability: once submitted, the row is frozen. Any further save —
+        // draft or submit — is a CONFLICT.
+        const existing = await findMyFeedbackRow(db, input.interviewId, membershipId);
+        if (existing?.submittedAt) {
+          throw new TRPCError({
+            code: "CONFLICT",
+            message: "Your feedback has been submitted and can no longer be edited.",
+          });
+        }
+
+        const isSubmit = input.action === "submit";
+        if (isSubmit && !input.recommendation) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: "A recommendation is required to submit your scorecard.",
+          });
+        }
+
+        const now = new Date();
+        const values = {
+          scorecard: input.scorecard,
+          strengths: input.strengths ?? null,
+          concerns: input.concerns ?? null,
+          notes: input.notes ?? null,
+          recommendation: input.recommendation ?? null,
+          submittedAt: isSubmit ? now : null,
+          updatedAt: now,
+        };
+
+        if (existing) {
+          await db
+            .update(interviewFeedback)
+            .set(values)
+            .where(eq(interviewFeedback.id, existing.id));
+        } else {
+          await db.insert(interviewFeedback).values({
+            tenantId: iv.tenantId,
+            interviewId: input.interviewId,
+            membershipId,
+            ...values,
+          });
+        }
+
+        return {
+          interviewId: input.interviewId,
+          state: isSubmit ? ("submitted" as const) : ("draft" as const),
+          submittedAt: isSubmit ? now.toISOString() : null,
+        };
+      });
     }),
 
   // ─────────── protected: integration health (admin) ───────────
@@ -7868,12 +8219,24 @@ async function resolveRequisitionId(
   return app.requisitionId;
 }
 
-/** interview panel → {membershipId, name, isLead}[] keyed by interviewId. */
+interface PanelMemberView {
+  membershipId: string;
+  name: string | null;
+  isLead: boolean;
+  feedbackState: FeedbackState;
+}
+
+/**
+ * interview panel → {membershipId, name, isLead, feedbackState}[] keyed by
+ * interviewId. INT-03 added `feedbackState` (none/draft/submitted) via a
+ * LEFT JOIN to interview_feedback per (interview, membership) — this powers
+ * the recruiter scorecard-progress chips on both interview list surfaces.
+ */
 async function fetchInterviewPanels(
   db: NonNullable<HonoTRPCContext["db"]>,
   interviewIds: string[],
-): Promise<Map<string, { membershipId: string; name: string | null; isLead: boolean }[]>> {
-  const map = new Map<string, { membershipId: string; name: string | null; isLead: boolean }[]>();
+): Promise<Map<string, PanelMemberView[]>> {
+  const map = new Map<string, PanelMemberView[]>();
   if (interviewIds.length === 0) return map;
   const rows = await db
     .select({
@@ -7881,17 +8244,169 @@ async function fetchInterviewPanels(
       membershipId: interviewPanelists.membershipId,
       isLead: interviewPanelists.isLead,
       name: users.displayName,
+      feedbackId: interviewFeedback.id,
+      feedbackSubmittedAt: interviewFeedback.submittedAt,
     })
     .from(interviewPanelists)
     .leftJoin(tenantUserMemberships, eq(tenantUserMemberships.id, interviewPanelists.membershipId))
     .leftJoin(users, eq(users.id, tenantUserMemberships.userId))
+    .leftJoin(
+      interviewFeedback,
+      and(
+        eq(interviewFeedback.interviewId, interviewPanelists.interviewId),
+        eq(interviewFeedback.membershipId, interviewPanelists.membershipId),
+      ),
+    )
     .where(inArray(interviewPanelists.interviewId, interviewIds));
   for (const r of rows) {
     const list = map.get(r.interviewId) ?? [];
-    list.push({ membershipId: r.membershipId, name: r.name ?? null, isLead: r.isLead });
+    list.push({
+      membershipId: r.membershipId,
+      name: r.name ?? null,
+      isLead: r.isLead,
+      feedbackState: deriveFeedbackState(r.feedbackId, r.feedbackSubmittedAt),
+    });
     map.set(r.interviewId, list);
   }
   return map;
+}
+
+/** none = no row; draft = row with submitted_at NULL; submitted = stamped. */
+function deriveFeedbackState(
+  feedbackId: string | null,
+  submittedAt: Date | string | null,
+): FeedbackState {
+  if (!feedbackId) return "none";
+  return submittedAt ? "submitted" : "draft";
+}
+
+// ─────────────────────── panel persona helpers (INT-03) ───────────────────────
+
+/** MY feedback state per interview id — for the "my interviews" list badges. */
+async function fetchMyFeedbackStates(
+  db: NonNullable<HonoTRPCContext["db"]>,
+  membershipId: string,
+  interviewIds: string[],
+): Promise<Map<string, FeedbackState>> {
+  const map = new Map<string, FeedbackState>();
+  if (interviewIds.length === 0) return map;
+  const rows = await db
+    .select({
+      interviewId: interviewFeedback.interviewId,
+      id: interviewFeedback.id,
+      submittedAt: interviewFeedback.submittedAt,
+    })
+    .from(interviewFeedback)
+    .where(
+      and(
+        eq(interviewFeedback.membershipId, membershipId),
+        inArray(interviewFeedback.interviewId, interviewIds),
+      ),
+    );
+  for (const r of rows) {
+    map.set(r.interviewId, deriveFeedbackState(r.id, r.submittedAt));
+  }
+  return map;
+}
+
+/** Is this membership a panelist on this interview? Returns the row or null. */
+async function findPanelistRow(
+  db: NonNullable<HonoTRPCContext["db"]>,
+  interviewId: string,
+  membershipId: string,
+): Promise<{ id: string; isLead: boolean } | null> {
+  const [row] = await db
+    .select({ id: interviewPanelists.id, isLead: interviewPanelists.isLead })
+    .from(interviewPanelists)
+    .where(
+      and(
+        eq(interviewPanelists.interviewId, interviewId),
+        eq(interviewPanelists.membershipId, membershipId),
+      ),
+    )
+    .limit(1);
+  return row ?? null;
+}
+
+/** MY feedback row for an interview (the single per-panelist scorecard). */
+async function findMyFeedbackRow(
+  db: NonNullable<HonoTRPCContext["db"]>,
+  interviewId: string,
+  membershipId: string,
+): Promise<{
+  id: string;
+  scorecard: unknown;
+  strengths: string | null;
+  concerns: string | null;
+  notes: string | null;
+  recommendation: string | null;
+  submittedAt: Date | string | null;
+} | null> {
+  const [row] = await db
+    .select({
+      id: interviewFeedback.id,
+      scorecard: interviewFeedback.scorecard,
+      strengths: interviewFeedback.strengths,
+      concerns: interviewFeedback.concerns,
+      notes: interviewFeedback.notes,
+      recommendation: interviewFeedback.recommendation,
+      submittedAt: interviewFeedback.submittedAt,
+    })
+    .from(interviewFeedback)
+    .where(
+      and(
+        eq(interviewFeedback.interviewId, interviewId),
+        eq(interviewFeedback.membershipId, membershipId),
+      ),
+    )
+    .limit(1);
+  return row ?? null;
+}
+
+/**
+ * SUBMITTED feedback from OTHER interviews of the same application — the
+ * prior-round disclosure on the brief. DELIBERATE partial disclosure: only
+ * recommendation + strengths + concerns cross to the next panelist; the
+ * per-criterion scores never leave the row (not selected here).
+ */
+async function fetchPriorRoundFeedback(
+  db: NonNullable<HonoTRPCContext["db"]>,
+  applicationId: string,
+  excludeInterviewId: string,
+): Promise<PriorRoundFeedback[]> {
+  const rows = await db
+    .select({
+      interviewId: interviewFeedback.interviewId,
+      roundNumber: interviews.roundNumber,
+      roundName: interviews.roundName,
+      panelistName: users.displayName,
+      recommendation: interviewFeedback.recommendation,
+      strengths: interviewFeedback.strengths,
+      concerns: interviewFeedback.concerns,
+      submittedAt: interviewFeedback.submittedAt,
+    })
+    .from(interviewFeedback)
+    .innerJoin(interviews, eq(interviews.id, interviewFeedback.interviewId))
+    .leftJoin(tenantUserMemberships, eq(tenantUserMemberships.id, interviewFeedback.membershipId))
+    .leftJoin(users, eq(users.id, tenantUserMemberships.userId))
+    .where(
+      and(
+        eq(interviews.applicationId, applicationId),
+        dsql`${interviews.id} <> ${excludeInterviewId}`,
+        dsql`${interviewFeedback.submittedAt} IS NOT NULL`,
+      ),
+    )
+    .orderBy(interviews.roundNumber);
+  return rows.map((r) => ({
+    interviewId: r.interviewId,
+    roundNumber: r.roundNumber,
+    roundName: r.roundName,
+    panelistName: r.panelistName ?? null,
+    recommendation: (r.recommendation as "strong_yes" | "yes" | "hold" | "no" | null) ?? null,
+    strengths: r.strengths,
+    concerns: r.concerns,
+    submittedAt: toIsoString(r.submittedAt),
+  }));
 }
 
 /**

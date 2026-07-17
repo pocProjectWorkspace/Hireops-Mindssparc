@@ -30,6 +30,7 @@ import {
   IconRequisitions,
   IconReqApprovals,
   IconInterviews,
+  IconPanel,
   IconWorkflows,
   IconAudit,
   IconCosts,
@@ -45,6 +46,7 @@ export type PortalNavKey =
   | "requisitions"
   | "requisition-approvals"
   | "interviews"
+  | "panel"
   | "workflows"
   | "audit"
   | "costs"
@@ -89,6 +91,15 @@ const MAIN_NAV: NavItem[] = [
     href: "/interviews",
     icon: <IconInterviews />,
     roles: ["hiring_manager", "recruiter", "admin"],
+  },
+  {
+    // INT-03: the interviewer's own surface — distinct from /interviews (the
+    // recruiter scheduling surface). panel_member + admin only.
+    key: "panel",
+    label: "My interviews",
+    href: "/panel",
+    icon: <IconPanel />,
+    roles: ["panel_member", "admin"],
   },
 ];
 

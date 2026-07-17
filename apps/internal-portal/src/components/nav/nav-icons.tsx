@@ -64,6 +64,17 @@ export function IconInterviews() {
   );
 }
 
+export function IconPanel() {
+  return (
+    <Svg>
+      <path d="M9 11a3 3 0 1 0 0-6 3 3 0 0 0 0 6z" />
+      <path d="M3 20v-1a5 5 0 0 1 5-5h2a5 5 0 0 1 3 1" />
+      <rect x="14" y="13" width="7" height="8" rx="1.5" />
+      <path d="M16.5 17l1 1 2-2" />
+    </Svg>
+  );
+}
+
 export function IconRequisitions() {
   return (
     <Svg>

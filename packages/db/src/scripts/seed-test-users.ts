@@ -61,6 +61,13 @@ const TEST_USERS = [
     displayName: "Test HR Head",
     roles: ["hr_head"] as const,
   },
+  {
+    // INT-03 (Wave B): the panel/interviewer persona. Sees "My interviews",
+    // opens the candidate brief, submits ONE scorecard per interview.
+    email: "panel1@kyndryl-poc.test",
+    displayName: "Test Panelist",
+    roles: ["panel_member"] as const,
+  },
 ] as const;
 
 async function main() {
