@@ -25,25 +25,11 @@
  */
 
 import { Hono } from "hono";
-import { createHash, randomUUID } from "node:crypto";
 import { and, eq } from "drizzle-orm";
 import { recordPiiAccess, onboardingDocuments } from "@hireops/db";
-import {
-  uploadOnboardingDocumentResponseSchema,
-  type UploadOnboardingDocumentResponse,
-} from "@hireops/api-types";
 import type { TenantContextVars } from "../middleware/tenant-context";
 import { getStorageClient, StorageError, StorageNotFoundError } from "../lib/storage";
-
-const MAX_BYTES = 10 * 1024 * 1024;
-// ID documents are commonly scans/photos, so JPEG + PNG join the PDF/DOCX set
-// the resume route allows.
-const ALLOWED_TYPES = new Set([
-  "application/pdf",
-  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-  "image/jpeg",
-  "image/png",
-]);
+import { storeUploadedDocument } from "../lib/document-upload";
 
 export const onboardingDocumentRoutes = new Hono<{ Variables: TenantContextVars }>();
 
@@ -54,46 +40,11 @@ onboardingDocumentRoutes.post("/upload", async (c) => {
   } catch {
     return c.json({ error: "invalid_form" }, 400);
   }
-  const file = body["file"];
-  if (!(file instanceof File)) {
-    return c.json({ error: "no_file" }, 400);
+  const result = await storeUploadedDocument(body, c.var.log);
+  if (!result.ok) {
+    return c.json(result.body, result.status);
   }
-
-  if (file.size > MAX_BYTES) {
-    return c.json({ error: "file_too_large", maxBytes: MAX_BYTES }, 400);
-  }
-  if (!ALLOWED_TYPES.has(file.type)) {
-    return c.json({ error: "unsupported_type", contentType: file.type }, 400);
-  }
-
-  const arrayBuffer = await file.arrayBuffer();
-  const buffer = Buffer.from(arrayBuffer);
-  const checksum = createHash("sha256").update(buffer).digest("hex");
-
-  // Distinct prefix from resumes so the two upload classes never collide and
-  // storage policies / lifecycle rules can target them independently.
-  const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, "_").slice(0, 80);
-  const storageKey = `onboarding-documents/${randomUUID()}-${safeName}`;
-
-  try {
-    const storage = getStorageClient();
-    await storage.put(storageKey, buffer, { contentType: file.type });
-  } catch (err) {
-    if (err instanceof StorageError) {
-      c.var.log.error({ err, storageKey }, "onboarding document storage put failed");
-      return c.json({ error: "upload_failed" }, 500);
-    }
-    throw err;
-  }
-
-  const out: UploadOnboardingDocumentResponse = {
-    storageKey,
-    sizeBytes: file.size,
-    contentType: file.type,
-    checksum,
-  };
-  uploadOnboardingDocumentResponseSchema.parse(out);
-  return c.json(out);
+  return c.json(result.response);
 });
 
 onboardingDocumentRoutes.get("/:documentId/download", async (c) => {

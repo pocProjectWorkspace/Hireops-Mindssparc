@@ -240,6 +240,10 @@ import {
   candidateListMyInterviewsOutputSchema,
   candidateConfirmInterviewInputSchema,
   candidateConfirmInterviewOutputSchema,
+  candidateGetMyOfferOutputSchema,
+  candidateAcceptOfferInputSchema,
+  candidateAcceptOfferOutputSchema,
+  candidateGetMyOnboardingOutputSchema,
   CANDIDATE_STAGE_STEPS,
   type CandidateApplicationRow,
   type CandidateInterviewRow,
@@ -288,6 +292,8 @@ import {
   resolveGeographyCode,
 } from "../lib/onboarding-case";
 import { getStorageClient } from "../lib/storage";
+import { attachDocumentToCase, matchDocumentCollectionTask } from "../lib/onboarding-document";
+import { acceptOfferAtomically, runOfferAcceptSideEffects } from "../lib/offer-accept";
 
 /**
  * Lowercase, drop +suffix in the local part. Gmail dot-stripping is
@@ -683,6 +689,38 @@ async function ingestPartnerApplication(
   }
 
   return { candidateId, applicationId, wasNewApplication, parseStatus };
+}
+
+// ─────────────── CAND-02 raw-SQL row shapes (ctx.db.execute reads) ───────────────
+interface CandidateOfferSqlRow {
+  offer_id: string;
+  application_id: string;
+  status: string;
+  base_salary_inr_paise: string;
+  variable_target_inr_paise: string | null;
+  joining_bonus_inr_paise: string | null;
+  joining_date: string;
+  location: string;
+  expiry_at: Date | string;
+  terms_html: string | null;
+  position_title: string;
+  company_name: string;
+}
+interface CandidateOnbCaseSqlRow {
+  id: string;
+  status: string;
+  expected_start_date: string | null;
+  position_title: string | null;
+}
+interface CandidateOnbDocSqlRow {
+  document_type_id: string | null;
+  document_type_name: string | null;
+  task_status: string;
+  document_id: string | null;
+  verification_status: string | null;
+  file_name: string | null;
+  rejection_reason: string | null;
+  uploaded_at: Date | string | null;
 }
 
 export const appRouter = router({
@@ -6881,100 +6919,23 @@ export const appRouter = router({
           throw new TRPCError({ code: "NOT_FOUND", message: "Document type not found" });
         }
 
-        const now = new Date();
-        const [existingDoc] = await db
-          .select({ id: onboardingDocuments.id })
-          .from(onboardingDocuments)
-          .where(
-            and(
-              eq(onboardingDocuments.tenantId, tenantId),
-              eq(onboardingDocuments.caseId, input.caseId),
-              eq(onboardingDocuments.documentTypeId, input.documentTypeId),
-            ),
-          )
-          .limit(1);
-
-        let documentId: string;
-        let created: boolean;
-        if (existingDoc) {
-          const [updated] = await db
-            .update(onboardingDocuments)
-            .set({
-              storageRef: input.storageKey,
-              fileName: input.fileName,
-              mimeType: input.mimeType,
-              sizeBytes: BigInt(input.sizeBytes),
-              verificationStatus: "pending",
-              verifiedByMembershipId: null,
-              verifiedAt: null,
-              rejectionReason: null,
-              uploadedAt: now,
-              updatedAt: now,
-            })
-            .where(
-              and(
-                eq(onboardingDocuments.tenantId, tenantId),
-                eq(onboardingDocuments.id, existingDoc.id),
-              ),
-            )
-            .returning({ id: onboardingDocuments.id });
-          if (!updated) {
-            throw new TRPCError({
-              code: "INTERNAL_SERVER_ERROR",
-              message: "attach document update returned no row",
-            });
-          }
-          documentId = updated.id;
-          created = false;
-        } else {
-          const [inserted] = await db
-            .insert(onboardingDocuments)
-            .values({
-              tenantId,
-              caseId: input.caseId,
-              documentTypeId: input.documentTypeId,
-              storageRef: input.storageKey,
-              fileName: input.fileName,
-              mimeType: input.mimeType,
-              sizeBytes: BigInt(input.sizeBytes),
-              verificationStatus: "pending",
-            })
-            .returning({ id: onboardingDocuments.id });
-          if (!inserted) {
-            throw new TRPCError({
-              code: "INTERNAL_SERVER_ERROR",
-              message: "attach document insert returned no row",
-            });
-          }
-          documentId = inserted.id;
-          created = true;
-        }
-
-        // Nudge the matching document_collection task forward, but only from
-        // pending — an already in_progress / completed / blocked task is left
-        // as-is so a re-upload doesn't clobber a recruiter's manual state.
-        const task = await matchDocumentCollectionTask(
-          db,
-          tenantId,
-          input.caseId,
-          input.documentTypeId,
-        );
-        let taskStatus = task?.status ?? null;
-        if (task && task.status === "pending") {
-          const [t] = await db
-            .update(onboardingTasks)
-            .set({ status: "in_progress", updatedAt: now })
-            .where(and(eq(onboardingTasks.tenantId, tenantId), eq(onboardingTasks.id, task.id)))
-            .returning({ status: onboardingTasks.status });
-          taskStatus = t?.status ?? taskStatus;
-        }
+        // Shared find-or-replace + task-progression write path (reused
+        // verbatim by the candidate-side candidateAttachDocument).
+        const result = await attachDocumentToCase(db, tenantId, {
+          caseId: input.caseId,
+          documentTypeId: input.documentTypeId,
+          storageKey: input.storageKey,
+          fileName: input.fileName,
+          mimeType: input.mimeType,
+          sizeBytes: input.sizeBytes,
+        });
 
         return {
-          documentId,
-          verificationStatus: "pending",
-          created,
-          taskId: task?.id ?? null,
-          taskStatus: taskStatus as OnboardingTaskRow["status"] | null,
+          documentId: result.documentId,
+          verificationStatus: result.verificationStatus,
+          created: result.created,
+          taskId: result.taskId,
+          taskStatus: result.taskStatus as OnboardingTaskRow["status"] | null,
         };
       });
     }),
@@ -8092,36 +8053,322 @@ export const appRouter = router({
         },
       );
     }),
+
+  // ─────────────── CAND-02 — candidate documents + in-portal offer ───────────────
+  //
+  // Four candidateProcedure procedures fill CAND-01's "Documents & offers"
+  // placeholder. Every read/write is person-scoped by ctx.candidate.personId on
+  // top of the tenant_isolation RLS the tx applies — the case/offer/document
+  // must trace offer|case → application → candidate → person = the caller's
+  // person, or it resolves to NOT_FOUND (never a cross-person leak).
+
+  /**
+   * candidateGetMyOffer — the candidate's latest extended-or-accepted offer,
+   * disclosing NO MORE than the public signed-link offer page (routes/offers.ts
+   * `GET /preview/:token`): company, position, comp, joining date, location,
+   * expiry, terms, status. Returns { offer: null } when they have none.
+   */
+  candidateGetMyOffer: candidateProcedure
+    .output(candidateGetMyOfferOutputSchema)
+    .query(async ({ ctx }) => {
+      const db = ctx.db;
+      if (!db) {
+        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "candidate ctx.db missing" });
+      }
+      const result = await db.execute(dsql`
+        SELECT
+          o.id::text AS offer_id,
+          o.application_id::text AS application_id,
+          o.status,
+          o.base_salary_inr_paise::text AS base_salary_inr_paise,
+          o.variable_target_inr_paise::text AS variable_target_inr_paise,
+          o.joining_bonus_inr_paise::text AS joining_bonus_inr_paise,
+          o.joining_date::text AS joining_date,
+          o.location,
+          o.expiry_at,
+          o.terms_html,
+          pos.title AS position_title,
+          t.display_name AS company_name
+        FROM public.offers o
+        JOIN public.applications a ON a.id = o.application_id AND a.tenant_id = o.tenant_id
+        JOIN public.candidates c ON c.id = a.candidate_id AND c.tenant_id = o.tenant_id
+        JOIN public.requisitions r ON r.id = a.requisition_id AND r.tenant_id = o.tenant_id
+        JOIN public.positions pos ON pos.id = r.position_id AND pos.tenant_id = o.tenant_id
+        JOIN public.tenants t ON t.id = o.tenant_id
+        WHERE o.tenant_id = ${ctx.candidate.tenantId}
+          AND c.person_id = ${ctx.candidate.personId}
+          AND o.status IN ('extended', 'accepted')
+        ORDER BY o.created_at DESC
+        LIMIT 1
+      `);
+      const rows =
+        (result as unknown as { rows?: CandidateOfferSqlRow[] }).rows ??
+        (result as unknown as CandidateOfferSqlRow[]);
+      const row = rows[0];
+      if (!row) return { offer: null };
+
+      return {
+        offer: {
+          offerId: row.offer_id,
+          applicationId: row.application_id,
+          status: row.status,
+          companyName: row.company_name,
+          positionTitle: row.position_title,
+          baseSalaryInrPaise: Number(row.base_salary_inr_paise),
+          variableTargetInrPaise:
+            row.variable_target_inr_paise !== null ? Number(row.variable_target_inr_paise) : null,
+          joiningBonusInrPaise:
+            row.joining_bonus_inr_paise !== null ? Number(row.joining_bonus_inr_paise) : null,
+          joiningDate: row.joining_date,
+          location: row.location,
+          expiryAt: new Date(row.expiry_at as string | Date).toISOString(),
+          termsHtml: row.terms_html,
+        },
+      };
+    }),
+
+  /**
+   * candidateAcceptOffer — the authenticated twin of the public signed-link
+   * accept. Person-scopes to THEIR offer, then runs the SAME single-winner
+   * transition + side-effects (Workday enqueue, onboarding case, recruiter
+   * notice) via the shared helper. The public link route stays for email users.
+   */
+  candidateAcceptOffer: candidateProcedure
+    .input(candidateAcceptOfferInputSchema)
+    .output(candidateAcceptOfferOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      return withAudit("candidate_accept_offer", ctx, { offerId: input.offerId }, async () => {
+        // Person-scoped ownership: the offer's application → candidate → person
+        // MUST be this candidate's person. A cross-person offer id resolves to
+        // no row → NOT_FOUND (opaque, same as candidateConfirmInterview).
+        const [offer] = await ctx.sql<
+          { id: string; application_id: string; status: string; expiry_at: Date | string }[]
+        >`
+          SELECT o.id, o.application_id, o.status, o.expiry_at
+          FROM public.offers o
+          JOIN public.applications a ON a.id = o.application_id AND a.tenant_id = o.tenant_id
+          JOIN public.candidates c ON c.id = a.candidate_id AND c.tenant_id = o.tenant_id
+          WHERE o.tenant_id = ${ctx.candidate.tenantId}
+            AND c.person_id = ${ctx.candidate.personId}
+            AND o.id = ${input.offerId}
+          LIMIT 1
+        `;
+        if (!offer) {
+          throw new TRPCError({ code: "NOT_FOUND", message: "offer_not_found" });
+        }
+        if (offer.status !== "extended") {
+          // Already accepted / declined / cancelled — clean double-accept path.
+          throw new TRPCError({ code: "CONFLICT", message: "already_resolved" });
+        }
+        const expiryMs = new Date(offer.expiry_at as string | Date).getTime();
+        if (Number.isFinite(expiryMs) && expiryMs < Date.now()) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "offer_expired" });
+        }
+
+        const won = await acceptOfferAtomically(ctx.sql, {
+          offerId: offer.id,
+          ip: ctx.ipAddress,
+          userAgent: ctx.userAgent,
+        });
+        if (!won) {
+          // Lost the race to a concurrent link/portal accept.
+          throw new TRPCError({ code: "CONFLICT", message: "already_resolved" });
+        }
+
+        await runOfferAcceptSideEffects(ctx.sql, {
+          tenantId: ctx.candidate.tenantId,
+          applicationId: offer.application_id,
+          offerId: offer.id,
+          log: ctx.log,
+        });
+
+        return {
+          ok: true as const,
+          offerId: offer.id,
+          applicationId: offer.application_id,
+          status: "accepted" as const,
+        };
+      });
+    }),
+
+  /**
+   * candidateGetMyOnboarding — the candidate's onboarding case (if any, latest)
+   * plus its document-collection checklist, each slot carrying the current
+   * uploaded document + its verification status. Person-scoped via
+   * case → candidate → person = the caller.
+   */
+  candidateGetMyOnboarding: candidateProcedure
+    .output(candidateGetMyOnboardingOutputSchema)
+    .query(async ({ ctx }) => {
+      const db = ctx.db;
+      if (!db) {
+        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "candidate ctx.db missing" });
+      }
+
+      const caseResult = await db.execute(dsql`
+        SELECT
+          oc.id::text AS id,
+          oc.status,
+          oc.expected_start_date::text AS expected_start_date,
+          pos.title AS position_title
+        FROM public.onboarding_cases oc
+        JOIN public.candidates c ON c.id = oc.candidate_id AND c.tenant_id = oc.tenant_id
+        LEFT JOIN public.applications a
+          ON a.id = oc.application_id AND a.tenant_id = oc.tenant_id
+        LEFT JOIN public.requisitions r ON r.id = a.requisition_id AND r.tenant_id = oc.tenant_id
+        LEFT JOIN public.positions pos ON pos.id = r.position_id AND pos.tenant_id = oc.tenant_id
+        WHERE oc.tenant_id = ${ctx.candidate.tenantId}
+          AND c.person_id = ${ctx.candidate.personId}
+        ORDER BY oc.created_at DESC
+        LIMIT 1
+      `);
+      const caseRows =
+        (caseResult as unknown as { rows?: CandidateOnbCaseSqlRow[] }).rows ??
+        (caseResult as unknown as CandidateOnbCaseSqlRow[]);
+      const caseRow = caseRows[0];
+      if (!caseRow) {
+        return { case: null, documents: [] };
+      }
+
+      // One row per document_collection task, left-joined to its current
+      // uploaded document (single-current per type). Person-scope is already
+      // proven by the case lookup above; case_id filter keeps it to this case.
+      const docResult = await db.execute(dsql`
+        SELECT
+          (t.metadata->>'documentTypeId') AS document_type_id,
+          COALESCE(dt.name, t.title) AS document_type_name,
+          t.status AS task_status,
+          d.id::text AS document_id,
+          d.verification_status,
+          d.file_name,
+          d.rejection_reason,
+          d.uploaded_at
+        FROM public.onboarding_tasks t
+        LEFT JOIN public.document_types dt
+          ON dt.id = NULLIF(t.metadata->>'documentTypeId', '')::uuid
+        LEFT JOIN public.onboarding_documents d
+          ON d.tenant_id = t.tenant_id
+          AND d.case_id = t.case_id
+          AND d.document_type_id = NULLIF(t.metadata->>'documentTypeId', '')::uuid
+        WHERE t.tenant_id = ${ctx.candidate.tenantId}
+          AND t.case_id = ${caseRow.id}
+          AND t.task_type = 'document_collection'
+        ORDER BY t.created_at, t.id
+      `);
+      const docRows =
+        (docResult as unknown as { rows?: CandidateOnbDocSqlRow[] }).rows ??
+        (docResult as unknown as CandidateOnbDocSqlRow[]);
+
+      const documents = docRows
+        .filter((r) => r.document_type_id)
+        .map((r) => ({
+          documentTypeId: r.document_type_id as string,
+          documentTypeName: r.document_type_name ?? null,
+          taskStatus: r.task_status,
+          document: r.document_id
+            ? {
+                documentId: r.document_id,
+                verificationStatus: r.verification_status ?? "pending",
+                fileName: r.file_name ?? null,
+                rejectionReason: r.rejection_reason ?? null,
+                uploadedAt: r.uploaded_at
+                  ? new Date(r.uploaded_at as string | Date).toISOString()
+                  : null,
+              }
+            : null,
+        }));
+
+      return {
+        case: {
+          id: caseRow.id,
+          status: caseRow.status,
+          positionTitle: caseRow.position_title ?? null,
+          expectedStartDate: caseRow.expected_start_date ?? null,
+        },
+        documents,
+      };
+    }),
+
+  /**
+   * candidateAttachDocument — the candidate's own upload-then-attach against
+   * THEIR onboarding case + a document type. Person-scoped case ownership check,
+   * then the SAME find-or-replace + task-progression internals the recruiter
+   * attach uses (shared attachDocumentToCase). Verification stays recruiter-side.
+   */
+  candidateAttachDocument: candidateProcedure
+    .input(attachOnboardingDocumentInputSchema)
+    .output(attachOnboardingDocumentOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      return withAudit(
+        "candidate_attach_document",
+        ctx,
+        { caseId: input.caseId, documentTypeId: input.documentTypeId },
+        async () => {
+          const db = ctx.db;
+          if (!db) {
+            throw new TRPCError({
+              code: "INTERNAL_SERVER_ERROR",
+              message: "candidate ctx.db missing",
+            });
+          }
+
+          // Person-scoped case ownership: the case → candidate → person MUST be
+          // this candidate's. RLS scopes to tenant; this scopes to the person.
+          const [owned] = await db
+            .select({ id: onboardingCases.id })
+            .from(onboardingCases)
+            .innerJoin(
+              candidates,
+              and(
+                eq(candidates.tenantId, onboardingCases.tenantId),
+                eq(candidates.id, onboardingCases.candidateId),
+              ),
+            )
+            .where(
+              and(
+                eq(onboardingCases.tenantId, ctx.candidate.tenantId),
+                eq(onboardingCases.id, input.caseId),
+                eq(candidates.personId, ctx.candidate.personId),
+              ),
+            )
+            .limit(1);
+          if (!owned) {
+            throw new TRPCError({ code: "NOT_FOUND", message: "onboarding_case_not_found" });
+          }
+
+          // document_types is a tenant-agnostic reference table — validate the
+          // id for a clean 404 instead of an FK error.
+          const [dtRow] = await db
+            .select({ id: documentTypes.id })
+            .from(documentTypes)
+            .where(eq(documentTypes.id, input.documentTypeId))
+            .limit(1);
+          if (!dtRow) {
+            throw new TRPCError({ code: "NOT_FOUND", message: "document_type_not_found" });
+          }
+
+          const result = await attachDocumentToCase(db, ctx.candidate.tenantId, {
+            caseId: input.caseId,
+            documentTypeId: input.documentTypeId,
+            storageKey: input.storageKey,
+            fileName: input.fileName,
+            mimeType: input.mimeType,
+            sizeBytes: input.sizeBytes,
+          });
+
+          return {
+            documentId: result.documentId,
+            verificationStatus: result.verificationStatus,
+            created: result.created,
+            taskId: result.taskId,
+            taskStatus: result.taskStatus as OnboardingTaskRow["status"] | null,
+          };
+        },
+      );
+    }),
 });
 
 // ─────────────── ONBOARD-05 document helpers ───────────────
-
-/**
- * Finds the document_collection task for a (case, documentType) — the task the
- * ONBOARD-02 checklist generator seeded with metadata.documentTypeId. Returns
- * null when no such task exists (e.g. a document attached for a type outside
- * the case's geography set). Raw SQL because the match is on a JSONB field.
- */
-async function matchDocumentCollectionTask(
-  db: NonNullable<HonoTRPCContext["db"]>,
-  tenantId: string,
-  caseId: string,
-  documentTypeId: string,
-): Promise<{ id: string; status: string } | null> {
-  const result = await db.execute(dsql`
-    SELECT id::text AS id, status
-    FROM public.onboarding_tasks
-    WHERE tenant_id = ${tenantId}
-      AND case_id = ${caseId}
-      AND task_type = 'document_collection'
-      AND metadata->>'documentTypeId' = ${documentTypeId}
-    LIMIT 1
-  `);
-  const rows =
-    (result as unknown as { rows?: { id: string; status: string }[] }).rows ??
-    (result as unknown as { id: string; status: string }[]);
-  return rows[0] ?? null;
-}
 
 /**
  * Resolves the caller's tenant_user_memberships.id for the verifier stamp.

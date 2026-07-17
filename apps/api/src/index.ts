@@ -10,6 +10,7 @@ import { optionalAuth, type OptionalAuthVars } from "./middleware/optional-auth"
 import { testRoutes } from "./routes/test";
 import { uploadRoutes } from "./routes/upload";
 import { onboardingDocumentRoutes } from "./routes/onboarding-documents";
+import { candidateDocumentRoutes } from "./routes/candidate-documents";
 import { linksRoutes } from "./routes/links";
 import { offersRoutes } from "./routes/offers";
 import { interviewsRoutes } from "./routes/interviews";
@@ -83,6 +84,13 @@ app.route("/api/upload", uploadRoutes);
 // download route writes a pii_access_log row per read (PII-01).
 app.use("/api/onboarding-documents/*", tenantContext);
 app.route("/api/onboarding-documents", onboardingDocumentRoutes);
+
+// Candidate document upload + self-download (CAND-02). NOT behind the strict
+// tenantContext middleware — the candidate JWT has no `tid` claim (see
+// candidateProcedure), so this route resolves the candidate from
+// candidate_accounts in its OWN middleware and person-scopes every read.
+// The download route writes a pii_access_log row per read (PII-01).
+app.route("/api/candidate-documents", candidateDocumentRoutes);
 
 // Signed-link verification is intentionally unauthenticated — the link
 // IS the credential. The handler does its own audit insert.

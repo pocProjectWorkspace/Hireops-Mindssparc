@@ -1,9 +1,13 @@
 import { Hono } from "hono";
 import { sql as poolSql } from "@hireops/db";
-import { verifyLink, enqueueNotification } from "@hireops/notifications";
+import { verifyLink } from "@hireops/notifications";
 import { offerAcceptRequestSchema, offerDeclineRequestSchema } from "@hireops/api-types";
 import { baseLog } from "../lib/observability";
-import { createOnboardingCaseForApplication } from "../lib/onboarding-case";
+import {
+  acceptOfferAtomically,
+  runOfferAcceptSideEffects,
+  enqueueRecruiterNotice,
+} from "../lib/offer-accept";
 
 /**
  * Public candidate accept / decline endpoints.
@@ -188,64 +192,24 @@ offersRoutes.post("/accept/:token", async (c) => {
   }
 
   // Atomic transition: only the row whose status is still 'extended'
-  // gets accepted; another concurrent attempt fails the WHERE clause.
-  const updated = await poolSql<{ id: string }[]>`
-    UPDATE public.offers
-    SET status = 'accepted', accepted_at = now(),
-        accepted_from_ip = ${ip}, accepted_user_agent = ${userAgent},
-        updated_at = now()
-    WHERE id = ${offer.id} AND status = 'extended'
-    RETURNING id
-  `;
-  if (updated.length === 0) {
+  // gets accepted; another concurrent attempt fails the WHERE clause. The
+  // single-winner UPDATE + the post-accept side-effect sequence are shared
+  // verbatim with the in-portal twin (candidateAcceptOffer).
+  const won = await acceptOfferAtomically(poolSql, {
+    offerId: offer.id,
+    ip,
+    userAgent,
+  });
+  if (!won) {
     await recordLinkUse(offer.tenant_id, tokenHash, offer.id, ip, false, "concurrent_resolve");
     return c.json({ ok: false, reason: "already_resolved" }, 409);
   }
 
-  // Walk the application forward + enqueue the Workday Hire sync + tell
-  // the recruiter. Each step wrapped — a notification failure must not
-  // unwind the acceptance.
-  try {
-    await poolSql`
-      INSERT INTO public.application_state_transitions
-        (tenant_id, application_id, from_stage, to_stage, reason)
-      VALUES (${offer.tenant_id}, ${offer.application_id}, 'offer_drafted',
-              'offer_accepted', ${"offer accepted by candidate (offer_id=" + offer.id + ")"})
-    `;
-    await poolSql`
-      UPDATE public.applications
-      SET current_stage = 'offer_accepted', stage_entered_at = now()
-      WHERE id = ${offer.application_id}
-    `;
-  } catch (err) {
-    baseLog.error({ err, offer_id: offer.id }, "offers.accept.transition_failed");
-  }
-
-  await enqueueWorkdayHire(offer);
-
-  // Open the onboarding case + generate its checklist (ONBOARD-02). This
-  // sits OUTSIDE the accept UPDATE, alongside the Workday-hire enqueue and
-  // the recruiter notice, and is best-effort by design: the acceptance is
-  // already committed and durable, so a case-creation failure is logged but
-  // must NOT fail the candidate's 200 or unwind a valid acceptance. The
-  // creation is idempotent (unique(tenant_id, application_id)); a retried
-  // accept returns 409 before reaching here anyway, so the case is opened
-  // exactly once by the winning acceptance. A dropped case is recoverable
-  // via the createOnboardingCaseForApplication backfill procedure.
-  try {
-    await createOnboardingCaseForApplication(poolSql, {
-      tenantId: offer.tenant_id,
-      applicationId: offer.application_id,
-    });
-  } catch (err) {
-    baseLog.error({ err, offer_id: offer.id }, "offers.accept.onboarding_case_failed");
-  }
-
-  await enqueueRecruiterNotice(offer.tenant_id, offer.application_id, "recruiter.offer_accepted", {
-    extraTemplateData: {
-      acceptedAtFormatted: new Date().toISOString().slice(0, 16).replace("T", " "),
-    },
-    dedupKey: `offer_accepted_recruiter:${offer.id}`,
+  await runOfferAcceptSideEffects(poolSql, {
+    tenantId: offer.tenant_id,
+    applicationId: offer.application_id,
+    offerId: offer.id,
+    log: baseLog,
   });
   await recordLinkUse(offer.tenant_id, tokenHash, offer.id, ip, true, null);
 
@@ -315,13 +279,20 @@ offersRoutes.post("/decline/:token", async (c) => {
     baseLog.error({ err, offer_id: offer.id }, "offers.decline.transition_failed");
   }
 
-  await enqueueRecruiterNotice(offer.tenant_id, offer.application_id, "recruiter.offer_declined", {
-    extraTemplateData: {
-      declinedAtFormatted: new Date().toISOString().slice(0, 16).replace("T", " "),
-      declinedReason: parsed.data.reason ?? null,
+  await enqueueRecruiterNotice(
+    poolSql,
+    offer.tenant_id,
+    offer.application_id,
+    "recruiter.offer_declined",
+    {
+      extraTemplateData: {
+        declinedAtFormatted: new Date().toISOString().slice(0, 16).replace("T", " "),
+        declinedReason: parsed.data.reason ?? null,
+      },
+      dedupKey: `offer_declined_recruiter:${offer.id}`,
+      log: baseLog,
     },
-    dedupKey: `offer_declined_recruiter:${offer.id}`,
-  });
+  );
   await recordLinkUse(offer.tenant_id, tokenHash, offer.id, ip, true, null);
 
   return c.json({
@@ -354,193 +325,5 @@ async function recordLinkUse(
     // Partial unique on (tenant, token_hash) WHERE successful=true blocks
     // double-successful redemptions; failed records can stack.
     baseLog.warn({ err, offer_id: offerId, successful }, "offers.record_link_use_skipped");
-  }
-}
-
-interface WorkdayHirePayload {
-  pre_hire: {
-    full_name: string;
-    email: string;
-    phone: string;
-    address?: { city?: string; country?: string };
-  };
-  position: {
-    requisition_external_id: string;
-    title: string;
-    business_unit_name: string;
-    location: string;
-  };
-  effective_date: string;
-  compensation: {
-    base_annual_inr_paise: number;
-    variable_target_annual_inr_paise: number | null;
-    joining_bonus_inr_paise: number | null;
-    currency: "INR";
-  };
-  source: {
-    application_id: string;
-    offer_id: string;
-    accepted_at: string;
-  };
-}
-
-async function enqueueWorkdayHire(offer: OfferRow): Promise<void> {
-  const [row] = await poolSql<
-    {
-      full_name: string;
-      email: string;
-      phone: string;
-      requisition_external_id: string;
-      title: string;
-      business_unit_name: string;
-      base_salary_inr_paise: bigint;
-      variable_target_inr_paise: bigint | null;
-      joining_bonus_inr_paise: bigint | null;
-      joining_date: string;
-      location: string;
-    }[]
-  >`
-    SELECT
-      p.full_name,
-      p.email_primary AS email,
-      p.phone_primary AS phone,
-      r.id AS requisition_external_id,
-      pos.title,
-      bu.name AS business_unit_name,
-      o.base_salary_inr_paise,
-      o.variable_target_inr_paise,
-      o.joining_bonus_inr_paise,
-      o.joining_date,
-      o.location
-    FROM public.offers o
-    JOIN public.applications a ON a.id = o.application_id
-    JOIN public.candidates c ON c.id = a.candidate_id
-    JOIN public.persons p ON p.id = c.person_id
-    JOIN public.requisitions r ON r.id = a.requisition_id
-    JOIN public.positions pos ON pos.id = r.position_id
-    JOIN public.business_units bu ON bu.id = pos.business_unit_id
-    WHERE o.id = ${offer.id}
-    LIMIT 1
-  `;
-  if (!row) {
-    baseLog.error({ offer_id: offer.id }, "offers.workday_payload_lookup_failed");
-    return;
-  }
-
-  const payload: WorkdayHirePayload = {
-    pre_hire: {
-      full_name: row.full_name,
-      email: row.email,
-      phone: row.phone,
-    },
-    position: {
-      requisition_external_id: row.requisition_external_id,
-      title: row.title,
-      business_unit_name: row.business_unit_name,
-      location: row.location,
-    },
-    effective_date: row.joining_date,
-    compensation: {
-      base_annual_inr_paise: Number(row.base_salary_inr_paise),
-      variable_target_annual_inr_paise:
-        row.variable_target_inr_paise !== null ? Number(row.variable_target_inr_paise) : null,
-      joining_bonus_inr_paise:
-        row.joining_bonus_inr_paise !== null ? Number(row.joining_bonus_inr_paise) : null,
-      currency: "INR",
-    },
-    source: {
-      application_id: offer.application_id,
-      offer_id: offer.id,
-      accepted_at: new Date().toISOString(),
-    },
-  };
-
-  const businessKey = `hire:application:${offer.application_id}`;
-  try {
-    await poolSql`
-      INSERT INTO public.workday_sync_outbox
-        (tenant_id, event_type, business_key, subject_application_id, payload)
-      VALUES (${offer.tenant_id}, 'hire_employee', ${businessKey},
-              ${offer.application_id}, ${JSON.stringify(payload)}::jsonb)
-    `;
-  } catch (err) {
-    // Idempotency unique violation: this application's hire already queued.
-    const e = err as { code?: string; constraint_name?: string };
-    if (e.code === "23505" || e.constraint_name === "uniq_workday_sync_outbox_business_key") {
-      baseLog.info({ business_key: businessKey }, "offers.workday_hire_already_queued");
-      return;
-    }
-    baseLog.error({ err, offer_id: offer.id }, "offers.workday_enqueue_failed");
-  }
-}
-
-async function enqueueRecruiterNotice(
-  tenantId: string,
-  applicationId: string,
-  templateKey: "recruiter.offer_accepted" | "recruiter.offer_declined",
-  opts: { extraTemplateData: Record<string, unknown>; dedupKey: string },
-): Promise<void> {
-  const [row] = await poolSql<
-    {
-      recruiter_email: string;
-      recruiter_name: string;
-      recruiter_membership_id: string;
-      candidate_name: string;
-      position_title: string;
-      joining_date: string;
-    }[]
-  >`
-    SELECT
-      au.email AS recruiter_email,
-      COALESCE(u.display_name, au.email) AS recruiter_name,
-      r.primary_recruiter_id AS recruiter_membership_id,
-      p.full_name AS candidate_name,
-      pos.title AS position_title,
-      COALESCE((
-        SELECT MAX(joining_date)::text FROM public.offers
-        WHERE application_id = ${applicationId} AND status = 'accepted'
-      ), '') AS joining_date
-    FROM public.applications a
-    JOIN public.candidates c ON c.id = a.candidate_id
-    JOIN public.persons p ON p.id = c.person_id
-    JOIN public.requisitions r ON r.id = a.requisition_id
-    JOIN public.positions pos ON pos.id = r.position_id
-    JOIN public.tenant_user_memberships tum
-      ON tum.id = r.primary_recruiter_id AND tum.tenant_id = r.tenant_id
-    LEFT JOIN public.users u ON u.id = tum.user_id
-    JOIN auth.users au ON au.id = tum.user_id
-    WHERE a.id = ${applicationId}
-    LIMIT 1
-  `;
-  if (!row || !row.recruiter_email) {
-    baseLog.warn({ application_id: applicationId }, "offers.recruiter_notice_lookup_failed");
-    return;
-  }
-
-  const portalBase = process.env.NEXT_PUBLIC_SITE_URL ?? "http://localhost:3002";
-
-  try {
-    const { db: poolDb } = await import("@hireops/db");
-    await enqueueNotification(poolDb, {
-      tenantId,
-      recipientType: "recruiter",
-      recipientEmail: row.recruiter_email,
-      recipientMembershipId: row.recruiter_membership_id,
-      templateKey,
-      templateData: {
-        recruiterName: row.recruiter_name,
-        candidateName: row.candidate_name,
-        positionTitle: row.position_title,
-        joiningDate: row.joining_date,
-        triageUrl: `${portalBase}/triage`,
-        ...opts.extraTemplateData,
-      },
-      dedupKey: opts.dedupKey,
-    });
-  } catch (err) {
-    baseLog.warn(
-      { err, application_id: applicationId, templateKey },
-      "offers.recruiter_notice_enqueue_failed",
-    );
   }
 }

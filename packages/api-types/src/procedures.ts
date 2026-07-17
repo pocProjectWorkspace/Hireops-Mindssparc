@@ -2674,3 +2674,94 @@ export const candidateConfirmInterviewOutputSchema = z.object({
   confirmedAt: z.string(),
 });
 export type CandidateConfirmInterviewOutput = z.infer<typeof candidateConfirmInterviewOutputSchema>;
+
+// ═══════════════════ CAND-02 — candidate documents + in-portal offer ═══════════════════
+
+// ─────────────── candidateGetMyOffer ───────────────
+
+/**
+ * The candidate's in-portal offer view. Discloses NO MORE than the public
+ * signed-link offer page (routes/offers.ts `GET /preview/:token`): company,
+ * position, compensation (integer paise), joining date, location, expiry,
+ * terms, status. Paise are numbers (mirrors the preview's Number() coercion).
+ */
+export const candidateOfferSchema = z.object({
+  offerId: z.string().uuid(),
+  applicationId: z.string().uuid(),
+  // extended | accepted (the only statuses surfaced to the candidate).
+  status: z.string(),
+  companyName: z.string(),
+  positionTitle: z.string(),
+  baseSalaryInrPaise: z.number().int(),
+  variableTargetInrPaise: z.number().int().nullable(),
+  joiningBonusInrPaise: z.number().int().nullable(),
+  joiningDate: z.string(),
+  location: z.string(),
+  expiryAt: z.string(),
+  termsHtml: z.string().nullable(),
+});
+export type CandidateOffer = z.infer<typeof candidateOfferSchema>;
+
+export const candidateGetMyOfferOutputSchema = z.object({
+  offer: candidateOfferSchema.nullable(),
+});
+export type CandidateGetMyOfferOutput = z.infer<typeof candidateGetMyOfferOutputSchema>;
+
+// ─────────────── candidateAcceptOffer ───────────────
+
+export const candidateAcceptOfferInputSchema = z.object({
+  offerId: z.string().uuid(),
+});
+export type CandidateAcceptOfferInput = z.infer<typeof candidateAcceptOfferInputSchema>;
+
+export const candidateAcceptOfferOutputSchema = z.object({
+  ok: z.literal(true),
+  offerId: z.string().uuid(),
+  applicationId: z.string().uuid(),
+  status: z.literal("accepted"),
+});
+export type CandidateAcceptOfferOutput = z.infer<typeof candidateAcceptOfferOutputSchema>;
+
+// ─────────────── candidateGetMyOnboarding ───────────────
+
+/**
+ * One row per document-collection slot: the document type, the checklist
+ * task's status, and the current uploaded document (single-current per type)
+ * with its recruiter verification status + any rejection reason. `document` is
+ * null before the candidate uploads anything for the type.
+ */
+export const candidateDocumentSlotSchema = z.object({
+  documentTypeId: z.string().uuid(),
+  documentTypeName: z.string().nullable(),
+  taskStatus: z.string(),
+  document: z
+    .object({
+      documentId: z.string().uuid(),
+      // pending | verified | rejected.
+      verificationStatus: z.string(),
+      fileName: z.string().nullable(),
+      rejectionReason: z.string().nullable(),
+      uploadedAt: z.string().nullable(),
+    })
+    .nullable(),
+});
+export type CandidateDocumentSlot = z.infer<typeof candidateDocumentSlotSchema>;
+
+export const candidateOnboardingCaseSchema = z.object({
+  id: z.string().uuid(),
+  status: z.string(),
+  positionTitle: z.string().nullable(),
+  expectedStartDate: z.string().nullable(),
+});
+export type CandidateOnboardingCase = z.infer<typeof candidateOnboardingCaseSchema>;
+
+/**
+ * The candidate's onboarding surface. `case` is null before an offer is
+ * accepted (no case exists yet — the quiet empty state); `documents` is the
+ * document-collection checklist for the case.
+ */
+export const candidateGetMyOnboardingOutputSchema = z.object({
+  case: candidateOnboardingCaseSchema.nullable(),
+  documents: z.array(candidateDocumentSlotSchema),
+});
+export type CandidateGetMyOnboardingOutput = z.infer<typeof candidateGetMyOnboardingOutputSchema>;
