@@ -36,7 +36,13 @@ import {
   buildAIScoringPrompt,
   type AIScoringResponse,
 } from "@hireops/ai-scoring";
-import { getAIClient, parserOutputSchema, type ParserOutput } from "@hireops/ai-client";
+import {
+  getAIClient,
+  parserOutputSchema,
+  resolveTenantAiSettings,
+  maskPiiIf,
+  type ParserOutput,
+} from "@hireops/ai-client";
 
 export interface DrainOpts {
   batchSize?: number;
@@ -69,6 +75,12 @@ export async function drainAiScoreOutboxOnce(opts: DrainOpts): Promise<{
   completed: number;
   retried: number;
   failed: number;
+  /**
+   * Rows the tenant's AI settings had `ai_scoring` disabled for. These are
+   * NOT scored and NOT retried — the outbox row is marked completed and the
+   * application is left cleanly unscored (scored_by='skipped'). CONF-01.
+   */
+  skipped: number;
 }> {
   const batchSize = opts.batchSize ?? DEFAULT_BATCH;
   const workerId = opts.workerId ?? `ai-score-${randomUUID().slice(0, 8)}`;
@@ -88,11 +100,12 @@ export async function drainAiScoreOutboxOnce(opts: DrainOpts): Promise<{
     RETURNING id, tenant_id, application_id, attempt_count, attempt_cap
   `;
 
-  if (rows.length === 0) return { claimed: 0, completed: 0, retried: 0, failed: 0 };
+  if (rows.length === 0) return { claimed: 0, completed: 0, retried: 0, failed: 0, skipped: 0 };
 
   let completed = 0;
   let retried = 0;
   let failed = 0;
+  let skipped = 0;
 
   for (const row of rows) {
     const child = log.child({
@@ -102,17 +115,52 @@ export async function drainAiScoreOutboxOnce(opts: DrainOpts): Promise<{
       attempt: row.attempt_count,
     });
     try {
+      // CONF-01: honour the per-tenant ai_scoring switch. Disabled → the
+      // graceful no-AI path: mark the application skipped (reusing the
+      // existing scored_by='skipped' vocabulary the apply flow already
+      // writes on knockout failure) and complete the outbox row. No model
+      // call, no retries, no churn — the application simply stays unscored.
+      const aiSettings = await resolveTenantAiSettings(poolSql, row.tenant_id);
+      if (!aiSettings.ai_scoring.enabled) {
+        const skippedAtIso = new Date().toISOString();
+        await poolSql`
+          UPDATE public.applications
+          SET ai_score_explanation = ${JSON.stringify({
+            scored_by: "skipped",
+            reason: "ai_scoring_disabled",
+            skipped_at: skippedAtIso,
+          })}::jsonb
+          WHERE tenant_id = ${row.tenant_id} AND id = ${row.application_id}
+        `;
+        await poolSql`
+          UPDATE public.ai_score_outbox
+          SET status = 'completed', completed_at = now(),
+              last_error = 'ai_scoring disabled in tenant AI settings — application left unscored'
+          WHERE id = ${row.id}
+        `;
+        skipped += 1;
+        child.info({}, "ai_score.skipped_disabled");
+        continue;
+      }
+
       const ctxRow = await loadContext(row.tenant_id, row.application_id);
-      const { system, user } = buildAIScoringPrompt({
+      const built = buildAIScoringPrompt({
         positionTitle: ctxRow.positionTitle,
         jdDescription: ctxRow.jdSummary ?? ctxRow.jdText,
         jdSkills: ctxRow.jdSkills,
         parsedCv: ctxRow.parsedCv,
       });
+      const system = built.system;
+      // PII masking (when enabled) redacts emails / phones / URLs in the
+      // candidate-derived user prompt before it leaves the process.
+      const user = maskPiiIf(aiSettings.piiMasking, built.user);
       const client = await getAIClient(row.tenant_id);
       const response: AIScoringResponse = await client.completeStructured<AIScoringResponse>({
         system,
         prompt: user,
+        model: aiSettings.ai_scoring.model,
+        temperature: aiSettings.ai_scoring.temperature,
+        maxTokens: aiSettings.ai_scoring.maxTokens,
         schema: z.toJSONSchema(aiScoringResponseSchema, { target: "draft-2020-12" }),
         schemaName: "candidate_fit_score",
         feature: "ai_scoring",
@@ -188,7 +236,7 @@ export async function drainAiScoreOutboxOnce(opts: DrainOpts): Promise<{
       }
     }
   }
-  return { claimed: rows.length, completed, retried, failed };
+  return { claimed: rows.length, completed, retried, failed, skipped };
 }
 
 async function loadContext(tenantId: string, applicationId: string): Promise<LoadedContext> {

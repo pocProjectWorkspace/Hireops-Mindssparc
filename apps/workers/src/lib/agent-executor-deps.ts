@@ -1,5 +1,5 @@
 import { sql as poolSql } from "@hireops/db";
-import { getAIClient } from "@hireops/ai-client";
+import { getAIClient, resolveTenantAiSettings, maskPiiIf } from "@hireops/ai-client";
 import type {
   AIDraftRequest,
   AIDraftResult,
@@ -98,11 +98,27 @@ export function createExecutorDeps(): ExecutorDeps {
     },
 
     async draftWithAI(tenantId: string, req: AIDraftRequest): Promise<AIDraftResult> {
+      // CONF-01: honour the per-tenant agent_drafts switch. Disabled →
+      // refuse with a clear error; the agent run drain marks the run failed
+      // with this message (its existing failure path), no model call made.
+      const aiSettings = await resolveTenantAiSettings(poolSql, tenantId);
+      const draftSettings = aiSettings.agent_drafts;
+      if (!draftSettings.enabled) {
+        throw new Error(
+          "agent_drafts disabled in tenant AI settings — an admin can re-enable it in Admin → AI settings",
+        );
+      }
       const client = await getAIClient(tenantId);
       const result = await client.complete({
-        prompt: req.prompt,
+        // PII masking (when enabled) redacts emails / phones / URLs in the
+        // candidate-derived prompt before it leaves the process.
+        prompt: maskPiiIf(aiSettings.piiMasking, req.prompt),
         system: req.system,
-        maxTokens: req.maxTokens,
+        model: draftSettings.model,
+        temperature: draftSettings.temperature,
+        // The tenant's maxTokens is a ceiling; never inflate the executor's
+        // per-invocation request above it.
+        maxTokens: Math.min(req.maxTokens, draftSettings.maxTokens),
         feature: req.feature,
       });
       // ai_usage_logs already carries the authoritative per-call cost row

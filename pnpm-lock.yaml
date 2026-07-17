@@ -358,6 +358,9 @@ importers:
       '@anthropic-ai/sdk':
         specifier: ^0.40.0
         version: 0.40.1
+      '@hireops/api-types':
+        specifier: workspace:*
+        version: link:../api-types
       '@hireops/db':
         specifier: workspace:*
         version: link:../db

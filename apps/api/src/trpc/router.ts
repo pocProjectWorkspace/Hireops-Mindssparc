@@ -192,6 +192,11 @@ import {
   listAuditEventsOutputSchema,
   getAiUsageSummaryInputSchema,
   getAiUsageSummaryOutputSchema,
+  getTenantAiSettingsInputSchema,
+  getTenantAiSettingsOutputSchema,
+  updateTenantAiSettingsInputSchema,
+  updateTenantAiSettingsOutputSchema,
+  resolveAiSettings,
   getRecruitmentReportInputSchema,
   getRecruitmentReportOutputSchema,
   approveApprovalInputSchema,
@@ -263,7 +268,7 @@ import {
   type GetApprovalRequestOutput,
 } from "@hireops/api-types";
 import { createClient } from "@supabase/supabase-js";
-import { parseResume, getAIClient } from "@hireops/ai-client";
+import { parseResume, getAIClient, resolveTenantAiSettingsDb } from "@hireops/ai-client";
 import {
   buildJdGenerationPrompt,
   jdGenerationResponseJsonSchema,
@@ -412,6 +417,12 @@ const INTERVIEW_MANAGE_ROLES = new Set(["admin", "hiring_manager", "recruiter"])
 // is not on the interview gets FORBIDDEN), so the role set alone is not the
 // authorisation boundary. RLS still scopes rows to the tenant on top.
 const PANEL_SURFACE_ROLES = new Set(["admin", "panel_member"]);
+
+// CONF-01 per-tenant AI settings. Admin-only on both read and write —
+// unlike the /admin/costs read (page-gated only), these procedures enforce
+// the gate themselves because the write changes real AI call behaviour and
+// the read exposes config an admin owns.
+const AI_SETTINGS_ADMIN_ROLES = new Set(["admin"]);
 
 /**
  * Throws FORBIDDEN unless the caller holds any role in `allowed`. Same
@@ -1632,6 +1643,19 @@ export const appRouter = router({
           });
         }
 
+        // CONF-01: honour the per-tenant jd_generation switch. Disabled →
+        // a clean, honest error the wizard shows (no model call, no
+        // ai_usage_logs row). Re-enable in Admin → AI settings.
+        const aiSettings = await resolveTenantAiSettingsDb(tenantId);
+        const jdSettings = aiSettings.jd_generation;
+        if (!jdSettings.enabled) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message:
+              "JD generation is disabled for this tenant. An admin can re-enable it in Admin → AI settings.",
+          });
+        }
+
         const skillRows = await db
           .select({
             skillName: jdSkills.skillName,
@@ -1657,10 +1681,16 @@ export const appRouter = router({
           extraContext: input.extraContext ?? null,
         });
 
+        // JD generation carries NO candidate PII (the prompt is built from
+        // position title, skills, and company only), so piiMasking does not
+        // apply here — verified against buildJdGenerationPrompt.
         const client = await getAIClient(tenantId);
         const raw = await client.completeStructured<JdGenerationResponse>({
           prompt: user,
           system,
+          model: jdSettings.model,
+          temperature: jdSettings.temperature,
+          maxTokens: jdSettings.maxTokens,
           schema: jdGenerationResponseJsonSchema,
           schemaName: JD_GENERATION_SCHEMA_NAME,
           feature: JD_GENERATION_FEATURE,
@@ -4417,6 +4447,73 @@ export const appRouter = router({
           cost_micros: r.cost_micros,
         })),
       };
+    }),
+
+  // ─────────────────────── getTenantAiSettings (CONF-01) ───────────────────────
+  //
+  // Admin read of the effective per-tenant AI settings (defaults merged over
+  // whatever is stored in tenants.settings.aiSettings). Admin-gated on the
+  // procedure itself. Read-only, no withAudit (matches getAiUsageSummary).
+  getTenantAiSettings: protectedProcedure
+    .input(getTenantAiSettingsInputSchema)
+    .output(getTenantAiSettingsOutputSchema)
+    .query(async ({ ctx }) => {
+      requireAnyRole(ctx, AI_SETTINGS_ADMIN_ROLES, "AI settings are admin-only");
+      if (!ctx.tenantId) {
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: "protected procedure missing tenantId",
+        });
+      }
+      return resolveTenantAiSettingsDb(ctx.tenantId);
+    }),
+
+  // ─────────────────────── updateTenantAiSettings (CONF-01) ───────────────────────
+  //
+  // Admin write of the per-tenant AI settings block. Admin-gated + audited.
+  // Merges the validated block into tenants.settings under the `aiSettings`
+  // key, preserving every OTHER key (ai_provider, cosmetic config) verbatim:
+  // a single atomic top-level jsonb `||` merge — never a clobber and never a
+  // read-modify-write race. The write goes through the unscoped pool
+  // (service_role): `tenants` is FORCE RLS with SELECT-only policies, so the
+  // tenant-scoped client cannot update it (same precedent as
+  // storeIntegrationCredential / the ai-client usage-log writes). The
+  // explicit admin gate + the ctx.tenantId predicate are the authorisation.
+  updateTenantAiSettings: protectedProcedure
+    .input(updateTenantAiSettingsInputSchema)
+    .output(updateTenantAiSettingsOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      return withAudit("update_tenant_ai_settings", ctx, input, async () => {
+        requireAnyRole(ctx, AI_SETTINGS_ADMIN_ROLES, "AI settings are admin-only");
+        if (!ctx.tenantId) {
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: "protected procedure missing tenantId",
+          });
+        }
+        const tenantId = ctx.tenantId;
+
+        // input is already validated + defaulted by the zod .input(); parse
+        // again through resolveAiSettings only to normalise the stored shape.
+        const nextBlock = resolveAiSettings(input);
+
+        const res = await poolDb.execute(dsql`
+          UPDATE public.tenants
+          SET settings = COALESCE(settings, '{}'::jsonb)
+              || jsonb_build_object('aiSettings', ${JSON.stringify(nextBlock)}::jsonb)
+          WHERE id = ${tenantId}::uuid
+          RETURNING id
+        `);
+        const updated = (res as { rows?: unknown[] }).rows ?? (res as unknown[]);
+        if (updated.length !== 1) {
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: "tenant settings update affected an unexpected number of rows",
+          });
+        }
+
+        return { ok: true as const, settings: nextBlock };
+      });
     }),
 
   // ─────────────────────── getRecruitmentReport (REPORT-01) ───────────────────────

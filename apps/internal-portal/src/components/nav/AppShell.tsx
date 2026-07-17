@@ -34,6 +34,7 @@ import {
   IconWorkflows,
   IconAudit,
   IconCosts,
+  IconAiSettings,
   IconReports,
   IconIntegrations,
   IconSignOut,
@@ -50,6 +51,7 @@ export type PortalNavKey =
   | "workflows"
   | "audit"
   | "costs"
+  | "ai-settings"
   | "reports"
   | "integrations";
 
@@ -119,6 +121,12 @@ const ADMIN_NAV: NavItem[] = [
   { key: "workflows", label: "Workflows", href: "/admin/workflows", icon: <IconWorkflows /> },
   { key: "audit", label: "Audit", href: "/admin/audit", icon: <IconAudit /> },
   { key: "costs", label: "Costs", href: "/admin/costs", icon: <IconCosts /> },
+  {
+    key: "ai-settings",
+    label: "AI settings",
+    href: "/admin/ai-settings",
+    icon: <IconAiSettings />,
+  },
   { key: "reports", label: "Reports", href: "/admin/reports", icon: <IconReports /> },
   {
     key: "integrations",
