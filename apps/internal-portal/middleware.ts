@@ -15,23 +15,31 @@ import { createServerClient, type CookieOptions } from "@supabase/ssr";
  * indirection that hides which environment is running.
  */
 
-const PUBLIC_PATHS = new Set<string>(["/login", "/logout", "/privacy"]);
+const PUBLIC_PATHS = new Set<string>(["/login", "/logout", "/privacy", "/candidate/login"]);
 
 // Path prefixes that are always public (candidate-side flows). Each
 // entry must end with "/" so a literal segment match doesn't bleed.
 // `/interviews/confirm/` is public (candidate confirm link) while the
-// `/interviews` recruiter list stays auth-gated.
-const PUBLIC_PREFIXES = ["/offer/", "/t/", "/interviews/confirm/"];
+// `/interviews` recruiter list stays auth-gated. `/candidate/activate/` is
+// the set-password page reached from the emailed activation link.
+const PUBLIC_PREFIXES = ["/offer/", "/t/", "/interviews/confirm/", "/candidate/activate/"];
 
 export async function middleware(req: NextRequest) {
-  if (PUBLIC_PATHS.has(req.nextUrl.pathname)) {
+  const { pathname } = req.nextUrl;
+  if (PUBLIC_PATHS.has(pathname)) {
     return NextResponse.next();
   }
   for (const prefix of PUBLIC_PREFIXES) {
-    if (req.nextUrl.pathname.startsWith(prefix)) {
+    if (pathname.startsWith(prefix)) {
       return NextResponse.next();
     }
   }
+
+  // Candidate surfaces (/candidate/*) require a Supabase session but bounce
+  // to the CANDIDATE login, not the internal one. (The dashboard additionally
+  // resolves the candidate identity server/API-side; a signed-in non-candidate
+  // gets a calm "not a candidate account" there.)
+  const isCandidateArea = pathname === "/candidate" || pathname.startsWith("/candidate/");
 
   const res = NextResponse.next();
   const supabase = createServerClient(
@@ -58,8 +66,10 @@ export async function middleware(req: NextRequest) {
 
   if (!session) {
     const url = req.nextUrl.clone();
-    url.pathname = "/login";
-    url.searchParams.set("from", req.nextUrl.pathname);
+    url.pathname = isCandidateArea ? "/candidate/login" : "/login";
+    if (!isCandidateArea) {
+      url.searchParams.set("from", req.nextUrl.pathname);
+    }
     return NextResponse.redirect(url);
   }
 

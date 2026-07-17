@@ -2538,3 +2538,139 @@ export const partnerListMySubmissionsOutputSchema = z.object({
 });
 export type PartnerListMySubmissionsInput = z.infer<typeof partnerListMySubmissionsInputSchema>;
 export type PartnerListMySubmissionsOutput = z.infer<typeof partnerListMySubmissionsOutputSchema>;
+
+// ═══════════════════ CAND-01 — candidate accounts ═══════════════════
+
+/**
+ * Candidate-visible stage stepper. A strict SUBSET of the real
+ * application_stage enum, in the enum's own forward order — no invented
+ * stages (prototype-gap-audit §5). Terminal/back-office stages
+ * (ai_screening, offer_declined, withdrawn, recruiter_rejected) are NOT
+ * steps: a candidate sees the forward journey, and a terminal current_stage
+ * is surfaced as a status note, not a step. `offer_accepted` is the final
+ * step (the happy path); the actual offer surface arrives in CAND-02.
+ */
+export const CANDIDATE_STAGE_STEPS = [
+  "application_received",
+  "recruiter_review",
+  "shortlisted",
+  "tech_interview",
+  "hr_round",
+  "offer_drafted",
+  "offer_accepted",
+] as const;
+export type CandidateStageStep = (typeof CANDIDATE_STAGE_STEPS)[number];
+
+// ─────────────── requestCandidateActivation (public) ───────────────
+
+export const requestCandidateActivationInputSchema = z.object({
+  email: z.string().email(),
+  // Which tenant to activate against. The candidate login page carries this
+  // (single-tenant POC defaults to kyndryl-poc); a tenant-scoped path or a
+  // slug keeps the endpoint from having to enumerate tenants.
+  tenantSlug: z
+    .string()
+    .min(1)
+    .max(100)
+    .regex(/^[a-z0-9-]+$/),
+});
+export type RequestCandidateActivationInput = z.infer<typeof requestCandidateActivationInputSchema>;
+
+/**
+ * ALWAYS the same response, whether or not a person with that email exists —
+ * no account enumeration (requirements.md §9.2). The UI shows "if the email
+ * exists, we've sent a link" unconditionally.
+ */
+export const requestCandidateActivationOutputSchema = z.object({ ok: z.literal(true) });
+export type RequestCandidateActivationOutput = z.infer<
+  typeof requestCandidateActivationOutputSchema
+>;
+
+// ─────────────── completeCandidateActivation (public) ───────────────
+
+export const completeCandidateActivationInputSchema = z.object({
+  token: z.string().min(1).max(2000),
+  password: z.string().min(8).max(200),
+});
+export type CompleteCandidateActivationInput = z.infer<
+  typeof completeCandidateActivationInputSchema
+>;
+
+export const completeCandidateActivationOutputSchema = z.object({
+  ok: z.literal(true),
+  // The email the candidate now signs in with (echoed for the login prefill).
+  email: z.string().email(),
+});
+export type CompleteCandidateActivationOutput = z.infer<
+  typeof completeCandidateActivationOutputSchema
+>;
+
+// ─────────────── candidateGetMe ───────────────
+
+export const candidateGetMeOutputSchema = z.object({
+  candidateAccountId: z.string().uuid(),
+  personId: z.string().uuid(),
+  tenantId: z.string().uuid(),
+  tenantDisplayName: z.string(),
+  fullName: z.string(),
+  email: z.string(),
+});
+export type CandidateGetMeOutput = z.infer<typeof candidateGetMeOutputSchema>;
+
+// ─────────────── candidateListMyApplications ───────────────
+
+export const candidateApplicationRowSchema = z.object({
+  applicationId: z.string().uuid(),
+  requisitionId: z.string().uuid(),
+  positionTitle: z.string(),
+  location: z.string().nullable(),
+  currentStage: applicationStageSchema,
+  // The ordered stepper vocabulary (same for every application) so the UI
+  // renders one consistent stepper; currentStage marks where they are.
+  stageSteps: z.array(z.string()),
+  appliedAt: z.string(),
+});
+export type CandidateApplicationRow = z.infer<typeof candidateApplicationRowSchema>;
+
+export const candidateListMyApplicationsOutputSchema = z.object({
+  items: z.array(candidateApplicationRowSchema),
+});
+export type CandidateListMyApplicationsOutput = z.infer<
+  typeof candidateListMyApplicationsOutputSchema
+>;
+
+// ─────────────── candidateListMyInterviews ───────────────
+
+export const candidateInterviewRowSchema = z.object({
+  interviewId: z.string().uuid(),
+  positionTitle: z.string(),
+  roundName: z.string(),
+  status: interviewStatusSchema,
+  mode: interviewModeSchema,
+  scheduledStart: z.string().nullable(),
+  durationMinutes: z.number().int(),
+  meetingUrl: z.string().nullable(),
+  confirmedAt: z.string().nullable(),
+  // Derived: scheduledStart in the future and not cancelled/completed.
+  isUpcoming: z.boolean(),
+});
+export type CandidateInterviewRow = z.infer<typeof candidateInterviewRowSchema>;
+
+export const candidateListMyInterviewsOutputSchema = z.object({
+  items: z.array(candidateInterviewRowSchema),
+});
+export type CandidateListMyInterviewsOutput = z.infer<typeof candidateListMyInterviewsOutputSchema>;
+
+// ─────────────── candidateConfirmInterview ───────────────
+
+export const candidateConfirmInterviewInputSchema = z.object({
+  interviewId: z.string().uuid(),
+});
+export type CandidateConfirmInterviewInput = z.infer<typeof candidateConfirmInterviewInputSchema>;
+
+export const candidateConfirmInterviewOutputSchema = z.object({
+  ok: z.literal(true),
+  interviewId: z.string().uuid(),
+  confirmedAt: z.string(),
+});
+export type CandidateConfirmInterviewOutput = z.infer<typeof candidateConfirmInterviewOutputSchema>;

@@ -21,7 +21,7 @@
 
 import { z } from "zod";
 import { TRPCError } from "@trpc/server";
-import { and, desc, eq, gte, inArray, lt, lte, sql as dsql, type SQL } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, isNull, lt, lte, sql as dsql, type SQL } from "drizzle-orm";
 import {
   db as poolDb,
   tenants,
@@ -231,6 +231,18 @@ import {
   partnerListMySubmissionsOutputSchema,
   partnerSubmitCandidateInputSchema,
   partnerSubmitCandidateOutputSchema,
+  requestCandidateActivationInputSchema,
+  requestCandidateActivationOutputSchema,
+  completeCandidateActivationInputSchema,
+  completeCandidateActivationOutputSchema,
+  candidateGetMeOutputSchema,
+  candidateListMyApplicationsOutputSchema,
+  candidateListMyInterviewsOutputSchema,
+  candidateConfirmInterviewInputSchema,
+  candidateConfirmInterviewOutputSchema,
+  CANDIDATE_STAGE_STEPS,
+  type CandidateApplicationRow,
+  type CandidateInterviewRow,
   type PartnerAssignedRequisitionRow,
   type PartnerSubmissionRow,
   type PartnerSubmitCandidateOutput,
@@ -246,6 +258,7 @@ import {
   type PendingApprovalItem,
   type GetApprovalRequestOutput,
 } from "@hireops/api-types";
+import { createClient } from "@supabase/supabase-js";
 import { parseResume, getAIClient } from "@hireops/ai-client";
 import {
   buildJdGenerationPrompt,
@@ -257,13 +270,14 @@ import {
   JD_GENERATION_FEATURE,
   type JdGenerationResponse,
 } from "../lib/jd-generation";
-import { enqueueNotification, signLink, hashToken } from "@hireops/notifications";
+import { enqueueNotification, signLink, hashToken, verifyLink } from "@hireops/notifications";
 import { assertRuleAttachable, IncompatibleApprovalRuleError } from "@hireops/agent-actions";
 import {
   router,
   publicProcedure,
   protectedProcedure,
   partnerProcedure,
+  candidateProcedure,
   type HonoTRPCContext,
 } from "./trpc-core";
 import { withAudit } from "./with-audit";
@@ -288,6 +302,50 @@ function normaliseEmail(email: string): string {
   const plusIndex = local.indexOf("+");
   const trimmedLocal = plusIndex < 0 ? local : local.slice(0, plusIndex);
   return `${trimmedLocal}@${domain}`;
+}
+
+/**
+ * Create (or resolve, if it already exists) a Supabase auth user via the
+ * service-role admin API, email pre-confirmed. Mirrors the seed scripts'
+ * createUser → "already registered" → listUsers fallback. Used by
+ * completeCandidateActivation to mint the candidate's login identity.
+ *
+ * Returns the auth user id. `alreadyExisted` is true when we reused an
+ * existing auth.users row (e.g. a re-run, or an email that already had an
+ * auth identity) — the caller flags/logs it.
+ */
+async function createOrResolveAuthUser(
+  email: string,
+  password: string,
+): Promise<{ userId: string; alreadyExisted: boolean }> {
+  const supabaseUrl = process.env.SUPABASE_URL;
+  const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  if (!supabaseUrl || !serviceRoleKey) {
+    throw new TRPCError({
+      code: "INTERNAL_SERVER_ERROR",
+      message: "auth admin not configured (SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY)",
+    });
+  }
+  const admin = createClient(supabaseUrl, serviceRoleKey, {
+    auth: { persistSession: false, autoRefreshToken: false },
+  });
+  const created = await admin.auth.admin.createUser({ email, password, email_confirm: true });
+  if (created.data?.user?.id) {
+    return { userId: created.data.user.id, alreadyExisted: false };
+  }
+  // "already registered" → look it up (dev volumes stay under one page).
+  const list = await admin.auth.admin.listUsers({ page: 1, perPage: 200 });
+  const existing = list.data?.users.find((x) => x.email?.toLowerCase() === email.toLowerCase());
+  if (existing) {
+    // The candidate is setting a password on an email that already has an auth
+    // identity — set it so the credential they just chose works.
+    await admin.auth.admin.updateUserById(existing.id, { password });
+    return { userId: existing.id, alreadyExisted: true };
+  }
+  throw new TRPCError({
+    code: "INTERNAL_SERVER_ERROR",
+    message: `failed to create or resolve auth user: ${created.error?.message ?? "unknown"}`,
+  });
 }
 
 function normalisePhone(phone: string): string {
@@ -7595,6 +7653,444 @@ export const appRouter = router({
         stage: r.stage ?? null,
       }));
       return { items, capped };
+    }),
+
+  // ─────────────── CAND-01 — candidate accounts (Wave C) ───────────────
+  //
+  // Two PUBLIC procedures drive activation (no open self-signup): request a
+  // link → complete with a password. Four candidateProcedure reads/writes
+  // power the dashboard. candidateProcedure resolves tenant + person from
+  // candidate_accounts and every read is filtered by ctx.candidate.personId —
+  // person-scoping is explicit (the table carries only a tenant policy).
+
+  /**
+   * requestCandidateActivation — public. If a person with this email exists
+   * in the tenant, upsert a PENDING candidate_accounts row carrying the
+   * SHA-256 of a single-use signed link and email that link. ALWAYS returns
+   * { ok: true } — no account enumeration (requirements.md §9.2).
+   */
+  requestCandidateActivation: publicProcedure
+    .input(requestCandidateActivationInputSchema)
+    .output(requestCandidateActivationOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      const emailNorm = normaliseEmail(input.email);
+
+      // Resolve tenant by slug. Missing tenant → still return ok (no leak).
+      const [tenant] = await ctx.sql<{ id: string; display_name: string }[]>`
+        SELECT id, display_name FROM public.tenants
+        WHERE slug = ${input.tenantSlug} AND status = 'active' LIMIT 1
+      `;
+      if (!tenant) return { ok: true as const };
+
+      return withAudit(
+        "request_candidate_activation",
+        ctx,
+        { tenantSlug: input.tenantSlug },
+        async () => {
+          // Person must already exist in the tenant (created via apply). No
+          // person → silently succeed (indistinguishable to the caller).
+          const [person] = await ctx.sql<
+            { id: string; full_name: string | null; email_primary: string | null }[]
+          >`
+            SELECT id, full_name, email_primary FROM public.persons
+            WHERE tenant_id = ${tenant.id} AND email_normalised = ${emailNorm}
+              AND redacted_at IS NULL
+            LIMIT 1
+          `;
+          if (!person) return { ok: true as const };
+
+          // Already-active account → nothing to do (don't re-issue; don't leak).
+          const [existing] = await ctx.sql<{ id: string; status: string }[]>`
+            SELECT id, status FROM public.candidate_accounts
+            WHERE tenant_id = ${tenant.id} AND person_id = ${person.id} LIMIT 1
+          `;
+          if (existing && existing.status === "active") return { ok: true as const };
+
+          // Upsert the pending row (unique on (tenant_id, person_id)). Get the
+          // id first so the signed link's subject is the real account row.
+          const [row] = await ctx.sql<{ id: string }[]>`
+            INSERT INTO public.candidate_accounts (tenant_id, person_id, status, activation_requested_at)
+            VALUES (${tenant.id}, ${person.id}, 'pending', now())
+            ON CONFLICT (tenant_id, person_id) DO UPDATE
+              SET status = 'pending', activation_requested_at = now(), updated_at = now()
+            RETURNING id
+          `;
+          if (!row) return { ok: true as const };
+
+          const expiresAt = new Date(Date.now() + 48 * 60 * 60 * 1000);
+          const token = signLink({
+            action: "candidate.activate_account",
+            subjectId: row.id,
+            expiresAt,
+          });
+          const tokenHash = hashToken(token);
+          await ctx.sql`
+            UPDATE public.candidate_accounts
+            SET activation_token_hash = ${tokenHash}, updated_at = now()
+            WHERE id = ${row.id}
+          `;
+
+          const recipientEmail = person.email_primary ?? input.email;
+          const portalBase = process.env.NEXT_PUBLIC_SITE_URL ?? "http://localhost:3002";
+          const activationUrl = `${portalBase}/candidate/activate/${token}`;
+          try {
+            await enqueueNotification(poolDb, {
+              tenantId: tenant.id,
+              recipientType: "candidate",
+              recipientEmail,
+              templateKey: "candidate.account_activation",
+              templateData: {
+                candidateName: (person.full_name ?? "there").split(" ")[0] ?? "there",
+                companyName: tenant.display_name,
+                activationUrl,
+              },
+              dedupKey: `candidate_activation:${row.id}:${tokenHash.slice(0, 16)}`,
+            });
+          } catch (err) {
+            ctx.log.warn(
+              { err, request_id: ctx.requestId, tenant_id: tenant.id },
+              "requestCandidateActivation: enqueueNotification failed",
+            );
+          }
+          return { ok: true as const };
+        },
+        { tenantIdOverride: tenant.id },
+      );
+    }),
+
+  /**
+   * completeCandidateActivation — public. Verify the signed link, locate the
+   * PENDING account by token hash, create the Supabase auth user, flip the
+   * account to active, and NULL the hash. Single-use is intrinsic: once
+   * consumed the hash is gone and status='active', so a replay 404s at the
+   * lookup. Records a signed_link_uses row for audit (mirrors the interview
+   * confirm route).
+   */
+  completeCandidateActivation: publicProcedure
+    .input(completeCandidateActivationInputSchema)
+    .output(completeCandidateActivationOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      const verify = verifyLink(input.token);
+      if (!verify.ok) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: `activation_link_${verify.reason}` });
+      }
+      if (verify.payload.action !== "candidate.activate_account") {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "activation_link_wrong_action" });
+      }
+      const tokenHash = verify.payload.tokenHash;
+
+      const [pending] = await ctx.sql<
+        {
+          id: string;
+          tenant_id: string;
+          person_id: string;
+          email_primary: string | null;
+        }[]
+      >`
+        SELECT ca.id, ca.tenant_id, ca.person_id, p.email_primary
+        FROM public.candidate_accounts ca
+        JOIN public.persons p ON p.id = ca.person_id AND p.tenant_id = ca.tenant_id
+        WHERE ca.activation_token_hash = ${tokenHash} AND ca.status = 'pending'
+        LIMIT 1
+      `;
+      if (!pending) {
+        // Hash cleared on first use, or never issued → replay / invalid.
+        throw new TRPCError({ code: "BAD_REQUEST", message: "activation_already_used_or_invalid" });
+      }
+      const email = pending.email_primary;
+      if (!email) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "activation_no_email_on_person" });
+      }
+
+      return withAudit(
+        "complete_candidate_activation",
+        ctx,
+        { candidateAccountId: pending.id },
+        async () => {
+          const { userId, alreadyExisted } = await createOrResolveAuthUser(email, input.password);
+          if (alreadyExisted) {
+            ctx.log.warn(
+              { request_id: ctx.requestId, tenant_id: pending.tenant_id },
+              "completeCandidateActivation: reused an existing auth.users identity for candidate",
+            );
+          }
+
+          // Atomic flip — only the still-pending row wins; a concurrent second
+          // completion fails the WHERE and gets already_used.
+          const [updated] = await ctx.sql<{ activated_at: Date | string }[]>`
+            UPDATE public.candidate_accounts
+            SET user_id = ${userId}, status = 'active', activated_at = now(),
+                activation_token_hash = NULL, updated_at = now()
+            WHERE id = ${pending.id} AND status = 'pending'
+            RETURNING activated_at
+          `;
+          if (!updated) {
+            throw new TRPCError({ code: "BAD_REQUEST", message: "activation_already_used" });
+          }
+
+          // Append-only audit of the link redemption (best-effort; the partial
+          // unique on (tenant, token_hash) WHERE successful blocks a re-use).
+          try {
+            await ctx.sql`
+              INSERT INTO public.signed_link_uses
+                (tenant_id, token_hash, action, subject_id, redeemed_by_ip, successful, failure_reason)
+              VALUES (${pending.tenant_id}, ${tokenHash}, 'candidate.activate_account',
+                      ${pending.id}, ${ctx.ipAddress}, true, null)
+            `;
+          } catch (err) {
+            ctx.log.warn(
+              { err, request_id: ctx.requestId },
+              "completeCandidateActivation: signed_link_uses insert skipped",
+            );
+          }
+          return { ok: true as const, email };
+        },
+        { tenantIdOverride: pending.tenant_id },
+      );
+    }),
+
+  /**
+   * candidateGetMe — the resolved candidate identity for the dashboard header.
+   * Pure read of the already-resolved context; no DB round-trip.
+   */
+  candidateGetMe: candidateProcedure.output(candidateGetMeOutputSchema).query(({ ctx }) => {
+    const c = ctx.candidate;
+    return {
+      candidateAccountId: c.candidateAccountId,
+      personId: c.personId,
+      tenantId: c.tenantId,
+      tenantDisplayName: c.tenantDisplayName,
+      fullName: c.fullName,
+      email: c.email,
+    };
+  }),
+
+  /**
+   * candidateListMyApplications — the caller's own applications, person-scoped
+   * via candidates.person_id = ctx.candidate.personId. Each row carries the
+   * current stage + the ordered stepper vocabulary (the REAL application_stage
+   * enum order, no invented stages).
+   */
+  candidateListMyApplications: candidateProcedure
+    .output(candidateListMyApplicationsOutputSchema)
+    .query(async ({ ctx }) => {
+      const db = ctx.db;
+      if (!db) {
+        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "candidate ctx.db missing" });
+      }
+      const rows = await db
+        .select({
+          applicationId: applications.id,
+          requisitionId: applications.requisitionId,
+          positionTitle: positions.title,
+          location: positions.primaryLocation,
+          currentStage: applications.currentStage,
+          appliedAt: applications.createdAt,
+        })
+        .from(applications)
+        .innerJoin(
+          candidates,
+          and(
+            eq(candidates.tenantId, applications.tenantId),
+            eq(candidates.id, applications.candidateId),
+          ),
+        )
+        .innerJoin(
+          requisitions,
+          and(
+            eq(requisitions.tenantId, applications.tenantId),
+            eq(requisitions.id, applications.requisitionId),
+          ),
+        )
+        .innerJoin(
+          positions,
+          and(
+            eq(positions.tenantId, requisitions.tenantId),
+            eq(positions.id, requisitions.positionId),
+          ),
+        )
+        .where(
+          and(
+            eq(applications.tenantId, ctx.candidate.tenantId),
+            eq(candidates.personId, ctx.candidate.personId),
+          ),
+        )
+        .orderBy(desc(applications.createdAt));
+
+      const items: CandidateApplicationRow[] = rows.map((r) => ({
+        applicationId: r.applicationId,
+        requisitionId: r.requisitionId,
+        positionTitle: r.positionTitle,
+        location: r.location ?? null,
+        currentStage: r.currentStage,
+        stageSteps: [...CANDIDATE_STAGE_STEPS],
+        appliedAt: r.appliedAt.toISOString(),
+      }));
+      return { items };
+    }),
+
+  /**
+   * candidateListMyInterviews — the caller's own interviews, person-scoped via
+   * candidates.person_id. Upcoming + past, with round, when, mode, meeting URL
+   * and confirmed state.
+   */
+  candidateListMyInterviews: candidateProcedure
+    .output(candidateListMyInterviewsOutputSchema)
+    .query(async ({ ctx }) => {
+      const db = ctx.db;
+      if (!db) {
+        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "candidate ctx.db missing" });
+      }
+      const rows = await db
+        .select({
+          interviewId: interviews.id,
+          positionTitle: positions.title,
+          roundName: interviews.roundName,
+          status: interviews.status,
+          mode: interviews.mode,
+          scheduledStart: interviews.scheduledStart,
+          durationMinutes: interviews.durationMinutes,
+          meetingUrl: interviews.meetingUrl,
+          confirmedAt: interviews.candidateConfirmedAt,
+        })
+        .from(interviews)
+        .innerJoin(
+          applications,
+          and(
+            eq(applications.tenantId, interviews.tenantId),
+            eq(applications.id, interviews.applicationId),
+          ),
+        )
+        .innerJoin(
+          candidates,
+          and(
+            eq(candidates.tenantId, applications.tenantId),
+            eq(candidates.id, applications.candidateId),
+          ),
+        )
+        .innerJoin(
+          requisitions,
+          and(
+            eq(requisitions.tenantId, interviews.tenantId),
+            eq(requisitions.id, interviews.requisitionId),
+          ),
+        )
+        .innerJoin(
+          positions,
+          and(
+            eq(positions.tenantId, requisitions.tenantId),
+            eq(positions.id, requisitions.positionId),
+          ),
+        )
+        .where(
+          and(
+            eq(interviews.tenantId, ctx.candidate.tenantId),
+            eq(candidates.personId, ctx.candidate.personId),
+          ),
+        )
+        .orderBy(desc(interviews.scheduledStart));
+
+      const now = Date.now();
+      const items: CandidateInterviewRow[] = rows.map((r) => {
+        const startMs = r.scheduledStart ? new Date(r.scheduledStart).getTime() : null;
+        const isUpcoming = r.status === "scheduled" && startMs !== null && startMs >= now;
+        return {
+          interviewId: r.interviewId,
+          positionTitle: r.positionTitle,
+          roundName: r.roundName,
+          status: r.status as CandidateInterviewRow["status"],
+          mode: r.mode as CandidateInterviewRow["mode"],
+          scheduledStart: r.scheduledStart ? new Date(r.scheduledStart).toISOString() : null,
+          durationMinutes: r.durationMinutes,
+          meetingUrl: r.meetingUrl ?? null,
+          confirmedAt: r.confirmedAt ? new Date(r.confirmedAt).toISOString() : null,
+          isUpcoming,
+        };
+      });
+      return { items };
+    }),
+
+  /**
+   * candidateConfirmInterview — the authenticated equivalent of the public
+   * signed-link confirm. Stamps candidate_confirmed_at for an interview that
+   * belongs to THIS candidate's person (person-scoping enforced explicitly —
+   * candidate A cannot confirm candidate B's round). The signed-link route
+   * (routes/interviews.ts) stays for email users.
+   */
+  candidateConfirmInterview: candidateProcedure
+    .input(candidateConfirmInterviewInputSchema)
+    .output(candidateConfirmInterviewOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      const db = ctx.db;
+      if (!db) {
+        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "candidate ctx.db missing" });
+      }
+      return withAudit(
+        "candidate_confirm_interview",
+        ctx,
+        { interviewId: input.interviewId },
+        async () => {
+          // Ownership check: the interview's application → candidate → person
+          // MUST be this candidate's person. RLS scopes to tenant; this scopes
+          // to the person.
+          const [owned] = await db
+            .select({
+              id: interviews.id,
+              status: interviews.status,
+              confirmedAt: interviews.candidateConfirmedAt,
+            })
+            .from(interviews)
+            .innerJoin(
+              applications,
+              and(
+                eq(applications.tenantId, interviews.tenantId),
+                eq(applications.id, interviews.applicationId),
+              ),
+            )
+            .innerJoin(
+              candidates,
+              and(
+                eq(candidates.tenantId, applications.tenantId),
+                eq(candidates.id, applications.candidateId),
+              ),
+            )
+            .where(
+              and(
+                eq(interviews.tenantId, ctx.candidate.tenantId),
+                eq(interviews.id, input.interviewId),
+                eq(candidates.personId, ctx.candidate.personId),
+              ),
+            )
+            .limit(1);
+          if (!owned) {
+            // Not found OR not this candidate's — same opaque error either way.
+            throw new TRPCError({ code: "NOT_FOUND", message: "interview_not_found" });
+          }
+          if (owned.status === "cancelled") {
+            throw new TRPCError({ code: "CONFLICT", message: "already_cancelled" });
+          }
+
+          const nowTs = new Date();
+          const [updated] = await db
+            .update(interviews)
+            .set({ candidateConfirmedAt: nowTs, updatedAt: nowTs })
+            .where(
+              and(
+                eq(interviews.tenantId, ctx.candidate.tenantId),
+                eq(interviews.id, input.interviewId),
+                isNull(interviews.candidateConfirmedAt),
+              ),
+            )
+            .returning({ confirmedAt: interviews.candidateConfirmedAt });
+
+          const confirmedAt = updated?.confirmedAt ?? owned.confirmedAt ?? nowTs;
+          return {
+            ok: true as const,
+            interviewId: input.interviewId,
+            confirmedAt: new Date(confirmedAt).toISOString(),
+          };
+        },
+      );
     }),
 });
 

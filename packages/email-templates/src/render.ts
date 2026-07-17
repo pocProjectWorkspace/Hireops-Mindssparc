@@ -12,6 +12,10 @@ import {
   type InterviewInvitationProps,
 } from "./templates/interview-invitation";
 import {
+  CandidateAccountActivation,
+  type CandidateAccountActivationProps,
+} from "./templates/candidate-account-activation";
+import {
   OfferAcceptedRecruiter,
   type OfferAcceptedRecruiterProps,
 } from "./templates/offer-accepted-recruiter";
@@ -87,6 +91,15 @@ export async function renderTemplate(
       const element = InterviewInvitation(props);
       return {
         subject: `Interview invitation — ${props.roundName} for ${props.positionTitle}`,
+        html: await render(element),
+        text: await render(element, { plainText: true }),
+      };
+    }
+    case "candidate.account_activation": {
+      const props = data as unknown as CandidateAccountActivationProps;
+      const element = CandidateAccountActivation(props);
+      return {
+        subject: `Activate your ${props.companyName} candidate account`,
         html: await render(element),
         text: await render(element, { plainText: true }),
       };

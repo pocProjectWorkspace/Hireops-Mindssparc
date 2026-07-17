@@ -203,3 +203,112 @@ export const partnerProcedure = t.procedure.use(async ({ ctx, next }) => {
     },
   );
 });
+
+/**
+ * Resolved candidate context, attached to ctx by candidateProcedure. The
+ * personId is load-bearing: EVERY candidate read filters by it, so a
+ * candidate sees only their own person's applications + interviews.
+ */
+export interface CandidateContext {
+  candidateAccountId: string;
+  personId: string;
+  tenantId: string;
+  tenantSlug: string;
+  tenantDisplayName: string;
+  fullName: string;
+  email: string;
+}
+
+/**
+ * candidateProcedure — the candidate-portal auth tier (CAND-01), the third
+ * and final identity tier alongside protectedProcedure (internal) and
+ * partnerProcedure (partner).
+ *
+ * Same shape as partnerProcedure and for the same reason: the Custom Access
+ * Token hook (migration 0002) only reads tenant_user_memberships, so a human
+ * who exists ONLY in candidate_accounts signs in via Supabase and gets a JWT
+ * with a verified `sub` but NO `tid`/`roles` claim. protectedProcedure would
+ * UNAUTHORIZED them. We resolve the candidate's tenant + person HERE, from
+ * candidate_accounts, using ctx.sql (the service-role pool), then open a
+ * withTenantContext tx with SYNTHETIC claims so current_tenant_id() and
+ * tenant_isolation fire under the `authenticated` role.
+ *
+ * Rejections:
+ *   - no JWT (ctx.userId null)                        → UNAUTHORIZED
+ *   - JWT but no ACTIVE candidate_accounts row        → FORBIDDEN
+ *     ('not_a_candidate_account') — this is exactly how an internal recruiter
+ *     or a partner user is rejected (they have their own identity row, never
+ *     a candidate_accounts one).
+ *
+ * Person-scoping note: candidate_accounts carries only a single
+ * tenant_isolation RLS policy, so RLS alone would let candidate A read
+ * candidate B within the same tenant. Every candidate procedure MUST
+ * additionally filter reads by ctx.candidate.personId — that explicit
+ * predicate is load-bearing for person isolation.
+ */
+export const candidateProcedure = t.procedure.use(async ({ ctx, next }) => {
+  if (!ctx.userId) {
+    throw new TRPCError({ code: "UNAUTHORIZED" });
+  }
+
+  // Service-role lookup (RLS-bypassing): the ACTIVE candidate identity by auth
+  // user id. Joins tenants (must be active) + persons (display + compound
+  // tenant sanity). LIMIT 1 — (tenant_id, user_id) is unique and a candidate
+  // is one identity per auth user in the POC.
+  const rows = await ctx.sql<
+    {
+      candidate_account_id: string;
+      person_id: string;
+      tenant_id: string;
+      tenant_slug: string;
+      tenant_display_name: string;
+      full_name: string | null;
+      email: string | null;
+    }[]
+  >`
+    SELECT ca.id AS candidate_account_id, ca.person_id, ca.tenant_id,
+           t.slug AS tenant_slug, t.display_name AS tenant_display_name,
+           p.full_name, p.email_primary AS email
+    FROM public.candidate_accounts ca
+    JOIN public.tenants t ON t.id = ca.tenant_id
+    JOIN public.persons p ON p.id = ca.person_id AND p.tenant_id = ca.tenant_id
+    WHERE ca.user_id = ${ctx.userId} AND ca.status = 'active' AND t.status = 'active'
+    LIMIT 1
+  `;
+  const cand = rows[0];
+  if (!cand) {
+    throw new TRPCError({ code: "FORBIDDEN", message: "not_a_candidate_account" });
+  }
+
+  const candidateClaims: JwtClaims = {
+    sub: ctx.userId,
+    tid: cand.tenant_id,
+    tenant_slug: cand.tenant_slug,
+    roles: ["candidate"],
+  };
+  const candidate: CandidateContext = {
+    candidateAccountId: cand.candidate_account_id,
+    personId: cand.person_id,
+    tenantId: cand.tenant_id,
+    tenantSlug: cand.tenant_slug,
+    tenantDisplayName: cand.tenant_display_name,
+    fullName: cand.full_name ?? "there",
+    email: cand.email ?? "",
+  };
+
+  return withTenantContext(
+    candidateClaims,
+    async ({ db }) => {
+      return next({
+        ctx: { ...ctx, db, tenantId: cand.tenant_id, claims: candidateClaims, candidate },
+      });
+    },
+    {
+      actorUserId: ctx.userId,
+      requestId: ctx.requestId,
+      userAgent: ctx.userAgent,
+      ipAddress: ctx.ipAddress,
+      source: "app",
+    },
+  );
+});

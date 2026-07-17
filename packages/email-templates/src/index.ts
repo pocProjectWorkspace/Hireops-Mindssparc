@@ -11,6 +11,10 @@ export {
   type InterviewInvitationProps,
 } from "./templates/interview-invitation";
 export {
+  CandidateAccountActivation,
+  type CandidateAccountActivationProps,
+} from "./templates/candidate-account-activation";
+export {
   OfferAcceptedRecruiter,
   type OfferAcceptedRecruiterProps,
 } from "./templates/offer-accepted-recruiter";

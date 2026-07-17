@@ -75,3 +75,5 @@ export * from "./interview-plans";
 export * from "./interviews";
 export * from "./interview-panelists";
 export * from "./interview-feedback";
+// Candidate accounts (Wave C, CAND-01)
+export * from "./candidate-accounts";

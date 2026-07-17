@@ -16,7 +16,7 @@
     "start": "tsx src/index.ts",
     "test": "NODE_ENV=test DB_POOL_MAX=3 vitest run",
     "test:watch": "NODE_ENV=test DB_POOL_MAX=3 vitest",
-    "test:gate": "NODE_ENV=test DB_POOL_MAX=3 vitest run test/agent-04a-lifecycle.test.ts test/agent-04b-scheduling-lifecycle.test.ts test/agent-04b-candidate-qa-lifecycle.test.ts test/agents.test.ts test/agent-approval-vertical-smoke.test.ts test/agent-run-drain.test.ts test/agent-ttl-scan.test.ts test/agent-vertical-smoke.test.ts test/stage-stale-scan.test.ts test/pii-access-log.test.ts test/recruitment-report.test.ts test/onboarding.test.ts test/partner-auth.test.ts test/partner-submission.test.ts test/req-01-personas.test.ts test/req-02-creation.test.ts test/req-03-decisions.test.ts test/int-02-scheduling.test.ts test/int-03-panel.test.ts test/int-04-completion.test.ts"
+    "test:gate": "NODE_ENV=test DB_POOL_MAX=3 vitest run test/agent-04a-lifecycle.test.ts test/agent-04b-scheduling-lifecycle.test.ts test/agent-04b-candidate-qa-lifecycle.test.ts test/agents.test.ts test/agent-approval-vertical-smoke.test.ts test/agent-run-drain.test.ts test/agent-ttl-scan.test.ts test/agent-vertical-smoke.test.ts test/stage-stale-scan.test.ts test/pii-access-log.test.ts test/recruitment-report.test.ts test/onboarding.test.ts test/partner-auth.test.ts test/partner-submission.test.ts test/req-01-personas.test.ts test/req-02-creation.test.ts test/req-03-decisions.test.ts test/int-02-scheduling.test.ts test/int-03-panel.test.ts test/int-04-completion.test.ts test/cand-01-accounts.test.ts"
   },
   "dependencies": {
     "@hireops/agent-actions": "workspace:*",
