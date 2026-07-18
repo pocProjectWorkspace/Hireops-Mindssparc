@@ -20,7 +20,7 @@ import {
   Td,
 } from "@/components/ui";
 import type { BadgeTone } from "@/components/ui";
-import { IntelPageHeader } from "./IntelPageHeader";
+import { PageHeader } from "@/components/patterns";
 
 /**
  * Market Intelligence — the benchmark table + per-role trending-skills cards,
@@ -71,7 +71,7 @@ export function MarketIntelligenceView({
 
   return (
     <>
-      <IntelPageHeader
+      <PageHeader
         title="Market intelligence"
         subtitle={
           <>

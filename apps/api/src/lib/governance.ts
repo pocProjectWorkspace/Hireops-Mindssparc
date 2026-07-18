@@ -204,7 +204,9 @@ export async function computeGovernanceRiskFlags(
   // its final column shape. We PRE-CHECK the table + the exact columns we need
   // via information_schema so we never issue a statement that could fail and
   // poison the surrounding read transaction; a shape we don't recognise is
-  // skipped cleanly. Assumed shape: (tenant_id, position_id, median_annual_comp).
+  // skipped cleanly. Reconciled to HRHEAD-02's actual shape:
+  // (tenant_id, role_title, median_salary_minor /* paise */), matched on
+  // normalised title (the SQL rule uses the matcher's exact tier only).
   try {
     const shapeRes = await db.execute(sql`
       SELECT
@@ -212,12 +214,12 @@ export async function computeGovernanceRiskFlags(
         EXISTS (
           SELECT 1 FROM information_schema.columns
           WHERE table_schema = 'public' AND table_name = 'market_benchmarks'
-            AND column_name = 'position_id'
+            AND column_name = 'role_title'
         ) AS has_position_id,
         EXISTS (
           SELECT 1 FROM information_schema.columns
           WHERE table_schema = 'public' AND table_name = 'market_benchmarks'
-            AND column_name = 'median_annual_comp'
+            AND column_name = 'median_salary_minor'
         ) AS has_median
     `);
     const [shape] = asRows<{ has_table: boolean; has_position_id: boolean; has_median: boolean }>(
@@ -232,7 +234,7 @@ export async function computeGovernanceRiskFlags(
       skippedRules.push({
         rule: "budget_below_benchmark",
         reason:
-          "market_benchmarks present but its columns differ from the assumed shape (position_id, median_annual_comp) — reconcile with HRHEAD-02",
+          "market_benchmarks present but its columns differ from the expected shape (role_title, median_salary_minor)",
       });
     } else {
       const benchRes = await db.execute(sql`
@@ -241,12 +243,13 @@ export async function computeGovernanceRiskFlags(
         JOIN public.positions p
           ON p.tenant_id = r.tenant_id AND p.id = r.position_id
         JOIN public.market_benchmarks mb
-          ON mb.tenant_id = r.tenant_id AND mb.position_id = p.id
+          ON mb.tenant_id = r.tenant_id
+          AND LOWER(TRIM(mb.role_title)) = LOWER(TRIM(p.title))
         WHERE r.tenant_id = ${tenantId}::uuid
           AND r.status IN ${OPEN_REQ_STATUSES}
           AND p.comp_band_max IS NOT NULL
-          AND mb.median_annual_comp IS NOT NULL
-          AND p.comp_band_max < mb.median_annual_comp * 0.9
+          AND mb.median_salary_minor IS NOT NULL
+          AND p.comp_band_max < (mb.median_salary_minor / 100.0) * 0.9
       `);
       for (const row of asRows<{ req_id: string; title: string }>(benchRes)) {
         push(

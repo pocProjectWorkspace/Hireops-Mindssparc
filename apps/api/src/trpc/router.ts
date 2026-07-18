@@ -12785,18 +12785,28 @@ async function buildHrHeadDashboardExtras(
 
   // ── Risk & compliance ──
   const lexicon = await resolveTenantBiasLexiconDb(tenantId);
-  // FLAG: the benchmark table (HRHEAD-02, concurrent, not merged) is probed
-  // defensively by name; belowBenchmark stays null until it exists so the row
-  // renders only when the data is present. Assumed name: requisition_benchmarks.
+  // Reconciled to HRHEAD-02's actual table: market_benchmarks(role_title,
+  // median_salary_minor /* paise */), matched on normalised position title.
+  // Probe stays defensive so environments without the table render no row.
   const benchmarkExists = await dashScalar(
     db,
-    dsql`SELECT (to_regclass('public.requisition_benchmarks') IS NOT NULL)::int AS n`,
+    dsql`SELECT (to_regclass('public.market_benchmarks') IS NOT NULL)::int AS n`,
   );
   let belowBenchmark: number | null = null;
   if (benchmarkExists === 1) {
     belowBenchmark = await dashScalar(
       db,
-      dsql`SELECT count(*)::int AS n FROM public.requisition_benchmarks WHERE ${T} AND below_median = true`,
+      dsql`SELECT count(*)::int AS n
+        FROM public.requisitions r
+        JOIN public.positions p ON p.tenant_id = r.tenant_id AND p.id = r.position_id
+        JOIN public.market_benchmarks mb
+          ON mb.tenant_id = r.tenant_id
+          AND LOWER(TRIM(mb.role_title)) = LOWER(TRIM(p.title))
+        WHERE r.tenant_id = ${tenantId}::uuid
+          AND r.status IN ('approved', 'posted')
+          AND p.comp_band_max IS NOT NULL
+          AND mb.median_salary_minor IS NOT NULL
+          AND p.comp_band_max < (mb.median_salary_minor / 100.0) * 0.9`,
     );
   }
 

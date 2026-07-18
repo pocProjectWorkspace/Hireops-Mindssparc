@@ -106,7 +106,6 @@ export function ActionTriad({
       {arming ? (
         <div className="flex flex-col gap-2">
           <textarea
-            autoFocus
             rows={2}
             value={reason}
             onChange={(e) => setReason(e.target.value)}

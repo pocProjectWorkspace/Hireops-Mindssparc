@@ -9,7 +9,7 @@ import type {
 import { trpc, handleTRPCError } from "@/lib/trpc-client";
 import { Badge, Button, Card, EmptyState } from "@/components/ui";
 import type { BadgeTone } from "@/components/ui";
-import { IntelPageHeader } from "./IntelPageHeader";
+import { PageHeader } from "@/components/patterns";
 
 /**
  * Feasibility Reports — a card grid mirroring the prototype anatomy: two fit
@@ -59,7 +59,7 @@ export function FeasibilityView({ initial }: { initial: ListRequisitionFeasibili
 
   return (
     <>
-      <IntelPageHeader
+      <PageHeader
         title="Feasibility reports"
         subtitle={
           <>

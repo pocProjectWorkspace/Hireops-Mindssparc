@@ -42,7 +42,8 @@ export function RequisitionApprovalsTable({ rows }: { rows: RequisitionApprovalR
     return c;
   }, [rows]);
 
-  const active = TABS.find((t) => t.key === tab) ?? TABS[0]!;
+  const active = TABS.find((t) => t.key === tab) ??
+    TABS[0] ?? { key: "all", label: "All", match: () => true };
   const filtered = rows.filter((r) => active.match(r.outcome));
 
   return (
