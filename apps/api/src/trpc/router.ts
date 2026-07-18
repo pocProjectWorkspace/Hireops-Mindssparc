@@ -22,7 +22,19 @@
 import { randomBytes } from "node:crypto";
 import { z } from "zod";
 import { TRPCError } from "@trpc/server";
-import { and, desc, eq, gte, inArray, isNull, lt, lte, sql as dsql, type SQL } from "drizzle-orm";
+import {
+  and,
+  desc,
+  eq,
+  gte,
+  inArray,
+  isNull,
+  lt,
+  lte,
+  ne,
+  sql as dsql,
+  type SQL,
+} from "drizzle-orm";
 import {
   db as poolDb,
   tenants,
@@ -63,6 +75,11 @@ import {
   onboardingCases,
   onboardingTasks,
   onboardingDocuments,
+  offboardingCases,
+  offboardingTasks,
+  assetReturns,
+  exitInterviews,
+  finalSettlements,
   documentTypes,
   approvalRequests,
   approvalDecisions,
@@ -234,6 +251,23 @@ import {
   updateOnboardingCaseOutputSchema,
   createOnboardingCaseForApplicationInputSchema,
   createOnboardingCaseForApplicationOutputSchema,
+  initiateOffboardingInputSchema,
+  initiateOffboardingOutputSchema,
+  updateOffboardingTaskStatusInputSchema,
+  updateOffboardingTaskStatusOutputSchema,
+  advanceOffboardingCaseInputSchema,
+  advanceOffboardingCaseOutputSchema,
+  recordAssetReturnInputSchema,
+  updateAssetReturnInputSchema,
+  assetReturnMutationOutputSchema,
+  recordExitInterviewInputSchema,
+  recordExitInterviewOutputSchema,
+  updateFinalSettlementInputSchema,
+  updateFinalSettlementOutputSchema,
+  getOffboardingCaseDetailInputSchema,
+  getOffboardingCaseDetailOutputSchema,
+  listOffboardingCasesInputSchema,
+  listOffboardingCasesOutputSchema,
   attachOnboardingDocumentInputSchema,
   attachOnboardingDocumentOutputSchema,
   verifyOnboardingDocumentInputSchema,
@@ -291,6 +325,16 @@ import {
   type OnboardingTaskRow,
   type OnboardingDocumentRow,
   type OnboardingCaseStatus,
+  type OffboardingCaseListRow,
+  type OffboardingTaskRow,
+  type OffboardingCaseStatus,
+  type OffboardingInitiationType,
+  type OffboardingTaskType,
+  type AssetReturnRow,
+  type AssetReturnStatus,
+  type ExitInterviewRow,
+  type FinalSettlementRow,
+  type FinalSettlementStatus,
   type TenantMembershipRow,
   type SubmitApplicationOutput,
   type GetCandidateByIdOutput,
@@ -342,6 +386,12 @@ import {
   enqueueDayZeroWorkdayHire,
   resolveGeographyCode,
 } from "../lib/onboarding-case";
+import {
+  createOffboardingCase,
+  enqueueTerminateWorkday,
+  NotHiredError,
+  ActiveCaseExistsError,
+} from "../lib/offboarding-case";
 import { getStorageClient } from "../lib/storage";
 import { attachDocumentToCase, matchDocumentCollectionTask } from "../lib/onboarding-document";
 import { acceptOfferAtomically, runOfferAcceptSideEffects } from "../lib/offer-accept";
@@ -487,6 +537,15 @@ const AI_SETTINGS_ADMIN_ROLES = new Set(["admin"]);
 // (tenant_user_memberships has no authenticated write policy) are authorised
 // by this explicit gate + the ctx.tenantId predicate.
 const USERS_ADMIN_ROLES = new Set(["admin"]);
+
+// OFFBOARD-02 — departures are an HR operation. hr_ops + people_ops run them;
+// admin is the super-role. recruiter / hiring_manager / panel get FORBIDDEN.
+// Flagged: if the demo persona map later says a manager initiates a
+// resignation, add hiring_manager here — the requirements (§8.1) frame
+// initiation as HR/manager, but the CLEARANCE spine (settlement, access,
+// HR-clearance) is unambiguously HR, so the whole surface is HR-gated for now.
+// RLS still scopes rows to the tenant on top of this persona gate.
+const OFFBOARD_MANAGE_ROLES = new Set(["admin", "hr_ops", "people_ops"]);
 
 // The set of internal roles an admin may assign (mirror of api-types'
 // INTERNAL_TENANT_ROLES). A submitted role outside this set is rejected by the
@@ -7914,6 +7973,948 @@ export const appRouter = router({
       });
     }),
 
+  // ─────────────── OFFBOARD-02 — offboarding lifecycle ───────────────
+  // Every procedure is OFFBOARD_MANAGE_ROLES-gated (hr_ops/people_ops/admin);
+  // RLS scopes rows to the tenant on top. Case mutations mirror the ONBOARD
+  // task/case semantics; the Workday terminate sim mirrors ONBOARD-06.
+
+  /**
+   * initiateOffboarding — open a departure case for a HIRED candidate and
+   * generate the 7-task clearance checklist. Hired predicate + assignee
+   * mapping live in the offboarding-case lib. A live case for the candidate
+   * → CONFLICT (partial-unique); a never-employed candidate → BAD_REQUEST.
+   */
+  initiateOffboarding: protectedProcedure
+    .input(initiateOffboardingInputSchema)
+    .output(initiateOffboardingOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      return withAudit("initiate_offboarding", ctx, input, async () => {
+        const db = requireDb(ctx);
+        if (!ctx.tenantId) {
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: "protected procedure missing tenantId",
+          });
+        }
+        const tenantId = ctx.tenantId;
+        requireAnyRole(ctx, OFFBOARD_MANAGE_ROLES, "You don't have access to offboarding.");
+
+        // Candidate must exist in this tenant (RLS) — clean 404 rather than an
+        // FK error from the lib insert.
+        const [cand] = await db
+          .select({ id: candidates.id })
+          .from(candidates)
+          .where(and(eq(candidates.tenantId, tenantId), eq(candidates.id, input.candidateId)))
+          .limit(1);
+        if (!cand) {
+          throw new TRPCError({ code: "NOT_FOUND", message: "Candidate not found" });
+        }
+
+        const initiatedByMembershipId = await resolveCallerMembershipId(ctx, tenantId);
+        if (!initiatedByMembershipId) {
+          throw new TRPCError({
+            code: "FORBIDDEN",
+            message: "No tenant membership for the caller",
+          });
+        }
+
+        try {
+          const result = await createOffboardingCase(ctx.sql, {
+            tenantId,
+            candidateId: input.candidateId,
+            initiationType: input.initiationType,
+            noticeStartDate: input.noticeStartDate ?? null,
+            lastWorkingDay: input.lastWorkingDay ?? null,
+            reason: input.reason ?? null,
+            initiatedByMembershipId,
+            managerMembershipId: input.managerMembershipId ?? null,
+          });
+          return {
+            caseId: result.caseId,
+            created: true,
+            status: "initiated" as const,
+            tasksCreated: result.tasksCreated,
+          };
+        } catch (err) {
+          if (err instanceof NotHiredError) {
+            throw new TRPCError({
+              code: "BAD_REQUEST",
+              message: "Candidate has no hire history — cannot be offboarded.",
+            });
+          }
+          if (err instanceof ActiveCaseExistsError) {
+            throw new TRPCError({
+              code: "CONFLICT",
+              message: "An active offboarding case already exists for this candidate.",
+            });
+          }
+          const e = err as { code?: string };
+          if (e.code === "23503") {
+            throw new TRPCError({
+              code: "BAD_REQUEST",
+              message: "Invalid manager membership for this tenant.",
+            });
+          }
+          throw err;
+        }
+      });
+    }),
+
+  /**
+   * updateOffboardingTaskStatus — ONBOARD task-status semantics verbatim:
+   * → completed stamps completed_at (cleared on reopen); → blocked requires a
+   * reason (cleared otherwise).
+   */
+  updateOffboardingTaskStatus: protectedProcedure
+    .input(updateOffboardingTaskStatusInputSchema)
+    .output(updateOffboardingTaskStatusOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      return withAudit("update_offboarding_task_status", ctx, input, async () => {
+        const db = requireDb(ctx);
+        if (!ctx.tenantId) {
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: "protected procedure missing tenantId",
+          });
+        }
+        const tenantId = ctx.tenantId;
+        requireAnyRole(ctx, OFFBOARD_MANAGE_ROLES, "You don't have access to offboarding.");
+
+        if (input.status === "blocked" && !input.blockedReason) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: "blockedReason is required when status is 'blocked'",
+          });
+        }
+
+        const [existing] = await db
+          .select({ id: offboardingTasks.id })
+          .from(offboardingTasks)
+          .where(
+            and(eq(offboardingTasks.tenantId, tenantId), eq(offboardingTasks.id, input.taskId)),
+          )
+          .limit(1);
+        if (!existing) {
+          throw new TRPCError({ code: "NOT_FOUND", message: "Offboarding task not found" });
+        }
+
+        const completedAt = input.status === "completed" ? new Date() : null;
+        const blockedReason = input.status === "blocked" ? (input.blockedReason ?? null) : null;
+
+        const [updated] = await db
+          .update(offboardingTasks)
+          .set({ status: input.status, completedAt, blockedReason, updatedAt: new Date() })
+          .where(
+            and(eq(offboardingTasks.tenantId, tenantId), eq(offboardingTasks.id, input.taskId)),
+          )
+          .returning({
+            id: offboardingTasks.id,
+            status: offboardingTasks.status,
+            completedAt: offboardingTasks.completedAt,
+            blockedReason: offboardingTasks.blockedReason,
+          });
+        if (!updated) {
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: "task update returned no row",
+          });
+        }
+        return {
+          taskId: updated.id,
+          status: updated.status as OffboardingTaskRow["status"],
+          completedAt: toIsoString(updated.completedAt),
+          blockedReason: updated.blockedReason ?? null,
+        };
+      });
+    }),
+
+  /**
+   * advanceOffboardingCase — forward-only lifecycle walk with the §8 gates:
+   *   → clearance requires last_working_day set;
+   *   → completed requires access_revocation + asset_return tasks completed AND
+   *     the settlement approved|paid;
+   *   → cancelled (from any non-terminal) requires a reason.
+   * On → completed, enqueues the idempotent Workday terminate_employee event.
+   */
+  advanceOffboardingCase: protectedProcedure
+    .input(advanceOffboardingCaseInputSchema)
+    .output(advanceOffboardingCaseOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      return withAudit("advance_offboarding_case", ctx, input, async () => {
+        const db = requireDb(ctx);
+        if (!ctx.tenantId) {
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: "protected procedure missing tenantId",
+          });
+        }
+        const tenantId = ctx.tenantId;
+        requireAnyRole(ctx, OFFBOARD_MANAGE_ROLES, "You don't have access to offboarding.");
+
+        const [existing] = await db
+          .select({
+            status: offboardingCases.status,
+            lastWorkingDay: offboardingCases.lastWorkingDay,
+          })
+          .from(offboardingCases)
+          .where(
+            and(eq(offboardingCases.tenantId, tenantId), eq(offboardingCases.id, input.caseId)),
+          )
+          .limit(1);
+        if (!existing) {
+          throw new TRPCError({ code: "NOT_FOUND", message: "Offboarding case not found" });
+        }
+
+        const target = input.targetStatus;
+        if (target === existing.status) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: `Case is already ${target}`,
+          });
+        }
+        const allowed = ALLOWED_OFFBOARDING_TRANSITIONS[existing.status] ?? [];
+        if (!allowed.includes(target)) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: `Illegal offboarding status transition ${existing.status} → ${target}`,
+          });
+        }
+
+        // Merge any date fields the caller stamps on this step.
+        const setFields: Record<string, unknown> = { status: target, updatedAt: new Date() };
+        if (input.noticeStartDate !== undefined) setFields.noticeStartDate = input.noticeStartDate;
+        if (input.lastWorkingDay !== undefined) setFields.lastWorkingDay = input.lastWorkingDay;
+
+        // Gate: → clearance requires a last working day (existing or just set).
+        if (target === "clearance") {
+          const lwd = input.lastWorkingDay ?? existing.lastWorkingDay;
+          if (!lwd) {
+            throw new TRPCError({
+              code: "BAD_REQUEST",
+              message: "last_working_day must be set before moving to clearance.",
+            });
+          }
+        }
+
+        // Gate: → completed requires the clearance gates (§8.3 ordering enforced
+        // at the settlement layer; here we require its terminal-ish state).
+        if (target === "completed") {
+          const [accessDone, assetsDone] = await Promise.all([
+            isOffboardingTaskCompleted(db, tenantId, input.caseId, "access_revocation"),
+            isOffboardingTaskCompleted(db, tenantId, input.caseId, "asset_return"),
+          ]);
+          if (!accessDone || !assetsDone) {
+            throw new TRPCError({
+              code: "BAD_REQUEST",
+              message:
+                "Clearance incomplete: access_revocation and asset_return tasks must be completed.",
+            });
+          }
+          const [settle] = await db
+            .select({ status: finalSettlements.status })
+            .from(finalSettlements)
+            .where(
+              and(
+                eq(finalSettlements.tenantId, tenantId),
+                eq(finalSettlements.caseId, input.caseId),
+              ),
+            )
+            .limit(1);
+          if (!settle || (settle.status !== "approved" && settle.status !== "paid")) {
+            throw new TRPCError({
+              code: "BAD_REQUEST",
+              message: "Final settlement must be approved or paid before completion.",
+            });
+          }
+        }
+
+        // Gate: → cancelled requires a reason (overwrites the resignation reason
+        // with the cancellation reason — honest for the audit trail).
+        if (target === "cancelled") {
+          if (!input.reason) {
+            throw new TRPCError({
+              code: "BAD_REQUEST",
+              message: "A reason is required to cancel an offboarding case.",
+            });
+          }
+          setFields.reason = input.reason;
+        }
+
+        const [updated] = await db
+          .update(offboardingCases)
+          .set(setFields)
+          .where(
+            and(eq(offboardingCases.tenantId, tenantId), eq(offboardingCases.id, input.caseId)),
+          )
+          .returning({ status: offboardingCases.status });
+        if (!updated) {
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: "case update returned no row",
+          });
+        }
+
+        // On → completed, fire the Workday terminate sim. Best-effort +
+        // idempotent per case, so the transition stands even if it races.
+        let terminateEnqueued = false;
+        if (target === "completed") {
+          terminateEnqueued = await enqueueTerminateWorkday(ctx.sql, {
+            tenantId,
+            caseId: input.caseId,
+            log: ctx.log,
+          });
+        }
+
+        return {
+          caseId: input.caseId,
+          status: updated.status as OffboardingCaseStatus,
+          terminateEnqueued,
+        };
+      });
+    }),
+
+  /**
+   * recordAssetReturn — add an asset_returns row for a case. When ALL rows for
+   * the case are returned|written_off, auto-completes the asset_return task
+   * (flagged). A 'lost'/'pending' row leaves the task open (honest).
+   */
+  recordAssetReturn: protectedProcedure
+    .input(recordAssetReturnInputSchema)
+    .output(assetReturnMutationOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      return withAudit("record_asset_return", ctx, input, async () => {
+        const db = requireDb(ctx);
+        if (!ctx.tenantId) {
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: "protected procedure missing tenantId",
+          });
+        }
+        const tenantId = ctx.tenantId;
+        requireAnyRole(ctx, OFFBOARD_MANAGE_ROLES, "You don't have access to offboarding.");
+
+        const [caseRow] = await db
+          .select({ id: offboardingCases.id })
+          .from(offboardingCases)
+          .where(
+            and(eq(offboardingCases.tenantId, tenantId), eq(offboardingCases.id, input.caseId)),
+          )
+          .limit(1);
+        if (!caseRow) {
+          throw new TRPCError({ code: "NOT_FOUND", message: "Offboarding case not found" });
+        }
+
+        const now = new Date();
+        const returnedAt =
+          input.status === "returned" || input.status === "written_off" ? now : null;
+        const [inserted] = await db
+          .insert(assetReturns)
+          .values({
+            tenantId,
+            caseId: input.caseId,
+            assetType: input.assetType,
+            assetTag: input.assetTag ?? null,
+            status: input.status,
+            returnedAt,
+            notes: input.notes ?? null,
+          })
+          .returning({ id: assetReturns.id, status: assetReturns.status });
+        if (!inserted) {
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: "asset return insert returned no row",
+          });
+        }
+
+        const taskAutoCompleted = await maybeCompleteAssetReturnTask(db, tenantId, input.caseId);
+        return {
+          assetReturnId: inserted.id,
+          status: inserted.status as AssetReturnStatus,
+          taskAutoCompleted,
+        };
+      });
+    }),
+
+  /**
+   * updateAssetReturn — mutate an existing asset_returns row (status / notes /
+   * receiver). A → returned/written_off transition stamps returned_at + the
+   * receiver; re-runs the all-returned auto-completion.
+   */
+  updateAssetReturn: protectedProcedure
+    .input(updateAssetReturnInputSchema)
+    .output(assetReturnMutationOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      return withAudit("update_asset_return", ctx, input, async () => {
+        const db = requireDb(ctx);
+        if (!ctx.tenantId) {
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: "protected procedure missing tenantId",
+          });
+        }
+        const tenantId = ctx.tenantId;
+        requireAnyRole(ctx, OFFBOARD_MANAGE_ROLES, "You don't have access to offboarding.");
+
+        const [existing] = await db
+          .select({ id: assetReturns.id, caseId: assetReturns.caseId })
+          .from(assetReturns)
+          .where(and(eq(assetReturns.tenantId, tenantId), eq(assetReturns.id, input.assetReturnId)))
+          .limit(1);
+        if (!existing) {
+          throw new TRPCError({ code: "NOT_FOUND", message: "Asset return not found" });
+        }
+
+        const now = new Date();
+        const setFields: Record<string, unknown> = { updatedAt: now };
+        if (input.status !== undefined) {
+          setFields.status = input.status;
+          if (input.status === "returned" || input.status === "written_off") {
+            setFields.returnedAt = now;
+          }
+        }
+        if (input.notes !== undefined) setFields.notes = input.notes;
+        if (input.receivedByMembershipId !== undefined) {
+          setFields.receivedByMembershipId = input.receivedByMembershipId;
+        }
+
+        const [updated] = await db
+          .update(assetReturns)
+          .set(setFields)
+          .where(and(eq(assetReturns.tenantId, tenantId), eq(assetReturns.id, input.assetReturnId)))
+          .returning({ id: assetReturns.id, status: assetReturns.status });
+        if (!updated) {
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: "asset return update returned no row",
+          });
+        }
+
+        const taskAutoCompleted = await maybeCompleteAssetReturnTask(db, tenantId, existing.caseId);
+        return {
+          assetReturnId: updated.id,
+          status: updated.status as AssetReturnStatus,
+          taskAutoCompleted,
+        };
+      });
+    }),
+
+  /**
+   * recordExitInterview — upsert the one-per-case exit interview. Mutable draft
+   * until submit:true, which stamps submitted_at ONCE, auto-completes the
+   * exit_interview task, and freezes the row (further writes → CONFLICT).
+   */
+  recordExitInterview: protectedProcedure
+    .input(recordExitInterviewInputSchema)
+    .output(recordExitInterviewOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      return withAudit("record_exit_interview", ctx, input, async () => {
+        const db = requireDb(ctx);
+        if (!ctx.tenantId) {
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: "protected procedure missing tenantId",
+          });
+        }
+        const tenantId = ctx.tenantId;
+        requireAnyRole(ctx, OFFBOARD_MANAGE_ROLES, "You don't have access to offboarding.");
+
+        const [caseRow] = await db
+          .select({ id: offboardingCases.id })
+          .from(offboardingCases)
+          .where(
+            and(eq(offboardingCases.tenantId, tenantId), eq(offboardingCases.id, input.caseId)),
+          )
+          .limit(1);
+        if (!caseRow) {
+          throw new TRPCError({ code: "NOT_FOUND", message: "Offboarding case not found" });
+        }
+
+        const [existing] = await db
+          .select({ id: exitInterviews.id, submittedAt: exitInterviews.submittedAt })
+          .from(exitInterviews)
+          .where(
+            and(eq(exitInterviews.tenantId, tenantId), eq(exitInterviews.caseId, input.caseId)),
+          )
+          .limit(1);
+
+        // Immutable once submitted (scorecard discipline).
+        if (existing?.submittedAt) {
+          throw new TRPCError({
+            code: "CONFLICT",
+            message: "Exit interview already submitted and is now immutable.",
+          });
+        }
+
+        const now = new Date();
+        const submittedAt = input.submit ? now : null;
+
+        let interviewId: string;
+        if (existing) {
+          const setFields: Record<string, unknown> = { updatedAt: now };
+          if (input.scheduledAt !== undefined) setFields.scheduledAt = new Date(input.scheduledAt);
+          if (input.conductedByMembershipId !== undefined) {
+            setFields.conductedByMembershipId = input.conductedByMembershipId;
+          }
+          if (input.structuredResponses !== undefined) {
+            setFields.structuredResponses = input.structuredResponses;
+          }
+          if (input.freeText !== undefined) setFields.freeText = input.freeText;
+          if (submittedAt) setFields.submittedAt = submittedAt;
+          const [u] = await db
+            .update(exitInterviews)
+            .set(setFields)
+            .where(and(eq(exitInterviews.tenantId, tenantId), eq(exitInterviews.id, existing.id)))
+            .returning({ id: exitInterviews.id });
+          interviewId = u?.id ?? existing.id;
+        } else {
+          const [ins] = await db
+            .insert(exitInterviews)
+            .values({
+              tenantId,
+              caseId: input.caseId,
+              scheduledAt: input.scheduledAt ? new Date(input.scheduledAt) : null,
+              conductedByMembershipId: input.conductedByMembershipId ?? null,
+              structuredResponses: input.structuredResponses ?? {},
+              freeText: input.freeText ?? null,
+              submittedAt,
+            })
+            .returning({ id: exitInterviews.id });
+          if (!ins) {
+            throw new TRPCError({
+              code: "INTERNAL_SERVER_ERROR",
+              message: "exit interview insert returned no row",
+            });
+          }
+          interviewId = ins.id;
+        }
+
+        // Completing (submitting) the interview auto-completes its task.
+        const taskAutoCompleted = submittedAt
+          ? await autoCompleteOffboardingTask(db, tenantId, input.caseId, "exit_interview")
+          : false;
+
+        return {
+          exitInterviewId: interviewId,
+          submittedAt: toIsoString(submittedAt),
+          taskAutoCompleted,
+        };
+      });
+    }),
+
+  /**
+   * updateFinalSettlement — walk the F&F record pending → calculated →
+   * approved → paid (upsert-creates a pending row on first touch). → approved
+   * requires the access_revocation task completed (§8.3 gate: IT confirms
+   * before settlement is released). → paid stamps paid_at + auto-completes the
+   * final_settlement task.
+   */
+  updateFinalSettlement: protectedProcedure
+    .input(updateFinalSettlementInputSchema)
+    .output(updateFinalSettlementOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      return withAudit("update_final_settlement", ctx, input, async () => {
+        const db = requireDb(ctx);
+        if (!ctx.tenantId) {
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: "protected procedure missing tenantId",
+          });
+        }
+        const tenantId = ctx.tenantId;
+        requireAnyRole(ctx, OFFBOARD_MANAGE_ROLES, "You don't have access to offboarding.");
+
+        const [caseRow] = await db
+          .select({ id: offboardingCases.id })
+          .from(offboardingCases)
+          .where(
+            and(eq(offboardingCases.tenantId, tenantId), eq(offboardingCases.id, input.caseId)),
+          )
+          .limit(1);
+        if (!caseRow) {
+          throw new TRPCError({ code: "NOT_FOUND", message: "Offboarding case not found" });
+        }
+
+        // Upsert-create a pending row on first touch, so the walk always has a
+        // starting point.
+        let [settle] = await db
+          .select({ id: finalSettlements.id, status: finalSettlements.status })
+          .from(finalSettlements)
+          .where(
+            and(eq(finalSettlements.tenantId, tenantId), eq(finalSettlements.caseId, input.caseId)),
+          )
+          .limit(1);
+        if (!settle) {
+          const [ins] = await db
+            .insert(finalSettlements)
+            .values({ tenantId, caseId: input.caseId, status: "pending" })
+            .returning({ id: finalSettlements.id, status: finalSettlements.status });
+          settle = ins;
+        }
+        if (!settle) {
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: "settlement upsert returned no row",
+          });
+        }
+
+        const target = input.status;
+        const now = new Date();
+        const setFields: Record<string, unknown> = { updatedAt: now };
+        if (input.amountMinor !== undefined) setFields.amountMinor = BigInt(input.amountMinor);
+        if (input.currency !== undefined) setFields.currency = input.currency.toUpperCase();
+        if (input.breakdown !== undefined) setFields.breakdown = input.breakdown;
+
+        // Status walk (forward-only; same-status is an amount-only edit).
+        if (target !== settle.status) {
+          const allowed = ALLOWED_SETTLEMENT_TRANSITIONS[settle.status] ?? [];
+          if (!allowed.includes(target)) {
+            throw new TRPCError({
+              code: "BAD_REQUEST",
+              message: `Illegal settlement transition ${settle.status} → ${target}`,
+            });
+          }
+          setFields.status = target;
+
+          // §8.3 gate: approve only after access is revoked.
+          if (target === "approved") {
+            const accessDone = await isOffboardingTaskCompleted(
+              db,
+              tenantId,
+              input.caseId,
+              "access_revocation",
+            );
+            if (!accessDone) {
+              throw new TRPCError({
+                code: "BAD_REQUEST",
+                message:
+                  "Access revocation must be completed before the settlement can be approved.",
+              });
+            }
+            setFields.approvedByMembershipId = await resolveCallerMembershipId(ctx, tenantId);
+          }
+          if (target === "paid") {
+            setFields.paidAt = now;
+          }
+        } else if (target === "paid") {
+          // A no-op onto 'paid' is not a valid edit — paid is terminal.
+          throw new TRPCError({ code: "BAD_REQUEST", message: "Settlement is already paid." });
+        }
+
+        const [updated] = await db
+          .update(finalSettlements)
+          .set(setFields)
+          .where(and(eq(finalSettlements.tenantId, tenantId), eq(finalSettlements.id, settle.id)))
+          .returning({
+            id: finalSettlements.id,
+            status: finalSettlements.status,
+            paidAt: finalSettlements.paidAt,
+          });
+        if (!updated) {
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: "settlement update returned no row",
+          });
+        }
+
+        const taskAutoCompleted =
+          target === "paid"
+            ? await autoCompleteOffboardingTask(db, tenantId, input.caseId, "final_settlement")
+            : false;
+
+        return {
+          settlementId: updated.id,
+          status: updated.status as FinalSettlementStatus,
+          paidAt: toIsoString(updated.paidAt),
+          taskAutoCompleted,
+        };
+      });
+    }),
+
+  /**
+   * listOffboardingCases — tenant-scoped, optional status filter, keyset on
+   * (created_at, id) desc (same codec as onboarding/audit). Carries candidate
+   * name + task-progress counts.
+   */
+  listOffboardingCases: protectedProcedure
+    .input(listOffboardingCasesInputSchema)
+    .output(listOffboardingCasesOutputSchema)
+    .query(async ({ ctx, input }) => {
+      const db = requireDb(ctx);
+      if (!ctx.tenantId) {
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: "protected procedure missing tenantId",
+        });
+      }
+      const tenantId = ctx.tenantId;
+      requireAnyRole(ctx, OFFBOARD_MANAGE_ROLES, "You don't have access to offboarding.");
+      const limit = input.limit;
+      const decoded = decodeAuditCursor(input.cursor);
+
+      const conditions = [eq(offboardingCases.tenantId, tenantId)];
+      if (input.status) {
+        conditions.push(eq(offboardingCases.status, input.status));
+      }
+      if (decoded) {
+        conditions.push(
+          dsql`(${offboardingCases.createdAt}, ${offboardingCases.id}) < (${decoded.createdAt.toISOString()}::timestamptz, ${decoded.id}::uuid)`,
+        );
+      }
+
+      const rows = await db
+        .select({
+          id: offboardingCases.id,
+          candidateId: offboardingCases.candidateId,
+          applicationId: offboardingCases.applicationId,
+          onboardingCaseId: offboardingCases.onboardingCaseId,
+          initiationType: offboardingCases.initiationType,
+          status: offboardingCases.status,
+          noticeStartDate: offboardingCases.noticeStartDate,
+          lastWorkingDay: offboardingCases.lastWorkingDay,
+          reason: offboardingCases.reason,
+          initiatedByMembershipId: offboardingCases.initiatedByMembershipId,
+          managerMembershipId: offboardingCases.managerMembershipId,
+          candidateName: persons.fullName,
+          totalTasks: dsql<number>`(SELECT count(*)::int FROM public.offboarding_tasks t WHERE t.tenant_id = ${offboardingCases.tenantId} AND t.case_id = ${offboardingCases.id})`,
+          completedTasks: dsql<number>`(SELECT count(*)::int FROM public.offboarding_tasks t WHERE t.tenant_id = ${offboardingCases.tenantId} AND t.case_id = ${offboardingCases.id} AND t.status = 'completed')`,
+          createdAt: offboardingCases.createdAt,
+          updatedAt: offboardingCases.updatedAt,
+        })
+        .from(offboardingCases)
+        .leftJoin(
+          candidates,
+          and(
+            eq(candidates.id, offboardingCases.candidateId),
+            eq(candidates.tenantId, offboardingCases.tenantId),
+          ),
+        )
+        .leftJoin(
+          persons,
+          and(eq(persons.id, candidates.personId), eq(persons.tenantId, offboardingCases.tenantId)),
+        )
+        .where(and(...conditions))
+        .orderBy(desc(offboardingCases.createdAt), desc(offboardingCases.id))
+        .limit(limit + 1);
+
+      const hasMore = rows.length > limit;
+      const pageRows = hasMore ? rows.slice(0, limit) : rows;
+      const items: OffboardingCaseListRow[] = pageRows.map((r) => ({
+        id: r.id,
+        candidateId: r.candidateId,
+        applicationId: r.applicationId ?? null,
+        onboardingCaseId: r.onboardingCaseId ?? null,
+        initiationType: r.initiationType as OffboardingInitiationType,
+        status: r.status as OffboardingCaseStatus,
+        noticeStartDate: r.noticeStartDate ?? null,
+        lastWorkingDay: r.lastWorkingDay ?? null,
+        reason: r.reason ?? null,
+        initiatedByMembershipId: r.initiatedByMembershipId,
+        managerMembershipId: r.managerMembershipId ?? null,
+        candidateName: r.candidateName ?? null,
+        totalTasks: Number(r.totalTasks),
+        completedTasks: Number(r.completedTasks),
+        createdAt: toIsoString(r.createdAt) ?? new Date(0).toISOString(),
+        updatedAt: toIsoString(r.updatedAt) ?? new Date(0).toISOString(),
+      }));
+
+      const lastRow = pageRows[pageRows.length - 1];
+      const nextCursor =
+        hasMore && lastRow ? encodeAuditCursor(lastRow.createdAt, lastRow.id) : null;
+
+      return { items, nextCursor };
+    }),
+
+  /**
+   * getOffboardingCaseDetail — one case + its tasks + asset returns + exit
+   * interview + settlement, with candidate + manager + initiator name joins.
+   */
+  getOffboardingCaseDetail: protectedProcedure
+    .input(getOffboardingCaseDetailInputSchema)
+    .output(getOffboardingCaseDetailOutputSchema)
+    .query(async ({ ctx, input }) => {
+      const db = requireDb(ctx);
+      if (!ctx.tenantId) {
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: "protected procedure missing tenantId",
+        });
+      }
+      const tenantId = ctx.tenantId;
+      requireAnyRole(ctx, OFFBOARD_MANAGE_ROLES, "You don't have access to offboarding.");
+
+      const [caseRow] = await db
+        .select({
+          id: offboardingCases.id,
+          candidateId: offboardingCases.candidateId,
+          applicationId: offboardingCases.applicationId,
+          onboardingCaseId: offboardingCases.onboardingCaseId,
+          initiationType: offboardingCases.initiationType,
+          status: offboardingCases.status,
+          noticeStartDate: offboardingCases.noticeStartDate,
+          lastWorkingDay: offboardingCases.lastWorkingDay,
+          reason: offboardingCases.reason,
+          initiatedByMembershipId: offboardingCases.initiatedByMembershipId,
+          managerMembershipId: offboardingCases.managerMembershipId,
+          candidateName: persons.fullName,
+          createdAt: offboardingCases.createdAt,
+          updatedAt: offboardingCases.updatedAt,
+        })
+        .from(offboardingCases)
+        .leftJoin(
+          candidates,
+          and(
+            eq(candidates.id, offboardingCases.candidateId),
+            eq(candidates.tenantId, offboardingCases.tenantId),
+          ),
+        )
+        .leftJoin(
+          persons,
+          and(eq(persons.id, candidates.personId), eq(persons.tenantId, offboardingCases.tenantId)),
+        )
+        .where(and(eq(offboardingCases.tenantId, tenantId), eq(offboardingCases.id, input.caseId)))
+        .limit(1);
+      if (!caseRow) {
+        throw new TRPCError({ code: "NOT_FOUND", message: "Offboarding case not found" });
+      }
+
+      const taskRows = await db
+        .select()
+        .from(offboardingTasks)
+        .where(
+          and(eq(offboardingTasks.tenantId, tenantId), eq(offboardingTasks.caseId, input.caseId)),
+        )
+        .orderBy(offboardingTasks.createdAt, offboardingTasks.id);
+
+      const assetRows = await db
+        .select()
+        .from(assetReturns)
+        .where(and(eq(assetReturns.tenantId, tenantId), eq(assetReturns.caseId, input.caseId)))
+        .orderBy(assetReturns.createdAt, assetReturns.id);
+
+      const [exitRow] = await db
+        .select()
+        .from(exitInterviews)
+        .where(and(eq(exitInterviews.tenantId, tenantId), eq(exitInterviews.caseId, input.caseId)))
+        .limit(1);
+
+      const [settleRow] = await db
+        .select()
+        .from(finalSettlements)
+        .where(
+          and(eq(finalSettlements.tenantId, tenantId), eq(finalSettlements.caseId, input.caseId)),
+        )
+        .limit(1);
+
+      // Resolve manager + initiator names via the service-role membership
+      // lookup (RLS on public.users is self-only) — same discipline as the
+      // onboarding detail.
+      const nameTargets = [caseRow.managerMembershipId, caseRow.initiatedByMembershipId].filter(
+        (id): id is string => id != null,
+      );
+      const nameById = new Map<string, { displayName: string | null; email: string | null }>();
+      if (nameTargets.length > 0) {
+        const nameRows = await ctx.sql<
+          { id: string; display_name: string | null; email: string | null }[]
+        >`
+          SELECT tum.id::text AS id, u.display_name AS display_name, au.email AS email
+          FROM public.tenant_user_memberships tum
+          JOIN auth.users au ON au.id = tum.user_id
+          LEFT JOIN public.users u ON u.id = tum.user_id
+          WHERE tum.tenant_id = ${tenantId} AND tum.id::text = ANY(${nameTargets})
+        `;
+        for (const r of nameRows) {
+          nameById.set(r.id, { displayName: r.display_name, email: r.email });
+        }
+      }
+      const manager = caseRow.managerMembershipId
+        ? nameById.get(caseRow.managerMembershipId)
+        : undefined;
+      const initiator = nameById.get(caseRow.initiatedByMembershipId);
+
+      const tasks: OffboardingTaskRow[] = taskRows.map((t) => ({
+        id: t.id,
+        caseId: t.caseId,
+        taskType: t.taskType as OffboardingTaskType,
+        status: t.status as OffboardingTaskRow["status"],
+        title: t.title,
+        assigneeMembershipId: t.assigneeMembershipId ?? null,
+        dueAt: toIsoString(t.dueAt),
+        completedAt: toIsoString(t.completedAt),
+        blockedReason: t.blockedReason ?? null,
+        metadata: t.metadata ?? null,
+        createdAt: toIsoString(t.createdAt) ?? new Date(0).toISOString(),
+        updatedAt: toIsoString(t.updatedAt) ?? new Date(0).toISOString(),
+      }));
+
+      const assetReturnRows: AssetReturnRow[] = assetRows.map((a) => ({
+        id: a.id,
+        caseId: a.caseId,
+        assetType: a.assetType,
+        assetTag: a.assetTag ?? null,
+        status: a.status as AssetReturnStatus,
+        returnedAt: toIsoString(a.returnedAt),
+        receivedByMembershipId: a.receivedByMembershipId ?? null,
+        notes: a.notes ?? null,
+        createdAt: toIsoString(a.createdAt) ?? new Date(0).toISOString(),
+        updatedAt: toIsoString(a.updatedAt) ?? new Date(0).toISOString(),
+      }));
+
+      const exitInterview: ExitInterviewRow | null = exitRow
+        ? {
+            id: exitRow.id,
+            caseId: exitRow.caseId,
+            scheduledAt: toIsoString(exitRow.scheduledAt),
+            conductedByMembershipId: exitRow.conductedByMembershipId ?? null,
+            structuredResponses: exitRow.structuredResponses ?? null,
+            freeText: exitRow.freeText ?? null,
+            submittedAt: toIsoString(exitRow.submittedAt),
+            createdAt: toIsoString(exitRow.createdAt) ?? new Date(0).toISOString(),
+            updatedAt: toIsoString(exitRow.updatedAt) ?? new Date(0).toISOString(),
+          }
+        : null;
+
+      const settlement: FinalSettlementRow | null = settleRow
+        ? {
+            id: settleRow.id,
+            caseId: settleRow.caseId,
+            status: settleRow.status as FinalSettlementStatus,
+            amountMinor: settleRow.amountMinor != null ? Number(settleRow.amountMinor) : null,
+            currency: settleRow.currency ?? null,
+            breakdown: settleRow.breakdown ?? null,
+            approvedByMembershipId: settleRow.approvedByMembershipId ?? null,
+            paidAt: toIsoString(settleRow.paidAt),
+            createdAt: toIsoString(settleRow.createdAt) ?? new Date(0).toISOString(),
+            updatedAt: toIsoString(settleRow.updatedAt) ?? new Date(0).toISOString(),
+          }
+        : null;
+
+      return {
+        case: {
+          id: caseRow.id,
+          candidateId: caseRow.candidateId,
+          applicationId: caseRow.applicationId ?? null,
+          onboardingCaseId: caseRow.onboardingCaseId ?? null,
+          initiationType: caseRow.initiationType as OffboardingInitiationType,
+          status: caseRow.status as OffboardingCaseStatus,
+          noticeStartDate: caseRow.noticeStartDate ?? null,
+          lastWorkingDay: caseRow.lastWorkingDay ?? null,
+          reason: caseRow.reason ?? null,
+          initiatedByMembershipId: caseRow.initiatedByMembershipId,
+          managerMembershipId: caseRow.managerMembershipId ?? null,
+          candidateName: caseRow.candidateName ?? null,
+          managerName: manager?.displayName ?? null,
+          managerEmail: manager?.email ?? null,
+          initiatedByName: initiator?.displayName ?? initiator?.email ?? null,
+          createdAt: toIsoString(caseRow.createdAt) ?? new Date(0).toISOString(),
+          updatedAt: toIsoString(caseRow.updatedAt) ?? new Date(0).toISOString(),
+        },
+        tasks,
+        assetReturns: assetReturnRows,
+        exitInterview,
+        settlement,
+      };
+    }),
+
   // ─────────────── PARTNER-01 — partner-portal surface ───────────────
   // All three are partnerProcedure: the tenant is resolved from
   // partner_users (NOT the JWT), and every query filters by the resolved
@@ -9194,6 +10195,109 @@ const ALLOWED_CASE_TRANSITIONS: Record<string, OnboardingCaseStatus[]> = {
   completed: [],
   cancelled: [],
 };
+
+// ─────────────── OFFBOARD-02 case status transition guard ───────────────
+
+/**
+ * Legal offboarding_cases.status transitions (requirements.md §8 lifecycle):
+ *   initiated     → notice_period | cancelled
+ *   notice_period → clearance | cancelled
+ *   clearance     → completed | cancelled
+ *   completed / cancelled are terminal.
+ * Forward-only; a no-op (same status) is rejected before this map is consulted.
+ * The transition-specific GATES (→ clearance needs LWD; → completed needs the
+ * clearance gates; → cancelled needs a reason) are enforced in the procedure.
+ */
+const ALLOWED_OFFBOARDING_TRANSITIONS: Record<string, OffboardingCaseStatus[]> = {
+  initiated: ["notice_period", "cancelled"],
+  notice_period: ["clearance", "cancelled"],
+  clearance: ["completed", "cancelled"],
+  completed: [],
+  cancelled: [],
+};
+
+/** Legal final_settlements.status walk (OFFBOARD-02). Forward-only. */
+const ALLOWED_SETTLEMENT_TRANSITIONS: Record<string, FinalSettlementStatus[]> = {
+  pending: ["calculated"],
+  calculated: ["approved"],
+  approved: ["paid"],
+  paid: [],
+};
+
+/**
+ * OFFBOARD-02 — auto-complete the single checklist task of `taskType` for a
+ * case when its underlying artifact reaches done (all assets returned / exit
+ * interview submitted / settlement paid). Flips a not-yet-completed task to
+ * completed (stamps completed_at, clears blocked_reason) and returns whether a
+ * row changed. Idempotent: re-running after completion is a no-op (false).
+ * All three call sites are flagged in the hand-back.
+ */
+async function autoCompleteOffboardingTask(
+  db: ReturnType<typeof requireDb>,
+  tenantId: string,
+  caseId: string,
+  taskType: OffboardingTaskType,
+): Promise<boolean> {
+  const now = new Date();
+  const rows = await db
+    .update(offboardingTasks)
+    .set({ status: "completed", completedAt: now, blockedReason: null, updatedAt: now })
+    .where(
+      and(
+        eq(offboardingTasks.tenantId, tenantId),
+        eq(offboardingTasks.caseId, caseId),
+        eq(offboardingTasks.taskType, taskType),
+        ne(offboardingTasks.status, "completed"),
+      ),
+    )
+    .returning({ id: offboardingTasks.id });
+  return rows.length > 0;
+}
+
+/**
+ * OFFBOARD-02 — auto-complete the asset_return task when EVERY asset row for
+ * the case is settled (returned | written_off) and at least one row exists. A
+ * 'pending'/'lost' row leaves the task open. Returns whether the task flipped.
+ */
+async function maybeCompleteAssetReturnTask(
+  db: ReturnType<typeof requireDb>,
+  tenantId: string,
+  caseId: string,
+): Promise<boolean> {
+  const [counts] = await db
+    .select({
+      total: dsql<number>`count(*)::int`,
+      outstanding: dsql<number>`count(*) FILTER (WHERE ${assetReturns.status} NOT IN ('returned', 'written_off'))::int`,
+    })
+    .from(assetReturns)
+    .where(and(eq(assetReturns.tenantId, tenantId), eq(assetReturns.caseId, caseId)));
+  const total = Number(counts?.total ?? 0);
+  const outstanding = Number(counts?.outstanding ?? 0);
+  if (total === 0 || outstanding > 0) return false;
+  return autoCompleteOffboardingTask(db, tenantId, caseId, "asset_return");
+}
+
+/** True when the case's single task of `taskType` exists AND is completed. */
+async function isOffboardingTaskCompleted(
+  db: ReturnType<typeof requireDb>,
+  tenantId: string,
+  caseId: string,
+  taskType: OffboardingTaskType,
+): Promise<boolean> {
+  const [row] = await db
+    .select({ id: offboardingTasks.id })
+    .from(offboardingTasks)
+    .where(
+      and(
+        eq(offboardingTasks.tenantId, tenantId),
+        eq(offboardingTasks.caseId, caseId),
+        eq(offboardingTasks.taskType, taskType),
+        eq(offboardingTasks.status, "completed"),
+      ),
+    )
+    .limit(1);
+  return row != null;
+}
 
 // ─────────────── AGENT-04a #30 rule-attachment guard ───────────────
 

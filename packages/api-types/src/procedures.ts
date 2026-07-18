@@ -1838,6 +1838,336 @@ export const rejectOnboardingDocumentOutputSchema = z.object({
 export type RejectOnboardingDocumentInput = z.infer<typeof rejectOnboardingDocumentInputSchema>;
 export type RejectOnboardingDocumentOutput = z.infer<typeof rejectOnboardingDocumentOutputSchema>;
 
+// ─────────────── offboarding lifecycle (OFFBOARD-02) ───────────────
+
+/**
+ * offboarding_cases.status / offboarding_tasks.{status,task_type} /
+ * initiation_type / asset_returns.status / final_settlements.status — text +
+ * CHECK in the DB (OFFBOARD-01, HANDOVER reality #114), mirrored here as zod
+ * enums for the tRPC surface. Wave-1 values; additive to grow.
+ */
+export const offboardingCaseStatusSchema = z.enum([
+  "initiated",
+  "notice_period",
+  "clearance",
+  "completed",
+  "cancelled",
+]);
+export type OffboardingCaseStatus = z.infer<typeof offboardingCaseStatusSchema>;
+
+export const offboardingInitiationTypeSchema = z.enum([
+  "resignation",
+  "termination",
+  "end_of_contract",
+]);
+export type OffboardingInitiationType = z.infer<typeof offboardingInitiationTypeSchema>;
+
+// Note: NO 'cancelled' member — the offboarding_tasks CHECK (OFFBOARD-01)
+// omits it (a task is skipped, not cancelled).
+export const offboardingTaskStatusSchema = z.enum([
+  "pending",
+  "in_progress",
+  "completed",
+  "blocked",
+  "skipped",
+]);
+export type OffboardingTaskStatus = z.infer<typeof offboardingTaskStatusSchema>;
+
+export const offboardingTaskTypeSchema = z.enum([
+  "knowledge_transfer",
+  "asset_return",
+  "access_revocation",
+  "final_settlement",
+  "exit_interview",
+  "manager_signoff",
+  "hr_clearance",
+]);
+export type OffboardingTaskType = z.infer<typeof offboardingTaskTypeSchema>;
+
+export const assetReturnStatusSchema = z.enum(["pending", "returned", "written_off", "lost"]);
+export type AssetReturnStatus = z.infer<typeof assetReturnStatusSchema>;
+
+export const finalSettlementStatusSchema = z.enum(["pending", "calculated", "approved", "paid"]);
+export type FinalSettlementStatus = z.infer<typeof finalSettlementStatusSchema>;
+
+const DATE_ONLY = /^\d{4}-\d{2}-\d{2}$/;
+
+// ─────────── row shapes ───────────
+
+export const offboardingCaseListRowSchema = z.object({
+  id: z.string().uuid(),
+  candidateId: z.string().uuid(),
+  applicationId: z.string().uuid().nullable(),
+  onboardingCaseId: z.string().uuid().nullable(),
+  initiationType: offboardingInitiationTypeSchema,
+  status: offboardingCaseStatusSchema,
+  noticeStartDate: z.string().nullable(),
+  lastWorkingDay: z.string().nullable(),
+  reason: z.string().nullable(),
+  initiatedByMembershipId: z.string().uuid(),
+  managerMembershipId: z.string().uuid().nullable(),
+  candidateName: z.string().nullable(),
+  totalTasks: z.number().int(),
+  completedTasks: z.number().int(),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+});
+export type OffboardingCaseListRow = z.infer<typeof offboardingCaseListRowSchema>;
+
+export const offboardingTaskRowSchema = z.object({
+  id: z.string().uuid(),
+  caseId: z.string().uuid(),
+  taskType: offboardingTaskTypeSchema,
+  status: offboardingTaskStatusSchema,
+  title: z.string(),
+  assigneeMembershipId: z.string().uuid().nullable(),
+  dueAt: z.string().nullable(),
+  completedAt: z.string().nullable(),
+  blockedReason: z.string().nullable(),
+  metadata: z.unknown().nullable(),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+});
+export type OffboardingTaskRow = z.infer<typeof offboardingTaskRowSchema>;
+
+export const assetReturnRowSchema = z.object({
+  id: z.string().uuid(),
+  caseId: z.string().uuid(),
+  assetType: z.string(),
+  assetTag: z.string().nullable(),
+  status: assetReturnStatusSchema,
+  returnedAt: z.string().nullable(),
+  receivedByMembershipId: z.string().uuid().nullable(),
+  notes: z.string().nullable(),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+});
+export type AssetReturnRow = z.infer<typeof assetReturnRowSchema>;
+
+export const exitInterviewRowSchema = z.object({
+  id: z.string().uuid(),
+  caseId: z.string().uuid(),
+  scheduledAt: z.string().nullable(),
+  conductedByMembershipId: z.string().uuid().nullable(),
+  structuredResponses: z.unknown().nullable(),
+  freeText: z.string().nullable(),
+  submittedAt: z.string().nullable(),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+});
+export type ExitInterviewRow = z.infer<typeof exitInterviewRowSchema>;
+
+export const finalSettlementRowSchema = z.object({
+  id: z.string().uuid(),
+  caseId: z.string().uuid(),
+  status: finalSettlementStatusSchema,
+  // Net settlement in minor units (paise/cents). Serialised as a number — the
+  // demo amounts (single-digit-crore paise) sit well within Number.MAX_SAFE.
+  amountMinor: z.number().nullable(),
+  currency: z.string().nullable(),
+  breakdown: z.unknown().nullable(),
+  approvedByMembershipId: z.string().uuid().nullable(),
+  paidAt: z.string().nullable(),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+});
+export type FinalSettlementRow = z.infer<typeof finalSettlementRowSchema>;
+
+// ─────────── initiateOffboarding ───────────
+
+/**
+ * initiateOffboarding — open a departure case for a HIRED candidate and
+ * generate the standard 7-task clearance checklist. `created` is false when a
+ * live case already exists (the procedure 409s on that path — see the router),
+ * so in practice callers only see created:true.
+ */
+export const initiateOffboardingInputSchema = z.object({
+  candidateId: z.string().uuid(),
+  initiationType: offboardingInitiationTypeSchema,
+  noticeStartDate: z.string().regex(DATE_ONLY, "Expected YYYY-MM-DD").optional(),
+  lastWorkingDay: z.string().regex(DATE_ONLY, "Expected YYYY-MM-DD").optional(),
+  reason: z.string().min(1).max(2000).optional(),
+  managerMembershipId: z.string().uuid().optional(),
+});
+export const initiateOffboardingOutputSchema = z.object({
+  caseId: z.string().uuid(),
+  created: z.boolean(),
+  status: offboardingCaseStatusSchema,
+  tasksCreated: z.number().int(),
+});
+export type InitiateOffboardingInput = z.infer<typeof initiateOffboardingInputSchema>;
+export type InitiateOffboardingOutput = z.infer<typeof initiateOffboardingOutputSchema>;
+
+// ─────────── updateOffboardingTaskStatus ───────────
+
+export const updateOffboardingTaskStatusInputSchema = z.object({
+  taskId: z.string().uuid(),
+  status: offboardingTaskStatusSchema,
+  blockedReason: z.string().min(1).max(1000).optional(),
+});
+export const updateOffboardingTaskStatusOutputSchema = z.object({
+  taskId: z.string().uuid(),
+  status: offboardingTaskStatusSchema,
+  completedAt: z.string().nullable(),
+  blockedReason: z.string().nullable(),
+});
+export type UpdateOffboardingTaskStatusInput = z.infer<
+  typeof updateOffboardingTaskStatusInputSchema
+>;
+export type UpdateOffboardingTaskStatusOutput = z.infer<
+  typeof updateOffboardingTaskStatusOutputSchema
+>;
+
+// ─────────── advanceOffboardingCase ───────────
+
+/**
+ * advanceOffboardingCase — forward-only lifecycle walk (initiated →
+ * notice_period → clearance → completed) plus cancel-from-any-non-terminal.
+ * Transition gates enforced in the router: → clearance requires
+ * last_working_day; → completed requires the clearance gates (access_revocation
+ * + asset_return tasks completed AND settlement approved|paid); → cancelled
+ * requires a reason.
+ */
+export const advanceOffboardingCaseInputSchema = z.object({
+  caseId: z.string().uuid(),
+  targetStatus: offboardingCaseStatusSchema,
+  // Required when targetStatus = 'cancelled'; the notice/LWD may also be
+  // stamped on the → notice_period / → clearance steps.
+  reason: z.string().min(1).max(2000).optional(),
+  noticeStartDate: z.string().regex(DATE_ONLY, "Expected YYYY-MM-DD").optional(),
+  lastWorkingDay: z.string().regex(DATE_ONLY, "Expected YYYY-MM-DD").optional(),
+});
+export const advanceOffboardingCaseOutputSchema = z.object({
+  caseId: z.string().uuid(),
+  status: offboardingCaseStatusSchema,
+  // True when this advance enqueued the Workday terminate_employee event
+  // (only on the → completed transition, and idempotent).
+  terminateEnqueued: z.boolean(),
+});
+export type AdvanceOffboardingCaseInput = z.infer<typeof advanceOffboardingCaseInputSchema>;
+export type AdvanceOffboardingCaseOutput = z.infer<typeof advanceOffboardingCaseOutputSchema>;
+
+// ─────────── recordAssetReturn / updateAssetReturn ───────────
+
+export const recordAssetReturnInputSchema = z.object({
+  caseId: z.string().uuid(),
+  assetType: z.string().min(1).max(120),
+  assetTag: z.string().min(1).max(120).optional(),
+  status: assetReturnStatusSchema.default("pending"),
+  notes: z.string().max(2000).optional(),
+});
+export const assetReturnMutationOutputSchema = z.object({
+  assetReturnId: z.string().uuid(),
+  status: assetReturnStatusSchema,
+  // True when this write flipped the asset_return checklist task to completed
+  // (all rows returned/written_off).
+  taskAutoCompleted: z.boolean(),
+});
+export type RecordAssetReturnInput = z.infer<typeof recordAssetReturnInputSchema>;
+export type AssetReturnMutationOutput = z.infer<typeof assetReturnMutationOutputSchema>;
+
+export const updateAssetReturnInputSchema = z
+  .object({
+    assetReturnId: z.string().uuid(),
+    status: assetReturnStatusSchema.optional(),
+    notes: z.string().max(2000).nullable().optional(),
+    // The IT/HR membership signing off the return; stamped alongside a
+    // → returned transition.
+    receivedByMembershipId: z.string().uuid().nullable().optional(),
+  })
+  .refine(
+    (v) =>
+      v.status !== undefined || v.notes !== undefined || v.receivedByMembershipId !== undefined,
+    { message: "At least one field to update is required" },
+  );
+export type UpdateAssetReturnInput = z.infer<typeof updateAssetReturnInputSchema>;
+
+// ─────────── recordExitInterview ───────────
+
+/**
+ * recordExitInterview — upsert the one-per-case exit interview. Before
+ * submit it is a mutable draft (schedule + responses + free text); passing
+ * submit:true stamps submitted_at ONCE, auto-completes the exit_interview
+ * task, and freezes the row (further writes 409 — scorecard-immutability
+ * discipline).
+ */
+export const recordExitInterviewInputSchema = z.object({
+  caseId: z.string().uuid(),
+  scheduledAt: z.string().datetime().optional(),
+  conductedByMembershipId: z.string().uuid().nullable().optional(),
+  structuredResponses: z.record(z.string(), z.unknown()).optional(),
+  freeText: z.string().max(10000).nullable().optional(),
+  submit: z.boolean().default(false),
+});
+export const recordExitInterviewOutputSchema = z.object({
+  exitInterviewId: z.string().uuid(),
+  submittedAt: z.string().nullable(),
+  taskAutoCompleted: z.boolean(),
+});
+export type RecordExitInterviewInput = z.infer<typeof recordExitInterviewInputSchema>;
+export type RecordExitInterviewOutput = z.infer<typeof recordExitInterviewOutputSchema>;
+
+// ─────────── updateFinalSettlement ───────────
+
+/**
+ * updateFinalSettlement — walk the F&F record pending → calculated →
+ * approved → paid (upsert-creates a pending row on first touch). → approved
+ * requires the access_revocation task completed (requirements §8.3: IT
+ * confirms access is cut before settlement is released). → paid stamps
+ * paid_at and auto-completes the final_settlement task.
+ */
+export const updateFinalSettlementInputSchema = z.object({
+  caseId: z.string().uuid(),
+  status: finalSettlementStatusSchema,
+  amountMinor: z.number().int().nonnegative().optional(),
+  currency: z.string().length(3).optional(),
+  breakdown: z.record(z.string(), z.unknown()).optional(),
+});
+export const updateFinalSettlementOutputSchema = z.object({
+  settlementId: z.string().uuid(),
+  status: finalSettlementStatusSchema,
+  paidAt: z.string().nullable(),
+  taskAutoCompleted: z.boolean(),
+});
+export type UpdateFinalSettlementInput = z.infer<typeof updateFinalSettlementInputSchema>;
+export type UpdateFinalSettlementOutput = z.infer<typeof updateFinalSettlementOutputSchema>;
+
+// ─────────── getOffboardingCaseDetail / listOffboardingCases ───────────
+
+export const offboardingCaseDetailSchema = offboardingCaseListRowSchema
+  .omit({ totalTasks: true, completedTasks: true })
+  .extend({
+    managerName: z.string().nullable(),
+    managerEmail: z.string().nullable(),
+    initiatedByName: z.string().nullable(),
+  });
+export type OffboardingCaseDetail = z.infer<typeof offboardingCaseDetailSchema>;
+
+export const getOffboardingCaseDetailInputSchema = z.object({
+  caseId: z.string().uuid(),
+});
+export const getOffboardingCaseDetailOutputSchema = z.object({
+  case: offboardingCaseDetailSchema,
+  tasks: z.array(offboardingTaskRowSchema),
+  assetReturns: z.array(assetReturnRowSchema),
+  exitInterview: exitInterviewRowSchema.nullable(),
+  settlement: finalSettlementRowSchema.nullable(),
+});
+export type GetOffboardingCaseDetailInput = z.infer<typeof getOffboardingCaseDetailInputSchema>;
+export type GetOffboardingCaseDetailOutput = z.infer<typeof getOffboardingCaseDetailOutputSchema>;
+
+export const listOffboardingCasesInputSchema = z.object({
+  status: offboardingCaseStatusSchema.optional(),
+  limit: z.number().int().positive().max(100).default(50),
+  cursor: z.string().optional(),
+});
+export const listOffboardingCasesOutputSchema = z.object({
+  items: z.array(offboardingCaseListRowSchema),
+  nextCursor: z.string().nullable(),
+});
+export type ListOffboardingCasesInput = z.infer<typeof listOffboardingCasesInputSchema>;
+export type ListOffboardingCasesOutput = z.infer<typeof listOffboardingCasesOutputSchema>;
+
 // ─────────── listTenantMemberships (ONBOARD-04) ───────────
 
 /**

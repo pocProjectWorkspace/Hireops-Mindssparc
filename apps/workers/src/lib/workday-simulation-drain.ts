@@ -42,6 +42,16 @@ const DEFAULT_BATCH = 10;
  */
 const DAY_ZERO_HIRE_EVENT_TYPE = "hire_employee_day_zero";
 
+/**
+ * OFFBOARD-02 — the Workday terminate event type. Mirrors TERMINATE_EVENT_TYPE
+ * in apps/api/src/lib/offboarding-case.ts (kept as a literal here to avoid a
+ * cross-package import). Its payload carries `offboarding_case_id` — but there
+ * is NO case-side write-back (no worker-ID equivalent, and a terminate-marker
+ * column would need a migration; deferred to OFFBOARD-03+). The record of the
+ * simulated termination IS the outbox row's `simulated_response` update below.
+ */
+const TERMINATE_EVENT_TYPE = "terminate_employee";
+
 export async function drainWorkdayOutboxOnce(opts: SimulationDrainOpts): Promise<{
   claimed: number;
   simulated: number;
@@ -194,6 +204,25 @@ export function generateMockWorkdayResponse(
         type: "Worker",
         wid: randomUUID(),
         descriptor: `Worker: ${preHire.full_name ?? "Unknown"}`,
+      },
+      effective_date: effectiveDate ?? null,
+      simulated_at: new Date().toISOString(),
+      simulation_notes:
+        "This is a simulated response. In production, this would be the actual Workday SOAP response.",
+    };
+  }
+  if (eventType === TERMINATE_EVENT_TYPE) {
+    // OFFBOARD-02 Termination: the active Worker is separated. No write-back
+    // (see the note on TERMINATE_EVENT_TYPE) — the terminal outbox row is the
+    // record.
+    const worker = (payload.worker ?? {}) as { full_name?: string };
+    const effectiveDate = payload.effective_date as string | undefined;
+    return {
+      status: "success",
+      workday_reference: {
+        type: "Termination",
+        wid: randomUUID(),
+        descriptor: `Termination: ${worker.full_name ?? "Unknown"}`,
       },
       effective_date: effectiveDate ?? null,
       simulated_at: new Date().toISOString(),
