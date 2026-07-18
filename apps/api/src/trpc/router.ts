@@ -19,6 +19,7 @@
  * tRPC middleware in trpc-core.ts.
  */
 
+import { randomBytes } from "node:crypto";
 import { z } from "zod";
 import { TRPCError } from "@trpc/server";
 import { and, desc, eq, gte, inArray, isNull, lt, lte, sql as dsql, type SQL } from "drizzle-orm";
@@ -241,6 +242,25 @@ import {
   rejectOnboardingDocumentOutputSchema,
   listTenantMembershipsInputSchema,
   listTenantMembershipsOutputSchema,
+  getScoringWeightsInputSchema,
+  getScoringWeightsOutputSchema,
+  updateScoringWeightsInputSchema,
+  updateScoringWeightsOutputSchema,
+  resolveScoringWeights,
+  listTenantUsersAdminInputSchema,
+  listTenantUsersAdminOutputSchema,
+  inviteTenantUserInputSchema,
+  inviteTenantUserOutputSchema,
+  updateMembershipRolesInputSchema,
+  updateMembershipRolesOutputSchema,
+  setMembershipStatusInputSchema,
+  setMembershipStatusOutputSchema,
+  getDocumentRetentionInputSchema,
+  getDocumentRetentionOutputSchema,
+  INTERNAL_TENANT_ROLES,
+  type ScoringWeights,
+  type TenantUserAdminRow,
+  type DocumentRetentionRow,
   partnerGetMeOutputSchema,
   partnerListAssignedRequisitionsInputSchema,
   partnerListAssignedRequisitionsOutputSchema,
@@ -285,6 +305,7 @@ import {
   getAIClient,
   resolveTenantAiSettingsDb,
   resolveTenantBiasLexiconDb,
+  resolveTenantScoringWeightsDb,
 } from "@hireops/ai-client";
 import {
   buildJdGenerationPrompt,
@@ -350,6 +371,17 @@ function normaliseEmail(email: string): string {
  * existing auth.users row (e.g. a re-run, or an email that already had an
  * auth identity) — the caller flags/logs it.
  */
+/**
+ * Generate a strong one-time password for an invited user (CONF-03). No email
+ * is sent this ticket — the admin reads this once off the screen and hands it
+ * over out-of-band. Mixed case + digits + a symbol so it satisfies any
+ * reasonable password policy; base64url of 18 random bytes gives ~144 bits.
+ */
+function generateTempPassword(): string {
+  const core = randomBytes(18).toString("base64url");
+  return `Hq7!${core}`;
+}
+
 async function createOrResolveAuthUser(
   email: string,
   password: string,
@@ -448,6 +480,19 @@ const PANEL_SURFACE_ROLES = new Set(["admin", "panel_member"]);
 // the gate themselves because the write changes real AI call behaviour and
 // the read exposes config an admin owns.
 const AI_SETTINGS_ADMIN_ROLES = new Set(["admin"]);
+
+// CONF-03 users & roles admin. Admin-only on every read and write — the
+// listing exposes every member's email + roles + status, and the mutations
+// change who can access the tenant. The service-role membership writes
+// (tenant_user_memberships has no authenticated write policy) are authorised
+// by this explicit gate + the ctx.tenantId predicate.
+const USERS_ADMIN_ROLES = new Set(["admin"]);
+
+// The set of internal roles an admin may assign (mirror of api-types'
+// INTERNAL_TENANT_ROLES). A submitted role outside this set is rejected by the
+// zod .input(); this Set is the server-side backstop + the self-demotion guard
+// key ("admin").
+const ASSIGNABLE_INTERNAL_ROLES = new Set<string>(INTERNAL_TENANT_ROLES);
 
 /**
  * CONF-02 bias-gate helpers.
@@ -4703,6 +4748,69 @@ export const appRouter = router({
       });
     }),
 
+  // ─────────────────────── getScoringWeights (CONF-03) ───────────────────────
+  //
+  // Admin read of the effective per-tenant scoring weight profile (defaults
+  // merged over tenants.settings.scoringWeights). Admin-gated on the procedure
+  // itself. Read-only, no withAudit (matches getTenantAiSettings). The four
+  // categories mirror the scoring response's top_factors factor enum.
+  getScoringWeights: protectedProcedure
+    .input(getScoringWeightsInputSchema)
+    .output(getScoringWeightsOutputSchema)
+    .query(async ({ ctx }) => {
+      requireAnyRole(ctx, AI_SETTINGS_ADMIN_ROLES, "Scoring weights are admin-only");
+      if (!ctx.tenantId) {
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: "protected procedure missing tenantId",
+        });
+      }
+      return resolveTenantScoringWeightsDb(ctx.tenantId);
+    }),
+
+  // ─────────────────────── updateScoringWeights (CONF-03) ───────────────────────
+  //
+  // Admin write of the per-tenant scoring weight profile. Admin-gated +
+  // audited. The zod .input() already enforces sum-to-100 (a refine); we
+  // normalise through resolveScoringWeights and merge the block into
+  // tenants.settings under the `scoringWeights` key via the same atomic
+  // service-role jsonb `||` merge updateTenantAiSettings uses (tenants is
+  // FORCE RLS SELECT-only). A SIBLING mutation — the weight profile saves
+  // independently of aiSettings + biasLexicon.
+  updateScoringWeights: protectedProcedure
+    .input(updateScoringWeightsInputSchema)
+    .output(updateScoringWeightsOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      return withAudit("update_scoring_weights", ctx, input, async () => {
+        requireAnyRole(ctx, AI_SETTINGS_ADMIN_ROLES, "Scoring weights are admin-only");
+        if (!ctx.tenantId) {
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: "protected procedure missing tenantId",
+          });
+        }
+        const tenantId = ctx.tenantId;
+        const nextBlock: ScoringWeights = resolveScoringWeights(input);
+
+        const res = await poolDb.execute(dsql`
+          UPDATE public.tenants
+          SET settings = COALESCE(settings, '{}'::jsonb)
+              || jsonb_build_object('scoringWeights', ${JSON.stringify(nextBlock)}::jsonb)
+          WHERE id = ${tenantId}::uuid
+          RETURNING id
+        `);
+        const updated = (res as { rows?: unknown[] }).rows ?? (res as unknown[]);
+        if (updated.length !== 1) {
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: "tenant settings update affected an unexpected number of rows",
+          });
+        }
+
+        return { ok: true as const, weights: nextBlock };
+      });
+    }),
+
   // ─────────────────────── reviewJdWithAi (CONF-02) ───────────────────────
   //
   // Optional, advisory AI inclusive-language review of a DRAFT requisition's
@@ -6655,6 +6763,325 @@ export const appRouter = router({
         displayName: r.display_name ?? null,
         email: r.email ?? null,
         roles: Array.isArray(r.roles) ? r.roles : [],
+      }));
+      return { items };
+    }),
+
+  // ─────────────────────── CONF-03 users & roles admin ───────────────────────
+  //
+  // /admin/users. Admin-only on every read + write (USERS_ADMIN_ROLES). Reads
+  // + writes go through the service-role pool (ctx.sql / poolDb) with an
+  // explicit tenant_id predicate: tenant_user_memberships has NO authenticated
+  // write policy (only memberships_self_select), so the RLS-scoped client
+  // cannot list other members or mutate memberships. The explicit admin gate +
+  // the tenantId predicate are the authorisation, matching the seed-test-users
+  // service-role precedent. Role changes + deactivations take effect at the
+  // member's NEXT token issuance (the auth hook reads active memberships at
+  // sign-in) — surfaced in the UI copy.
+
+  /**
+   * listTenantUsersAdmin — every membership in the caller's tenant (all
+   * statuses, unlike listTenantMemberships which is active-only for the
+   * assignment pickers), with email + roles + status + createdAt + an isSelf
+   * flag the client uses to render the self-guard affordances.
+   */
+  listTenantUsersAdmin: protectedProcedure
+    .input(listTenantUsersAdminInputSchema)
+    .output(listTenantUsersAdminOutputSchema)
+    .query(async ({ ctx }) => {
+      requireAnyRole(ctx, USERS_ADMIN_ROLES, "User administration is admin-only");
+      if (!ctx.tenantId) {
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: "protected procedure missing tenantId",
+        });
+      }
+      const tenantId = ctx.tenantId;
+      const selfUserId = ctx.userId;
+      const CAP = 500;
+
+      const rows = await ctx.sql<
+        {
+          id: string;
+          user_id: string;
+          display_name: string | null;
+          email: string | null;
+          roles: string[];
+          status: string;
+          created_at: Date | string;
+        }[]
+      >`
+        SELECT tum.id::text AS id, tum.user_id::text AS user_id,
+               u.display_name AS display_name, au.email AS email,
+               tum.roles AS roles, tum.status AS status, tum.created_at AS created_at
+        FROM public.tenant_user_memberships tum
+        JOIN auth.users au ON au.id = tum.user_id
+        LEFT JOIN public.users u ON u.id = tum.user_id
+        WHERE tum.tenant_id = ${tenantId}
+        ORDER BY (tum.status = 'active') DESC, u.display_name ASC NULLS LAST, au.email ASC
+        LIMIT ${CAP}
+      `;
+
+      const items: TenantUserAdminRow[] = rows.map((r) => ({
+        membershipId: r.id,
+        userId: r.user_id,
+        displayName: r.display_name ?? null,
+        email: r.email ?? null,
+        roles: Array.isArray(r.roles) ? r.roles : [],
+        status: r.status,
+        createdAt: toIsoString(r.created_at) ?? new Date(0).toISOString(),
+        isSelf: r.user_id === selfUserId,
+      }));
+      return { items };
+    }),
+
+  /**
+   * inviteTenantUser — mint (or resolve) an auth identity + membership with
+   * the chosen internal roles, via the service-role admin pattern. NO email is
+   * sent this ticket: the temp password is returned once for the admin to
+   * relay out-of-band (flagged in the UI). Idempotent-ish: an existing auth
+   * email has its password reset (alreadyExisted); an existing membership in
+   * this tenant is updated in place (membershipReused) rather than duplicated.
+   */
+  inviteTenantUser: protectedProcedure
+    .input(inviteTenantUserInputSchema)
+    .output(inviteTenantUserOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      return withAudit("invite_tenant_user", ctx, { ...input, roles: input.roles }, async () => {
+        requireAnyRole(ctx, USERS_ADMIN_ROLES, "Inviting users is admin-only");
+        if (!ctx.tenantId) {
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: "protected procedure missing tenantId",
+          });
+        }
+        const tenantId = ctx.tenantId;
+        const email = input.email.trim().toLowerCase();
+        // Backstop the zod enum: every role must be an assignable internal role.
+        for (const r of input.roles) {
+          if (!ASSIGNABLE_INTERNAL_ROLES.has(r)) {
+            throw new TRPCError({ code: "BAD_REQUEST", message: `role not assignable: ${r}` });
+          }
+        }
+
+        const tempPassword = generateTempPassword();
+        const { userId, alreadyExisted } = await createOrResolveAuthUser(email, tempPassword);
+
+        // Profile row (display name) — best-effort upsert of display name.
+        if (input.displayName) {
+          await poolDb
+            .insert(users)
+            .values({ id: userId, displayName: input.displayName })
+            .onConflictDoNothing();
+        }
+
+        // Existing membership in THIS tenant? Update roles + reactivate rather
+        // than create a duplicate (the (user_id, tenant_id) unique index would
+        // reject a second insert anyway).
+        const [existing] = await poolDb
+          .select({ id: tenantUserMemberships.id })
+          .from(tenantUserMemberships)
+          .where(
+            and(
+              eq(tenantUserMemberships.userId, userId),
+              eq(tenantUserMemberships.tenantId, tenantId),
+            ),
+          )
+          .limit(1);
+
+        let membershipId: string;
+        let membershipReused = false;
+        if (existing) {
+          membershipReused = true;
+          await poolDb
+            .update(tenantUserMemberships)
+            .set({ roles: [...input.roles], status: "active", updatedAt: new Date() })
+            .where(
+              and(
+                eq(tenantUserMemberships.id, existing.id),
+                eq(tenantUserMemberships.tenantId, tenantId),
+              ),
+            );
+          membershipId = existing.id;
+        } else {
+          const [inserted] = await poolDb
+            .insert(tenantUserMemberships)
+            .values({
+              userId,
+              tenantId,
+              roles: [...input.roles],
+              status: "active",
+              jobTitle: input.displayName ?? null,
+            })
+            .returning({ id: tenantUserMemberships.id });
+          if (!inserted) {
+            throw new TRPCError({
+              code: "INTERNAL_SERVER_ERROR",
+              message: "membership insert returned no row",
+            });
+          }
+          membershipId = inserted.id;
+        }
+
+        return {
+          membershipId,
+          userId,
+          email,
+          tempPassword,
+          alreadyExisted,
+          membershipReused,
+        };
+      });
+    }),
+
+  /**
+   * updateMembershipRoles — replace a membership's internal roles. Admin +
+   * audited. Self-demotion guard: an admin cannot strip their OWN admin role
+   * (clean BAD_REQUEST) — otherwise a lone admin could lock the tenant out.
+   */
+  updateMembershipRoles: protectedProcedure
+    .input(updateMembershipRolesInputSchema)
+    .output(updateMembershipRolesOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      return withAudit("update_membership_roles", ctx, input, async () => {
+        requireAnyRole(ctx, USERS_ADMIN_ROLES, "Editing roles is admin-only");
+        if (!ctx.tenantId) {
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: "protected procedure missing tenantId",
+          });
+        }
+        const tenantId = ctx.tenantId;
+        for (const r of input.roles) {
+          if (!ASSIGNABLE_INTERNAL_ROLES.has(r)) {
+            throw new TRPCError({ code: "BAD_REQUEST", message: `role not assignable: ${r}` });
+          }
+        }
+
+        const [membership] = await poolDb
+          .select({ id: tenantUserMemberships.id, userId: tenantUserMemberships.userId })
+          .from(tenantUserMemberships)
+          .where(
+            and(
+              eq(tenantUserMemberships.id, input.membershipId),
+              eq(tenantUserMemberships.tenantId, tenantId),
+            ),
+          )
+          .limit(1);
+        if (!membership) {
+          throw new TRPCError({ code: "NOT_FOUND", message: "membership not found" });
+        }
+
+        // Self-demotion guard: the acting admin may not remove their own admin.
+        if (membership.userId === ctx.userId && !input.roles.includes("admin")) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: "You cannot remove your own admin role. Ask another admin to change it.",
+          });
+        }
+
+        await poolDb
+          .update(tenantUserMemberships)
+          .set({ roles: [...input.roles], updatedAt: new Date() })
+          .where(
+            and(
+              eq(tenantUserMemberships.id, input.membershipId),
+              eq(tenantUserMemberships.tenantId, tenantId),
+            ),
+          );
+
+        return { ok: true as const, membershipId: input.membershipId, roles: [...input.roles] };
+      });
+    }),
+
+  /**
+   * setMembershipStatus — deactivate (suspended) / reactivate (active) a
+   * membership. Admin + audited. Self-deactivation guard: an admin cannot
+   * deactivate their own membership (clean BAD_REQUEST).
+   */
+  setMembershipStatus: protectedProcedure
+    .input(setMembershipStatusInputSchema)
+    .output(setMembershipStatusOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      return withAudit("set_membership_status", ctx, input, async () => {
+        requireAnyRole(ctx, USERS_ADMIN_ROLES, "Changing membership status is admin-only");
+        if (!ctx.tenantId) {
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: "protected procedure missing tenantId",
+          });
+        }
+        const tenantId = ctx.tenantId;
+
+        const [membership] = await poolDb
+          .select({ id: tenantUserMemberships.id, userId: tenantUserMemberships.userId })
+          .from(tenantUserMemberships)
+          .where(
+            and(
+              eq(tenantUserMemberships.id, input.membershipId),
+              eq(tenantUserMemberships.tenantId, tenantId),
+            ),
+          )
+          .limit(1);
+        if (!membership) {
+          throw new TRPCError({ code: "NOT_FOUND", message: "membership not found" });
+        }
+
+        // Self-deactivation guard.
+        if (membership.userId === ctx.userId && input.status !== "active") {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: "You cannot deactivate your own membership.",
+          });
+        }
+
+        await poolDb
+          .update(tenantUserMemberships)
+          .set({ status: input.status, updatedAt: new Date() })
+          .where(
+            and(
+              eq(tenantUserMemberships.id, input.membershipId),
+              eq(tenantUserMemberships.tenantId, tenantId),
+            ),
+          );
+
+        return { ok: true as const, membershipId: input.membershipId, status: input.status };
+      });
+    }),
+
+  /**
+   * getDocumentRetention — READ-ONLY view of the ONBOARD-01 document_types
+   * reference rows (retention years per geography). Admin-only (surfaced on
+   * /admin/users). No mutations this ticket — enforcement automation is a
+   * future work package. document_types is a tenant-agnostic reference table
+   * with a permissive authenticated SELECT policy, so ctx.db reads it fine.
+   */
+  getDocumentRetention: protectedProcedure
+    .input(getDocumentRetentionInputSchema)
+    .output(getDocumentRetentionOutputSchema)
+    .query(async ({ ctx }) => {
+      requireAnyRole(ctx, USERS_ADMIN_ROLES, "Data retention view is admin-only");
+      const db = requireDb(ctx);
+      const rows = await db
+        .select({
+          code: documentTypes.code,
+          name: documentTypes.name,
+          geographyCode: documentTypes.geographyCode,
+          requiredForLifecycleStage: documentTypes.requiredForLifecycleStage,
+          retentionYears: documentTypes.retentionYears,
+        })
+        .from(documentTypes)
+        .orderBy(
+          dsql`${documentTypes.geographyCode} ASC NULLS FIRST`,
+          documentTypes.retentionYears,
+          documentTypes.name,
+        );
+      const items: DocumentRetentionRow[] = rows.map((r) => ({
+        code: r.code,
+        name: r.name,
+        geographyCode: r.geographyCode ?? null,
+        requiredForLifecycleStage: r.requiredForLifecycleStage ?? null,
+        retentionYears: r.retentionYears ?? null,
       }));
       return { items };
     }),

@@ -22,11 +22,21 @@ import { eq } from "drizzle-orm";
 import {
   resolveAiSettings,
   resolveBiasLexicon,
+  resolveScoringWeights,
   type AiSettings,
   type BiasLexicon,
+  type ScoringWeights,
 } from "@hireops/api-types";
 
-export type { AiSettings, BiasLexicon } from "@hireops/api-types";
+export type { AiSettings, BiasLexicon, ScoringWeights } from "@hireops/api-types";
+// Re-export the pure weight helpers so the scoring drain (which depends on
+// ai-client + ai-scoring but not api-types directly) can decide when the
+// profile is non-default and flatten it for the prompt/explanation.
+export {
+  isDefaultScoringWeights,
+  scoringWeightsEmphasis,
+  type ScoringWeightEmphasisEntry,
+} from "@hireops/api-types";
 
 /**
  * Resolve the effective AI settings for a tenant via a postgres-js `sql`
@@ -79,4 +89,37 @@ export async function resolveTenantBiasLexiconDb(
     .limit(1);
   const settings = (row?.settings ?? {}) as Record<string, unknown>;
   return resolveBiasLexicon(settings["biasLexicon"]);
+}
+
+/**
+ * Resolve the effective scoring weight profile for a tenant (CONF-03) — the
+ * sibling `scoringWeights` key in `tenants.settings`, defaults merged. The
+ * scoring drain passes its `poolSql`; absent/malformed/sum≠100 blocks fall
+ * back to the incumbent defaults inside `resolveScoringWeights` — the scoring
+ * path must never break on a stale blob. Same unscoped-pool read as the
+ * AI-settings resolver.
+ */
+export async function resolveTenantScoringWeights(
+  sql: typeof poolSqlDefault,
+  tenantId: string,
+): Promise<ScoringWeights> {
+  const rows = await sql<{ settings: unknown }[]>`
+    SELECT settings FROM public.tenants WHERE id = ${tenantId} LIMIT 1
+  `;
+  const settings = (rows[0]?.settings ?? {}) as Record<string, unknown>;
+  return resolveScoringWeights(settings["scoringWeights"]);
+}
+
+/** Drizzle-client variant for the tRPC router (no raw `sql` tag in hand). */
+export async function resolveTenantScoringWeightsDb(
+  tenantId: string,
+  client: typeof poolDb = poolDb,
+): Promise<ScoringWeights> {
+  const [row] = await client
+    .select({ settings: tenants.settings })
+    .from(tenants)
+    .where(eq(tenants.id, tenantId))
+    .limit(1);
+  const settings = (row?.settings ?? {}) as Record<string, unknown>;
+  return resolveScoringWeights(settings["scoringWeights"]);
 }

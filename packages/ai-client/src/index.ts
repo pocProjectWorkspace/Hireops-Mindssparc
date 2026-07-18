@@ -36,8 +36,17 @@ export {
   resolveTenantAiSettings,
   resolveTenantAiSettingsDb,
   resolveTenantBiasLexiconDb,
+  resolveTenantScoringWeights,
+  resolveTenantScoringWeightsDb,
+  isDefaultScoringWeights,
+  scoringWeightsEmphasis,
 } from "./tenant-settings";
-export type { AiSettings, BiasLexicon } from "./tenant-settings";
+export type {
+  AiSettings,
+  BiasLexicon,
+  ScoringWeights,
+  ScoringWeightEmphasisEntry,
+} from "./tenant-settings";
 
 export { maskPii, maskPiiIf, REDACTED_EMAIL, REDACTED_PHONE, REDACTED_URL } from "./pii-mask";
 

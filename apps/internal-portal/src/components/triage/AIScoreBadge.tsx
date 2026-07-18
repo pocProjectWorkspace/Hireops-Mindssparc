@@ -19,10 +19,19 @@ interface FactorChip {
   description?: string;
 }
 
+interface EmphasisEntry {
+  key?: string;
+  label?: string;
+  weight?: number;
+}
+
 interface AIScoreExplanation {
   top_factors?: FactorChip[];
   model?: string;
   notes?: string;
+  /** CONF-03: present only when the tenant scored with a non-default weight
+   * profile — the grading emphasis the model was instructed with. */
+  scoring_emphasis?: EmphasisEntry[];
 }
 
 function narrowExplanation(value: unknown): AIScoreExplanation {
@@ -102,6 +111,16 @@ export function AIScoreBadge({
       ) : (
         <p className="text-sm text-neutral-600">No factor breakdown available.</p>
       )}
+      {Array.isArray(exp.scoring_emphasis) && exp.scoring_emphasis.length > 0 ? (
+        <p className="mt-3 text-xs text-neutral-500">
+          <span className="font-medium text-neutral-600">Grading emphasis:</span>{" "}
+          {exp.scoring_emphasis
+            .filter((e) => typeof e.weight === "number")
+            .map((e) => `${e.label ?? e.key} ${e.weight}%`)
+            .join(" · ")}
+          . This is the emphasis the AI was instructed to apply — guidance, not a computed sum.
+        </p>
+      ) : null}
       {exp.notes && <p className="mt-3 text-xs text-neutral-500">{exp.notes}</p>}
     </section>
   );

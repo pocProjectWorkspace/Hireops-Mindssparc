@@ -40,6 +40,9 @@ import {
   getAIClient,
   parserOutputSchema,
   resolveTenantAiSettings,
+  resolveTenantScoringWeights,
+  isDefaultScoringWeights,
+  scoringWeightsEmphasis,
   maskPiiIf,
   type ParserOutput,
 } from "@hireops/ai-client";
@@ -143,12 +146,31 @@ export async function drainAiScoreOutboxOnce(opts: DrainOpts): Promise<{
         continue;
       }
 
+      // CONF-03: resolve the per-tenant scoring weight profile. Render the
+      // grading-emphasis block ONLY when the profile is non-default — a
+      // default-profile tenant gets the byte-identical ai-03-v1 prompt (same
+      // faithful-default contract as CONF-01). The emphasis (when non-default)
+      // is also recorded on the score explanation so recruiters see it.
+      const scoringWeights = await resolveTenantScoringWeights(poolSql, row.tenant_id);
+      const emphasis = isDefaultScoringWeights(scoringWeights)
+        ? null
+        : scoringWeightsEmphasis(scoringWeights);
+
       const ctxRow = await loadContext(row.tenant_id, row.application_id);
       const built = buildAIScoringPrompt({
         positionTitle: ctxRow.positionTitle,
         jdDescription: ctxRow.jdSummary ?? ctxRow.jdText,
         jdSkills: ctxRow.jdSkills,
         parsedCv: ctxRow.parsedCv,
+        ...(emphasis
+          ? {
+              scoringWeights: emphasis.map((e) => ({
+                key: e.key,
+                label: e.label,
+                weight: e.weight,
+              })),
+            }
+          : {}),
       });
       const system = built.system;
       // PII masking (when enabled) redacts emails / phones / URLs in the
@@ -199,6 +221,11 @@ export async function drainAiScoreOutboxOnce(opts: DrainOpts): Promise<{
               top_factors: validated.top_factors,
               caveats: validated.caveats,
               prompt_version: AI_SCORING_PROMPT_VERSION,
+              // CONF-03: present ONLY when the tenant runs a non-default
+              // weight profile — the emphasis the model was instructed with,
+              // surfaced to recruiters in the score drawer. Honest framing:
+              // it is grading guidance, not a computed weighted sum.
+              ...(emphasis ? { scoring_emphasis: emphasis } : {}),
             })}::jsonb,
             ai_scored_at = ${scoredAtIso}::timestamptz
         WHERE tenant_id = ${row.tenant_id} AND id = ${row.application_id}

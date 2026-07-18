@@ -37,6 +37,7 @@ import {
   IconAiSettings,
   IconReports,
   IconIntegrations,
+  IconUsers,
   IconSignOut,
 } from "./nav-icons";
 
@@ -53,7 +54,8 @@ export type PortalNavKey =
   | "costs"
   | "ai-settings"
   | "reports"
-  | "integrations";
+  | "integrations"
+  | "users";
 
 interface NavItem {
   key: PortalNavKey;
@@ -127,6 +129,7 @@ const ADMIN_NAV: NavItem[] = [
     href: "/admin/ai-settings",
     icon: <IconAiSettings />,
   },
+  { key: "users", label: "Users & roles", href: "/admin/users", icon: <IconUsers /> },
   { key: "reports", label: "Reports", href: "/admin/reports", icon: <IconReports /> },
   {
     key: "integrations",

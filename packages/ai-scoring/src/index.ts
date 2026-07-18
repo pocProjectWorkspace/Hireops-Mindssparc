@@ -27,4 +27,5 @@ export {
   aiScoringResponseSchema,
   type AIScoringResponse,
   type BuildAIScoringPromptInput,
+  type ScoringEmphasisInput,
 } from "./prompt";

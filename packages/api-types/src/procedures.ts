@@ -1861,6 +1861,122 @@ export const listTenantMembershipsOutputSchema = z.object({
 export type ListTenantMembershipsInput = z.infer<typeof listTenantMembershipsInputSchema>;
 export type ListTenantMembershipsOutput = z.infer<typeof listTenantMembershipsOutputSchema>;
 
+// ─────────── CONF-03 — users & roles admin + retention ───────────
+
+/**
+ * The internal tenant roles an admin may assign on /admin/users. This is
+ * TENANT_ROLES (mirror of the DB enum in @hireops/db) MINUS the identity
+ * tiers that have their OWN lifecycles and must never be granted from this
+ * surface: partner_admin / partner_user (partner org membership), candidate
+ * (candidate account activation), employee (post-hire, provisioned by
+ * onboarding). Re-declared here rather than imported from @hireops/db so the
+ * frontend doesn't pull drizzle in — kept in sync with roles.ts by the
+ * CONF-03 test (exclusion asserted). Flagged in the hand-back.
+ */
+export const INTERNAL_TENANT_ROLES = [
+  "admin",
+  "recruiter",
+  "hiring_manager",
+  "panel_member",
+  "hr_ops",
+  "people_ops",
+  "it_admin",
+  "hr_head",
+] as const;
+export const internalTenantRoleSchema = z.enum(INTERNAL_TENANT_ROLES);
+export type InternalTenantRole = z.infer<typeof internalTenantRoleSchema>;
+
+/** Membership statuses the admin surface may set (deactivate/reactivate). */
+export const MEMBERSHIP_ADMIN_STATUSES = ["active", "suspended"] as const;
+export const membershipAdminStatusSchema = z.enum(MEMBERSHIP_ADMIN_STATUSES);
+export type MembershipAdminStatus = z.infer<typeof membershipAdminStatusSchema>;
+
+/**
+ * One membership row for the users & roles admin table. Richer than
+ * TenantMembershipRow (the assignment picker): carries status + createdAt
+ * and includes non-active memberships, and flags the row that is the
+ * caller's own membership so the client can render the self-guard affordances.
+ */
+export const tenantUserAdminRowSchema = z.object({
+  membershipId: z.string().uuid(),
+  userId: z.string().uuid(),
+  displayName: z.string().nullable(),
+  email: z.string().nullable(),
+  roles: z.array(z.string()),
+  status: z.string(),
+  createdAt: z.string(),
+  isSelf: z.boolean(),
+});
+export type TenantUserAdminRow = z.infer<typeof tenantUserAdminRowSchema>;
+
+export const listTenantUsersAdminInputSchema = z.object({}).optional();
+export const listTenantUsersAdminOutputSchema = z.object({
+  items: z.array(tenantUserAdminRowSchema),
+});
+export type ListTenantUsersAdminOutput = z.infer<typeof listTenantUsersAdminOutputSchema>;
+
+export const inviteTenantUserInputSchema = z.object({
+  email: z.string().email().max(320),
+  displayName: z.string().trim().min(1).max(200).optional(),
+  roles: z.array(internalTenantRoleSchema).min(1).max(INTERNAL_TENANT_ROLES.length),
+});
+export type InviteTenantUserInput = z.infer<typeof inviteTenantUserInputSchema>;
+export const inviteTenantUserOutputSchema = z.object({
+  membershipId: z.string().uuid(),
+  userId: z.string().uuid(),
+  email: z.string(),
+  /** The temporary password, shown ONCE. No email is sent this ticket. */
+  tempPassword: z.string(),
+  /** True when the email already had an auth identity (password was reset). */
+  alreadyExisted: z.boolean(),
+  /** True when an active membership already existed and was updated in place. */
+  membershipReused: z.boolean(),
+});
+export type InviteTenantUserOutput = z.infer<typeof inviteTenantUserOutputSchema>;
+
+export const updateMembershipRolesInputSchema = z.object({
+  membershipId: z.string().uuid(),
+  roles: z.array(internalTenantRoleSchema).min(1).max(INTERNAL_TENANT_ROLES.length),
+});
+export type UpdateMembershipRolesInput = z.infer<typeof updateMembershipRolesInputSchema>;
+export const updateMembershipRolesOutputSchema = z.object({
+  ok: z.literal(true),
+  membershipId: z.string().uuid(),
+  roles: z.array(z.string()),
+});
+export type UpdateMembershipRolesOutput = z.infer<typeof updateMembershipRolesOutputSchema>;
+
+export const setMembershipStatusInputSchema = z.object({
+  membershipId: z.string().uuid(),
+  status: membershipAdminStatusSchema,
+});
+export type SetMembershipStatusInput = z.infer<typeof setMembershipStatusInputSchema>;
+export const setMembershipStatusOutputSchema = z.object({
+  ok: z.literal(true),
+  membershipId: z.string().uuid(),
+  status: z.string(),
+});
+export type SetMembershipStatusOutput = z.infer<typeof setMembershipStatusOutputSchema>;
+
+/**
+ * Read-only data-retention reference (CONF-03). Surfaces the ONBOARD-01
+ * document_types reference rows (retention years per geography). READ-ONLY —
+ * enforcement automation is a future work package.
+ */
+export const documentRetentionRowSchema = z.object({
+  code: z.string(),
+  name: z.string(),
+  geographyCode: z.string().nullable(),
+  requiredForLifecycleStage: z.string().nullable(),
+  retentionYears: z.number().int().nullable(),
+});
+export type DocumentRetentionRow = z.infer<typeof documentRetentionRowSchema>;
+export const getDocumentRetentionInputSchema = z.object({}).optional();
+export const getDocumentRetentionOutputSchema = z.object({
+  items: z.array(documentRetentionRowSchema),
+});
+export type GetDocumentRetentionOutput = z.infer<typeof getDocumentRetentionOutputSchema>;
+
 // ─────────── INT-02 — interview scheduling ───────────
 
 /**

@@ -16,7 +16,12 @@
 import { z } from "zod";
 import type { ParserOutput } from "@hireops/ai-client";
 
-export const AI_SCORING_PROMPT_VERSION = "ai-03-v1";
+// ai-03-v2 (CONF-03): the builder can now render an optional grading-emphasis
+// block driven by the per-tenant scoring weight profile. When no weights are
+// passed (a tenant at the incumbent defaults), the prompt is byte-identical to
+// ai-03-v1 — the emphasis block is opt-in, so default-profile scores are
+// unchanged.
+export const AI_SCORING_PROMPT_VERSION = "ai-03-v2";
 
 /** Caps applied to the prompt to keep inputs bounded. */
 const SKILL_CAP = 50;
@@ -52,11 +57,32 @@ export interface JdSkillInput {
   isRequired: boolean;
 }
 
+/**
+ * One grading-emphasis category (CONF-03). `weight` is an integer 0–100; the
+ * caller (the scoring drain) passes the resolved per-tenant profile ONLY when
+ * it is non-default. Shape kept as a plain object rather than importing the
+ * canonical type from `@hireops/api-types` so this package stays dependency-
+ * light; the drain owns the api-types round-trip.
+ */
+export interface ScoringEmphasisInput {
+  key: string;
+  label: string;
+  weight: number;
+}
+
 export interface BuildAIScoringPromptInput {
   positionTitle: string;
   jdDescription: string | null;
   jdSkills: JdSkillInput[];
   parsedCv: ParserOutput;
+  /**
+   * Optional grading-emphasis guidance. When present and non-empty the prompt
+   * renders an explicit "weight your judgement toward these categories"
+   * block; when omitted the prompt is byte-identical to ai-03-v1. The drain
+   * passes this only for a NON-default weight profile, so default-profile
+   * tenants score exactly as before CONF-03.
+   */
+  scoringWeights?: ScoringEmphasisInput[];
 }
 
 export interface BuiltPrompt {
@@ -106,6 +132,23 @@ export function buildAIScoringPrompt(input: BuildAIScoringPromptInput): BuiltPro
     .join("\n");
   const workBlock = workLines || "  (none extracted)";
 
+  // CONF-03: optional grading-emphasis guidance. Rendered only when the caller
+  // passes a non-default weight profile. This is INSTRUCTION, not arithmetic —
+  // the model is asked to lean its holistic judgement toward these categories
+  // in roughly this proportion; it does not compute a weighted sum.
+  const weights = input.scoringWeights?.filter((w) => Number.isFinite(w.weight)) ?? [];
+  const emphasisLines: string[] =
+    weights.length > 0
+      ? [
+          "",
+          "Grading emphasis (guidance, not a formula): this team weights fit toward the",
+          "following categories in roughly this proportion. Lean your overall judgement",
+          "accordingly — you are an evaluator applying emphasis, NOT a calculator summing",
+          "sub-scores:",
+          ...weights.map((w) => `  - ${w.label}: ${w.weight}%`),
+        ]
+      : [];
+
   const user = [
     "Job context:",
     `- Title: ${input.positionTitle}`,
@@ -120,6 +163,7 @@ export function buildAIScoringPrompt(input: BuildAIScoringPromptInput): BuiltPro
     `- Education: ${eduLine}`,
     "- Work history (most recent):",
     workBlock,
+    ...emphasisLines,
     "",
     "Return JSON only matching this shape:",
     "{",
