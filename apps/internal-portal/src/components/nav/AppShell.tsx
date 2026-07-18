@@ -24,6 +24,7 @@
 import type { ReactNode } from "react";
 import { cn } from "@/components/ui/cn";
 import {
+  IconHome,
   IconTriage,
   IconApprovals,
   IconOnboarding,
@@ -43,6 +44,7 @@ import {
 } from "./nav-icons";
 
 export type PortalNavKey =
+  | "home"
   | "triage"
   | "approvals"
   | "onboarding"
@@ -74,6 +76,8 @@ interface NavItem {
 }
 
 const MAIN_NAV: NavItem[] = [
+  // DASH-01: the persona landing dashboard is Home — first item, all roles.
+  { key: "home", label: "Home", href: "/dashboard", icon: <IconHome /> },
   { key: "triage", label: "Triage", href: "/triage", icon: <IconTriage /> },
   { key: "approvals", label: "Approvals", href: "/approvals", icon: <IconApprovals /> },
   { key: "onboarding", label: "Onboarding", href: "/onboarding", icon: <IconOnboarding /> },

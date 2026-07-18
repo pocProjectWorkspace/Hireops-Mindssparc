@@ -2,6 +2,7 @@ import type {
   PartnerGetMeOutput,
   PartnerAssignedRequisitionRow,
   PartnerSubmissionRow,
+  PartnerGetDashboardStatsOutput,
 } from "@hireops/api-types";
 import { Card, Badge, StatTile, EmptyState, type BadgeTone } from "@/components/ui";
 
@@ -87,16 +88,19 @@ export function PartnerDashboard({
   me,
   reqs,
   submissions,
+  stats,
 }: {
   me: PartnerGetMeOutput;
   reqs: PartnerAssignedRequisitionRow[];
   submissions: PartnerSubmissionRow[];
+  stats: PartnerGetDashboardStatsOutput;
 }) {
   const today = new Date().toLocaleDateString("en-GB", {
     day: "numeric",
     month: "long",
     year: "numeric",
   });
+  const topStage = stats.byStage[0] ?? null;
 
   return (
     <div className="flex flex-col gap-8">
@@ -110,8 +114,8 @@ export function PartnerDashboard({
         </p>
       </div>
 
-      {/* KPI row */}
-      <div className="grid grid-cols-2 gap-4 sm:grid-cols-3">
+      {/* KPI row — DASH-01 partner stats: real submissions-by-stage totals. */}
+      <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
         <StatTile
           label="Assigned reqs"
           value={reqs.length}
@@ -119,12 +123,58 @@ export function PartnerDashboard({
           tone="accent"
         />
         <StatTile
-          label="Your submissions"
-          value={submissions.length}
-          hint={submissions.length === 0 ? "none yet" : "across all reqs"}
+          label="Submissions"
+          value={stats.totalSubmissions}
+          hint={stats.totalSubmissions === 0 ? "none yet" : "candidates submitted"}
         />
-        <StatTile label="Commercials" value="—" hint="coming soon" />
+        <StatTile
+          label="In play"
+          value={stats.activeSubmissions}
+          hint={topStage ? `most at ${topStage.label.toLowerCase()}` : "live in pipeline"}
+          tone={stats.activeSubmissions > 0 ? "info" : "neutral"}
+        />
+        <StatTile
+          label="Placed"
+          value={stats.placed}
+          hint={stats.placed > 0 ? "offers accepted" : "none yet"}
+          tone={stats.placed > 0 ? "positive" : "neutral"}
+        />
       </div>
+
+      {/* Submissions-by-stage breakdown */}
+      {stats.byStage.length > 0 ? (
+        <section className="flex flex-col gap-3">
+          <h2 className="text-base font-semibold tracking-tight text-neutral-900">
+            Submissions by stage
+          </h2>
+          <Card padded={false}>
+            <ul className="divide-y divide-neutral-100">
+              {stats.byStage.map((s) => {
+                const pct =
+                  stats.totalSubmissions > 0
+                    ? Math.round((s.count / stats.totalSubmissions) * 100)
+                    : 0;
+                return (
+                  <li key={s.stage} className="flex items-center gap-4 px-4 py-3">
+                    <span className="w-40 shrink-0 truncate text-sm text-neutral-700">
+                      {s.label}
+                    </span>
+                    <div className="h-2 flex-1 overflow-hidden rounded-full bg-neutral-100">
+                      <div
+                        className="h-full rounded-full bg-brand-500"
+                        style={{ width: `${Math.max(pct, 4)}%` }}
+                      />
+                    </div>
+                    <span className="w-10 shrink-0 text-right text-sm font-medium tabular-nums text-neutral-900">
+                      {s.count}
+                    </span>
+                  </li>
+                );
+              })}
+            </ul>
+          </Card>
+        </section>
+      ) : null}
 
       {/* Assigned requisitions */}
       <section className="flex flex-col gap-3">

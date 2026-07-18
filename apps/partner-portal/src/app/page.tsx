@@ -34,9 +34,10 @@ export default async function DashboardPage() {
     throw err;
   }
 
-  const [reqs, submissions] = await Promise.all([
+  const [reqs, submissions, stats] = await Promise.all([
     caller.partnerListAssignedRequisitions(),
     caller.partnerListMySubmissions(),
+    caller.partnerGetDashboardStats(),
   ]);
 
   return (
@@ -45,7 +46,7 @@ export default async function DashboardPage() {
       user={{ label: me.displayName, role: roleLabel(me.role) }}
       active="dashboard"
     >
-      <PartnerDashboard me={me} reqs={reqs.items} submissions={submissions.items} />
+      <PartnerDashboard me={me} reqs={reqs.items} submissions={submissions.items} stats={stats} />
     </PartnerShell>
   );
 }

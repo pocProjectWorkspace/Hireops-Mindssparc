@@ -319,7 +319,14 @@ import {
   candidateAcceptOfferInputSchema,
   candidateAcceptOfferOutputSchema,
   candidateGetMyOnboardingOutputSchema,
+  getMyDashboardOutputSchema,
+  partnerGetDashboardStatsOutputSchema,
   CANDIDATE_STAGE_STEPS,
+  type DashboardKpi,
+  type DashboardAction,
+  type DashboardActivity,
+  type GetMyDashboardOutput,
+  type PartnerStageCount,
   type CandidateApplicationRow,
   type CandidateInterviewRow,
   type PartnerAssignedRequisitionRow,
@@ -556,6 +563,13 @@ const OFFBOARD_MANAGE_ROLES = new Set(["admin", "hr_ops", "people_ops"]);
 // zod .input(); this Set is the server-side backstop + the self-demotion guard
 // key ("admin").
 const ASSIGNABLE_INTERNAL_ROLES = new Set<string>(INTERNAL_TENANT_ROLES);
+
+// DASH-01 — the internal-persona gate on getMyDashboard. Any internal tenant
+// role earns a landing dashboard (the payload is honestly empty for a role with
+// nothing pending). A candidate/partner JWT carries no `tid` and is rejected
+// UNAUTHORIZED by protectedProcedure before this gate runs — so the practical
+// effect is "internal identities only". RLS still scopes every row to the tenant.
+const DASHBOARD_PERSONA_ROLES = new Set<string>(INTERNAL_TENANT_ROLES);
 
 /**
  * CONF-02 bias-gate helpers.
@@ -10390,7 +10404,869 @@ export const appRouter = router({
         },
       );
     }),
+
+  // ═══════════ DASH-01 — persona landing dashboards ═══════════
+  //
+  // ONE aggregate read per persona. protectedProcedure guarantees ctx.db +
+  // tenant scoping; requireAnyRole then gates to an internal persona role (a
+  // candidate/partner JWT never carries `tid`, so it is rejected UNAUTHORIZED
+  // upstream before ever reaching this gate). Every number is real (counts off
+  // the live tables, tenant-scoped + explicit filters, no AI) and every href
+  // deep-links an existing surface. Multi-role internal users get a merged view
+  // (sections composed per held role); admin gets the condensed superset.
+
+  getMyDashboard: protectedProcedure
+    .output(getMyDashboardOutputSchema)
+    .query(async ({ ctx }): Promise<GetMyDashboardOutput> => {
+      requireAnyRole(ctx, DASHBOARD_PERSONA_ROLES, "A dashboard requires an internal tenant role.");
+      const db = requireDb(ctx);
+      if (!ctx.tenantId) {
+        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
+      }
+      const membershipId = await resolveActorMembership(db, ctx);
+      return buildInternalDashboard(db, ctx.tenantId, ctx.roles, membershipId);
+    }),
+
+  partnerGetDashboardStats: partnerProcedure
+    .output(partnerGetDashboardStatsOutputSchema)
+    .query(async ({ ctx }) => {
+      const db = ctx.db;
+      if (!db) {
+        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "partner ctx.db missing" });
+      }
+      // Submissions = candidate_ownership_claims joined to their claiming
+      // application, bucketed by the application's live stage. Org-scoped by
+      // partner_org_id (the explicit predicate that is load-bearing for org
+      // isolation, per partnerProcedure's contract).
+      const rows = await dashRows<{ stage: string | null; n: number }>(
+        db,
+        dsql`
+          SELECT a.current_stage AS stage, count(*)::int AS n
+          FROM public.candidate_ownership_claims c
+          JOIN public.applications a
+            ON a.tenant_id = c.tenant_id AND a.id = c.claimed_via_application_id
+          WHERE c.tenant_id = ${ctx.partner.tenantId}::uuid
+            AND c.partner_org_id = ${ctx.partner.partnerOrgId}::uuid
+          GROUP BY a.current_stage
+        `,
+      );
+      const TERMINAL = new Set(["offer_declined", "withdrawn", "recruiter_rejected"]);
+      let total = 0;
+      let active = 0;
+      let placed = 0;
+      const byStage: PartnerStageCount[] = [];
+      for (const r of rows) {
+        if (!r.stage) continue;
+        total += r.n;
+        if (r.stage === "offer_accepted") placed += r.n;
+        else if (!TERMINAL.has(r.stage)) active += r.n;
+        byStage.push({ stage: r.stage, label: humanizeStage(r.stage), count: r.n });
+      }
+      byStage.sort((a, b) => b.count - a.count);
+      return { totalSubmissions: total, activeSubmissions: active, placed, byStage };
+    }),
 });
+
+// ═══════════ DASH-01 — persona-dashboard builders ═══════════
+//
+// Each builder returns the KPI tiles + recommended actions for one persona,
+// computed from real table counts (tenant-scoped, explicit filters). db.execute
+// runs under the caller's RLS-scoped tx (protectedProcedure), so every row is
+// already tenant-isolated; the explicit `tenant_id = …::uuid` predicate is
+// defence-in-depth + matches the getAiUsageSummary idiom. No AI, no writes.
+
+type DashDb = NonNullable<HonoTRPCContext["db"]>;
+
+/** Read a single scalar (count or a bigint-as-text sum) off a raw query. */
+async function dashScalar(db: DashDb, query: SQL): Promise<number> {
+  const res = await db.execute(query);
+  const rows =
+    (res as unknown as { rows?: { n: number | string }[] }).rows ??
+    (res as unknown as { n: number | string }[]);
+  const n = rows[0]?.n;
+  return typeof n === "string" ? Number(n) : (n ?? 0);
+}
+
+/** Read a small set of rows off a raw query. */
+async function dashRows<T>(db: DashDb, query: SQL): Promise<T[]> {
+  const res = await db.execute(query);
+  return (res as unknown as { rows?: T[] }).rows ?? (res as unknown as T[]);
+}
+
+/** "tech_interview" → "Tech Interview". */
+function humanizeStage(stage: string): string {
+  return stage.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+function formatUsdMicros(micros: number): string {
+  return `$${(micros / 1_000_000).toFixed(2)}`;
+}
+
+/** Whole-days elapsed since an ISO/Date instant (floored, never negative). */
+function daysSince(at: Date | string | null): number {
+  if (!at) return 0;
+  const then = at instanceof Date ? at.getTime() : new Date(at).getTime();
+  if (Number.isNaN(then)) return 0;
+  return Math.max(0, Math.floor((Date.now() - then) / 86_400_000));
+}
+
+/** The SLA-breach predicate (bare columns) for a raw SELECT on applications —
+ * the same CASE the triage listCandidates query composes, reused here. */
+function slaBreachSql(): SQL {
+  const clauses = (Object.entries(SLA_THRESHOLDS_HOURS) as [ApplicationStage, number | null][])
+    .filter(([, h]) => h !== null)
+    .map(
+      ([stage, h]) =>
+        dsql`WHEN current_stage = ${stage} THEN extract(epoch FROM (now() - stage_entered_at)) / 3600.0 > ${h}`,
+    );
+  return dsql`(CASE ${dsql.join(clauses, dsql.raw(" "))} ELSE false END)`;
+}
+
+interface DashSection {
+  kpis: DashboardKpi[];
+  actions: DashboardAction[];
+}
+
+async function hiringManagerSection(
+  db: DashDb,
+  tenantId: string,
+  membershipId: string | null,
+): Promise<DashSection> {
+  if (!membershipId) return { kpis: [], actions: [] };
+  const mine = dsql`tenant_id = ${tenantId}::uuid AND hiring_manager_id = ${membershipId}::uuid`;
+  const [total, awaiting, sentBack, drafts] = await Promise.all([
+    dashScalar(db, dsql`SELECT count(*)::int AS n FROM public.requisitions WHERE ${mine}`),
+    dashScalar(
+      db,
+      dsql`SELECT count(*)::int AS n FROM public.requisitions WHERE ${mine} AND status = 'pending_approval'`,
+    ),
+    dashScalar(
+      db,
+      dsql`SELECT count(*)::int AS n FROM public.requisitions r WHERE r.tenant_id = ${tenantId}::uuid
+             AND r.hiring_manager_id = ${membershipId}::uuid AND r.status = 'draft'
+             AND EXISTS (SELECT 1 FROM public.requisition_state_transitions t
+               WHERE t.tenant_id = r.tenant_id AND t.requisition_id = r.id
+                 AND t.from_status = 'pending_approval' AND t.to_status = 'draft')`,
+    ),
+    dashScalar(
+      db,
+      dsql`SELECT count(*)::int AS n FROM public.requisitions r WHERE r.tenant_id = ${tenantId}::uuid
+             AND r.hiring_manager_id = ${membershipId}::uuid AND r.status = 'draft'
+             AND (EXISTS (SELECT 1 FROM public.jd_versions j WHERE j.tenant_id = r.tenant_id
+                    AND j.id = r.jd_version_id AND j.jd_text = ${JD_DRAFT_PLACEHOLDER})
+                  OR NOT EXISTS (SELECT 1 FROM public.jd_skills s WHERE s.tenant_id = r.tenant_id
+                    AND s.jd_version_id = r.jd_version_id))`,
+    ),
+  ]);
+  const kpis: DashboardKpi[] = [
+    {
+      key: "hm_my_reqs",
+      label: "My requisitions",
+      value: total,
+      hint: "all statuses",
+      tone: "accent",
+      href: "/requisitions",
+    },
+    {
+      key: "hm_awaiting",
+      label: "Awaiting approval",
+      value: awaiting,
+      hint: awaiting ? "with HR" : "none pending",
+      tone: awaiting ? "info" : "neutral",
+      href: "/requisitions",
+    },
+    {
+      key: "hm_sent_back",
+      label: "Sent back",
+      value: sentBack,
+      hint: sentBack ? "need revision" : "none",
+      tone: sentBack ? "warning" : "neutral",
+      href: "/requisitions",
+    },
+    {
+      key: "hm_drafts",
+      label: "Drafts to finish",
+      value: drafts,
+      hint: drafts ? "missing JD or skills" : "none",
+      tone: drafts ? "warning" : "neutral",
+      href: "/requisitions",
+    },
+  ];
+
+  const actions: DashboardAction[] = [];
+  const rows = await dashRows<{
+    id: string;
+    title: string | null;
+    sent_back: boolean;
+    incomplete: boolean;
+  }>(
+    db,
+    dsql`SELECT r.id::text AS id, p.title AS title,
+           EXISTS (SELECT 1 FROM public.requisition_state_transitions t
+             WHERE t.tenant_id = r.tenant_id AND t.requisition_id = r.id
+               AND t.from_status = 'pending_approval' AND t.to_status = 'draft') AS sent_back,
+           (EXISTS (SELECT 1 FROM public.jd_versions j WHERE j.tenant_id = r.tenant_id
+                AND j.id = r.jd_version_id AND j.jd_text = ${JD_DRAFT_PLACEHOLDER})
+             OR NOT EXISTS (SELECT 1 FROM public.jd_skills s WHERE s.tenant_id = r.tenant_id
+                AND s.jd_version_id = r.jd_version_id)) AS incomplete
+         FROM public.requisitions r
+         LEFT JOIN public.positions p ON p.tenant_id = r.tenant_id AND p.id = r.position_id
+         WHERE r.tenant_id = ${tenantId}::uuid AND r.hiring_manager_id = ${membershipId}::uuid
+           AND r.status = 'draft'
+         ORDER BY r.updated_at DESC
+         LIMIT 5`,
+  );
+  for (const r of rows) {
+    const title = r.title ?? "Untitled requisition";
+    if (r.sent_back) {
+      actions.push({
+        key: `hm_resubmit_${r.id}`,
+        label: `Revise & resubmit ${title}`,
+        detail: "Sent back by HR for changes",
+        href: `/requisitions/${r.id}`,
+        urgency: "attention",
+      });
+    } else if (r.incomplete) {
+      actions.push({
+        key: `hm_finish_${r.id}`,
+        label: `Finish draft: ${title}`,
+        detail: "Add a JD and required skills, then submit",
+        href: `/requisitions/${r.id}`,
+        urgency: "normal",
+      });
+    }
+  }
+  return { kpis, actions };
+}
+
+async function hrHeadSection(db: DashDb, tenantId: string): Promise<DashSection> {
+  const reqApproval = dsql`tenant_id = ${tenantId}::uuid AND subject_type = 'requisition'`;
+  const [pending, flagged, decidedWeek, postedMonth] = await Promise.all([
+    dashScalar(
+      db,
+      dsql`SELECT count(*)::int AS n FROM public.approval_requests WHERE ${reqApproval} AND status = 'pending'`,
+    ),
+    dashScalar(
+      db,
+      dsql`SELECT count(*)::int AS n FROM public.approval_requests WHERE ${reqApproval} AND status = 'pending' AND context -> 'bias_scan' IS NOT NULL`,
+    ),
+    dashScalar(
+      db,
+      dsql`SELECT count(*)::int AS n FROM public.approval_requests WHERE ${reqApproval} AND decided_at >= now() - interval '7 days'`,
+    ),
+    dashScalar(
+      db,
+      dsql`SELECT count(*)::int AS n FROM public.requisitions WHERE tenant_id = ${tenantId}::uuid AND status = 'posted' AND posted_at >= date_trunc('month', now())`,
+    ),
+  ]);
+  const kpis: DashboardKpi[] = [
+    {
+      key: "hrh_pending",
+      label: "Pending approvals",
+      value: pending,
+      hint: pending ? "awaiting your decision" : "queue clear",
+      tone: pending ? "accent" : "neutral",
+      href: "/requisition-approvals",
+    },
+    {
+      key: "hrh_flagged",
+      label: "Bias-flagged",
+      value: flagged,
+      hint: flagged ? "review wording" : "none flagged",
+      tone: flagged ? "warning" : "neutral",
+      href: "/requisition-approvals",
+    },
+    {
+      key: "hrh_decided",
+      label: "Decided this week",
+      value: decidedWeek,
+      hint: "last 7 days",
+      tone: "info",
+      href: "/requisition-approvals",
+    },
+    {
+      key: "hrh_posted",
+      label: "Posted this month",
+      value: postedMonth,
+      hint: "went live",
+      tone: "positive",
+      href: "/requisitions",
+    },
+  ];
+
+  const actions: DashboardAction[] = [];
+  const rows = await dashRows<{
+    id: string;
+    title: string | null;
+    requested_at: string | Date;
+    bias: boolean;
+  }>(
+    db,
+    dsql`SELECT ar.id::text AS id, p.title AS title, ar.requested_at AS requested_at,
+           (ar.context -> 'bias_scan' IS NOT NULL) AS bias
+         FROM public.approval_requests ar
+         LEFT JOIN public.requisitions r ON r.tenant_id = ar.tenant_id AND r.id = ar.subject_id
+         LEFT JOIN public.positions p ON p.tenant_id = r.tenant_id AND p.id = r.position_id
+         WHERE ar.tenant_id = ${tenantId}::uuid AND ar.subject_type = 'requisition' AND ar.status = 'pending'
+         ORDER BY ar.requested_at ASC
+         LIMIT 5`,
+  );
+  for (const r of rows) {
+    const age = daysSince(r.requested_at);
+    const title = r.title ?? "a requisition";
+    const detailBits = [age > 0 ? `waiting ${age}d` : "just submitted"];
+    if (r.bias) detailBits.push("bias flags");
+    actions.push({
+      key: `hrh_decide_${r.id}`,
+      label: `Decide approval: ${title}`,
+      detail: detailBits.join(" · "),
+      href: "/requisition-approvals",
+      urgency: age > 2 ? "urgent" : "attention",
+    });
+  }
+  return { kpis, actions };
+}
+
+async function recruiterSection(db: DashDb, tenantId: string): Promise<DashSection> {
+  const T = dsql`tenant_id = ${tenantId}::uuid`;
+  const breach = slaBreachSql();
+  const [newTriage, breaches, toSchedule, toComplete, offers, agentApprovals] = await Promise.all([
+    dashScalar(
+      db,
+      dsql`SELECT count(*)::int AS n FROM public.applications WHERE ${T} AND current_stage = 'application_received'`,
+    ),
+    dashScalar(
+      db,
+      dsql`SELECT count(*)::int AS n FROM public.applications WHERE ${T} AND ${breach}`,
+    ),
+    dashScalar(
+      db,
+      dsql`SELECT count(*)::int AS n FROM public.applications a WHERE a.tenant_id = ${tenantId}::uuid
+             AND a.current_stage IN ('shortlisted', 'tech_interview', 'hr_round')
+             AND NOT EXISTS (SELECT 1 FROM public.interviews i WHERE i.tenant_id = a.tenant_id
+               AND i.application_id = a.id AND i.status = 'scheduled')`,
+    ),
+    dashScalar(
+      db,
+      dsql`SELECT count(*)::int AS n FROM public.interviews i WHERE i.tenant_id = ${tenantId}::uuid
+             AND i.status = 'scheduled'
+             AND EXISTS (SELECT 1 FROM public.interview_panelists p WHERE p.tenant_id = i.tenant_id AND p.interview_id = i.id)
+             AND NOT EXISTS (SELECT 1 FROM public.interview_panelists p WHERE p.tenant_id = i.tenant_id AND p.interview_id = i.id
+               AND NOT EXISTS (SELECT 1 FROM public.interview_feedback f WHERE f.tenant_id = i.tenant_id
+                 AND f.interview_id = i.id AND f.membership_id = p.membership_id AND f.submitted_at IS NOT NULL))`,
+    ),
+    dashScalar(
+      db,
+      dsql`SELECT count(*)::int AS n FROM public.offers WHERE ${T} AND status IN ('drafted', 'extended')`,
+    ),
+    dashScalar(
+      db,
+      dsql`SELECT count(*)::int AS n FROM public.agent_approval_requests WHERE ${T} AND status = 'pending'`,
+    ),
+  ]);
+  const kpis: DashboardKpi[] = [
+    {
+      key: "rec_new",
+      label: "New in triage",
+      value: newTriage,
+      hint: newTriage ? "just applied" : "all triaged",
+      tone: newTriage ? "accent" : "neutral",
+      href: "/triage",
+    },
+    {
+      key: "rec_sla",
+      label: "SLA breaches",
+      value: breaches,
+      hint: breaches ? "overdue in stage" : "all on time",
+      tone: breaches ? "error" : "positive",
+      href: "/triage",
+    },
+    {
+      key: "rec_schedule",
+      label: "To schedule",
+      value: toSchedule,
+      hint: "interviews awaiting a slot",
+      tone: toSchedule ? "warning" : "neutral",
+      href: "/interviews",
+    },
+    {
+      key: "rec_complete",
+      label: "Ready to close",
+      value: toComplete,
+      hint: "all feedback in",
+      tone: toComplete ? "info" : "neutral",
+      href: "/interviews",
+    },
+    {
+      key: "rec_offers",
+      label: "Offers outstanding",
+      value: offers,
+      hint: "drafted or extended",
+      tone: offers ? "info" : "neutral",
+      href: "/triage",
+    },
+    {
+      key: "rec_agents",
+      label: "Agent approvals",
+      value: agentApprovals,
+      hint: agentApprovals ? "awaiting your review" : "none pending",
+      tone: agentApprovals ? "accent" : "neutral",
+      href: "/approvals",
+    },
+  ];
+  const actions: DashboardAction[] = [];
+  if (agentApprovals > 0)
+    actions.push({
+      key: "rec_a_agents",
+      label: `Review ${agentApprovals} agent approval${agentApprovals === 1 ? "" : "s"}`,
+      detail: "Drafted messages awaiting your sign-off",
+      href: "/approvals",
+      urgency: "attention",
+    });
+  if (breaches > 0)
+    actions.push({
+      key: "rec_a_sla",
+      label: `Clear ${breaches} SLA breach${breaches === 1 ? "" : "es"}`,
+      detail: "Candidates overdue in their stage",
+      href: "/triage",
+      urgency: "urgent",
+    });
+  if (toComplete > 0)
+    actions.push({
+      key: "rec_a_complete",
+      label: `Close ${toComplete} interview${toComplete === 1 ? "" : "s"}`,
+      detail: "All panel feedback is in",
+      href: "/interviews",
+      urgency: "attention",
+    });
+  if (toSchedule > 0)
+    actions.push({
+      key: "rec_a_schedule",
+      label: `Schedule ${toSchedule} interview${toSchedule === 1 ? "" : "s"}`,
+      detail: "Advanced candidates without a slot",
+      href: "/interviews",
+      urgency: "normal",
+    });
+  return { kpis, actions };
+}
+
+async function panelSection(
+  db: DashDb,
+  tenantId: string,
+  membershipId: string | null,
+): Promise<DashSection> {
+  if (!membershipId) return { kpis: [], actions: [] };
+  const onPanel = dsql`EXISTS (SELECT 1 FROM public.interview_panelists p WHERE p.tenant_id = i.tenant_id AND p.interview_id = i.id AND p.membership_id = ${membershipId}::uuid)`;
+  const myFeedbackDone = dsql`EXISTS (SELECT 1 FROM public.interview_feedback f WHERE f.tenant_id = i.tenant_id AND f.interview_id = i.id AND f.membership_id = ${membershipId}::uuid AND f.submitted_at IS NOT NULL)`;
+  const [upcoming, feedbackDue] = await Promise.all([
+    dashScalar(
+      db,
+      dsql`SELECT count(*)::int AS n FROM public.interviews i WHERE i.tenant_id = ${tenantId}::uuid
+             AND i.status = 'scheduled' AND i.scheduled_start >= now() AND i.scheduled_start < now() + interval '7 days'
+             AND ${onPanel}`,
+    ),
+    dashScalar(
+      db,
+      dsql`SELECT count(*)::int AS n FROM public.interviews i WHERE i.tenant_id = ${tenantId}::uuid
+             AND ${onPanel} AND i.status <> 'cancelled'
+             AND (i.status = 'completed' OR (i.scheduled_end IS NOT NULL AND i.scheduled_end < now()))
+             AND NOT ${myFeedbackDone}`,
+    ),
+  ]);
+  const kpis: DashboardKpi[] = [
+    {
+      key: "pan_upcoming",
+      label: "Upcoming interviews",
+      value: upcoming,
+      hint: "next 7 days",
+      tone: upcoming ? "accent" : "neutral",
+      href: "/panel",
+    },
+    {
+      key: "pan_feedback",
+      label: "Feedback due",
+      value: feedbackDue,
+      hint: feedbackDue ? "scorecards to submit" : "all in",
+      tone: feedbackDue ? "warning" : "positive",
+      href: "/panel",
+    },
+  ];
+  const actions: DashboardAction[] = [];
+  const rows = await dashRows<{
+    id: string;
+    round_name: string | null;
+    scheduled_start: string | Date | null;
+  }>(
+    db,
+    dsql`SELECT i.id::text AS id, i.round_name AS round_name, i.scheduled_start AS scheduled_start
+         FROM public.interviews i
+         WHERE i.tenant_id = ${tenantId}::uuid AND ${onPanel} AND i.status <> 'cancelled'
+           AND (i.status = 'completed' OR (i.scheduled_end IS NOT NULL AND i.scheduled_end < now()))
+           AND NOT ${myFeedbackDone}
+         ORDER BY i.scheduled_start ASC NULLS LAST
+         LIMIT 5`,
+  );
+  for (const r of rows) {
+    actions.push({
+      key: `pan_score_${r.id}`,
+      label: `Submit feedback: ${r.round_name ?? "interview"}`,
+      detail: r.scheduled_start ? `Interviewed ${daysSince(r.scheduled_start)}d ago` : null,
+      href: `/panel/${r.id}`,
+      urgency: "attention",
+    });
+  }
+  return { kpis, actions };
+}
+
+async function peopleOpsSection(db: DashDb, tenantId: string): Promise<DashSection> {
+  const T = dsql`tenant_id = ${tenantId}::uuid`;
+  const [docs, tasksDue, blockedOn, blockedOff, offActive] = await Promise.all([
+    dashScalar(
+      db,
+      dsql`SELECT count(*)::int AS n FROM public.onboarding_documents WHERE ${T} AND verification_status = 'pending'`,
+    ),
+    dashScalar(
+      db,
+      dsql`SELECT count(*)::int AS n FROM public.onboarding_tasks WHERE ${T} AND status IN ('pending', 'in_progress') AND due_at IS NOT NULL AND due_at <= now()`,
+    ),
+    dashScalar(
+      db,
+      dsql`SELECT count(*)::int AS n FROM public.onboarding_tasks WHERE ${T} AND status = 'blocked'`,
+    ),
+    dashScalar(
+      db,
+      dsql`SELECT count(*)::int AS n FROM public.offboarding_tasks WHERE ${T} AND status = 'blocked'`,
+    ),
+    dashScalar(
+      db,
+      dsql`SELECT count(*)::int AS n FROM public.offboarding_cases WHERE ${T} AND status NOT IN ('completed', 'cancelled')`,
+    ),
+  ]);
+  const blocked = blockedOn + blockedOff;
+  const kpis: DashboardKpi[] = [
+    {
+      key: "ops_docs",
+      label: "Documents to review",
+      value: docs,
+      hint: docs ? "pending verification" : "none pending",
+      tone: docs ? "accent" : "neutral",
+      href: "/onboarding",
+    },
+    {
+      key: "ops_tasks_due",
+      label: "Onboarding tasks due",
+      value: tasksDue,
+      hint: tasksDue ? "past their due date" : "on track",
+      tone: tasksDue ? "warning" : "neutral",
+      href: "/onboarding",
+    },
+    {
+      key: "ops_blocked",
+      label: "Blocked tasks",
+      value: blocked,
+      hint: blocked ? "need unblocking" : "none blocked",
+      tone: blocked ? "error" : "neutral",
+      href: "/onboarding",
+    },
+    {
+      key: "ops_offboarding",
+      label: "Offboarding active",
+      value: offActive,
+      hint: "in progress",
+      tone: offActive ? "info" : "neutral",
+      href: "/offboarding",
+    },
+  ];
+  const actions: DashboardAction[] = [];
+  const docRows = await dashRows<{ id: string; case_id: string; file_name: string | null }>(
+    db,
+    dsql`SELECT d.id::text AS id, d.case_id::text AS case_id, d.file_name AS file_name
+         FROM public.onboarding_documents d WHERE d.tenant_id = ${tenantId}::uuid AND d.verification_status = 'pending'
+         ORDER BY d.uploaded_at ASC LIMIT 3`,
+  );
+  for (const r of docRows) {
+    actions.push({
+      key: `ops_verify_${r.id}`,
+      label: `Verify document: ${r.file_name ?? "uploaded file"}`,
+      detail: "Awaiting review",
+      href: `/onboarding/${r.case_id}`,
+      urgency: "attention",
+    });
+  }
+  const blockRows = await dashRows<{ id: string; case_id: string; title: string | null }>(
+    db,
+    dsql`SELECT t.id::text AS id, t.case_id::text AS case_id, t.title AS title
+         FROM public.onboarding_tasks t WHERE t.tenant_id = ${tenantId}::uuid AND t.status = 'blocked'
+         ORDER BY t.updated_at DESC LIMIT 3`,
+  );
+  for (const r of blockRows) {
+    actions.push({
+      key: `ops_unblock_${r.id}`,
+      label: `Unblock: ${r.title ?? "onboarding task"}`,
+      detail: "Blocked — needs attention",
+      href: `/onboarding/${r.case_id}`,
+      urgency: "urgent",
+    });
+  }
+  return { kpis, actions };
+}
+
+async function adminSection(
+  db: DashDb,
+  tenantId: string,
+): Promise<DashSection & { activity: DashboardActivity[] }> {
+  const T = dsql`tenant_id = ${tenantId}::uuid`;
+  const [
+    newTriage,
+    reqApprovals,
+    interviewsUp,
+    onbActive,
+    offActive,
+    agentApprovals,
+    workflows,
+    spendToday,
+    spendWeek,
+    auditToday,
+  ] = await Promise.all([
+    dashScalar(
+      db,
+      dsql`SELECT count(*)::int AS n FROM public.applications WHERE ${T} AND current_stage = 'application_received'`,
+    ),
+    dashScalar(
+      db,
+      dsql`SELECT count(*)::int AS n FROM public.approval_requests WHERE ${T} AND subject_type = 'requisition' AND status = 'pending'`,
+    ),
+    dashScalar(
+      db,
+      dsql`SELECT count(*)::int AS n FROM public.interviews WHERE ${T} AND status = 'scheduled' AND scheduled_start >= now()`,
+    ),
+    dashScalar(
+      db,
+      dsql`SELECT count(*)::int AS n FROM public.onboarding_cases WHERE ${T} AND status NOT IN ('completed', 'cancelled')`,
+    ),
+    dashScalar(
+      db,
+      dsql`SELECT count(*)::int AS n FROM public.offboarding_cases WHERE ${T} AND status NOT IN ('completed', 'cancelled')`,
+    ),
+    dashScalar(
+      db,
+      dsql`SELECT count(*)::int AS n FROM public.agent_approval_requests WHERE ${T} AND status = 'pending'`,
+    ),
+    dashScalar(
+      db,
+      dsql`SELECT count(*)::int AS n FROM public.automation_agents WHERE ${T} AND enabled = true AND retired_at IS NULL`,
+    ),
+    dashScalar(
+      db,
+      dsql`SELECT COALESCE(SUM(cost_micros), 0)::text AS n FROM public.ai_usage_logs WHERE ${T} AND created_at >= date_trunc('day', now())`,
+    ),
+    dashScalar(
+      db,
+      dsql`SELECT COALESCE(SUM(cost_micros), 0)::text AS n FROM public.ai_usage_logs WHERE ${T} AND created_at >= now() - interval '7 days'`,
+    ),
+    dashScalar(
+      db,
+      dsql`SELECT count(*)::int AS n FROM public.audit_logs WHERE ${T} AND created_at >= date_trunc('day', now())`,
+    ),
+  ]);
+  const kpis: DashboardKpi[] = [
+    {
+      key: "adm_triage",
+      label: "New in triage",
+      value: newTriage,
+      hint: "just applied",
+      tone: newTriage ? "accent" : "neutral",
+      href: "/triage",
+    },
+    {
+      key: "adm_req_appr",
+      label: "Req approvals",
+      value: reqApprovals,
+      hint: "pending",
+      tone: reqApprovals ? "warning" : "neutral",
+      href: "/requisition-approvals",
+    },
+    {
+      key: "adm_interviews",
+      label: "Interviews scheduled",
+      value: interviewsUp,
+      hint: "upcoming",
+      tone: "info",
+      href: "/interviews",
+    },
+    {
+      key: "adm_onboarding",
+      label: "Onboarding active",
+      value: onbActive,
+      hint: "in progress",
+      tone: "info",
+      href: "/onboarding",
+    },
+    {
+      key: "adm_offboarding",
+      label: "Offboarding active",
+      value: offActive,
+      hint: "in progress",
+      tone: "info",
+      href: "/offboarding",
+    },
+    {
+      key: "adm_agents",
+      label: "Agent approvals",
+      value: agentApprovals,
+      hint: "pending",
+      tone: agentApprovals ? "warning" : "neutral",
+      href: "/approvals",
+    },
+    {
+      key: "adm_workflows",
+      label: "Workflows enabled",
+      value: workflows,
+      hint: "live agents",
+      tone: "neutral",
+      href: "/admin/workflows",
+    },
+    {
+      key: "adm_spend_today",
+      label: "AI spend today",
+      value: formatUsdMicros(spendToday),
+      hint: "USD",
+      tone: "neutral",
+      href: "/admin/costs",
+    },
+    {
+      key: "adm_spend_week",
+      label: "AI spend · 7d",
+      value: formatUsdMicros(spendWeek),
+      hint: "USD",
+      tone: "neutral",
+      href: "/admin/costs",
+    },
+    {
+      key: "adm_audit",
+      label: "Audit events today",
+      value: auditToday,
+      hint: "logged",
+      tone: "neutral",
+      href: "/admin/audit",
+    },
+  ];
+  const actions: DashboardAction[] = [];
+  if (reqApprovals > 0)
+    actions.push({
+      key: "adm_a_req",
+      label: `Decide ${reqApprovals} requisition approval${reqApprovals === 1 ? "" : "s"}`,
+      detail: "HR-head queue",
+      href: "/requisition-approvals",
+      urgency: "urgent",
+    });
+  if (agentApprovals > 0)
+    actions.push({
+      key: "adm_a_agents",
+      label: `Review ${agentApprovals} agent approval${agentApprovals === 1 ? "" : "s"}`,
+      detail: "Awaiting sign-off",
+      href: "/approvals",
+      urgency: "attention",
+    });
+  if (newTriage > 0)
+    actions.push({
+      key: "adm_a_triage",
+      label: `Triage ${newTriage} new application${newTriage === 1 ? "" : "s"}`,
+      detail: "Fresh in the pipeline",
+      href: "/triage",
+      urgency: "attention",
+    });
+  if (onbActive > 0)
+    actions.push({
+      key: "adm_a_onb",
+      label: `Track ${onbActive} onboarding case${onbActive === 1 ? "" : "s"}`,
+      detail: "In progress",
+      href: "/onboarding",
+      urgency: "normal",
+    });
+
+  const activityRows = await dashRows<{
+    id: string;
+    entity_type: string;
+    action: string;
+    created_at: string | Date;
+  }>(
+    db,
+    dsql`SELECT id::text AS id, entity_type, action::text AS action, created_at
+         FROM public.audit_logs WHERE ${T} ORDER BY created_at DESC LIMIT 5`,
+  );
+  const activity: DashboardActivity[] = activityRows.map((r) => ({
+    key: `act_${r.id}`,
+    label: `${humanizeStage(r.action)} · ${humanizeStage(r.entity_type)}`,
+    detail: null,
+    href: "/admin/audit",
+    at:
+      r.created_at instanceof Date
+        ? r.created_at.toISOString()
+        : new Date(r.created_at).toISOString(),
+  }));
+  return { kpis, actions, activity };
+}
+
+/**
+ * Compose the caller's dashboard. admin → the condensed superset (one KPI row
+ * per pillar + AI spend + workflows + audit + a recent-activity strip). Any
+ * other internal identity → the union of its persona sections, so a
+ * recruiter-only user gets recruiter content, an hr_head gets hr_head content
+ * (recruiter ≠ hr_head), and a multi-role user gets both. `it_admin` (no bespoke
+ * section) lands an honest empty dashboard — the UI renders the calm empty state.
+ */
+async function buildInternalDashboard(
+  db: DashDb,
+  tenantId: string,
+  roles: string[],
+  membershipId: string | null,
+): Promise<GetMyDashboardOutput> {
+  if (roles.includes("admin")) {
+    const a = await adminSection(db, tenantId);
+    return {
+      variants: ["admin"],
+      kpis: a.kpis,
+      actions: a.actions,
+      ...(a.activity.length ? { activity: a.activity } : {}),
+    };
+  }
+  const variants: string[] = [];
+  const kpis: DashboardKpi[] = [];
+  const actions: DashboardAction[] = [];
+  const has = (r: string) => roles.includes(r);
+  if (has("hiring_manager")) {
+    variants.push("hiring_manager");
+    const s = await hiringManagerSection(db, tenantId, membershipId);
+    kpis.push(...s.kpis);
+    actions.push(...s.actions);
+  }
+  if (has("hr_head")) {
+    variants.push("hr_head");
+    const s = await hrHeadSection(db, tenantId);
+    kpis.push(...s.kpis);
+    actions.push(...s.actions);
+  }
+  if (has("recruiter")) {
+    variants.push("recruiter");
+    const s = await recruiterSection(db, tenantId);
+    kpis.push(...s.kpis);
+    actions.push(...s.actions);
+  }
+  if (has("panel_member")) {
+    variants.push("panel_member");
+    const s = await panelSection(db, tenantId, membershipId);
+    kpis.push(...s.kpis);
+    actions.push(...s.actions);
+  }
+  if (has("hr_ops") || has("people_ops")) {
+    variants.push("people_ops");
+    const s = await peopleOpsSection(db, tenantId);
+    kpis.push(...s.kpis);
+    actions.push(...s.actions);
+  }
+  return { variants, kpis, actions };
+}
 
 // ─────────────── ONBOARD-05 document helpers ───────────────
 

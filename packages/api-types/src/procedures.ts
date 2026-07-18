@@ -3302,3 +3302,93 @@ export const candidateGetMyOnboardingOutputSchema = z.object({
   documents: z.array(candidateDocumentSlotSchema),
 });
 export type CandidateGetMyOnboardingOutput = z.infer<typeof candidateGetMyOnboardingOutputSchema>;
+
+// ─────────── DASH-01 — persona landing dashboards ───────────
+
+/**
+ * `tone` mirrors the StatTile tones the internal portal already ships
+ * (packages ui/StatTile) so a KPI's tint is data-driven from the server.
+ * `urgency` colours a recommended-action row: normal (calm), attention
+ * (worth doing soon), urgent (overdue / blocking).
+ */
+export const dashboardToneSchema = z.enum([
+  "neutral",
+  "accent",
+  "positive",
+  "warning",
+  "error",
+  "info",
+]);
+export type DashboardTone = z.infer<typeof dashboardToneSchema>;
+
+export const dashboardUrgencySchema = z.enum(["normal", "attention", "urgent"]);
+export type DashboardUrgency = z.infer<typeof dashboardUrgencySchema>;
+
+/** One KPI tile. `value` is pre-formatted server-side (a count, or a string
+ * like "$0.42"); `href` deep-links the whole tile to an existing surface. */
+export const dashboardKpiSchema = z.object({
+  key: z.string(),
+  label: z.string(),
+  value: z.union([z.number(), z.string()]),
+  hint: z.string().nullable(),
+  tone: dashboardToneSchema,
+  href: z.string(),
+});
+export type DashboardKpi = z.infer<typeof dashboardKpiSchema>;
+
+/** One recommended-action row — a single thing the persona should do next,
+ * deep-linked to the surface that does it. */
+export const dashboardActionSchema = z.object({
+  key: z.string(),
+  label: z.string(),
+  detail: z.string().nullable(),
+  href: z.string(),
+  urgency: dashboardUrgencySchema,
+});
+export type DashboardAction = z.infer<typeof dashboardActionSchema>;
+
+/** One recent-activity row (optional strip — cut first under time pressure). */
+export const dashboardActivitySchema = z.object({
+  key: z.string(),
+  label: z.string(),
+  detail: z.string().nullable(),
+  href: z.string().nullable(),
+  at: z.string(),
+});
+export type DashboardActivity = z.infer<typeof dashboardActivitySchema>;
+
+/**
+ * getMyDashboard — one aggregate read per internal persona. The server
+ * switches on the caller's roles and returns the KPI + recommended-action
+ * payload for that persona (admin = condensed superset). `variants` names the
+ * persona sections that were composed, so multi-role internal users get a
+ * merged view and tests can assert recruiter ≠ hr_head.
+ */
+export const getMyDashboardOutputSchema = z.object({
+  variants: z.array(z.string()),
+  kpis: z.array(dashboardKpiSchema),
+  actions: z.array(dashboardActionSchema),
+  activity: z.array(dashboardActivitySchema).optional(),
+});
+export type GetMyDashboardOutput = z.infer<typeof getMyDashboardOutputSchema>;
+
+/**
+ * partnerGetDashboardStats — the partner-portal analogue: the org's own
+ * submissions bucketed by live pipeline stage. Kept separate from the internal
+ * read because the partner tier resolves a different context (partnerProcedure)
+ * and sees only its org's claims.
+ */
+export const partnerStageCountSchema = z.object({
+  stage: z.string(),
+  label: z.string(),
+  count: z.number().int(),
+});
+export type PartnerStageCount = z.infer<typeof partnerStageCountSchema>;
+
+export const partnerGetDashboardStatsOutputSchema = z.object({
+  totalSubmissions: z.number().int(),
+  activeSubmissions: z.number().int(),
+  placed: z.number().int(),
+  byStage: z.array(partnerStageCountSchema),
+});
+export type PartnerGetDashboardStatsOutput = z.infer<typeof partnerGetDashboardStatsOutputSchema>;
