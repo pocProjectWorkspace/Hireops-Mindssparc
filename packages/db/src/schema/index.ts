@@ -77,3 +77,9 @@ export * from "./interview-panelists";
 export * from "./interview-feedback";
 // Candidate accounts (Wave C, CAND-01)
 export * from "./candidate-accounts";
+// Offboarding pillar (OFFBOARD-01)
+export * from "./offboarding-cases";
+export * from "./offboarding-tasks";
+export * from "./exit-interviews";
+export * from "./asset-returns";
+export * from "./final-settlements";

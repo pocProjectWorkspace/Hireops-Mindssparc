@@ -393,6 +393,27 @@
       "when": 1784265300975,
       "tag": "0058_cand_01_audit_triggers",
       "breakpoints": true
+    },
+    {
+      "idx": 59,
+      "version": "7",
+      "when": 1784334572871,
+      "tag": "0059_far_sugar_man",
+      "breakpoints": true
+    },
+    {
+      "idx": 60,
+      "version": "7",
+      "when": 1784334572872,
+      "tag": "0060_offboard_01_force_rls",
+      "breakpoints": true
+    },
+    {
+      "idx": 61,
+      "version": "7",
+      "when": 1784334572873,
+      "tag": "0061_offboard_01_audit_triggers",
+      "breakpoints": true
     }
   ]
 }
