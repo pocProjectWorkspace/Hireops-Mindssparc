@@ -11,6 +11,7 @@ import {
   InterviewInvitation,
   type InterviewInvitationProps,
 } from "./templates/interview-invitation";
+import { InterviewCancelled, type InterviewCancelledProps } from "./templates/interview-cancelled";
 import {
   CandidateAccountActivation,
   type CandidateAccountActivationProps,
@@ -91,6 +92,15 @@ export async function renderTemplate(
       const element = InterviewInvitation(props);
       return {
         subject: `Interview invitation — ${props.roundName} for ${props.positionTitle}`,
+        html: await render(element),
+        text: await render(element, { plainText: true }),
+      };
+    }
+    case "candidate.interview_cancelled": {
+      const props = data as unknown as InterviewCancelledProps;
+      const element = InterviewCancelled(props);
+      return {
+        subject: `Your ${props.roundName} interview for ${props.positionTitle} has been cancelled`,
         html: await render(element),
         text: await render(element, { plainText: true }),
       };

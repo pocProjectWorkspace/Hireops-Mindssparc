@@ -10,6 +10,7 @@ export {
   InterviewInvitation,
   type InterviewInvitationProps,
 } from "./templates/interview-invitation";
+export { InterviewCancelled, type InterviewCancelledProps } from "./templates/interview-cancelled";
 export {
   CandidateAccountActivation,
   type CandidateAccountActivationProps,

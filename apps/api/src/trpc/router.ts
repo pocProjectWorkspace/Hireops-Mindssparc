@@ -175,6 +175,8 @@ import {
   advanceApplicationAfterInterviewOutputSchema,
   getInterviewDecisionSummaryInputSchema,
   getInterviewDecisionSummaryOutputSchema,
+  reopenInterviewFeedbackInputSchema,
+  reopenInterviewFeedbackOutputSchema,
   type GetInterviewDecisionSummaryOutput,
   type DecisionPanelist,
   type InterviewRecommendation,
@@ -1338,6 +1340,27 @@ export const appRouter = router({
         if (!row) {
           throw new TRPCError({ code: "NOT_FOUND", message: "Candidate not found" });
         }
+
+        // POLISH-01 (Item A) — the drawer's AI-score hero. The score lives on
+        // the application, not the candidate, so we read it in its own facet.
+        // Prefer the applicationId the drawer passes (it's application-centric);
+        // otherwise fall back to the candidate's most recent application. RLS
+        // already scopes to the tenant; the candidateId predicate scopes to
+        // this candidate so a passed applicationId can't cross candidates.
+        const appConds = [eq(applications.candidateId, input.id)];
+        if (input.applicationId) appConds.push(eq(applications.id, input.applicationId));
+        const [appRow] = await db
+          .select({
+            id: applications.id,
+            aiScore: applications.aiScore,
+            aiScoreExplanation: applications.aiScoreExplanation,
+            aiScoredAt: applications.aiScoredAt,
+          })
+          .from(applications)
+          .where(and(...appConds))
+          .orderBy(desc(applications.createdAt))
+          .limit(1);
+
         // ADR-002 §7 — record the PII read (fire-and-forget, like withAudit).
         // ctx carries no membership id (not in JWT claims), so we log the
         // human actor via actor_user_id + actor_label 'user'. fields_accessed
@@ -1363,6 +1386,14 @@ export const appRouter = router({
         return {
           candidate: { ...row.candidate, createdAt: row.candidate.createdAt.toISOString() },
           person: row.person,
+          application: appRow
+            ? {
+                id: appRow.id,
+                aiScore: appRow.aiScore === null ? null : Number(appRow.aiScore),
+                aiScoreExplanation: appRow.aiScoreExplanation ?? null,
+                aiScoredAt: toIsoString(appRow.aiScoredAt),
+              }
+            : null,
         };
       });
     }),
@@ -3407,7 +3438,13 @@ export const appRouter = router({
       return withAudit("cancel_interview", ctx, input, async () => {
         const db = requireDb(ctx);
         const [row] = await db
-          .select({ id: interviews.id, status: interviews.status })
+          .select({
+            id: interviews.id,
+            tenantId: interviews.tenantId,
+            status: interviews.status,
+            applicationId: interviews.applicationId,
+            roundName: interviews.roundName,
+          })
           .from(interviews)
           .where(eq(interviews.id, input.interviewId))
           .limit(1);
@@ -3415,11 +3452,42 @@ export const appRouter = router({
         if (row.status === "cancelled") {
           return { interviewId: row.id };
         }
-        // Cancel-notification email is a flagged INT-02 follow-up; no email here.
         await db
           .update(interviews)
           .set({ status: "cancelled", updatedAt: new Date() })
           .where(eq(interviews.id, row.id));
+
+        // POLISH-01 (Item B) — candidate-facing cancellation email (warm, no
+        // meeting link, no CTA). Best-effort: an enqueue failure is logged, not
+        // fatal — the cancel already committed. dedupKey keys on the interview
+        // so a double-cancel doesn't double-send. NOTE: rescheduleInterview
+        // does NOT reach here — its replacement round sends a fresh invitation
+        // that already tells the candidate the new time, so a cancellation
+        // notice there would contradict it.
+        try {
+          const meta = await fetchOfferEmailContext(db, row.applicationId);
+          if (meta) {
+            await enqueueNotification(db, {
+              tenantId: row.tenantId,
+              recipientType: "candidate",
+              recipientEmail: meta.candidateEmail,
+              recipientCandidateId: meta.candidateId,
+              templateKey: "candidate.interview_cancelled",
+              templateData: {
+                candidateName: meta.candidateName,
+                companyName: meta.companyName,
+                positionTitle: meta.positionTitle,
+                roundName: row.roundName,
+              },
+              dedupKey: `interview_cancelled:${row.id}`,
+            });
+          }
+        } catch (err) {
+          ctx.log.warn(
+            { err, request_id: ctx.requestId, interview_id: row.id },
+            "cancelInterview: enqueueNotification failed",
+          );
+        }
         return { interviewId: row.id };
       });
     }),
@@ -3910,6 +3978,92 @@ export const appRouter = router({
           .set({ status: "no_show", updatedAt: new Date() })
           .where(eq(interviews.id, input.interviewId));
         return { interviewId: input.interviewId, status: "no_show" as const };
+      });
+    }),
+
+  // POLISH-01 (Item C) — reopen a submitted panelist scorecard. Recruiter /
+  // hiring_manager / admin only (the coarse INTERVIEW_MANAGE_ROLES gate already
+  // excludes panel_member); an extra guard forbids reopening YOUR OWN scorecard
+  // even if you also hold a manage role — un-submitting your own to re-edit it
+  // must be someone else's deliberate act, for audit integrity. Clearing
+  // submitted_at returns the feedback to `draft`: the panel scorecard becomes
+  // editable again (PanelInterviewBrief keys read-only off state === 'submitted')
+  // and saveInterviewFeedback's immutability guard (submittedAt truthy) passes,
+  // so the panelist can resubmit. CONFLICT if the interview is already completed
+  // — reopening after the completion decision would corrupt its basis. Notifies
+  // nobody this ticket. Reason is required and rides into the audit row.
+  reopenInterviewFeedback: protectedProcedure
+    .input(reopenInterviewFeedbackInputSchema)
+    .output(reopenInterviewFeedbackOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      requireAnyRole(
+        ctx,
+        INTERVIEW_MANAGE_ROLES,
+        "Only recruiters, hiring managers and admins can reopen a scorecard.",
+      );
+      return withAudit("reopen_interview_feedback", ctx, input, async () => {
+        const db = requireDb(ctx);
+
+        const [iv] = await db
+          .select({ id: interviews.id, status: interviews.status })
+          .from(interviews)
+          .where(eq(interviews.id, input.interviewId))
+          .limit(1);
+        if (!iv) throw new TRPCError({ code: "NOT_FOUND", message: "Interview not found" });
+        if (iv.status === "completed") {
+          throw new TRPCError({
+            code: "CONFLICT",
+            message:
+              "This interview is completed. Reopening a scorecard now would corrupt the decision it was based on.",
+          });
+        }
+
+        // The panelist may not reopen their OWN scorecard (see header). An admin
+        // with no membership in this tenant resolves to null and is fine — they
+        // can never match the target membership.
+        const actorMembershipId = await resolveActorMembership(db, ctx);
+        if (actorMembershipId && actorMembershipId === input.membershipId) {
+          throw new TRPCError({
+            code: "FORBIDDEN",
+            message: "You can't reopen your own scorecard — ask another recruiter or an admin.",
+          });
+        }
+
+        const [fb] = await db
+          .select({ id: interviewFeedback.id, submittedAt: interviewFeedback.submittedAt })
+          .from(interviewFeedback)
+          .where(
+            and(
+              eq(interviewFeedback.interviewId, input.interviewId),
+              eq(interviewFeedback.membershipId, input.membershipId),
+            ),
+          )
+          .limit(1);
+        if (!fb) {
+          throw new TRPCError({
+            code: "NOT_FOUND",
+            message: "No scorecard for that panelist on this interview.",
+          });
+        }
+        if (!fb.submittedAt) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: "That scorecard isn't submitted, so there's nothing to reopen.",
+          });
+        }
+
+        // Clear submitted_at only — the scores / recommendation stay as draft
+        // data so the panelist edits rather than re-enters from scratch.
+        await db
+          .update(interviewFeedback)
+          .set({ submittedAt: null, updatedAt: new Date() })
+          .where(eq(interviewFeedback.id, fb.id));
+
+        return {
+          interviewId: input.interviewId,
+          membershipId: input.membershipId,
+          state: "draft" as const,
+        };
       });
     }),
 

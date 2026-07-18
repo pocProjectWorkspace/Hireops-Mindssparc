@@ -162,7 +162,9 @@ export function InterviewDecisionControls({
         >
           {showSummary ? "Hide scorecards" : "View scorecards"}
         </button>
-        {showSummary && summary.data ? <DecisionSummary summary={summary.data} /> : null}
+        {showSummary && summary.data ? (
+          <DecisionSummary summary={summary.data} interviewId={interview.id} canReopen />
+        ) : null}
         {err ? <p className="text-xs text-status-error-700">{err}</p> : null}
       </div>
     );
@@ -174,7 +176,9 @@ export function InterviewDecisionControls({
     const nextStage = suggestedNextStage(template);
     return (
       <div className="mt-2 space-y-2 border-t border-neutral-100 pt-2">
-        {summary.data ? <DecisionSummary summary={summary.data} /> : null}
+        {summary.data ? (
+          <DecisionSummary summary={summary.data} interviewId={interview.id} canReopen={false} />
+        ) : null}
         {nextStage ? (
           <div className="flex items-center gap-2">
             <Button
@@ -210,13 +214,31 @@ interface Summary {
     membershipId: string;
     name: string | null;
     isLead: boolean;
+    feedbackState: "none" | "draft" | "submitted";
     recommendation: InterviewRecommendation | null;
     scorecard: { key: string; label: string; score: number | null }[];
   }[];
 }
 
-function DecisionSummary({ summary }: { summary: Summary }) {
+function DecisionSummary({
+  summary,
+  interviewId,
+  canReopen,
+}: {
+  summary: Summary;
+  interviewId: string;
+  /** Reopen is offered only on non-completed interviews — reopening after
+   * completion is a server-side CONFLICT (it would corrupt the decision). */
+  canReopen: boolean;
+}) {
   const { rollup } = summary;
+  const queryClient = useQueryClient();
+  const reopen = trpc.reopenInterviewFeedback.useMutation({
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: [["getInterviewDecisionSummary"]] });
+      void queryClient.invalidateQueries({ queryKey: [["listCandidates"]] });
+    },
+  });
   return (
     <div className="rounded-md border border-neutral-200 bg-white p-3 text-xs">
       <div className="mb-2 flex flex-wrap items-center gap-2">
@@ -248,11 +270,34 @@ function DecisionSummary({ summary }: { summary: Summary }) {
                 {p.name ?? "Panellist"}
                 {p.isLead ? <span className="ml-1 text-brand-700">· lead</span> : null}
               </span>
-              {p.recommendation ? (
-                <Badge tone={REC_TONE[p.recommendation]}>{REC_LABEL[p.recommendation]}</Badge>
-              ) : (
-                <span className="text-neutral-400">No recommendation</span>
-              )}
+              <div className="flex items-center gap-2">
+                {p.recommendation ? (
+                  <Badge tone={REC_TONE[p.recommendation]}>{REC_LABEL[p.recommendation]}</Badge>
+                ) : (
+                  <span className="text-neutral-400">No recommendation</span>
+                )}
+                {canReopen && p.feedbackState === "submitted" ? (
+                  <button
+                    type="button"
+                    disabled={reopen.isPending}
+                    onClick={() => {
+                      const reason = window.prompt(
+                        `Reopen ${p.name ?? "this panellist"}'s scorecard? Give a reason (audited):`,
+                        "",
+                      );
+                      if (!reason || reason.trim().length === 0) return;
+                      reopen.mutate({
+                        interviewId,
+                        membershipId: p.membershipId,
+                        reason: reason.trim(),
+                      });
+                    }}
+                    className="text-xs text-brand-700 hover:underline disabled:opacity-50"
+                  >
+                    {reopen.isPending ? "Reopening…" : "Reopen"}
+                  </button>
+                ) : null}
+              </div>
             </div>
             <div className="flex flex-wrap gap-x-3 gap-y-0.5 text-neutral-600">
               {p.scorecard.map((c) => (
@@ -264,6 +309,9 @@ function DecisionSummary({ summary }: { summary: Summary }) {
           </div>
         ))}
       </div>
+      {reopen.error ? (
+        <p className="mt-2 text-xs text-status-error-700">{reopen.error.message}</p>
+      ) : null}
     </div>
   );
 }

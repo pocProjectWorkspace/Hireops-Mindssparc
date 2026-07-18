@@ -9,6 +9,7 @@ import { useDrawerRouting } from "@/lib/use-drawer-routing";
 import { useUndoToast } from "./UndoToastProvider";
 import { OfferSection } from "@/components/offers/OfferSection";
 import { InterviewScheduleSection } from "@/components/interviews/InterviewScheduleSection";
+import { AIScoreBadge } from "./AIScoreBadge";
 
 /**
  * Slide-in drawer at 60vw with backdrop, Esc-to-close, click-backdrop-
@@ -86,7 +87,7 @@ export function CandidateDetailDrawer() {
   }, [candidateId, close]);
 
   const detail = trpc.getCandidateById.useQuery(
-    { id: candidateId ?? "" },
+    { id: candidateId ?? "", applicationId: applicationId ?? undefined },
     { enabled: !!candidateId },
   );
 
@@ -148,6 +149,7 @@ export function CandidateDetailDrawer() {
   const isPending = advance.isPending || reject.isPending;
   const person = detail.data?.person;
   const candidate = detail.data?.candidate;
+  const application = detail.data?.application;
   const parsed = narrowParsed(candidate?.parsedSkills);
   const skills = Array.isArray(parsed.skills) ? parsed.skills : [];
   const work = Array.isArray(parsed.work_history) ? parsed.work_history : [];
@@ -210,6 +212,16 @@ export function CandidateDetailDrawer() {
         </header>
 
         <div className="flex-1 space-y-5 overflow-y-auto px-6 py-5">
+          {/* AI-score hero (POLISH-01) — ring + top factors, drawn from the
+              application's ai_score_explanation. Honest unscored/skipped states. */}
+          {application ? (
+            <AIScoreBadge
+              score={application.aiScore}
+              explanation={application.aiScoreExplanation}
+              variant="drawer"
+            />
+          ) : null}
+
           {/* Skills */}
           {skills.length > 0 ? (
             <section className="rounded-lg border border-neutral-200 bg-white p-4">

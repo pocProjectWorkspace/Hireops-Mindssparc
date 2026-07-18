@@ -92,6 +92,11 @@ export type ResolvePublicRequisitionOutput = z.infer<typeof resolvePublicRequisi
 
 export const getCandidateByIdInputSchema = z.object({
   id: z.string().uuid(),
+  // POLISH-01 (Item A): the drawer is application-centric (it already carries
+  // applicationId in the URL). When present we return THAT application's AI
+  // score; when absent we fall back to the candidate's most recent application.
+  // Optional so existing callers (`{ id }`) keep working unchanged.
+  applicationId: z.string().uuid().optional(),
 });
 
 export const candidatePersonSchema = z.object({
@@ -114,9 +119,24 @@ export const candidateRowSchema = z.object({
   createdAt: z.string(),
 });
 
+/**
+ * POLISH-01 (Item A) — the drawer's AI-score hero. The score lives on the
+ * application, not the candidate, so it rides in its own nullable facet
+ * (null when the candidate has no application). `aiScore` is 0–100 or null
+ * (unscored / skipped); `aiScoreExplanation` is the raw jsonb the drawer
+ * narrows for top factors + scored_by + the CONF-03 emphasis note.
+ */
+export const candidateApplicationScoreSchema = z.object({
+  id: z.string().uuid(),
+  aiScore: z.number().nullable(),
+  aiScoreExplanation: z.unknown().nullable(),
+  aiScoredAt: z.string().nullable(),
+});
+
 export const getCandidateByIdOutputSchema = z.object({
   candidate: candidateRowSchema,
   person: candidatePersonSchema,
+  application: candidateApplicationScoreSchema.nullable(),
 });
 
 export type GetCandidateByIdInput = z.infer<typeof getCandidateByIdInputSchema>;
@@ -2868,6 +2888,27 @@ export type GetInterviewDecisionSummaryInput = z.infer<
 export type GetInterviewDecisionSummaryOutput = z.infer<
   typeof getInterviewDecisionSummaryOutputSchema
 >;
+
+/**
+ * POLISH-01 (Item C) — reopen a submitted panelist scorecard. Recruiter /
+ * hiring_manager / admin only (NOT the panelist themselves); an explicit
+ * reason is required for the audit trail. Clearing `submitted_at` returns the
+ * feedback to `draft`, so the panelist's read-only scorecard becomes editable
+ * again and they can resubmit. CONFLICT if the interview is already completed —
+ * reopening after completion would corrupt the decision basis.
+ */
+export const reopenInterviewFeedbackInputSchema = z.object({
+  interviewId: z.string().uuid(),
+  membershipId: z.string().uuid(),
+  reason: z.string().min(1).max(500),
+});
+export const reopenInterviewFeedbackOutputSchema = z.object({
+  interviewId: z.string().uuid(),
+  membershipId: z.string().uuid(),
+  state: feedbackStateSchema,
+});
+export type ReopenInterviewFeedbackInput = z.infer<typeof reopenInterviewFeedbackInputSchema>;
+export type ReopenInterviewFeedbackOutput = z.infer<typeof reopenInterviewFeedbackOutputSchema>;
 
 // ─────────── PARTNER-01 — partner-portal procedures ───────────
 
