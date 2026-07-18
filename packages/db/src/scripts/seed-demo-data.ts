@@ -1577,6 +1577,10 @@ async function main() {
     // any offboarding cases (children cascade from the case) referencing
     // this application before the delete-recreate, or the FK blocks it.
     await poolSql`DELETE FROM public.offboarding_cases WHERE application_id = ${id}`;
+    // The offboard-demo completed case also writes a terminate row into
+    // workday_sync_outbox with subject_application_id set (RESTRICT) —
+    // clear outbox rows for this application before the delete too.
+    await poolSql`DELETE FROM public.workday_sync_outbox WHERE subject_application_id = ${id}`;
     // Deleting the application cascades onboarding_cases → tasks/docs/etc + offers.
     await poolSql`DELETE FROM public.applications WHERE id = ${id}`;
   }
