@@ -138,6 +138,28 @@ export function IconAudit() {
   );
 }
 
+export function IconGovernance() {
+  return (
+    <Svg>
+      <path d="M12 3l7 3v5c0 4.5-3 7.5-7 9-4-1.5-7-4.5-7-9V6z" />
+      <path d="M9.5 12l2 2 3.5-3.5" />
+    </Svg>
+  );
+}
+
+export function IconExecAudit() {
+  return (
+    <Svg>
+      <path d="M12 3v3" />
+      <path d="M5 7h14" />
+      <path d="M7 7l-3 6a3 3 0 0 0 6 0z" />
+      <path d="M17 7l-3 6a3 3 0 0 0 6 0z" />
+      <path d="M12 6v13" />
+      <path d="M8 21h8" />
+    </Svg>
+  );
+}
+
 export function IconCosts() {
   return (
     <Svg>

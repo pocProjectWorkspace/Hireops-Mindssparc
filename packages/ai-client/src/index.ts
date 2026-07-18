@@ -38,6 +38,8 @@ export {
   resolveTenantBiasLexiconDb,
   resolveTenantScoringWeights,
   resolveTenantScoringWeightsDb,
+  resolveTenantScreeningPrivacyDb,
+  resolveTenantFeedbackSharingDb,
   isDefaultScoringWeights,
   scoringWeightsEmphasis,
 } from "./tenant-settings";
@@ -45,6 +47,8 @@ export type {
   AiSettings,
   BiasLexicon,
   ScoringWeights,
+  ScreeningPrivacy,
+  FeedbackSharing,
   ScoringWeightEmphasisEntry,
 } from "./tenant-settings";
 

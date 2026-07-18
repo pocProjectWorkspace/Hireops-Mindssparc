@@ -23,12 +23,22 @@ import {
   resolveAiSettings,
   resolveBiasLexicon,
   resolveScoringWeights,
+  resolveScreeningPrivacy,
+  resolveFeedbackSharing,
   type AiSettings,
   type BiasLexicon,
   type ScoringWeights,
+  type ScreeningPrivacy,
+  type FeedbackSharing,
 } from "@hireops/api-types";
 
-export type { AiSettings, BiasLexicon, ScoringWeights } from "@hireops/api-types";
+export type {
+  AiSettings,
+  BiasLexicon,
+  ScoringWeights,
+  ScreeningPrivacy,
+  FeedbackSharing,
+} from "@hireops/api-types";
 // Re-export the pure weight helpers so the scoring drain (which depends on
 // ai-client + ai-scoring but not api-types directly) can decide when the
 // profile is non-default and flatten it for the prompt/explanation.
@@ -122,4 +132,42 @@ export async function resolveTenantScoringWeightsDb(
     .limit(1);
   const settings = (row?.settings ?? {}) as Record<string, unknown>;
   return resolveScoringWeights(settings["scoringWeights"]);
+}
+
+/**
+ * Resolve the effective screening-privacy block for a tenant (HRHEAD-03) —
+ * the sibling `screeningPrivacy` key in `tenants.settings`, defaults merged.
+ * Consumed by the triage list + candidate drawer masking reads. Absent /
+ * malformed blocks fall back to defaults (masking OFF) — a masking read must
+ * never break on a stale blob. Same unscoped-pool read as the AI resolvers.
+ */
+export async function resolveTenantScreeningPrivacyDb(
+  tenantId: string,
+  client: typeof poolDb = poolDb,
+): Promise<ScreeningPrivacy> {
+  const [row] = await client
+    .select({ settings: tenants.settings })
+    .from(tenants)
+    .where(eq(tenants.id, tenantId))
+    .limit(1);
+  const settings = (row?.settings ?? {}) as Record<string, unknown>;
+  return resolveScreeningPrivacy(settings["screeningPrivacy"]);
+}
+
+/**
+ * Resolve the effective feedback-sharing block for a tenant (HRHEAD-03) — the
+ * sibling `feedbackSharing` key in `tenants.settings`, defaults merged.
+ * Consumed by the candidate portal's interviews read. Defaults OFF.
+ */
+export async function resolveTenantFeedbackSharingDb(
+  tenantId: string,
+  client: typeof poolDb = poolDb,
+): Promise<FeedbackSharing> {
+  const [row] = await client
+    .select({ settings: tenants.settings })
+    .from(tenants)
+    .where(eq(tenants.id, tenantId))
+    .limit(1);
+  const settings = (row?.settings ?? {}) as Record<string, unknown>;
+  return resolveFeedbackSharing(settings["feedbackSharing"]);
 }

@@ -90,6 +90,7 @@ import {
 } from "@hireops/db";
 import { evaluateKnockouts, type KnockoutInput } from "@hireops/ai-scoring";
 import { SLA_THRESHOLDS_HOURS } from "../lib/sla-thresholds";
+import { computeGovernanceRiskFlags, computeExecutiveAudit } from "../lib/governance";
 import {
   submitApplicationInputSchema,
   submitApplicationOutputSchema,
@@ -286,6 +287,23 @@ import {
   updateScoringWeightsInputSchema,
   updateScoringWeightsOutputSchema,
   resolveScoringWeights,
+  getScreeningPrivacyInputSchema,
+  getScreeningPrivacyOutputSchema,
+  updateScreeningPrivacyInputSchema,
+  updateScreeningPrivacyOutputSchema,
+  resolveScreeningPrivacy,
+  getFeedbackSharingInputSchema,
+  getFeedbackSharingOutputSchema,
+  updateFeedbackSharingInputSchema,
+  updateFeedbackSharingOutputSchema,
+  resolveFeedbackSharing,
+  resolveCandidateMasking,
+  candidateMaskLabel,
+  getGovernanceRiskFlagsOutputSchema,
+  getExecutiveAuditOutputSchema,
+  type ScreeningPrivacy,
+  type GetExecutiveAuditOutput,
+  type GetGovernanceRiskFlagsOutput,
   listTenantUsersAdminInputSchema,
   listTenantUsersAdminOutputSchema,
   inviteTenantUserInputSchema,
@@ -362,6 +380,8 @@ import {
   resolveTenantAiSettingsDb,
   resolveTenantBiasLexiconDb,
   resolveTenantScoringWeightsDb,
+  resolveTenantScreeningPrivacyDb,
+  resolveTenantFeedbackSharingDb,
 } from "@hireops/ai-client";
 import {
   buildJdGenerationPrompt,
@@ -513,6 +533,11 @@ const REQUISITION_APPROVAL_READ_ROLES = new Set(["admin", "hr_head"]);
 // HR-leadership view: hr_head (the people-metrics owner) + admin. recruiter /
 // hiring_manager / panel_member get FORBIDDEN. RLS still scopes every read.
 const HR_METRICS_READ_ROLES = new Set(["admin", "hr_head"]);
+// HRHEAD-03 — the Governance + Executive Audit surfaces (policy blocks, risk
+// flags, compliance score). hr_head (the governance owner) + admin. The
+// "changes require admin approval" copy on the settings blocks is COPY ONLY
+// for the POC — hr_head edits take effect immediately (flagged in the UI).
+const GOVERNANCE_READ_ROLES = new Set(["admin", "hr_head"]);
 // REQ-03 decision mutation. hr_head (the approver) + admin. recruiter /
 // hiring_manager get FORBIDDEN.
 const REQUISITION_APPROVAL_DECIDE_ROLES = new Set(["admin", "hr_head"]);
@@ -1374,11 +1399,36 @@ export const appRouter = router({
             aiScore: applications.aiScore,
             aiScoreExplanation: applications.aiScoreExplanation,
             aiScoredAt: applications.aiScoredAt,
+            currentStage: applications.currentStage,
           })
           .from(applications)
           .where(and(...appConds))
           .orderBy(desc(applications.createdAt))
           .limit(1);
+
+        // HRHEAD-03 screeningPrivacy — presentation-level masking. When the
+        // tenant enables anonymisation and the caller is a masked-role user
+        // (recruiter without an accountable role), a candidate still below the
+        // tech_interview gate renders as "Candidate #SHORT-ID" and/or with
+        // contact fields nulled. Purely a read transform: the PII-access log
+        // above is unaffected (the recruiter DID access the row; the policy
+        // only shapes what the UI shows). Missing application → most-restrictive
+        // (treat as earliest stage) so a policy-on tenant never leaks by gap.
+        const maskStage = appRow?.currentStage ?? "application_received";
+        const privacy = ctx.tenantId
+          ? await resolveTenantScreeningPrivacyDb(ctx.tenantId)
+          : resolveScreeningPrivacy({});
+        const mask = resolveCandidateMasking({
+          roles: ctx.roles,
+          stage: maskStage,
+          privacy,
+        });
+        const presentedPerson = {
+          ...row.person,
+          fullName: mask.maskName ? candidateMaskLabel(row.candidate.id) : row.person.fullName,
+          email: mask.maskContact ? null : row.person.email,
+          phone: mask.maskContact ? null : row.person.phone,
+        };
 
         // ADR-002 §7 — record the PII read (fire-and-forget, like withAudit).
         // ctx carries no membership id (not in JWT claims), so we log the
@@ -1404,7 +1454,7 @@ export const appRouter = router({
         }
         return {
           candidate: { ...row.candidate, createdAt: row.candidate.createdAt.toISOString() },
-          person: row.person,
+          person: presentedPerson,
           application: appRow
             ? {
                 id: appRow.id,
@@ -1505,19 +1555,31 @@ export const appRouter = router({
 
       const hasMore = rows.length > limit;
       const out = rows.slice(0, limit);
+
+      // HRHEAD-03 screeningPrivacy — same presentation-level mask the drawer
+      // applies, here per triage row. Resolve the policy once, then decide
+      // per-row from that row's stage (masking lifts at tech_interview). The
+      // recruiter still sees the row (and its score); only the identity is
+      // anonymised while the candidate is in early screening.
+      const privacy = ctx.tenantId
+        ? await resolveTenantScreeningPrivacyDb(ctx.tenantId)
+        : resolveScreeningPrivacy({});
       return {
-        rows: out.map((r) => ({
-          candidateId: r.candidateId,
-          applicationId: r.applicationId,
-          fullName: r.fullName,
-          email: r.email,
-          source: r.source,
-          stage: r.stage,
-          stageEnteredAt: r.stageEnteredAt.toISOString(),
-          aiScore: r.aiScore === null ? null : Number(r.aiScore),
-          aiScoreExplanation: r.aiScoreExplanation,
-          createdAt: r.createdAt.toISOString(),
-        })),
+        rows: out.map((r) => {
+          const mask = resolveCandidateMasking({ roles: ctx.roles, stage: r.stage, privacy });
+          return {
+            candidateId: r.candidateId,
+            applicationId: r.applicationId,
+            fullName: mask.maskName ? candidateMaskLabel(r.candidateId) : r.fullName,
+            email: mask.maskContact ? null : r.email,
+            source: r.source,
+            stage: r.stage,
+            stageEnteredAt: r.stageEnteredAt.toISOString(),
+            aiScore: r.aiScore === null ? null : Number(r.aiScore),
+            aiScoreExplanation: r.aiScoreExplanation,
+            createdAt: r.createdAt.toISOString(),
+          };
+        }),
         nextCursor: hasMore ? lastCursor(out) : null,
       };
     }),
@@ -5045,6 +5107,176 @@ export const appRouter = router({
       });
     }),
 
+  // ═════════════════════════ HRHEAD-03 — Governance & Executive Audit ═════════════════════════
+  //
+  // Two settings blocks (screeningPrivacy + feedbackSharing) on the CONF-01
+  // sibling-block pattern, plus two read-only derivations (risk flags +
+  // executive audit). hr_head + admin throughout. NOTE: the settings surfaces
+  // carry a "changes require admin approval" note in the UI that is COPY ONLY
+  // for the POC — an hr_head edit here takes effect immediately (no approval
+  // workflow was built; flagged in the hand-back).
+
+  // ─────────────────────── getScreeningPrivacy (HRHEAD-03) ───────────────────────
+  getScreeningPrivacy: protectedProcedure
+    .input(getScreeningPrivacyInputSchema)
+    .output(getScreeningPrivacyOutputSchema)
+    .query(async ({ ctx }) => {
+      requireAnyRole(
+        ctx,
+        GOVERNANCE_READ_ROLES,
+        "Governance settings require the hr_head or admin role",
+      );
+      if (!ctx.tenantId) {
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: "protected procedure missing tenantId",
+        });
+      }
+      return resolveTenantScreeningPrivacyDb(ctx.tenantId);
+    }),
+
+  // ─────────────────────── updateScreeningPrivacy (HRHEAD-03) ───────────────────────
+  // Merges the validated block into tenants.settings under `screeningPrivacy`
+  // via the same atomic service-role jsonb `||` merge updateTenantAiSettings
+  // uses (tenants is FORCE RLS SELECT-only). A SIBLING mutation — saves
+  // independently of aiSettings / biasLexicon / scoringWeights / feedbackSharing.
+  updateScreeningPrivacy: protectedProcedure
+    .input(updateScreeningPrivacyInputSchema)
+    .output(updateScreeningPrivacyOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      return withAudit("update_screening_privacy", ctx, input, async () => {
+        requireAnyRole(
+          ctx,
+          GOVERNANCE_READ_ROLES,
+          "Governance settings require the hr_head or admin role",
+        );
+        if (!ctx.tenantId) {
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: "protected procedure missing tenantId",
+          });
+        }
+        const tenantId = ctx.tenantId;
+        const nextBlock: ScreeningPrivacy = resolveScreeningPrivacy(input);
+        const res = await poolDb.execute(dsql`
+          UPDATE public.tenants
+          SET settings = COALESCE(settings, '{}'::jsonb)
+              || jsonb_build_object('screeningPrivacy', ${JSON.stringify(nextBlock)}::jsonb)
+          WHERE id = ${tenantId}::uuid
+          RETURNING id
+        `);
+        const updated = (res as { rows?: unknown[] }).rows ?? (res as unknown[]);
+        if (updated.length !== 1) {
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: "tenant settings update affected an unexpected number of rows",
+          });
+        }
+        return { ok: true as const, screeningPrivacy: nextBlock };
+      });
+    }),
+
+  // ─────────────────────── getFeedbackSharing (HRHEAD-03) ───────────────────────
+  getFeedbackSharing: protectedProcedure
+    .input(getFeedbackSharingInputSchema)
+    .output(getFeedbackSharingOutputSchema)
+    .query(async ({ ctx }) => {
+      requireAnyRole(
+        ctx,
+        GOVERNANCE_READ_ROLES,
+        "Governance settings require the hr_head or admin role",
+      );
+      if (!ctx.tenantId) {
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: "protected procedure missing tenantId",
+        });
+      }
+      return resolveTenantFeedbackSharingDb(ctx.tenantId);
+    }),
+
+  // ─────────────────────── updateFeedbackSharing (HRHEAD-03) ───────────────────────
+  updateFeedbackSharing: protectedProcedure
+    .input(updateFeedbackSharingInputSchema)
+    .output(updateFeedbackSharingOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      return withAudit("update_feedback_sharing", ctx, input, async () => {
+        requireAnyRole(
+          ctx,
+          GOVERNANCE_READ_ROLES,
+          "Governance settings require the hr_head or admin role",
+        );
+        if (!ctx.tenantId) {
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: "protected procedure missing tenantId",
+          });
+        }
+        const tenantId = ctx.tenantId;
+        const nextBlock = resolveFeedbackSharing(input);
+        const res = await poolDb.execute(dsql`
+          UPDATE public.tenants
+          SET settings = COALESCE(settings, '{}'::jsonb)
+              || jsonb_build_object('feedbackSharing', ${JSON.stringify(nextBlock)}::jsonb)
+          WHERE id = ${tenantId}::uuid
+          RETURNING id
+        `);
+        const updated = (res as { rows?: unknown[] }).rows ?? (res as unknown[]);
+        if (updated.length !== 1) {
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: "tenant settings update affected an unexpected number of rows",
+          });
+        }
+        return { ok: true as const, feedbackSharing: nextBlock };
+      });
+    }),
+
+  // ─────────────────────── getGovernanceRiskFlags (HRHEAD-03) ───────────────────────
+  // The deterministic rule engine over live data — five rules, each yielding a
+  // severity + entity deep-link + one-line consequence. Rule (a) probes for the
+  // concurrently-built market_benchmarks table and omits itself when absent.
+  // Read-only, no withAudit (matches getHrMetrics). RLS scopes every read.
+  getGovernanceRiskFlags: protectedProcedure
+    .output(getGovernanceRiskFlagsOutputSchema)
+    .query(async ({ ctx }): Promise<GetGovernanceRiskFlagsOutput> => {
+      requireAnyRole(
+        ctx,
+        GOVERNANCE_READ_ROLES,
+        "Governance access requires the hr_head or admin role",
+      );
+      const db = requireDb(ctx);
+      if (!ctx.tenantId) {
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: "protected procedure missing tenantId",
+        });
+      }
+      return computeGovernanceRiskFlags(db, ctx.tenantId);
+    }),
+
+  // ─────────────────────── getExecutiveAudit (HRHEAD-03) ───────────────────────
+  // The composite behind /exec-audit: compliance score (four weighted real
+  // ratios), the KPI row, the risk-flag feed, the per-stage SLA table, and top
+  // drop-off reasons — all from live tables in ONE call. hr_head + admin.
+  getExecutiveAudit: protectedProcedure
+    .output(getExecutiveAuditOutputSchema)
+    .query(async ({ ctx }): Promise<GetExecutiveAuditOutput> => {
+      requireAnyRole(
+        ctx,
+        GOVERNANCE_READ_ROLES,
+        "Governance access requires the hr_head or admin role",
+      );
+      const db = requireDb(ctx);
+      if (!ctx.tenantId) {
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: "protected procedure missing tenantId",
+        });
+      }
+      return computeExecutiveAudit(db, ctx.tenantId);
+    }),
+
   // ─────────────────────── reviewJdWithAi (CONF-02) ───────────────────────
   //
   // Optional, advisory AI inclusive-language review of a DRAFT requisition's
@@ -7521,16 +7753,21 @@ export const appRouter = router({
 
   /**
    * getDocumentRetention — READ-ONLY view of the ONBOARD-01 document_types
-   * reference rows (retention years per geography). Admin-only (surfaced on
-   * /admin/users). No mutations this ticket — enforcement automation is a
-   * future work package. document_types is a tenant-agnostic reference table
-   * with a permissive authenticated SELECT policy, so ctx.db reads it fine.
+   * reference rows (retention years per geography). admin + hr_head (surfaced
+   * on /admin/users AND the HRHEAD-03 /governance page). No mutations this
+   * ticket — enforcement automation is a future work package. document_types
+   * is a tenant-agnostic reference table with a permissive authenticated
+   * SELECT policy, so ctx.db reads it fine.
    */
   getDocumentRetention: protectedProcedure
     .input(getDocumentRetentionInputSchema)
     .output(getDocumentRetentionOutputSchema)
     .query(async ({ ctx }) => {
-      requireAnyRole(ctx, USERS_ADMIN_ROLES, "Data retention view is admin-only");
+      requireAnyRole(
+        ctx,
+        GOVERNANCE_READ_ROLES,
+        "Data retention view requires the hr_head or admin role",
+      );
       const db = requireDb(ctx);
       const rows = await db
         .select({
@@ -10221,10 +10458,60 @@ export const appRouter = router({
         )
         .orderBy(desc(interviews.scheduledStart));
 
+      // HRHEAD-03 feedbackSharing — surface submitted-feedback highlights on
+      // COMPLETED interviews only, and only what the tenant's policy opts into.
+      // Scores are NEVER selected (the read touches strengths + recommendation
+      // only). The feedback rows are person-safe because we scope to the
+      // interview ids already fetched for THIS candidate's person above.
+      const sharing = await resolveTenantFeedbackSharingDb(ctx.candidate.tenantId);
+      const completedIds = rows.filter((r) => r.status === "completed").map((r) => r.interviewId);
+      const sharedByInterview = new Map<
+        string,
+        { summary: string | null; recommendation: string | null }
+      >();
+      if ((sharing.shareInterviewSummary || sharing.shareRecommendation) && completedIds.length) {
+        const fbRes = await db.execute(dsql`
+          SELECT
+            interview_id,
+            string_agg(NULLIF(btrim(strengths), ''), E'\n\n' ORDER BY submitted_at) AS summary,
+            (array_agg(recommendation ORDER BY submitted_at DESC))[1] AS recommendation
+          FROM public.interview_feedback
+          WHERE tenant_id = ${ctx.candidate.tenantId}::uuid
+            AND submitted_at IS NOT NULL
+            AND interview_id IN (${dsql.join(
+              completedIds.map((id) => dsql`${id}::uuid`),
+              dsql.raw(", "),
+            )})
+          GROUP BY interview_id
+        `);
+        const fbRows =
+          (
+            fbRes as {
+              rows?: {
+                interview_id: string;
+                summary: string | null;
+                recommendation: string | null;
+              }[];
+            }
+          ).rows ??
+          (fbRes as unknown as {
+            interview_id: string;
+            summary: string | null;
+            recommendation: string | null;
+          }[]);
+        for (const f of fbRows) {
+          sharedByInterview.set(f.interview_id, {
+            summary: sharing.shareInterviewSummary ? (f.summary ?? null) : null,
+            recommendation: sharing.shareRecommendation ? (f.recommendation ?? null) : null,
+          });
+        }
+      }
+
       const now = Date.now();
       const items: CandidateInterviewRow[] = rows.map((r) => {
         const startMs = r.scheduledStart ? new Date(r.scheduledStart).getTime() : null;
         const isUpcoming = r.status === "scheduled" && startMs !== null && startMs >= now;
+        const shared = r.status === "completed" ? sharedByInterview.get(r.interviewId) : undefined;
         return {
           interviewId: r.interviewId,
           positionTitle: r.positionTitle,
@@ -10236,6 +10523,8 @@ export const appRouter = router({
           meetingUrl: r.meetingUrl ?? null,
           confirmedAt: r.confirmedAt ? new Date(r.confirmedAt).toISOString() : null,
           isUpcoming,
+          sharedSummary: shared?.summary ?? null,
+          sharedRecommendation: shared?.recommendation ?? null,
         };
       });
       return { items };

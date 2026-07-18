@@ -3287,6 +3287,14 @@ export const candidateInterviewRowSchema = z.object({
   confirmedAt: z.string().nullable(),
   // Derived: scheduledStart in the future and not cancelled/completed.
   isUpcoming: z.boolean(),
+  // HRHEAD-03 feedbackSharing: populated ONLY for completed interviews when
+  // the tenant's feedbackSharing policy opts in. `sharedSummary` is the
+  // panel's strengths roll-up (shareInterviewSummary); `sharedRecommendation`
+  // is the roll-up recommendation (shareRecommendation). Numeric scores are
+  // NEVER shared — the read does not select the scorecard. Null when the
+  // policy is off, the interview isn't completed, or no feedback was submitted.
+  sharedSummary: z.string().nullable(),
+  sharedRecommendation: z.string().nullable(),
 });
 export type CandidateInterviewRow = z.infer<typeof candidateInterviewRowSchema>;
 

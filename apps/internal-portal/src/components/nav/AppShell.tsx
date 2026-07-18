@@ -39,6 +39,8 @@ import {
   IconAiSettings,
   IconReports,
   IconMetrics,
+  IconGovernance,
+  IconExecAudit,
   IconIntegrations,
   IconUsers,
   IconSignOut,
@@ -53,6 +55,8 @@ export type PortalNavKey =
   | "requisitions"
   | "requisition-approvals"
   | "metrics"
+  | "governance"
+  | "exec-audit"
   | "interviews"
   | "panel"
   | "workflows"
@@ -114,6 +118,25 @@ const MAIN_NAV: NavItem[] = [
     label: "Metrics",
     href: "/metrics",
     icon: <IconMetrics />,
+    roles: ["hr_head", "admin"],
+  },
+  {
+    // HRHEAD-03: Policy & Governance — the settings blocks (screening privacy,
+    // feedback sharing), the active risk-flag panel + retention reference.
+    // hr_head (governance owner) + admin, matching the API gate.
+    key: "governance",
+    label: "Governance",
+    href: "/governance",
+    icon: <IconGovernance />,
+    roles: ["hr_head", "admin"],
+  },
+  {
+    // HRHEAD-03: Executive Audit — compliance score, KPIs, risk-alert feed +
+    // per-stage SLA table. Separate from Governance (audit vs config).
+    key: "exec-audit",
+    label: "Exec audit",
+    href: "/exec-audit",
+    icon: <IconExecAudit />,
     roles: ["hr_head", "admin"],
   },
   {
