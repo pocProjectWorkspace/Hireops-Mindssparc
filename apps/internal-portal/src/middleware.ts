@@ -41,24 +41,31 @@ export async function middleware(req: NextRequest) {
   // gets a calm "not a candidate account" there.)
   const isCandidateArea = pathname === "/candidate" || pathname.startsWith("/candidate/");
 
+  // NEXT_PUBLIC_* are inlined at build; a misconfigured deploy should fail
+  // closed (bounce to login) rather than crash the middleware. Mirrors
+  // apps/partner-portal/src/middleware.ts.
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+  if (!supabaseUrl || !supabaseAnonKey) {
+    const url = req.nextUrl.clone();
+    url.pathname = isCandidateArea ? "/candidate/login" : "/login";
+    return NextResponse.redirect(url);
+  }
+
   const res = NextResponse.next();
-  const supabase = createServerClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
-    {
-      cookies: {
-        get(name: string) {
-          return req.cookies.get(name)?.value;
-        },
-        set(name: string, value: string, options: CookieOptions) {
-          res.cookies.set({ name, value, ...options });
-        },
-        remove(name: string, options: CookieOptions) {
-          res.cookies.set({ name, value: "", ...options });
-        },
+  const supabase = createServerClient(supabaseUrl, supabaseAnonKey, {
+    cookies: {
+      get(name: string) {
+        return req.cookies.get(name)?.value;
+      },
+      set(name: string, value: string, options: CookieOptions) {
+        res.cookies.set({ name, value, ...options });
+      },
+      remove(name: string, options: CookieOptions) {
+        res.cookies.set({ name, value: "", ...options });
       },
     },
-  );
+  });
 
   const {
     data: { session },

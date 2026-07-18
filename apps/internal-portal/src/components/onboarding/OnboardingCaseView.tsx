@@ -11,7 +11,7 @@ import type {
   OnboardingTaskRow,
   OnboardingTaskStatus,
 } from "@hireops/api-types";
-import { Select } from "@hireops/ui";
+import { Input, Select } from "@hireops/ui";
 import { trpc } from "@/lib/trpc-client";
 import { getSupabaseBrowserClient } from "@/lib/supabase-client";
 import { Badge, Button, Card, EmptyState } from "@/components/ui";
@@ -544,8 +544,9 @@ function CaseDetailsEditor({ caseId, c }: { caseId: string; c: OnboardingCaseDet
         </EditField>
 
         <EditField label="Expected start">
-          <input
+          <Input
             type="date"
+            size="sm"
             value={startDraft}
             disabled={busy}
             onChange={(e) => setStartDraft(e.target.value)}
@@ -555,7 +556,6 @@ function CaseDetailsEditor({ caseId, c }: { caseId: string; c: OnboardingCaseDet
                 update({ caseId, expectedStartDate: next });
               }
             }}
-            className="h-8 w-full rounded-md border border-neutral-300 bg-white px-3 text-sm text-neutral-900 transition-colors hover:border-neutral-400 focus:border-brand-600 focus:outline-none focus:ring-1 focus:ring-brand-600 disabled:cursor-not-allowed disabled:bg-neutral-50 disabled:text-neutral-400"
           />
         </EditField>
 

@@ -2,7 +2,7 @@
 
 import { useMemo, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { Button, Select } from "@hireops/ui";
+import { Button, Input, Select } from "@hireops/ui";
 import { Badge } from "@/components/ui";
 import type { BadgeTone } from "@/components/ui";
 import { trpc } from "@/lib/trpc-client";
@@ -258,16 +258,13 @@ function ScheduleForm({
         disabled={forcedRound !== undefined}
         onValueChange={onRoundChange}
       />
-      <label className="block">
-        <span className="text-sm font-medium text-neutral-700">Date &amp; time</span>
-        <input
-          type="datetime-local"
-          value={start}
-          onChange={(e) => setStart(e.target.value)}
-          required
-          className="mt-1 w-full rounded-md border border-neutral-300 p-2 text-sm"
-        />
-      </label>
+      <Input
+        type="datetime-local"
+        label="Date & time"
+        value={start}
+        onChange={(e) => setStart(e.target.value)}
+        required
+      />
       <label className="block">
         <span className="text-sm font-medium text-neutral-700">Meeting URL (optional)</span>
         <input

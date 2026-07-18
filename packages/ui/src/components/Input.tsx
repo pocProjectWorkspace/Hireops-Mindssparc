@@ -3,7 +3,15 @@ import type { InputHTMLAttributes, ReactNode } from "react";
 import { cn } from "../lib/utils";
 
 export type InputSize = "sm" | "md";
-export type InputType = "text" | "email" | "tel" | "number" | "password" | "search";
+export type InputType =
+  | "text"
+  | "email"
+  | "tel"
+  | "number"
+  | "password"
+  | "search"
+  | "date"
+  | "datetime-local";
 
 type NativeInputProps = Omit<InputHTMLAttributes<HTMLInputElement>, "size" | "prefix" | "type">;
 

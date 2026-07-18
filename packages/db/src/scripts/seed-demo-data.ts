@@ -1079,22 +1079,26 @@ async function main() {
   const { db, sql: poolSql } = await import("../client");
   const { tenants } = await import("../schema");
 
-  const [tenant] = await db
-    .select({ id: tenants.id, displayName: tenants.displayName })
-    .from(tenants)
-    .where(eq(tenants.slug, TENANT_SLUG))
-    .limit(1);
-  if (!tenant) {
-    console.error(`tenant ${TENANT_SLUG} not found; run db:migrate first.`);
-    process.exit(2);
-  }
-  const tid = tenant.id;
-  const companyName = tenant.displayName;
-  console.log(`Seeding demo data into tenant ${TENANT_SLUG} (${tid})`);
+  // Close the pool in the finally so the script exits promptly instead of
+  // hanging on idle postgres-js connections (the documented pooler-hang
+  // class) — the same idiom every other seed script uses.
+  try {
+    const [tenant] = await db
+      .select({ id: tenants.id, displayName: tenants.displayName })
+      .from(tenants)
+      .where(eq(tenants.slug, TENANT_SLUG))
+      .limit(1);
+    if (!tenant) {
+      console.error(`tenant ${TENANT_SLUG} not found; run db:migrate first.`);
+      process.exit(2);
+    }
+    const tid = tenant.id;
+    const companyName = tenant.displayName;
+    console.log(`Seeding demo data into tenant ${TENANT_SLUG} (${tid})`);
 
-  // Look up recruiter1's membership specifically — the script assigns
-  // all reqs to them so a single login covers every demo screen.
-  const [recruiter] = await poolSql<{ id: string }[]>`
+    // Look up recruiter1's membership specifically — the script assigns
+    // all reqs to them so a single login covers every demo screen.
+    const [recruiter] = await poolSql<{ id: string }[]>`
     SELECT tum.id
     FROM public.tenant_user_memberships tum
     JOIN auth.users au ON au.id = tum.user_id
@@ -1103,44 +1107,44 @@ async function main() {
       AND au.email = ${RECRUITER_EMAIL}
     LIMIT 1
   `;
-  if (!recruiter) {
-    console.error(
-      `recruiter ${RECRUITER_EMAIL} not found in ${TENANT_SLUG}. Run pnpm db:seed:test-users first.`,
-    );
-    process.exit(2);
-  }
-  const recruiterId = recruiter.id;
+    if (!recruiter) {
+      console.error(
+        `recruiter ${RECRUITER_EMAIL} not found in ${TENANT_SLUG}. Run pnpm db:seed:test-users first.`,
+      );
+      process.exit(2);
+    }
+    const recruiterId = recruiter.id;
 
-  // hr_ops1 + admin1 memberships — buddy / manager assignees for the
-  // ONBOARD-04 in_progress cases. Optional: if a persona is missing (older
-  // test-user seed) the assignment is simply left unset for that role.
-  async function membershipByEmail(email: string): Promise<string | null> {
-    const [m] = await poolSql<{ id: string }[]>`
+    // hr_ops1 + admin1 memberships — buddy / manager assignees for the
+    // ONBOARD-04 in_progress cases. Optional: if a persona is missing (older
+    // test-user seed) the assignment is simply left unset for that role.
+    async function membershipByEmail(email: string): Promise<string | null> {
+      const [m] = await poolSql<{ id: string }[]>`
       SELECT tum.id
       FROM public.tenant_user_memberships tum
       JOIN auth.users au ON au.id = tum.user_id
       WHERE tum.tenant_id = ${tid} AND tum.status = 'active' AND au.email = ${email}
       LIMIT 1
     `;
-    return m?.id ?? null;
-  }
-  const hrOpsId = await membershipByEmail(ONB_HR_OPS_EMAIL);
-  const adminId = await membershipByEmail(ONB_ADMIN_EMAIL);
-  const onbMemberByRole: Record<"recruiter" | "hr_ops" | "admin", string | null> = {
-    recruiter: recruiterId,
-    hr_ops: hrOpsId,
-    admin: adminId,
-  };
+      return m?.id ?? null;
+    }
+    const hrOpsId = await membershipByEmail(ONB_HR_OPS_EMAIL);
+    const adminId = await membershipByEmail(ONB_ADMIN_EMAIL);
+    const onbMemberByRole: Record<"recruiter" | "hr_ops" | "admin", string | null> = {
+      recruiter: recruiterId,
+      hr_ops: hrOpsId,
+      admin: adminId,
+    };
 
-  // ── 1. BU / envelope / position / JD / req / req_recruiter ──────
-  await poolSql`
+    // ── 1. BU / envelope / position / JD / req / req_recruiter ──────
+    await poolSql`
     INSERT INTO public.business_units (id, tenant_id, name, slug)
     VALUES (${DEMO_BU}, ${tid}, 'Global Capability Center - Bengaluru', 'gcc-blr')
     ON CONFLICT (id) DO NOTHING
   `;
-  // Envelope: current FY 2026 (April-aligned per Indian fiscal year),
-  // 8 planned heads, status approved so the requisition can link.
-  await poolSql`
+    // Envelope: current FY 2026 (April-aligned per Indian fiscal year),
+    // 8 planned heads, status approved so the requisition can link.
+    await poolSql`
     INSERT INTO public.headcount_envelopes
       (id, tenant_id, business_unit_id, period_start, period_end,
        planned_headcount, status, notes)
@@ -1149,7 +1153,7 @@ async function main() {
             8, 'approved', 'Demo envelope — seed-demo-data')
     ON CONFLICT (id) DO NOTHING
   `;
-  await poolSql`
+    await poolSql`
     INSERT INTO public.positions
       (id, tenant_id, business_unit_id, title, location_type,
        primary_location, is_active)
@@ -1158,25 +1162,25 @@ async function main() {
             'Bengaluru', true)
     ON CONFLICT (id) DO NOTHING
   `;
-  await poolSql`
+    await poolSql`
     INSERT INTO public.jd_versions
       (id, tenant_id, position_id, version_number, jd_text, status)
     VALUES (${DEMO_JD}, ${tid}, ${DEMO_POSITION}, 1, ${JD_BODY}, 'approved')
     ON CONFLICT (id) DO NOTHING
   `;
 
-  // JD skills — derived from the JD body's must-have list.
-  const REQUIRED_SKILLS = ["Java", "Spring Boot", "Kafka", "PostgreSQL", "AWS"] as const;
-  for (const skill of REQUIRED_SKILLS) {
-    await poolSql`
+    // JD skills — derived from the JD body's must-have list.
+    const REQUIRED_SKILLS = ["Java", "Spring Boot", "Kafka", "PostgreSQL", "AWS"] as const;
+    for (const skill of REQUIRED_SKILLS) {
+      await poolSql`
       INSERT INTO public.jd_skills
         (tenant_id, jd_version_id, skill_name, weight, is_required)
       VALUES (${tid}, ${DEMO_JD}, ${skill}, 1.00, true)
       ON CONFLICT DO NOTHING
     `;
-  }
+    }
 
-  await poolSql`
+    await poolSql`
     INSERT INTO public.requisitions
       (id, tenant_id, position_id, jd_version_id, headcount_envelope_id,
        primary_recruiter_id, hiring_manager_id, status, number_of_openings,
@@ -1188,18 +1192,18 @@ async function main() {
             now() - interval '11 days')
     ON CONFLICT (id) DO NOTHING
   `;
-  // requisition_recruiters assignment (sparse junction; we still add the
-  // row so the screen reflects the assignment shape correctly).
-  await poolSql`
+    // requisition_recruiters assignment (sparse junction; we still add the
+    // row so the screen reflects the assignment shape correctly).
+    await poolSql`
     INSERT INTO public.requisition_recruiters
       (tenant_id, requisition_id, recruiter_id)
     VALUES (${tid}, ${DEMO_REQ}, ${recruiterId})
     ON CONFLICT DO NOTHING
   `;
 
-  // ── 2. persons + candidates ─────────────────────────────────────
-  for (const p of DEMO_PERSONS) {
-    await poolSql`
+    // ── 2. persons + candidates ─────────────────────────────────────
+    for (const p of DEMO_PERSONS) {
+      await poolSql`
       INSERT INTO public.persons
         (id, tenant_id, full_name, email_primary, email_normalised,
          phone_primary, phone_normalised, location_country)
@@ -1212,9 +1216,9 @@ async function main() {
         phone_primary = EXCLUDED.phone_primary,
         phone_normalised = EXCLUDED.phone_normalised
     `;
-  }
-  for (const c of DEMO_CANDIDATES) {
-    await poolSql`
+    }
+    for (const c of DEMO_CANDIDATES) {
+      await poolSql`
       INSERT INTO public.candidates
         (id, tenant_id, person_id, source, consent_version,
          years_of_experience, parsed_skills)
@@ -1223,31 +1227,31 @@ async function main() {
               ${JSON.stringify(c.parsedSkills)}::jsonb)
       ON CONFLICT (id) DO NOTHING
     `;
-  }
+    }
 
-  // ── 3. applications + state transitions ─────────────────────────
-  //
-  // Delete then re-insert so created_at / stage_entered_at refresh
-  // (Candidate C needs to be "30h old" on every run).
-  for (const id of APP_IDS) {
-    await poolSql`DELETE FROM public.application_state_transitions WHERE application_id = ${id}`;
-  }
-  // Clear any prior offer for E before re-inserting the app (FK
-  // applications → offers cascade is "restrict" because offers reference
-  // applications, not the other way; we just delete the offer row).
-  await poolSql`DELETE FROM public.workday_sync_outbox WHERE subject_application_id = ${APP_E}`;
-  await poolSql`DELETE FROM public.offers WHERE id = ${DEMO_OFFER}`;
-  // Clear F's outbox row (AI-03 real-scoring path) — it's pending
-  // until the worker drains it, so a re-seed needs a fresh row.
-  await poolSql`DELETE FROM public.ai_score_outbox WHERE application_id = ${APP_F}`;
-  for (const id of APP_IDS) {
-    await poolSql`DELETE FROM public.applications WHERE id = ${id}`;
-  }
+    // ── 3. applications + state transitions ─────────────────────────
+    //
+    // Delete then re-insert so created_at / stage_entered_at refresh
+    // (Candidate C needs to be "30h old" on every run).
+    for (const id of APP_IDS) {
+      await poolSql`DELETE FROM public.application_state_transitions WHERE application_id = ${id}`;
+    }
+    // Clear any prior offer for E before re-inserting the app (FK
+    // applications → offers cascade is "restrict" because offers reference
+    // applications, not the other way; we just delete the offer row).
+    await poolSql`DELETE FROM public.workday_sync_outbox WHERE subject_application_id = ${APP_E}`;
+    await poolSql`DELETE FROM public.offers WHERE id = ${DEMO_OFFER}`;
+    // Clear F's outbox row (AI-03 real-scoring path) — it's pending
+    // until the worker drains it, so a re-seed needs a fresh row.
+    await poolSql`DELETE FROM public.ai_score_outbox WHERE application_id = ${APP_F}`;
+    for (const id of APP_IDS) {
+      await poolSql`DELETE FROM public.applications WHERE id = ${id}`;
+    }
 
-  for (const a of DEMO_APPS) {
-    // Application row. Use poolSql.unsafe so we can inline SQL intervals
-    // (`now() - interval '2 hours'`) — these can't be bound as params.
-    await poolSql.unsafe(`
+    for (const a of DEMO_APPS) {
+      // Application row. Use poolSql.unsafe so we can inline SQL intervals
+      // (`now() - interval '2 hours'`) — these can't be bound as params.
+      await poolSql.unsafe(`
       INSERT INTO public.applications
         (id, tenant_id, candidate_id, requisition_id, source,
          current_stage, stage_entered_at, ai_score, ai_score_explanation,
@@ -1262,12 +1266,12 @@ async function main() {
               now() - interval '${a.stageEnteredAtInterval}')
     `);
 
-    // State transitions. fromStage NULL → first entry; otherwise the
-    // forward step. ageInterval = how long ago the transition happened.
-    for (const t of a.transitions) {
-      const fromSql = t.from === null ? "NULL" : `'${t.from}'`;
-      const reasonSql = t.reason ? `'${t.reason.replace(/'/g, "''")}'` : "NULL";
-      await poolSql.unsafe(`
+      // State transitions. fromStage NULL → first entry; otherwise the
+      // forward step. ageInterval = how long ago the transition happened.
+      for (const t of a.transitions) {
+        const fromSql = t.from === null ? "NULL" : `'${t.from}'`;
+        const reasonSql = t.reason ? `'${t.reason.replace(/'/g, "''")}'` : "NULL";
+        await poolSql.unsafe(`
         INSERT INTO public.application_state_transitions
           (tenant_id, application_id, from_stage, to_stage,
            transitioned_at, reason, actor_membership_id)
@@ -1276,24 +1280,24 @@ async function main() {
                 ${reasonSql},
                 '${recruiterId}')
       `);
+      }
     }
-  }
 
-  // ── 3a. Candidate F — AI-03 real-scoring path ──────────────────
-  //
-  // Inserted outside the DEMO_APPS loop because:
-  //   - aiScore is intentionally NULL (the worker fills it from the
-  //     real provider response, or LocalAIClient fixture in tests).
-  //   - knockout_passed is set to true because the demo requisition
-  //     has no knockouts; in production submitApplication runs
-  //     evaluateKnockouts() and writes the result atomically.
-  //   - An ai_score_outbox row is enqueued so the apps/workers
-  //     process drains it on its next 5s tick. With ANTHROPIC_API_KEY
-  //     present, a real Anthropic call lands and ai_usage_logs
-  //     records tokens + cost; otherwise (NODE_ENV=test or
-  //     AI_CLIENT_MODE=local) the LocalAIClient handles it via the
-  //     bundled fixture corpus.
-  await poolSql.unsafe(`
+    // ── 3a. Candidate F — AI-03 real-scoring path ──────────────────
+    //
+    // Inserted outside the DEMO_APPS loop because:
+    //   - aiScore is intentionally NULL (the worker fills it from the
+    //     real provider response, or LocalAIClient fixture in tests).
+    //   - knockout_passed is set to true because the demo requisition
+    //     has no knockouts; in production submitApplication runs
+    //     evaluateKnockouts() and writes the result atomically.
+    //   - An ai_score_outbox row is enqueued so the apps/workers
+    //     process drains it on its next 5s tick. With ANTHROPIC_API_KEY
+    //     present, a real Anthropic call lands and ai_usage_logs
+    //     records tokens + cost; otherwise (NODE_ENV=test or
+    //     AI_CLIENT_MODE=local) the LocalAIClient handles it via the
+    //     bundled fixture corpus.
+    await poolSql.unsafe(`
     INSERT INTO public.applications
       (id, tenant_id, candidate_id, requisition_id, source,
        current_stage, stage_entered_at,
@@ -1308,36 +1312,36 @@ async function main() {
             now() - interval '5 minutes',
             now() - interval '5 minutes')
   `);
-  await poolSql`
+    await poolSql`
     INSERT INTO public.application_state_transitions
       (tenant_id, application_id, from_stage, to_stage,
        transitioned_at, actor_membership_id)
     VALUES (${tid}, ${APP_F}, NULL, 'application_received',
             now() - interval '5 minutes', ${recruiterId})
   `;
-  await poolSql`
+    await poolSql`
     INSERT INTO public.ai_score_outbox
       (tenant_id, application_id, status, created_at)
     VALUES (${tid}, ${APP_F}, 'pending', now() - interval '5 minutes')
     ON CONFLICT (tenant_id, application_id) DO NOTHING
   `;
 
-  // ── 4. Candidate E's extended offer + signed-link token ─────────
-  //
-  // 7-day window from now. signLink replicates exactly what the
-  // extendOffer mutation does in production — same secret, same
-  // (action, subjectId, expiresAt, nonce) payload, same SHA-256
-  // token_hash.
-  const expiresAt = new Date(Date.now() + OFFER_E.expiryDays * 24 * 60 * 60 * 1000);
-  const token = signSeedLink("candidate.accept_offer", DEMO_OFFER, expiresAt);
-  const tokenHash = hashSeedToken(token);
-  const joiningDate = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+    // ── 4. Candidate E's extended offer + signed-link token ─────────
+    //
+    // 7-day window from now. signLink replicates exactly what the
+    // extendOffer mutation does in production — same secret, same
+    // (action, subjectId, expiresAt, nonce) payload, same SHA-256
+    // token_hash.
+    const expiresAt = new Date(Date.now() + OFFER_E.expiryDays * 24 * 60 * 60 * 1000);
+    const token = signSeedLink("candidate.accept_offer", DEMO_OFFER, expiresAt);
+    const tokenHash = hashSeedToken(token);
+    const joiningDate = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
 
-  // postgres-js rejects bigint params; stringify the paise values + cast
-  // to bigint server-side. expires_at goes via ISO string for the same
-  // safety as the other scripts (postgres-js Date-binding is fine but
-  // varies by parser config).
-  await poolSql`
+    // postgres-js rejects bigint params; stringify the paise values + cast
+    // to bigint server-side. expires_at goes via ISO string for the same
+    // safety as the other scripts (postgres-js Date-binding is fine but
+    // varies by parser config).
+    await poolSql`
     INSERT INTO public.offers
       (id, tenant_id, application_id, drafted_by_membership_id,
        base_salary_inr_paise, variable_target_inr_paise, joining_bonus_inr_paise,
@@ -1354,42 +1358,42 @@ async function main() {
             now() - interval '1 hour', now() - interval '1 hour')
   `;
 
-  // ── 4a. SEED-01 — follow-ups agent + G's paused pending approval ──
-  //
-  // Provisions the complete Act-2 wedge state so /approvals shows a
-  // real drafted message even before an Anthropic credential is wired,
-  // while the live stage_stale scanner can still fire on H.
-  //
-  // Idempotency pattern (documented for the hand-back):
-  //
-  //   1. RETIRE, don't delete, any *active* agent named "Demo
-  //      Follow-ups Agent" whose id ≠ our deterministic DEMO_AGENT.
-  //      The dev DB carries an ADMIN-01-era agent with an INVALID
-  //      trigger stage ('tech_screen') that holds the partial-unique
-  //      slot `(tenant_id, name) WHERE retired_at IS NULL`; we cannot
-  //      insert our agent while it's active. Retire (retired_at=now,
-  //      enabled=false) preserves its append-only audit + any children.
-  //
-  //   2. DELETE-THEN-REINSERT our own agent block + G's paused-run rows
-  //      by deterministic id, CHILD-FIRST (approval_requests →
-  //      run_actions → runs → outbox → approval_rules → actions →
-  //      triggers → agent). Child-first matters: agent_run_actions.
-  //      action_id → agent_actions is ON DELETE RESTRICT, so a naive
-  //      `DELETE automation_agents` cascade could trip the restrict
-  //      mid-cascade. Deleting run_actions before actions sidesteps it.
-  //      Re-seeding every run refreshes proposed_at/triggered_at (a
-  //      "recent" approval) and resets H's live-fire target if the
-  //      scanner enqueued anything between seeds — all rows are ours.
-  //
-  // The seeded run mirrors the exact end-state a real drain reaches when
-  // it halts on the draft_message approval gate (agent-vertical-smoke +
-  // agent-approval-vertical-smoke): outbox/run 'awaiting_approval', a
-  // single draft_message run_action 'awaiting_approval' carrying the
-  // draft output, and a 'pending' agent_approval_requests row whose
-  // proposed_action_payload IS that draft.
+    // ── 4a. SEED-01 — follow-ups agent + G's paused pending approval ──
+    //
+    // Provisions the complete Act-2 wedge state so /approvals shows a
+    // real drafted message even before an Anthropic credential is wired,
+    // while the live stage_stale scanner can still fire on H.
+    //
+    // Idempotency pattern (documented for the hand-back):
+    //
+    //   1. RETIRE, don't delete, any *active* agent named "Demo
+    //      Follow-ups Agent" whose id ≠ our deterministic DEMO_AGENT.
+    //      The dev DB carries an ADMIN-01-era agent with an INVALID
+    //      trigger stage ('tech_screen') that holds the partial-unique
+    //      slot `(tenant_id, name) WHERE retired_at IS NULL`; we cannot
+    //      insert our agent while it's active. Retire (retired_at=now,
+    //      enabled=false) preserves its append-only audit + any children.
+    //
+    //   2. DELETE-THEN-REINSERT our own agent block + G's paused-run rows
+    //      by deterministic id, CHILD-FIRST (approval_requests →
+    //      run_actions → runs → outbox → approval_rules → actions →
+    //      triggers → agent). Child-first matters: agent_run_actions.
+    //      action_id → agent_actions is ON DELETE RESTRICT, so a naive
+    //      `DELETE automation_agents` cascade could trip the restrict
+    //      mid-cascade. Deleting run_actions before actions sidesteps it.
+    //      Re-seeding every run refreshes proposed_at/triggered_at (a
+    //      "recent" approval) and resets H's live-fire target if the
+    //      scanner enqueued anything between seeds — all rows are ours.
+    //
+    // The seeded run mirrors the exact end-state a real drain reaches when
+    // it halts on the draft_message approval gate (agent-vertical-smoke +
+    // agent-approval-vertical-smoke): outbox/run 'awaiting_approval', a
+    // single draft_message run_action 'awaiting_approval' carrying the
+    // draft output, and a 'pending' agent_approval_requests row whose
+    // proposed_action_payload IS that draft.
 
-  // Step 1 — retire stale active namesakes (e.g. the tech_screen agent).
-  const retired = await poolSql<{ id: string }[]>`
+    // Step 1 — retire stale active namesakes (e.g. the tech_screen agent).
+    const retired = await poolSql<{ id: string }[]>`
     UPDATE public.automation_agents
     SET retired_at = now(), enabled = false, updated_at = now()
     WHERE tenant_id = ${tid}
@@ -1399,116 +1403,116 @@ async function main() {
     RETURNING id::text AS id
   `;
 
-  // Step 2a — child-first teardown of our own deterministic rows.
-  await poolSql`DELETE FROM public.agent_approval_requests WHERE agent_id = ${DEMO_AGENT}`;
-  await poolSql`
+    // Step 2a — child-first teardown of our own deterministic rows.
+    await poolSql`DELETE FROM public.agent_approval_requests WHERE agent_id = ${DEMO_AGENT}`;
+    await poolSql`
     DELETE FROM public.agent_run_actions
     WHERE run_id IN (SELECT id FROM public.agent_runs WHERE agent_id = ${DEMO_AGENT})
   `;
-  await poolSql`DELETE FROM public.agent_runs WHERE agent_id = ${DEMO_AGENT}`;
-  await poolSql`DELETE FROM public.agent_run_outbox WHERE agent_id = ${DEMO_AGENT}`;
-  await poolSql`DELETE FROM public.agent_approval_rules WHERE agent_id = ${DEMO_AGENT}`;
-  await poolSql`DELETE FROM public.agent_actions WHERE agent_id = ${DEMO_AGENT}`;
-  await poolSql`DELETE FROM public.agent_triggers WHERE agent_id = ${DEMO_AGENT}`;
-  await poolSql`DELETE FROM public.automation_agents WHERE id = ${DEMO_AGENT}`;
+    await poolSql`DELETE FROM public.agent_runs WHERE agent_id = ${DEMO_AGENT}`;
+    await poolSql`DELETE FROM public.agent_run_outbox WHERE agent_id = ${DEMO_AGENT}`;
+    await poolSql`DELETE FROM public.agent_approval_rules WHERE agent_id = ${DEMO_AGENT}`;
+    await poolSql`DELETE FROM public.agent_actions WHERE agent_id = ${DEMO_AGENT}`;
+    await poolSql`DELETE FROM public.agent_triggers WHERE agent_id = ${DEMO_AGENT}`;
+    await poolSql`DELETE FROM public.automation_agents WHERE id = ${DEMO_AGENT}`;
 
-  // Step 2b — the agent + its curated 2-action follow-up chain. Shapes
-  // copied field-for-field from createFollowUpAgent (apps/api router):
-  // trigger_config omits the `type` discriminator; draft action gates on
-  // human_required/owning_recruiter; send action is auto (approver NULL).
-  await poolSql`
+    // Step 2b — the agent + its curated 2-action follow-up chain. Shapes
+    // copied field-for-field from createFollowUpAgent (apps/api router):
+    // trigger_config omits the `type` discriminator; draft action gates on
+    // human_required/owning_recruiter; send action is auto (approver NULL).
+    await poolSql`
     INSERT INTO public.automation_agents
       (id, tenant_id, agent_type, name, description, enabled, version, created_by)
     VALUES (${DEMO_AGENT}, ${tid}, 'follow_up', ${DEMO_AGENT_NAME},
             'Drafts friendly check-in messages to candidates who have sat in a stage past the threshold, then sends on recruiter approval.',
             true, 1, ${recruiterId})
   `;
-  await poolSql`
+    await poolSql`
     INSERT INTO public.agent_triggers
       (id, tenant_id, agent_id, trigger_type, trigger_config)
     VALUES (${DEMO_AGENT_TRIGGER}, ${tid}, ${DEMO_AGENT}, 'stage_stale',
             ${JSON.stringify({ stage: STALE_STAGE, days_threshold: STALE_DAYS_THRESHOLD })}::jsonb)
   `;
-  await poolSql`
+    await poolSql`
     INSERT INTO public.agent_actions
       (id, tenant_id, agent_id, action_order, action_type, action_config)
     VALUES (${DEMO_DRAFT_ACTION}, ${tid}, ${DEMO_AGENT}, 1, 'draft_message',
             ${JSON.stringify({ template_prompt_id: "follow_up_v1", tone: FOLLOWUP_TONE, max_tokens: FOLLOWUP_MAX_TOKENS })}::jsonb)
   `;
-  await poolSql`
+    await poolSql`
     INSERT INTO public.agent_actions
       (id, tenant_id, agent_id, action_order, action_type, action_config)
     VALUES (${DEMO_SEND_ACTION}, ${tid}, ${DEMO_AGENT}, 2, 'send_message',
             ${JSON.stringify({ channel: "email", outbox_kind: "agent_followup", requires_approval: false })}::jsonb)
   `;
-  await poolSql`
+    await poolSql`
     INSERT INTO public.agent_approval_rules
       (id, tenant_id, agent_id, action_id, approval_mode, approver_role)
     VALUES (${DEMO_DRAFT_RULE}, ${tid}, ${DEMO_AGENT}, ${DEMO_DRAFT_ACTION},
             'human_required', 'owning_recruiter')
   `;
-  await poolSql`
+    await poolSql`
     INSERT INTO public.agent_approval_rules
       (id, tenant_id, agent_id, action_id, approval_mode, approver_role)
     VALUES (${DEMO_SEND_RULE}, ${tid}, ${DEMO_AGENT}, ${DEMO_SEND_ACTION},
             'auto', NULL)
   `;
 
-  // Step 2c — G's paused run. trigger_context matches the scanner's
-  // jsonb_build_object shape EXACTLY (application_id, trigger, stage) so
-  // an approve → resume in the drain re-probes and finds this run.
-  const gTriggerContext = {
-    application_id: APP_G,
-    trigger: "stage_stale",
-    stage: STALE_STAGE,
-  };
-  const gTriggerContextJson = JSON.stringify(gTriggerContext);
+    // Step 2c — G's paused run. trigger_context matches the scanner's
+    // jsonb_build_object shape EXACTLY (application_id, trigger, stage) so
+    // an approve → resume in the drain re-probes and finds this run.
+    const gTriggerContext = {
+      application_id: APP_G,
+      trigger: "stage_stale",
+      stage: STALE_STAGE,
+    };
+    const gTriggerContextJson = JSON.stringify(gTriggerContext);
 
-  // The drafted email the recruiter sees in /approvals. Field-for-field
-  // the draftMessageExecutor output shape (packages/agent-actions):
-  // draft_text + executor-owned subject + the flat application context.
-  const gDraftText =
-    `Hi Rohan,\n\n` +
-    `I wanted to check in on your application for the Senior Backend Engineer ` +
-    `role at ${companyName}. You've been at the technical interview stage for ` +
-    `about a week now, and I didn't want you to feel out of the loop while we ` +
-    `line up the next round with the panel.\n\n` +
-    `We're still very much moving forward — I'm coordinating the interviewers' ` +
-    `availability and expect to confirm a slot for you shortly. If anything has ` +
-    `changed on your end, or if you have any questions in the meantime, just ` +
-    `reply here and I'll get back to you the same day.\n\n` +
-    `Thanks for your patience, and talk soon.\n\n` +
-    `Warm regards,\nThe Talent Team`;
-  const gDraftPayload = {
-    draft_text: gDraftText,
-    subject: "Update on your application — Senior Backend Engineer",
-    application_id: APP_G,
-    candidate_id: CAND_G,
-    candidate_name: "Rohan Desai",
-    candidate_email: "digitalfuturity@outlook.com",
-    position_title: "Senior Backend Engineer",
-    company_name: companyName,
-    stage: STALE_STAGE,
-    days_in_stage: 7,
-    template_prompt_id: "follow_up_v1",
-    prompt_version: "followup-v1",
-    tone: FOLLOWUP_TONE,
-  };
-  const gDraftPayloadJson = JSON.stringify(gDraftPayload);
-  // The run_action.input snapshot the drain records: {config, triggerContext}.
-  const gRunActionInputJson = JSON.stringify({
-    config: {
+    // The drafted email the recruiter sees in /approvals. Field-for-field
+    // the draftMessageExecutor output shape (packages/agent-actions):
+    // draft_text + executor-owned subject + the flat application context.
+    const gDraftText =
+      `Hi Rohan,\n\n` +
+      `I wanted to check in on your application for the Senior Backend Engineer ` +
+      `role at ${companyName}. You've been at the technical interview stage for ` +
+      `about a week now, and I didn't want you to feel out of the loop while we ` +
+      `line up the next round with the panel.\n\n` +
+      `We're still very much moving forward — I'm coordinating the interviewers' ` +
+      `availability and expect to confirm a slot for you shortly. If anything has ` +
+      `changed on your end, or if you have any questions in the meantime, just ` +
+      `reply here and I'll get back to you the same day.\n\n` +
+      `Thanks for your patience, and talk soon.\n\n` +
+      `Warm regards,\nThe Talent Team`;
+    const gDraftPayload = {
+      draft_text: gDraftText,
+      subject: "Update on your application — Senior Backend Engineer",
+      application_id: APP_G,
+      candidate_id: CAND_G,
+      candidate_name: "Rohan Desai",
+      candidate_email: "digitalfuturity@outlook.com",
+      position_title: "Senior Backend Engineer",
+      company_name: companyName,
+      stage: STALE_STAGE,
+      days_in_stage: 7,
       template_prompt_id: "follow_up_v1",
+      prompt_version: "followup-v1",
       tone: FOLLOWUP_TONE,
-      max_tokens: FOLLOWUP_MAX_TOKENS,
-    },
-    triggerContext: gTriggerContext,
-  });
+    };
+    const gDraftPayloadJson = JSON.stringify(gDraftPayload);
+    // The run_action.input snapshot the drain records: {config, triggerContext}.
+    const gRunActionInputJson = JSON.stringify({
+      config: {
+        template_prompt_id: "follow_up_v1",
+        tone: FOLLOWUP_TONE,
+        max_tokens: FOLLOWUP_MAX_TOKENS,
+      },
+      triggerContext: gTriggerContext,
+    });
 
-  // agent_runs — 'awaiting_approval', triggered_by='system' (so
-  // triggered_by_user_id stays NULL per the CHECK), cost rolled from the
-  // draft LLM call.
-  await poolSql`
+    // agent_runs — 'awaiting_approval', triggered_by='system' (so
+    // triggered_by_user_id stays NULL per the CHECK), cost rolled from the
+    // draft LLM call.
+    await poolSql`
     INSERT INTO public.agent_runs
       (id, tenant_id, agent_id, triggered_by, triggered_by_user_id,
        triggered_at, trigger_context, status, cost_micros)
@@ -1516,11 +1520,11 @@ async function main() {
             now() - interval '4 minutes', ${gTriggerContextJson}::jsonb,
             'awaiting_approval', ${"3800"}::bigint)
   `;
-  // agent_run_outbox — 'awaiting_approval' (out of polling rotation).
-  // trigger_context byte-identical to the run's. This is also the dedup
-  // marker: the scanner's NOT EXISTS on (agent_id, application_id) means
-  // G will NOT double-fire while this row exists — by design.
-  await poolSql`
+    // agent_run_outbox — 'awaiting_approval' (out of polling rotation).
+    // trigger_context byte-identical to the run's. This is also the dedup
+    // marker: the scanner's NOT EXISTS on (agent_id, application_id) means
+    // G will NOT double-fire while this row exists — by design.
+    await poolSql`
     INSERT INTO public.agent_run_outbox
       (id, tenant_id, agent_id, trigger_context, status,
        enqueued_at, started_at, locked_until, attempt_count)
@@ -1528,11 +1532,11 @@ async function main() {
             'awaiting_approval', now() - interval '4 minutes',
             now() - interval '4 minutes', now() - interval '1 minute', 1)
   `;
-  // agent_run_actions — action 1 (draft_message) 'awaiting_approval',
-  // output = the draft, back-pointer to the approval request. Action 2
-  // (send_message) has NO row yet — it executes for the first time on
-  // resume, exactly as the drain does.
-  await poolSql`
+    // agent_run_actions — action 1 (draft_message) 'awaiting_approval',
+    // output = the draft, back-pointer to the approval request. Action 2
+    // (send_message) has NO row yet — it executes for the first time on
+    // resume, exactly as the drain does.
+    await poolSql`
     INSERT INTO public.agent_run_actions
       (id, tenant_id, run_id, action_id, action_order, status,
        started_at, input, output, approval_request_id)
@@ -1541,10 +1545,10 @@ async function main() {
             ${gRunActionInputJson}::jsonb, ${gDraftPayloadJson}::jsonb,
             ${DEMO_APPROVAL_G})
   `;
-  // agent_approval_requests — 'pending', proposed_action_payload IS the
-  // draft, approver_role 'owning_recruiter', proposed_at recent, ttl_at
-  // NULL (human_required carries no TTL — matches the smoke tests).
-  await poolSql`
+    // agent_approval_requests — 'pending', proposed_action_payload IS the
+    // draft, approver_role 'owning_recruiter', proposed_at recent, ttl_at
+    // NULL (human_required carries no TTL — matches the smoke tests).
+    await poolSql`
     INSERT INTO public.agent_approval_requests
       (id, tenant_id, run_id, run_action_id, agent_id, proposed_at,
        proposed_action_summary, proposed_action_payload, approver_role,
@@ -1554,47 +1558,47 @@ async function main() {
             ${gDraftPayloadJson}::jsonb, 'owning_recruiter', 'pending', NULL)
   `;
 
-  // ── 4b. ONBOARD-04 onboarding demo cases ────────────────────────
-  //
-  // Six cases across the lifecycle so /onboarding is a live board on a fresh
-  // seed. Idempotency: each case's application is delete-then-reinserted by
-  // deterministic id — deleting an application CASCADES its onboarding_case →
-  // tasks / documents / bgv / IT / assets and its offers, so a re-run
-  // rebuilds the case from scratch with refreshed relative timestamps.
-  // application_state_transitions do NOT cascade, so clear them first.
-  //
-  // Checklist generation MIRRORS apps/api/src/lib/onboarding-case.ts (not
-  // imported — packages/db must not depend on apps/api): document_collection
-  // tasks INSERT…SELECT from document_types (common + geography rows), then
-  // the 7 standard tasks. Per-case progress is then layered on with targeted
-  // UPDATEs so the board shows a spread of states (incl. one blocked task
-  // with a reason — a visible red line for the demo).
-  for (const id of ONB_APP_IDS) {
-    await poolSql`DELETE FROM public.application_state_transitions WHERE application_id = ${id}`;
-    // OFFBOARD-01 anchors offboarding_cases on applications with RESTRICT
-    // (deliberate: departure records must survive recruitment-side deletes in
-    // production). The demo seed cycle is the sanctioned exception — clear
-    // any offboarding cases (children cascade from the case) referencing
-    // this application before the delete-recreate, or the FK blocks it.
-    await poolSql`DELETE FROM public.offboarding_cases WHERE application_id = ${id}`;
-    // The offboard-demo completed case also writes a terminate row into
-    // workday_sync_outbox with subject_application_id set (RESTRICT) —
-    // clear outbox rows for this application before the delete too.
-    await poolSql`DELETE FROM public.workday_sync_outbox WHERE subject_application_id = ${id}`;
-    // Deleting the application cascades onboarding_cases → tasks/docs/etc + offers.
-    await poolSql`DELETE FROM public.applications WHERE id = ${id}`;
-  }
+    // ── 4b. ONBOARD-04 onboarding demo cases ────────────────────────
+    //
+    // Six cases across the lifecycle so /onboarding is a live board on a fresh
+    // seed. Idempotency: each case's application is delete-then-reinserted by
+    // deterministic id — deleting an application CASCADES its onboarding_case →
+    // tasks / documents / bgv / IT / assets and its offers, so a re-run
+    // rebuilds the case from scratch with refreshed relative timestamps.
+    // application_state_transitions do NOT cascade, so clear them first.
+    //
+    // Checklist generation MIRRORS apps/api/src/lib/onboarding-case.ts (not
+    // imported — packages/db must not depend on apps/api): document_collection
+    // tasks INSERT…SELECT from document_types (common + geography rows), then
+    // the 7 standard tasks. Per-case progress is then layered on with targeted
+    // UPDATEs so the board shows a spread of states (incl. one blocked task
+    // with a reason — a visible red line for the demo).
+    for (const id of ONB_APP_IDS) {
+      await poolSql`DELETE FROM public.application_state_transitions WHERE application_id = ${id}`;
+      // OFFBOARD-01 anchors offboarding_cases on applications with RESTRICT
+      // (deliberate: departure records must survive recruitment-side deletes in
+      // production). The demo seed cycle is the sanctioned exception — clear
+      // any offboarding cases (children cascade from the case) referencing
+      // this application before the delete-recreate, or the FK blocks it.
+      await poolSql`DELETE FROM public.offboarding_cases WHERE application_id = ${id}`;
+      // The offboard-demo completed case also writes a terminate row into
+      // workday_sync_outbox with subject_application_id set (RESTRICT) —
+      // clear outbox rows for this application before the delete too.
+      await poolSql`DELETE FROM public.workday_sync_outbox WHERE subject_application_id = ${id}`;
+      // Deleting the application cascades onboarding_cases → tasks/docs/etc + offers.
+      await poolSql`DELETE FROM public.applications WHERE id = ${id}`;
+    }
 
-  for (const spec of ONB_CASE_SPECS) {
-    const personId = onbAt(ONB_PERSON_IDS, spec.idx);
-    const candidateId = onbAt(ONB_CANDIDATE_IDS, spec.idx);
-    const appId = onbAt(ONB_APP_IDS, spec.idx);
-    const caseId = onbAt(ONB_CASE_IDS, spec.idx);
-    const offerId = onbAt(ONB_OFFER_IDS, spec.idx);
-    const phone = `+9198765432${String(10 + spec.idx)}`;
+    for (const spec of ONB_CASE_SPECS) {
+      const personId = onbAt(ONB_PERSON_IDS, spec.idx);
+      const candidateId = onbAt(ONB_CANDIDATE_IDS, spec.idx);
+      const appId = onbAt(ONB_APP_IDS, spec.idx);
+      const caseId = onbAt(ONB_CASE_IDS, spec.idx);
+      const offerId = onbAt(ONB_OFFER_IDS, spec.idx);
+      const phone = `+9198765432${String(10 + spec.idx)}`;
 
-    // person + candidate (stable content → upsert / do-nothing).
-    await poolSql`
+      // person + candidate (stable content → upsert / do-nothing).
+      await poolSql`
       INSERT INTO public.persons
         (id, tenant_id, full_name, email_primary, email_normalised,
          phone_primary, phone_normalised, location_country, location_city)
@@ -1607,15 +1611,15 @@ async function main() {
         location_country = EXCLUDED.location_country,
         location_city = EXCLUDED.location_city
     `;
-    await poolSql`
+      await poolSql`
       INSERT INTO public.candidates
         (id, tenant_id, person_id, source, consent_version, years_of_experience)
       VALUES (${candidateId}, ${tid}, ${personId}, 'referral', 'v1', '6.0')
       ON CONFLICT (id) DO NOTHING
     `;
 
-    // application at offer_accepted — the post-accept state onboarding sits on.
-    await poolSql`
+      // application at offer_accepted — the post-accept state onboarding sits on.
+      await poolSql`
       INSERT INTO public.applications
         (id, tenant_id, candidate_id, requisition_id, source,
          current_stage, stage_entered_at, created_at, updated_at)
@@ -1624,17 +1628,17 @@ async function main() {
               ${onbIso(-spec.createdOffsetDays)}::timestamptz,
               ${onbIso(-spec.createdOffsetDays)}::timestamptz)
     `;
-    await poolSql`
+      await poolSql`
       INSERT INTO public.application_state_transitions
         (tenant_id, application_id, from_stage, to_stage, transitioned_at, actor_membership_id)
       VALUES (${tid}, ${appId}, NULL, 'offer_accepted',
               ${onbIso(-spec.createdOffsetDays)}::timestamptz, ${recruiterId})
     `;
 
-    // accepted offer (joining_date = expected start) — coherence with the
-    // real accept→onboard path, though the screen reads dates off the case.
-    const expectedStart = onbDateStr(spec.expectedStartOffsetDays);
-    await poolSql`
+      // accepted offer (joining_date = expected start) — coherence with the
+      // real accept→onboard path, though the screen reads dates off the case.
+      const expectedStart = onbDateStr(spec.expectedStartOffsetDays);
+      await poolSql`
       INSERT INTO public.offers
         (id, tenant_id, application_id, drafted_by_membership_id,
          base_salary_inr_paise, joining_date, location, expiry_at,
@@ -1648,20 +1652,20 @@ async function main() {
               ${onbIso(-spec.createdOffsetDays)}::timestamptz)
     `;
 
-    // onboarding_case (deterministic id). probation_ends_at = start + 90.
-    const actualStart =
-      spec.actualStartOffsetDays !== null ? onbDateStr(spec.actualStartOffsetDays) : null;
-    const probationEnds = onbDateStr(spec.expectedStartOffsetDays + ONB_PROBATION_DAYS);
-    const buddyId = spec.buddy ? onbMemberByRole[spec.buddy] : null;
-    const managerId = spec.manager ? onbMemberByRole[spec.manager] : null;
-    // ONBOARD-06 follow-up: cases past pre_boarding have been "hired in
-    // Workday" (simulated) — pre-stamp a deterministic Worker ID (a58x
-    // namespace) so the "Hired in Workday" badge shows on a fresh seed.
-    // The live path (day_zero advance → outbox → sim drain write-back)
-    // only fires for cases advanced through updateOnboardingCase.
-    const workdayWorkerId =
-      spec.status === "pre_boarding" ? null : `00000000-0000-4000-8000-00000000a58${spec.idx}`;
-    await poolSql`
+      // onboarding_case (deterministic id). probation_ends_at = start + 90.
+      const actualStart =
+        spec.actualStartOffsetDays !== null ? onbDateStr(spec.actualStartOffsetDays) : null;
+      const probationEnds = onbDateStr(spec.expectedStartOffsetDays + ONB_PROBATION_DAYS);
+      const buddyId = spec.buddy ? onbMemberByRole[spec.buddy] : null;
+      const managerId = spec.manager ? onbMemberByRole[spec.manager] : null;
+      // ONBOARD-06 follow-up: cases past pre_boarding have been "hired in
+      // Workday" (simulated) — pre-stamp a deterministic Worker ID (a58x
+      // namespace) so the "Hired in Workday" badge shows on a fresh seed.
+      // The live path (day_zero advance → outbox → sim drain write-back)
+      // only fires for cases advanced through updateOnboardingCase.
+      const workdayWorkerId =
+        spec.status === "pre_boarding" ? null : `00000000-0000-4000-8000-00000000a58${spec.idx}`;
+      await poolSql`
       INSERT INTO public.onboarding_cases
         (id, tenant_id, application_id, candidate_id, status, geography_code,
          expected_start_date, actual_start_date, probation_days, probation_ends_at,
@@ -1672,10 +1676,10 @@ async function main() {
               ${onbIso(-spec.createdOffsetDays)}::timestamptz, ${onbIso(-spec.createdOffsetDays)}::timestamptz)
     `;
 
-    // document_collection tasks — common + geography rows (mirror of
-    // ensureDocumentCollectionTasks). Names/metadata come straight from the
-    // document_types reference so they match the production checklist.
-    await poolSql`
+      // document_collection tasks — common + geography rows (mirror of
+      // ensureDocumentCollectionTasks). Names/metadata come straight from the
+      // document_types reference so they match the production checklist.
+      await poolSql`
       INSERT INTO public.onboarding_tasks
         (tenant_id, case_id, task_type, status, title, metadata)
       SELECT ${tid}, ${caseId}, 'document_collection', 'pending', dt.name,
@@ -1686,25 +1690,25 @@ async function main() {
         AND (dt.geography_code IS NULL OR dt.geography_code = ${spec.country})
     `;
 
-    // standard tasks (mirror of createStandardTasks): IT, buddy, training,
-    // day 7/14/30 check-ins, probation review. Check-in due_at = start + N.
-    await poolSql`
+      // standard tasks (mirror of createStandardTasks): IT, buddy, training,
+      // day 7/14/30 check-ins, probation review. Check-in due_at = start + N.
+      await poolSql`
       INSERT INTO public.onboarding_tasks (tenant_id, case_id, task_type, status, title)
       VALUES
         (${tid}, ${caseId}, 'it_provisioning', 'pending', 'Provision IT accounts, email, and equipment'),
         (${tid}, ${caseId}, 'buddy_assignment', 'pending', 'Assign an onboarding buddy'),
         (${tid}, ${caseId}, 'training', 'pending', 'Complete mandatory onboarding training')
     `;
-    for (const day of ONB_CHECK_IN_DAYS) {
-      await poolSql`
+      for (const day of ONB_CHECK_IN_DAYS) {
+        await poolSql`
         INSERT INTO public.onboarding_tasks
           (tenant_id, case_id, task_type, status, title, due_at, metadata)
         VALUES (${tid}, ${caseId}, 'check_in', 'pending', ${`Day ${day} check-in`},
                 ${onbIso(spec.expectedStartOffsetDays + day)}::timestamptz,
                 ${JSON.stringify({ checkInDay: day })}::jsonb)
       `;
-    }
-    await poolSql`
+      }
+      await poolSql`
       INSERT INTO public.onboarding_tasks
         (tenant_id, case_id, task_type, status, title, due_at, metadata)
       VALUES (${tid}, ${caseId}, 'probation_review', 'pending', 'Probation review',
@@ -1712,18 +1716,18 @@ async function main() {
               ${JSON.stringify({ probationDays: ONB_PROBATION_DAYS })}::jsonb)
     `;
 
-    // ── progress overlay ──
-    if (spec.allComplete) {
-      // Completed case: resolve EVERY task.
-      await poolSql`
+      // ── progress overlay ──
+      if (spec.allComplete) {
+        // Completed case: resolve EVERY task.
+        await poolSql`
         UPDATE public.onboarding_tasks
         SET status = 'completed', completed_at = ${onbIso(-2)}::timestamptz, updated_at = ${onbIso(-2)}::timestamptz
         WHERE case_id = ${caseId} AND status <> 'completed'
       `;
-    } else {
-      // N document tasks → completed (ordered by title for determinism).
-      if (spec.docsCompleted > 0) {
-        await poolSql`
+      } else {
+        // N document tasks → completed (ordered by title for determinism).
+        if (spec.docsCompleted > 0) {
+          await poolSql`
           UPDATE public.onboarding_tasks
           SET status = 'completed', completed_at = ${onbIso(-3)}::timestamptz, updated_at = ${onbIso(-3)}::timestamptz
           WHERE id IN (
@@ -1732,10 +1736,10 @@ async function main() {
             ORDER BY title LIMIT ${spec.docsCompleted}
           )
         `;
-      }
-      // One still-pending document task → blocked (the demo red line).
-      if (spec.blockDocReason) {
-        await poolSql`
+        }
+        // One still-pending document task → blocked (the demo red line).
+        if (spec.blockDocReason) {
+          await poolSql`
           UPDATE public.onboarding_tasks
           SET status = 'blocked', blocked_reason = ${spec.blockDocReason}, updated_at = ${onbIso(-2)}::timestamptz
           WHERE id = (
@@ -1744,103 +1748,104 @@ async function main() {
             ORDER BY title LIMIT 1
           )
         `;
-      }
-      // Standard tasks → completed / in_progress.
-      for (const t of spec.standardCompleted) {
-        await poolSql`
+        }
+        // Standard tasks → completed / in_progress.
+        for (const t of spec.standardCompleted) {
+          await poolSql`
           UPDATE public.onboarding_tasks
           SET status = 'completed', completed_at = ${onbIso(-3)}::timestamptz, updated_at = ${onbIso(-3)}::timestamptz
           WHERE case_id = ${caseId} AND task_type = ${t}
         `;
-      }
-      for (const t of spec.standardInProgress) {
-        await poolSql`
+        }
+        for (const t of spec.standardInProgress) {
+          await poolSql`
           UPDATE public.onboarding_tasks
           SET status = 'in_progress', updated_at = ${onbIso(-1)}::timestamptz
           WHERE case_id = ${caseId} AND task_type = ${t}
         `;
-      }
-      // Completed check-ins (matched by metadata.checkInDay).
-      for (const day of spec.checkInsCompleted) {
-        await poolSql`
+        }
+        // Completed check-ins (matched by metadata.checkInDay).
+        for (const day of spec.checkInsCompleted) {
+          await poolSql`
           UPDATE public.onboarding_tasks
           SET status = 'completed', completed_at = ${onbIso(-2)}::timestamptz, updated_at = ${onbIso(-2)}::timestamptz
           WHERE case_id = ${caseId} AND task_type = 'check_in'
             AND (metadata->>'checkInDay')::int = ${day}
         `;
+        }
       }
     }
-  }
 
-  // ── 5. summary ──────────────────────────────────────────────────
-  const acceptUrl = `${PORTAL_BASE}/offer/${token}`;
-  console.log("");
-  console.log(`Seeded ${DEMO_APPS.length + 1} applications under requisition ${DEMO_REQ}`);
-  console.log(
-    "  A. Anika Raghavan      application_received   score=92   2h ago   (MomentumFeed top)",
-  );
-  console.log(
-    "  B. Vikram Joshi        application_received   score=64   6h ago   (MomentumFeed mid)",
-  );
-  console.log(
-    "  C. Sneha Banerjee      application_received   score=88   30h ago  (Hot Zone — SLA breach)",
-  );
-  console.log(
-    "  D. Karthik Mahadevan   recruiter_review       score=81   2d in stage  (drawer demo)",
-  );
-  console.log("  E. Priya Subramanian   offer_drafted          score=85   offer extended 1h ago");
-  console.log(
-    "  F. Aarav Iyer          application_received   score=PENDING   5m ago  (AI-03 real scoring)",
-  );
-  console.log(
-    "  G. Rohan Desai         tech_interview         score=87   7d in stage  (SEED-01 pending approval)",
-  );
-  console.log(
-    "  H. Meera Nair          tech_interview         score=83   6d in stage  (SEED-01 scanner live-fire)",
-  );
-  console.log("");
-  console.log("SEED-01 follow-ups wedge:");
-  console.log(`  Agent:    ${DEMO_AGENT_NAME}  (${DEMO_AGENT})`);
-  console.log(
-    `            follow_up · stage_stale · stage=${STALE_STAGE} · days_threshold=${STALE_DAYS_THRESHOLD} · enabled`,
-  );
-  if (retired.length > 0) {
+    // ── 5. summary ──────────────────────────────────────────────────
+    const acceptUrl = `${PORTAL_BASE}/offer/${token}`;
+    console.log("");
+    console.log(`Seeded ${DEMO_APPS.length + 1} applications under requisition ${DEMO_REQ}`);
     console.log(
-      `            retired ${retired.length} stale active namesake(s): ${retired.map((r) => r.id).join(", ")}`,
+      "  A. Anika Raghavan      application_received   score=92   2h ago   (MomentumFeed top)",
     );
+    console.log(
+      "  B. Vikram Joshi        application_received   score=64   6h ago   (MomentumFeed mid)",
+    );
+    console.log(
+      "  C. Sneha Banerjee      application_received   score=88   30h ago  (Hot Zone — SLA breach)",
+    );
+    console.log(
+      "  D. Karthik Mahadevan   recruiter_review       score=81   2d in stage  (drawer demo)",
+    );
+    console.log("  E. Priya Subramanian   offer_drafted          score=85   offer extended 1h ago");
+    console.log(
+      "  F. Aarav Iyer          application_received   score=PENDING   5m ago  (AI-03 real scoring)",
+    );
+    console.log(
+      "  G. Rohan Desai         tech_interview         score=87   7d in stage  (SEED-01 pending approval)",
+    );
+    console.log(
+      "  H. Meera Nair          tech_interview         score=83   6d in stage  (SEED-01 scanner live-fire)",
+    );
+    console.log("");
+    console.log("SEED-01 follow-ups wedge:");
+    console.log(`  Agent:    ${DEMO_AGENT_NAME}  (${DEMO_AGENT})`);
+    console.log(
+      `            follow_up · stage_stale · stage=${STALE_STAGE} · days_threshold=${STALE_DAYS_THRESHOLD} · enabled`,
+    );
+    if (retired.length > 0) {
+      console.log(
+        `            retired ${retired.length} stale active namesake(s): ${retired.map((r) => r.id).join(", ")}`,
+      );
+    }
+    console.log(
+      `  Approval: ${DEMO_APPROVAL_G}  (pending, owning_recruiter) — G's drafted check-in, visible at /approvals`,
+    );
+    console.log("");
+    console.log(`ONBOARD-04 onboarding cases (${ONB_CASE_SPECS.length}) at /onboarding:`);
+    for (const spec of ONB_CASE_SPECS) {
+      console.log(`  ${spec.fullName.padEnd(20)} ${spec.blurb}`);
+    }
+    console.log(
+      `  buddy/manager assignees: recruiter1${hrOpsId ? " + hr_ops1" : ""}${adminId ? " + admin1" : ""}`,
+    );
+    console.log(`  Run:      ${DEMO_RUN_G}  (awaiting_approval, halted on draft_message)`);
+    console.log(`  H (${APP_H}) has NO seeded run — the stage_stale scanner live-fires on it.`);
+    console.log("");
+    console.log("Candidate E offer-accept URL (single-use, expires in 7 days):");
+    console.log(`  ${acceptUrl}`);
+    console.log("");
+    console.log("Public apply URL (CRS-01, anyone can submit):");
+    console.log(`  ${PORTAL_BASE}/t/${TENANT_SLUG}/apply/gcc-blr-senior-backend`);
+    console.log("");
+    console.log("Candidate F is pending real AI scoring (ai_score_outbox row).");
+    console.log("Boot apps/workers with ANTHROPIC_API_KEY set to drain via the live");
+    console.log("provider; otherwise the LocalAIClient fixture corpus handles it in");
+    console.log("test mode.");
+    console.log("");
+    console.log("Login as recruiter1@kyndryl-poc.test / TestPassword123! to walk the lifecycle.");
+  } finally {
+    await poolSql.end({ timeout: 10 });
   }
-  console.log(
-    `  Approval: ${DEMO_APPROVAL_G}  (pending, owning_recruiter) — G's drafted check-in, visible at /approvals`,
-  );
-  console.log("");
-  console.log(`ONBOARD-04 onboarding cases (${ONB_CASE_SPECS.length}) at /onboarding:`);
-  for (const spec of ONB_CASE_SPECS) {
-    console.log(`  ${spec.fullName.padEnd(20)} ${spec.blurb}`);
-  }
-  console.log(
-    `  buddy/manager assignees: recruiter1${hrOpsId ? " + hr_ops1" : ""}${adminId ? " + admin1" : ""}`,
-  );
-  console.log(`  Run:      ${DEMO_RUN_G}  (awaiting_approval, halted on draft_message)`);
-  console.log(`  H (${APP_H}) has NO seeded run — the stage_stale scanner live-fires on it.`);
-  console.log("");
-  console.log("Candidate E offer-accept URL (single-use, expires in 7 days):");
-  console.log(`  ${acceptUrl}`);
-  console.log("");
-  console.log("Public apply URL (CRS-01, anyone can submit):");
-  console.log(`  ${PORTAL_BASE}/t/${TENANT_SLUG}/apply/gcc-blr-senior-backend`);
-  console.log("");
-  console.log("Candidate F is pending real AI scoring (ai_score_outbox row).");
-  console.log("Boot apps/workers with ANTHROPIC_API_KEY set to drain via the live");
-  console.log("provider; otherwise the LocalAIClient fixture corpus handles it in");
-  console.log("test mode.");
-  console.log("");
-  console.log("Login as recruiter1@kyndryl-poc.test / TestPassword123! to walk the lifecycle.");
 }
 
 main()
   .then(() => {
-    // postgres-js keeps idle connections open until end() is called;
-    // without an explicit exit Node sits waiting indefinitely.
     process.exit(0);
   })
   .catch((err) => {

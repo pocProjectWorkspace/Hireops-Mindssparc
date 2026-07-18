@@ -31,10 +31,21 @@
  *      the rest is reported.
  *   5. Stray agent_run_outbox rows whose agent no longer exists or is
  *      retired (reported + deleted).
+ *   6. Onboarding residue — onboarding_cases (+ their tasks / documents / bgv
+ *      runs+results / IT / assets) tied to `@hireops-dev.local` / `@onb02.test`
+ *      test personas, never the seeded a5xx demo cases.
+ *   7. Interview residue — interview_plans / interviews / interview_panelists /
+ *      interview_feedback left by interrupted INT-02/03/04 runs (their personas
+ *      carry an `@example.com` marker; the seed creates NO interview rows and
+ *      uses `@example.test`, so no seeded row can match).
+ *   8. candidate_accounts residue — accounts tied to a test-marker person,
+ *      never Priya's seeded a7xx account (…a701, `@example.test`).
  *
  * HARD PROTECTIONS (enforced, not merely avoided):
  *   - Never deletes a row whose id is in the seed's
- *     `00000000-0000-4000-8000-00000000a5xx` namespace.
+ *     `00000000-0000-4000-8000-00000000a5xx` namespace; the interview +
+ *     candidate-account classes widen this to the whole `…00000000aXX` seed
+ *     block (a5xx/a6xx/a7xx/a8xx) so Priya's …a701 account is protected.
  *   - Never touches audit_logs / api_audit_logs / pii_access_log
  *     (append-only compliance — residue there is acceptable history).
  *   - Never deletes any tenant other than a synth test tenant; never the
@@ -73,7 +84,20 @@ const DEV_LOCAL_EMAIL = "%@hireops-dev.local";
 // run can leave onboarding_cases + their whole subtree behind — residue the
 // CRS `@hireops-dev.local` class does NOT catch. Class 6 below sweeps both.
 const ONB_TEST_EMAIL = "%@onb02.test";
+// INT-02/03/04 test personas carry an `@example.com` email marker
+// (priya.int02@…, anaya.int03@…, ravi.int04@… etc.). The interview lifecycle
+// tests run against kyndryl-poc and clean up after themselves, but an
+// interrupted run can leave interviews / plans / panelists / feedback behind —
+// residue the CRS `@hireops-dev.local` and ONB `@onb02.test` classes do NOT
+// catch. Classes 7 + 8 below sweep them. The seed's own persons all use
+// `@example.test` (NOT `.com`), so this marker never matches a seeded row.
+const INT_TEST_EMAIL = "%@example.com";
 const SYNTH_SLUG = "%synth%";
+// The whole seed-fixture id block — a5xx (demo), a6xx (partner), a7xx
+// (candidate accounts), a8xx (offboarding). Broader than SEED_A5XX_PREFIX so
+// the interview + candidate-account classes protect Priya's …a701 account and
+// every other seeded id, not just the a5xx demo block.
+const SEED_AXX_PREFIX = "00000000-0000-4000-8000-00000000a";
 
 // postgres-js Sql instance type, derived from the client export.
 type SqlTag = (typeof import("../client"))["sql"];
@@ -183,6 +207,63 @@ function onboardingResidueCaseSub(sql: AnySql, kid: string) {
     WHERE oc.tenant_id = ${kid}
       AND (p.email_primary ILIKE ${DEV_LOCAL_EMAIL} OR p.email_primary ILIKE ${ONB_TEST_EMAIL})
       AND oc.id::text NOT LIKE ${SEED_A5XX_PREFIX + "%"}`;
+}
+
+/**
+ * The set of RESIDUE interview-test APPLICATIONS in kyndryl-poc: applications
+ * whose backing person carries the interview-test marker (`@example.com` — the
+ * INT-02/03/04 personas), EXCLUDING anything in a seed aXX namespace. The seed
+ * creates ZERO interview rows and all its persons use `@example.test`, so this
+ * matches only interrupted-run interview residue. Reused for the count
+ * (gather) and the child-first delete (tx) so they agree by construction.
+ */
+function interviewResidueAppSub(sql: AnySql, kid: string) {
+  return sql`
+    SELECT a.id
+    FROM public.applications a
+    JOIN public.candidates c ON c.id = a.candidate_id AND c.tenant_id = a.tenant_id
+    JOIN public.persons p ON p.id = c.person_id AND p.tenant_id = a.tenant_id
+    WHERE a.tenant_id = ${kid}
+      AND p.email_primary ILIKE ${INT_TEST_EMAIL}
+      AND a.id::text NOT LIKE ${SEED_AXX_PREFIX + "%"}`;
+}
+
+/**
+ * The requisitions those residue applications point at — the scope for stray
+ * interview_plans (plans are per-requisition, not per-candidate). A residue
+ * application only ever sits on a test requisition (the INT tests create their
+ * own reqs), and seeds create no plans, so this only ever names test reqs.
+ * The seed-namespace guard is belt-and-suspenders against a future seed.
+ */
+function interviewResidueReqSub(sql: AnySql, kid: string) {
+  return sql`
+    SELECT DISTINCT a.requisition_id
+    FROM public.applications a
+    JOIN public.candidates c ON c.id = a.candidate_id AND c.tenant_id = a.tenant_id
+    JOIN public.persons p ON p.id = c.person_id AND p.tenant_id = a.tenant_id
+    WHERE a.tenant_id = ${kid}
+      AND p.email_primary ILIKE ${INT_TEST_EMAIL}
+      AND a.requisition_id::text NOT LIKE ${SEED_AXX_PREFIX + "%"}`;
+}
+
+/**
+ * The set of RESIDUE candidate_accounts in kyndryl-poc: accounts whose backing
+ * person carries ANY test marker (`@hireops-dev.local` / `@onb02.test` /
+ * `@example.com`), EXCLUDING the seed aXX namespace. Priya's seeded account
+ * (…a701, person …a505, `priya.subramanian@example.test`) is protected TWICE:
+ * her email matches no marker (`example.test` ≠ any), and …a701 is in the aXX
+ * namespace the guard excludes.
+ */
+function candidateAccountResidueSub(sql: AnySql, kid: string) {
+  return sql`
+    SELECT ca.id
+    FROM public.candidate_accounts ca
+    JOIN public.persons p ON p.id = ca.person_id AND p.tenant_id = ca.tenant_id
+    WHERE ca.tenant_id = ${kid}
+      AND (p.email_primary ILIKE ${DEV_LOCAL_EMAIL}
+        OR p.email_primary ILIKE ${ONB_TEST_EMAIL}
+        OR p.email_primary ILIKE ${INT_TEST_EMAIL})
+      AND ca.id::text NOT LIKE ${SEED_AXX_PREFIX + "%"}`;
 }
 
 async function main(): Promise<void> {
@@ -332,6 +413,38 @@ async function main(): Promise<void> {
         WHERE case_id IN (${onboardingResidueCaseSub(sql, kid)})
       `);
 
+      // 7. interview residue — plans / interviews / panelists / feedback tied
+      //    to INT-02/03/04 test personas (@example.com), never seeded rows.
+      const ivInterviews = await scalar(sql<{ n: number }[]>`
+        SELECT count(*)::int AS n FROM public.interviews
+        WHERE application_id IN (${interviewResidueAppSub(sql, kid)})
+      `);
+      const ivPanelists = await scalar(sql<{ n: number }[]>`
+        SELECT count(*)::int AS n FROM public.interview_panelists
+        WHERE interview_id IN (
+          SELECT id FROM public.interviews WHERE application_id IN (${interviewResidueAppSub(sql, kid)})
+        )
+      `);
+      const ivFeedback = await scalar(sql<{ n: number }[]>`
+        SELECT count(*)::int AS n FROM public.interview_feedback
+        WHERE interview_id IN (
+          SELECT id FROM public.interviews WHERE application_id IN (${interviewResidueAppSub(sql, kid)})
+        )
+      `);
+      const ivPlans = await scalar(sql<{ n: number }[]>`
+        SELECT count(*)::int AS n FROM public.interview_plans
+        WHERE tenant_id = ${kid}
+          AND requisition_id IN (${interviewResidueReqSub(sql, kid)})
+          AND id::text NOT LIKE ${SEED_AXX_PREFIX + "%"}
+      `);
+
+      // 8. candidate_accounts residue — accounts tied to a test-marker person,
+      //    never the seeded a7xx (Priya) account.
+      const candAccounts = await scalar(sql<{ n: number }[]>`
+        SELECT count(*)::int AS n FROM public.candidate_accounts
+        WHERE id IN (${candidateAccountResidueSub(sql, kid)})
+      `);
+
       const rows: Row[] = [
         { klass: "1. CRS-01 dev.local", detail: "persons (kyndryl-poc)", count: crsPersons },
         { klass: "1. CRS-01 dev.local", detail: "candidates", count: crsCands },
@@ -377,6 +490,19 @@ async function main(): Promise<void> {
         { klass: "6. onboarding residue", detail: "bgv_results", count: onbBgvResults },
         { klass: "6. onboarding residue", detail: "it_provisioning_requests", count: onbIt },
         { klass: "6. onboarding residue", detail: "asset_assignments", count: onbAssets },
+        { klass: "7. interview residue", detail: "interview_plans (test reqs)", count: ivPlans },
+        {
+          klass: "7. interview residue",
+          detail: "interviews (test personas)",
+          count: ivInterviews,
+        },
+        { klass: "7. interview residue", detail: "interview_panelists", count: ivPanelists },
+        { klass: "7. interview residue", detail: "interview_feedback", count: ivFeedback },
+        {
+          klass: "8. candidate_accounts",
+          detail: "candidate_accounts (test personas)",
+          count: candAccounts,
+        },
       ];
       return { rows, synth };
     }
@@ -473,6 +599,40 @@ async function main(): Promise<void> {
       process.exit(3);
     }
 
+    // A seeded candidate_account carrying a test-marker email would be a seed
+    // bug the residue subquery would silently skip (it excludes aXX ids) —
+    // refuse loudly instead so it gets fixed. Protects Priya's …a701.
+    const caSeedHits = await scalar(sql<{ n: number }[]>`
+      SELECT count(*)::int AS n FROM public.candidate_accounts ca
+      JOIN public.persons p ON p.id = ca.person_id AND p.tenant_id = ca.tenant_id
+      WHERE ca.tenant_id = ${kid}
+        AND (p.email_primary ILIKE ${DEV_LOCAL_EMAIL}
+          OR p.email_primary ILIKE ${ONB_TEST_EMAIL}
+          OR p.email_primary ILIKE ${INT_TEST_EMAIL})
+        AND ca.id::text LIKE ${SEED_AXX_PREFIX + "%"}
+    `);
+    if (caSeedHits > 0) {
+      console.error(
+        `FATAL: ${caSeedHits} seed aXX candidate_account(s) carry a test-marker email — refusing (seed bug).`,
+      );
+      process.exit(3);
+    }
+
+    // Likewise, a seeded interview_plan on a residue test requisition would be
+    // a seed bug (the delete excludes aXX plan ids) — refuse rather than mask.
+    const ivPlanSeedHits = await scalar(sql<{ n: number }[]>`
+      SELECT count(*)::int AS n FROM public.interview_plans ip
+      WHERE ip.tenant_id = ${kid}
+        AND ip.requisition_id IN (${interviewResidueReqSub(sql, kid)})
+        AND ip.id::text LIKE ${SEED_AXX_PREFIX + "%"}
+    `);
+    if (ivPlanSeedHits > 0) {
+      console.error(
+        `FATAL: ${ivPlanSeedHits} seed aXX interview_plan(s) on a residue requisition — refusing (seed bug).`,
+      );
+      process.exit(3);
+    }
+
     // ── DELETIONS (single transaction, FK-safe order) ───────────────
     await sql.begin(async (tx) => {
       // Re-derive id sets inside the tx for consistency. These fragments
@@ -511,6 +671,34 @@ async function main(): Promise<void> {
       await tx`DELETE FROM public.onboarding_documents WHERE case_id IN (${onboardingResidueCaseSub(tx, kid)})`;
       await tx`DELETE FROM public.onboarding_tasks WHERE case_id IN (${onboardingResidueCaseSub(tx, kid)})`;
       await tx`DELETE FROM public.onboarding_cases WHERE id IN (${onboardingResidueCaseSub(tx, kid)})`;
+
+      // 7. interview residue — child-first: feedback + panelists (both FK the
+      // interview ON DELETE cascade) BEFORE the interviews, then the per-req
+      // plans. Scoped to @example.com INT-test personas; interviews the seed
+      // never creates. The residue subqueries re-derive each step and stay
+      // valid until the interviews are deleted (this class does NOT delete the
+      // backing applications, so the app-scoped subquery holds throughout).
+      await tx`
+        DELETE FROM public.interview_feedback
+        WHERE interview_id IN (
+          SELECT id FROM public.interviews WHERE application_id IN (${interviewResidueAppSub(tx, kid)})
+        )`;
+      await tx`
+        DELETE FROM public.interview_panelists
+        WHERE interview_id IN (
+          SELECT id FROM public.interviews WHERE application_id IN (${interviewResidueAppSub(tx, kid)})
+        )`;
+      await tx`DELETE FROM public.interviews WHERE application_id IN (${interviewResidueAppSub(tx, kid)})`;
+      await tx`
+        DELETE FROM public.interview_plans
+        WHERE tenant_id = ${kid}
+          AND requisition_id IN (${interviewResidueReqSub(tx, kid)})
+          AND id::text NOT LIKE ${SEED_AXX_PREFIX + "%"}`;
+
+      // 8. candidate_accounts residue — run BEFORE the class-1 person delete so
+      // this class explicitly owns them (deleting the person would otherwise
+      // cascade them away). Priya's …a701 is excluded by marker AND namespace.
+      await tx`DELETE FROM public.candidate_accounts WHERE id IN (${candidateAccountResidueSub(tx, kid)})`;
 
       // 1. CRS-01 — child-first. dev_email_outbox references
       // notification_outbox (SET NULL); delete the mirror rows first so
