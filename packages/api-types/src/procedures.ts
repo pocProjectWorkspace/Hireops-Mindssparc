@@ -2168,6 +2168,35 @@ export const listOffboardingCasesOutputSchema = z.object({
 export type ListOffboardingCasesInput = z.infer<typeof listOffboardingCasesInputSchema>;
 export type ListOffboardingCasesOutput = z.infer<typeof listOffboardingCasesOutputSchema>;
 
+// ─────────── listHiredCandidates (OFFBOARD-03) ───────────
+
+/**
+ * The hired-candidate picker for the initiate-offboarding flow. HireOps has no
+ * employees table (OFFBOARD-01 header), so "hired" is the SAME predicate the
+ * offboarding lib uses (resolveHireContext): a candidate has an accepted offer
+ * OR an onboarding case. Each row carries whether the person already has a live
+ * (non-cancelled) offboarding case, so the picker can disable them — initiating
+ * a second live case would 409 on the partial-unique guard.
+ */
+export const hiredCandidateRowSchema = z.object({
+  candidateId: z.string().uuid(),
+  personName: z.string().nullable(),
+  email: z.string().nullable(),
+  // Latest onboarding case status when one exists — context in the picker.
+  onboardingStatus: z.string().nullable(),
+  hasActiveOffboardingCase: z.boolean(),
+});
+export type HiredCandidateRow = z.infer<typeof hiredCandidateRowSchema>;
+
+export const listHiredCandidatesInputSchema = z.object({
+  limit: z.number().int().positive().max(200).default(100),
+});
+export const listHiredCandidatesOutputSchema = z.object({
+  items: z.array(hiredCandidateRowSchema),
+});
+export type ListHiredCandidatesInput = z.infer<typeof listHiredCandidatesInputSchema>;
+export type ListHiredCandidatesOutput = z.infer<typeof listHiredCandidatesOutputSchema>;
+
 // ─────────── listTenantMemberships (ONBOARD-04) ───────────
 
 /**

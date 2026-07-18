@@ -27,6 +27,7 @@ import {
   IconTriage,
   IconApprovals,
   IconOnboarding,
+  IconOffboarding,
   IconRequisitions,
   IconReqApprovals,
   IconInterviews,
@@ -45,6 +46,7 @@ export type PortalNavKey =
   | "triage"
   | "approvals"
   | "onboarding"
+  | "offboarding"
   | "requisitions"
   | "requisition-approvals"
   | "interviews"
@@ -75,6 +77,15 @@ const MAIN_NAV: NavItem[] = [
   { key: "triage", label: "Triage", href: "/triage", icon: <IconTriage /> },
   { key: "approvals", label: "Approvals", href: "/approvals", icon: <IconApprovals /> },
   { key: "onboarding", label: "Onboarding", href: "/onboarding", icon: <IconOnboarding /> },
+  {
+    // OFFBOARD-03: departures are an HR operation — hr_ops + people_ops + admin
+    // only (NOT recruiter). Matches the OFFBOARD_MANAGE_ROLES API gate.
+    key: "offboarding",
+    label: "Offboarding",
+    href: "/offboarding",
+    icon: <IconOffboarding />,
+    roles: ["hr_ops", "people_ops", "admin"],
+  },
   {
     key: "requisitions",
     label: "Requisitions",

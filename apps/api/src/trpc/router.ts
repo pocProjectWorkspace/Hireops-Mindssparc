@@ -268,6 +268,8 @@ import {
   getOffboardingCaseDetailOutputSchema,
   listOffboardingCasesInputSchema,
   listOffboardingCasesOutputSchema,
+  listHiredCandidatesInputSchema,
+  listHiredCandidatesOutputSchema,
   attachOnboardingDocumentInputSchema,
   attachOnboardingDocumentOutputSchema,
   verifyOnboardingDocumentInputSchema,
@@ -8912,6 +8914,78 @@ export const appRouter = router({
         assetReturns: assetReturnRows,
         exitInterview,
         settlement,
+      };
+    }),
+
+  /**
+   * listHiredCandidates — the picker behind the initiate-offboarding flow.
+   * "Hired" mirrors the offboarding lib's resolveHireContext predicate exactly
+   * (accepted offer OR onboarding case) — HireOps has no employees table. Each
+   * row flags whether the person already has a live offboarding case so the
+   * picker can disable it (initiating again would 409). OFFBOARD_MANAGE_ROLES-
+   * gated like the rest of the pillar; tenant scoping is explicit on ctx.sql.
+   */
+  listHiredCandidates: protectedProcedure
+    .input(listHiredCandidatesInputSchema)
+    .output(listHiredCandidatesOutputSchema)
+    .query(async ({ ctx, input }) => {
+      if (!ctx.tenantId) {
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: "protected procedure missing tenantId",
+        });
+      }
+      const tenantId = ctx.tenantId;
+      requireAnyRole(ctx, OFFBOARD_MANAGE_ROLES, "You don't have access to offboarding.");
+
+      const rows = await ctx.sql<
+        {
+          candidate_id: string;
+          person_name: string | null;
+          email: string | null;
+          onboarding_status: string | null;
+          has_active_offboarding_case: boolean;
+        }[]
+      >`
+        SELECT
+          c.id AS candidate_id,
+          p.full_name AS person_name,
+          p.email_primary AS email,
+          (
+            SELECT oc.status FROM public.onboarding_cases oc
+            WHERE oc.tenant_id = c.tenant_id AND oc.candidate_id = c.id
+            ORDER BY oc.created_at DESC LIMIT 1
+          ) AS onboarding_status,
+          EXISTS (
+            SELECT 1 FROM public.offboarding_cases o
+            WHERE o.tenant_id = c.tenant_id AND o.candidate_id = c.id AND o.status <> 'cancelled'
+          ) AS has_active_offboarding_case
+        FROM public.candidates c
+        JOIN public.persons p ON p.id = c.person_id AND p.tenant_id = c.tenant_id
+        WHERE c.tenant_id = ${tenantId}
+          AND (
+            EXISTS (
+              SELECT 1 FROM public.offers o
+              JOIN public.applications a ON a.id = o.application_id AND a.tenant_id = o.tenant_id
+              WHERE o.tenant_id = c.tenant_id AND a.candidate_id = c.id AND o.status = 'accepted'
+            )
+            OR EXISTS (
+              SELECT 1 FROM public.onboarding_cases oc
+              WHERE oc.tenant_id = c.tenant_id AND oc.candidate_id = c.id
+            )
+          )
+        ORDER BY p.full_name ASC NULLS LAST, c.id ASC
+        LIMIT ${input.limit}
+      `;
+
+      return {
+        items: rows.map((r) => ({
+          candidateId: r.candidate_id,
+          personName: r.person_name ?? null,
+          email: r.email ?? null,
+          onboardingStatus: r.onboarding_status ?? null,
+          hasActiveOffboardingCase: r.has_active_offboarding_case,
+        })),
       };
     }),
 
