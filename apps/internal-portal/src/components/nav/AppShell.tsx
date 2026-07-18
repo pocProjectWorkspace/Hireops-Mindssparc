@@ -178,27 +178,46 @@ export interface AppShellProps {
   children: ReactNode;
 }
 
-/** Product wordmark — indigo mark + text. Text-only per the ticket, styled. */
+/** Product wordmark — indigo mark + text, seated on the sidebar brand block.
+ * DESIGN-05: the one place a gradient is permitted (a near-tonal dark wash on
+ * the brand header), per the restraint rules. */
 function Wordmark() {
   return (
-    <div className="flex items-center gap-2 px-4 py-5">
+    <div className="flex items-center gap-2.5 border-b border-sidebar-border bg-sidebar-brand px-4 py-[1.15rem]">
       <span
         aria-hidden
-        className="flex h-7 w-7 items-center justify-center rounded-md bg-brand-600 text-sm font-bold text-white"
+        className="flex h-7 w-7 items-center justify-center rounded-md bg-brand-600 text-sm font-bold text-white shadow-1"
       >
         H
       </span>
-      <span className="text-base font-semibold tracking-tight text-neutral-900">HireOps</span>
+      <span className="text-base font-semibold tracking-tight text-sidebar-fg">HireOps</span>
     </div>
   );
 }
 
-function navItemClass(active: boolean): string {
-  return cn(
-    "flex items-center gap-2.5 rounded-md px-3 py-2 text-sm transition-colors",
-    active
-      ? "bg-brand-50 font-medium text-brand-700"
-      : "font-normal text-neutral-600 hover:bg-neutral-100 hover:text-neutral-900",
+function NavItemLink({ item, active }: { item: NavItem; active: boolean }) {
+  return (
+    <a
+      href={item.href}
+      aria-current={active ? "page" : undefined}
+      className={cn(
+        "relative flex items-center gap-2.5 rounded-md px-3 py-2 text-sm transition-colors",
+        active
+          ? "bg-sidebar-active font-medium text-sidebar-active-fg"
+          : "font-normal text-sidebar-fg-muted hover:bg-sidebar-elevated hover:text-sidebar-fg",
+      )}
+    >
+      {active ? (
+        <span
+          aria-hidden
+          className="absolute inset-y-1.5 left-0 w-0.5 rounded-full bg-sidebar-accent"
+        />
+      ) : null}
+      <span className={cn("shrink-0", active ? "text-sidebar-accent" : "text-current opacity-80")}>
+        {item.icon}
+      </span>
+      {item.label}
+    </a>
   );
 }
 
@@ -214,16 +233,13 @@ function NavGroup({
   return (
     <div className="px-3">
       {heading ? (
-        <p className="px-3 pb-1.5 pt-4 text-xs font-medium uppercase tracking-wide text-neutral-400">
+        <p className="px-3 pb-1.5 pt-4 text-[11px] font-semibold uppercase tracking-wider text-sidebar-fg-muted">
           {heading}
         </p>
       ) : null}
       <nav className="flex flex-col gap-0.5">
         {items.map((item) => (
-          <a key={item.key} href={item.href} className={navItemClass(active === item.key)}>
-            <span className="shrink-0 text-current opacity-80">{item.icon}</span>
-            {item.label}
-          </a>
+          <NavItemLink key={item.key} item={item} active={active === item.key} />
         ))}
       </nav>
     </div>
@@ -233,22 +249,22 @@ function NavGroup({
 function UserChip({ user }: { user: AppShellUser }) {
   const initial = (user.label.trim()[0] ?? "?").toUpperCase();
   return (
-    <div className="border-t border-neutral-200 p-3">
+    <div className="border-t border-sidebar-border p-3">
       <div className="flex items-center gap-2.5 px-2 py-1.5">
         <span
           aria-hidden
-          className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-neutral-200 text-sm font-medium text-neutral-600"
+          className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-sidebar-elevated text-sm font-medium text-sidebar-fg"
         >
           {initial}
         </span>
         <div className="min-w-0">
-          <p className="truncate text-sm font-medium text-neutral-800">{user.label}</p>
-          {user.role ? <p className="truncate text-xs text-neutral-500">{user.role}</p> : null}
+          <p className="truncate text-sm font-medium text-sidebar-fg">{user.label}</p>
+          {user.role ? <p className="truncate text-xs text-sidebar-fg-muted">{user.role}</p> : null}
         </div>
       </div>
       <a
         href="/logout"
-        className="mt-1 flex items-center gap-2.5 rounded-md px-3 py-2 text-sm text-neutral-600 transition-colors hover:bg-neutral-100 hover:text-neutral-900"
+        className="mt-1 flex items-center gap-2.5 rounded-md px-3 py-2 text-sm text-sidebar-fg-muted transition-colors hover:bg-sidebar-elevated hover:text-sidebar-fg"
       >
         <span className="shrink-0 opacity-80">
           <IconSignOut />
@@ -271,7 +287,7 @@ function Sidebar({
   user: AppShellUser;
 }) {
   return (
-    <aside className="flex w-60 shrink-0 flex-col border-r border-neutral-200 bg-white">
+    <aside className="flex w-60 shrink-0 flex-col border-r border-sidebar-border bg-sidebar text-sidebar-fg">
       <Wordmark />
       <div className="flex-1 overflow-y-auto pb-4">
         <NavGroup items={visibleNav(MAIN_NAV, isAdmin, roles)} active={active} />
@@ -286,7 +302,7 @@ function Sidebar({
  * live shell and the skeleton so the two are pixel-consistent. */
 function PageHeader({ title, actions }: { title: string; actions?: ReactNode }) {
   return (
-    <header className="flex shrink-0 items-center justify-between gap-4 border-b border-neutral-200 bg-white px-8 py-4">
+    <header className="flex shrink-0 items-center justify-between gap-4 border-b border-neutral-200 bg-white px-8 py-4 shadow-1">
       <h1 className="text-xl font-semibold tracking-tight text-neutral-900">{title}</h1>
       {actions ? <div className="flex items-center gap-2">{actions}</div> : null}
     </header>
@@ -328,15 +344,15 @@ export function AppShell({
 export function AppShellSkeleton({ title, children }: { title: string; children: ReactNode }) {
   return (
     <div className="flex h-screen overflow-hidden bg-neutral-50 text-neutral-900">
-      <aside className="flex w-60 shrink-0 flex-col border-r border-neutral-200 bg-white">
+      <aside className="flex w-60 shrink-0 flex-col border-r border-sidebar-border bg-sidebar text-sidebar-fg">
         <Wordmark />
         <div className="flex-1 space-y-2 px-6 py-4">
           {[0, 1, 2, 3].map((i) => (
-            <div key={i} className="h-8 animate-pulse rounded-md bg-neutral-100" />
+            <div key={i} className="h-8 animate-pulse rounded-md bg-sidebar-elevated" />
           ))}
         </div>
-        <div className="border-t border-neutral-200 p-3">
-          <div className="h-10 animate-pulse rounded-md bg-neutral-100" />
+        <div className="border-t border-sidebar-border p-3">
+          <div className="h-10 animate-pulse rounded-md bg-sidebar-elevated" />
         </div>
       </aside>
       <div className="flex min-w-0 flex-1 flex-col">

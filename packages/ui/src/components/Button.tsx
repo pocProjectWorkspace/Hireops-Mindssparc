@@ -26,8 +26,8 @@ const variantClasses: Record<ButtonVariant, string> = {
   // (focus outlines, checked indicators) where the 3:1 graphical
   // threshold applies.
   primary:
-    "bg-brand-600 text-white hover:bg-brand-700 active:bg-brand-700 " +
-    "disabled:bg-neutral-300 disabled:text-neutral-500",
+    "bg-brand-600 text-white shadow-1 hover:bg-brand-700 active:bg-brand-700 " +
+    "disabled:bg-neutral-300 disabled:text-neutral-500 disabled:shadow-none",
   secondary:
     "bg-white text-neutral-700 border border-neutral-300 " +
     "hover:bg-neutral-50 hover:border-neutral-400 " +

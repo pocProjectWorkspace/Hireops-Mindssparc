@@ -31,10 +31,12 @@ export interface StatTileProps {
 
 export function StatTile({ label, value, hint, tone = "neutral", className }: StatTileProps) {
   return (
-    <div className={cn("rounded-md border p-4", TONES[tone], className)}>
-      <p className="text-xs font-medium uppercase tracking-wide opacity-70">{label}</p>
-      <p className="mt-1.5 text-2xl font-semibold tabular-nums tracking-tight">{value}</p>
-      {hint ? <p className="mt-1 text-xs opacity-60">{hint}</p> : null}
+    <div className={cn("rounded-card border p-4 shadow-card", TONES[tone], className)}>
+      <p className="text-[11px] font-semibold uppercase tracking-wider opacity-70">{label}</p>
+      <p className="mt-2 text-[1.75rem] font-semibold leading-none tabular-nums tracking-tight">
+        {value}
+      </p>
+      {hint ? <p className="mt-1.5 text-xs opacity-60">{hint}</p> : null}
     </div>
   );
 }

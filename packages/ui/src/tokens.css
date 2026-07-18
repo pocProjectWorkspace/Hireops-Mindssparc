@@ -21,11 +21,13 @@
    * 2.1 Colour
    * ============================================================ */
 
-  /* Neutrals — warm gray ("stone") workhorse scale. Near-white app
-   * background at 50 (#fafaf9), warm ink at 900. Same variable names as
-   * the previous cool-gray ramp so every existing utility resolves; only
-   * the values changed (cool → warm) in the DESIGN-01 revamp. */
-  --color-neutral-50: #fafaf9;
+  /* Neutrals — warm gray ("stone") workhorse scale. Warm off-white app
+   * canvas at 50, warm ink at 900. Same variable names as the previous
+   * cool-gray ramp so every existing utility resolves; only the values
+   * changed (cool → warm) in the DESIGN-01 revamp. DESIGN-05 deepened 50
+   * a half-step (#fafaf9 → #f6f5f2) so white cards separate from the ground
+   * — the "finished product" surfaces read as layered, not one flat sheet. */
+  --color-neutral-50: #f6f5f2;
   --color-neutral-100: #f5f5f4;
   --color-neutral-200: #e7e5e4;
   --color-neutral-300: #d6d3d1;
@@ -108,6 +110,38 @@
   --color-ai-border: #e9d5ff;
   --color-ai-accent: #7c3aed;
 
+  /* Sidebar — the dark application chrome (DESIGN-05). A refined near-black
+   * slate-ink with a cool undertone: NOT pure black, NOT the prototype's
+   * saturated navy. All foreground tokens clear WCAG AA on the base
+   * (--color-sidebar-bg); computed ratios live in the DESIGN-05 hand-back:
+   *   fg 14.6:1 · fg-muted 6.8:1 · active-fg 15.1:1 · accent 6.0:1.
+   * The accent is the indigo brand lifted to its 400 step so it carries on
+   * the dark ground where brand-600 would sink. */
+  --color-sidebar-bg: #16181f;
+  --color-sidebar-elevated: #1e212a; /* brand block + hover surfaces */
+  --color-sidebar-border: #2a2e39; /* hairline dividers on the dark ground */
+  --color-sidebar-fg: #e7e9ee; /* primary nav labels */
+  --color-sidebar-fg-muted: #9aa1ad; /* section headings, secondary text */
+  --color-sidebar-active-bg: #23262f; /* active nav pill */
+  --color-sidebar-active-fg: #ffffff; /* active nav label */
+  --color-sidebar-accent: #818cf8; /* active left-rail + icon (indigo-400) */
+  --gradient-sidebar-brand: linear-gradient(158deg, #1e212a 0%, #16181f 100%);
+
+  /* Score tiers — muted metallics for the gold/platinum/silver tier idea
+   * (DESIGN-05 vocabulary). Restrained, not candy: each is a soft tint
+   * surface + a readable ink + a hairline, tuned so a tier chip clears AA
+   * (gold 5.8:1 · silver 6.7:1 · platinum 6.0:1). Exposed as Badge tones and
+   * available to METRICS-01; no tier COPY is invented on candidates here. */
+  --color-tier-gold-bg: #faf3e2;
+  --color-tier-gold-fg: #7a5a12;
+  --color-tier-gold-border: #ecdcb4;
+  --color-tier-silver-bg: #f0f1f3;
+  --color-tier-silver-fg: #4c5563;
+  --color-tier-silver-border: #dcdfe4;
+  --color-tier-platinum-bg: #eaf1f1;
+  --color-tier-platinum-fg: #35606a;
+  --color-tier-platinum-border: #cfe0e0;
+
   /* ============================================================
    * 2.2 Typography
    * ============================================================ */
@@ -164,13 +198,19 @@
   --elevation-2: 0 4px 12px -2px rgb(28 25 23 / 0.1), 0 2px 4px -2px rgb(28 25 23 / 0.06);
   --elevation-3: 0 24px 32px -8px rgb(28 25 23 / 0.16), 0 8px 12px -6px rgb(28 25 23 / 0.08);
 
+  /* DESIGN-05 resting card lift — a soft, layered two-drop shadow for the
+   * "elevated card" vocabulary. Sits between flat (border only) and level-2
+   * (floating). Warm-tinted like the others. Cards use this + a hairline. */
+  --elevation-card: 0 1px 2px -1px rgb(28 25 23 / 0.08), 0 2px 6px -1px rgb(28 25 23 / 0.05);
+
   /* ============================================================
    * 2.5 Border radius
    * ============================================================ */
 
   --radius-sm: 0.25rem; /* 4px  — subtle */
   --radius-button: 0.375rem; /* 6px — buttons, badges */
-  --radius-md: 0.5rem; /* 8px  — cards, inputs */
+  --radius-md: 0.5rem; /* 8px  — inputs, small surfaces */
+  --radius-card: 0.625rem; /* 10px — the DESIGN-05 elevated-card radius */
   --radius-lg: 0.75rem; /* 12px — large surfaces */
   --radius-full: 9999px; /* pills, avatars */
 

@@ -83,6 +83,29 @@ export default {
         "ai-surface": "var(--color-ai-surface)",
         "ai-border": "var(--color-ai-border)",
         "ai-accent": "var(--color-ai-accent)",
+        // DESIGN-05 dark application chrome.
+        sidebar: {
+          DEFAULT: "var(--color-sidebar-bg)",
+          elevated: "var(--color-sidebar-elevated)",
+          border: "var(--color-sidebar-border)",
+          fg: "var(--color-sidebar-fg)",
+          "fg-muted": "var(--color-sidebar-fg-muted)",
+          active: "var(--color-sidebar-active-bg)",
+          "active-fg": "var(--color-sidebar-active-fg)",
+          accent: "var(--color-sidebar-accent)",
+        },
+        // DESIGN-05 muted-metallic score tiers.
+        tier: {
+          "gold-bg": "var(--color-tier-gold-bg)",
+          "gold-fg": "var(--color-tier-gold-fg)",
+          "gold-border": "var(--color-tier-gold-border)",
+          "silver-bg": "var(--color-tier-silver-bg)",
+          "silver-fg": "var(--color-tier-silver-fg)",
+          "silver-border": "var(--color-tier-silver-border)",
+          "platinum-bg": "var(--color-tier-platinum-bg)",
+          "platinum-fg": "var(--color-tier-platinum-fg)",
+          "platinum-border": "var(--color-tier-platinum-border)",
+        },
       },
       fontFamily: {
         ui: "var(--font-family-ui)",
@@ -117,6 +140,7 @@ export default {
         sm: "var(--radius-sm)",
         button: "var(--radius-button)",
         md: "var(--radius-md)",
+        card: "var(--radius-card)",
         lg: "var(--radius-lg)",
         full: "var(--radius-full)",
       },
@@ -124,6 +148,10 @@ export default {
         1: "var(--elevation-1)",
         2: "var(--elevation-2)",
         3: "var(--elevation-3)",
+        card: "var(--elevation-card)",
+      },
+      backgroundImage: {
+        "sidebar-brand": "var(--gradient-sidebar-brand)",
       },
       zIndex: {
         base: "var(--z-base)",

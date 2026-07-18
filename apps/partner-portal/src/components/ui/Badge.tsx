@@ -7,7 +7,16 @@ import { cn } from "./cn";
  * (brand) tone for interactive/active labels. 6px radius by default;
  * pass `pill` for a fully-rounded count/tag chip.
  */
-export type BadgeTone = "neutral" | "success" | "warning" | "error" | "info" | "accent";
+export type BadgeTone =
+  | "neutral"
+  | "success"
+  | "warning"
+  | "error"
+  | "info"
+  | "accent"
+  | "gold"
+  | "platinum"
+  | "silver";
 
 const TONES: Record<BadgeTone, string> = {
   neutral: "bg-neutral-100 text-neutral-700",
@@ -16,6 +25,9 @@ const TONES: Record<BadgeTone, string> = {
   error: "bg-status-error-50 text-status-error-700",
   info: "bg-status-info-50 text-status-info-800",
   accent: "bg-brand-50 text-brand-700",
+  gold: "bg-tier-gold-bg text-tier-gold-fg ring-1 ring-inset ring-tier-gold-border",
+  platinum: "bg-tier-platinum-bg text-tier-platinum-fg ring-1 ring-inset ring-tier-platinum-border",
+  silver: "bg-tier-silver-bg text-tier-silver-fg ring-1 ring-inset ring-tier-silver-border",
 };
 
 export interface BadgeProps {

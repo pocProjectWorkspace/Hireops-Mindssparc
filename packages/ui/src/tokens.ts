@@ -5,9 +5,10 @@
  */
 
 export const colors = {
-  // Warm gray ("stone") neutrals — mirrors tokens.css.
+  // Warm gray ("stone") neutrals — mirrors tokens.css. 50 deepened in
+  // DESIGN-05 (#fafaf9 → #f6f5f2) so white cards separate from the canvas.
   neutral: {
-    50: "#fafaf9",
+    50: "#f6f5f2",
     100: "#f5f5f4",
     200: "#e7e5e4",
     300: "#d6d3d1",
@@ -87,6 +88,28 @@ export const colors = {
     border: "#e9d5ff",
     accent: "#7c3aed",
   },
+  // DESIGN-05 dark application chrome — refined near-black slate-ink.
+  sidebar: {
+    bg: "#16181f",
+    elevated: "#1e212a",
+    border: "#2a2e39",
+    fg: "#e7e9ee",
+    fgMuted: "#9aa1ad",
+    activeBg: "#23262f",
+    activeFg: "#ffffff",
+    accent: "#818cf8",
+  },
+  // DESIGN-05 muted-metallic score tiers.
+  tier: {
+    gold: { bg: "#faf3e2", fg: "#7a5a12", border: "#ecdcb4" },
+    silver: { bg: "#f0f1f3", fg: "#4c5563", border: "#dcdfe4" },
+    platinum: { bg: "#eaf1f1", fg: "#35606a", border: "#cfe0e0" },
+  },
+} as const;
+
+/** DESIGN-05 sidebar brand-block gradient (mirrors --gradient-sidebar-brand). */
+export const gradients = {
+  sidebarBrand: "linear-gradient(158deg, #1e212a 0%, #16181f 100%)",
 } as const;
 
 export const fontFamily = {
@@ -138,12 +161,14 @@ export const elevation = {
   1: "0 1px 2px 0 rgb(28 25 23 / 0.05)",
   2: "0 4px 12px -2px rgb(28 25 23 / 0.10), 0 2px 4px -2px rgb(28 25 23 / 0.06)",
   3: "0 24px 32px -8px rgb(28 25 23 / 0.16), 0 8px 12px -6px rgb(28 25 23 / 0.08)",
+  card: "0 1px 2px -1px rgb(28 25 23 / 0.08), 0 2px 6px -1px rgb(28 25 23 / 0.05)",
 } as const;
 
 export const radius = {
   sm: "0.25rem",
   button: "0.375rem",
   md: "0.5rem",
+  card: "0.625rem",
   lg: "0.75rem",
   full: "9999px",
 } as const;

@@ -23,18 +23,18 @@ export interface ButtonProps extends Omit<ButtonHTMLAttributes<HTMLButtonElement
 
 const VARIANTS: Record<PortalButtonVariant, string> = {
   primary:
-    "bg-brand-600 text-white hover:bg-brand-700 active:bg-brand-800 " +
-    "disabled:bg-neutral-300 disabled:text-neutral-500",
+    "bg-brand-600 text-white shadow-1 hover:bg-brand-700 active:bg-brand-800 " +
+    "disabled:bg-neutral-300 disabled:text-neutral-500 disabled:shadow-none",
   secondary:
-    "bg-white text-neutral-700 border border-neutral-300 hover:bg-neutral-50 " +
+    "bg-white text-neutral-700 border border-neutral-300 shadow-1 hover:bg-neutral-50 " +
     "hover:border-neutral-400 active:bg-neutral-100 " +
-    "disabled:bg-neutral-100 disabled:text-neutral-400 disabled:border-neutral-200",
+    "disabled:bg-neutral-100 disabled:text-neutral-400 disabled:border-neutral-200 disabled:shadow-none",
   ghost:
     "bg-transparent text-neutral-600 hover:bg-neutral-100 hover:text-neutral-900 " +
     "active:bg-neutral-200 disabled:text-neutral-400 disabled:bg-transparent",
   danger:
-    "bg-status-error-600 text-white hover:bg-status-error-700 active:bg-status-error-800 " +
-    "disabled:bg-neutral-300 disabled:text-neutral-500",
+    "bg-status-error-600 text-white shadow-1 hover:bg-status-error-700 active:bg-status-error-800 " +
+    "disabled:bg-neutral-300 disabled:text-neutral-500 disabled:shadow-none",
 };
 
 const SIZES: Record<PortalButtonSize, string> = {

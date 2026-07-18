@@ -14,10 +14,13 @@ export interface CardProps extends Omit<HTMLAttributes<HTMLElement>, "style"> {
   children: ReactNode;
 }
 
+// DESIGN-05: the elevated-card look — 10px radius + soft resting lift, with a
+// hairline so cards read as layered over the warm canvas.
 const variantClasses: Record<CardVariant, string> = {
-  default: "bg-white shadow-1 rounded-md",
-  hover: "bg-white shadow-1 rounded-md transition-shadow duration-150 hover:shadow-2",
-  ghost: "bg-transparent rounded-md",
+  default: "bg-white border border-neutral-200 shadow-card rounded-card",
+  hover:
+    "bg-white border border-neutral-200 shadow-card rounded-card transition-shadow duration-150 hover:shadow-2",
+  ghost: "bg-transparent rounded-card",
 };
 
 export const Card = forwardRef<HTMLElement, CardProps>(function Card(

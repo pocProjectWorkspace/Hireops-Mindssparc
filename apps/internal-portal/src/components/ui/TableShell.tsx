@@ -17,7 +17,10 @@ export function TableShell({
 }: HTMLAttributes<HTMLDivElement> & { children: ReactNode }) {
   return (
     <div
-      className={cn("overflow-x-auto rounded-md border border-neutral-200 bg-white", className)}
+      className={cn(
+        "overflow-x-auto rounded-card border border-neutral-200 bg-white shadow-card",
+        className,
+      )}
       {...rest}
     >
       <table className="w-full text-sm">{children}</table>
@@ -28,7 +31,7 @@ export function TableShell({
 export function Thead({ children }: { children: ReactNode }) {
   return (
     <thead>
-      <tr className="border-b border-neutral-200 text-left text-xs uppercase tracking-wide text-neutral-500">
+      <tr className="border-b border-neutral-200 bg-neutral-50/60 text-left text-[11px] font-semibold uppercase tracking-wider text-neutral-500">
         {children}
       </tr>
     </thead>
@@ -42,7 +45,7 @@ export function Th({
   ...rest
 }: ThHTMLAttributes<HTMLTableCellElement> & { numeric?: boolean }) {
   return (
-    <th className={cn("px-4 py-2.5 font-medium", numeric && "text-right", className)} {...rest}>
+    <th className={cn("px-4 py-2 font-semibold", numeric && "text-right", className)} {...rest}>
       {children}
     </th>
   );
