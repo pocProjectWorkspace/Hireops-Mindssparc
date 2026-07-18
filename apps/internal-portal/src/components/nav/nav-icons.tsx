@@ -220,6 +220,27 @@ export function IconUsers() {
   );
 }
 
+export function IconMarketIntel() {
+  return (
+    <Svg>
+      <path d="M3 3v18h18" />
+      <path d="M7 14l3-4 3 2 4-6" />
+      <circle cx="20" cy="6" r="1" />
+    </Svg>
+  );
+}
+
+export function IconFeasibility() {
+  return (
+    <Svg>
+      <path d="M12 3a9 9 0 1 0 9 9" />
+      <path d="M12 12l5-5" />
+      <path d="M12 7v5h5" opacity="0" />
+      <path d="M12 8v4l3 2" />
+    </Svg>
+  );
+}
+
 export function IconSignOut() {
   return (
     <Svg>

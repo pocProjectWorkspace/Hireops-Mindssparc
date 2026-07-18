@@ -32,6 +32,7 @@ import {
   lt,
   lte,
   ne,
+  notInArray,
   sql as dsql,
   type SQL,
 } from "drizzle-orm";
@@ -81,6 +82,8 @@ import {
   exitInterviews,
   finalSettlements,
   documentTypes,
+  marketBenchmarks,
+  requisitionFeasibility,
   approvalRequests,
   approvalDecisions,
   recordPiiAccess,
@@ -379,6 +382,21 @@ import {
   type AuditEventRow,
   type PendingApprovalItem,
   type GetApprovalRequestOutput,
+  // HRHEAD-02 market intelligence + feasibility
+  listMarketBenchmarksInputSchema,
+  listMarketBenchmarksOutputSchema,
+  upsertMarketBenchmarkInputSchema,
+  upsertMarketBenchmarkOutputSchema,
+  listRequisitionFeasibilityInputSchema,
+  listRequisitionFeasibilityOutputSchema,
+  getRequisitionFeasibilityInputSchema,
+  getRequisitionFeasibilityOutputSchema,
+  generateRequisitionFeasibilityInputSchema,
+  generateRequisitionFeasibilityOutputSchema,
+  feasibilityAssessmentSchema,
+  type MarketBenchmarkRow,
+  type FeasibilityCard,
+  type FeasibilityAssessment,
 } from "@hireops/api-types";
 import { createClient } from "@supabase/supabase-js";
 import {
@@ -408,6 +426,14 @@ import {
   JD_BIAS_REVIEW_FEATURE,
   type JdBiasReviewResponse,
 } from "../lib/jd-bias-review";
+import {
+  buildRequisitionFeasibilityPrompt,
+  feasibilityAssessmentJsonSchema,
+  matchBenchmarkTitle,
+  REQ_FEASIBILITY_PROMPT_VERSION,
+  REQ_FEASIBILITY_SCHEMA_NAME,
+  REQ_FEASIBILITY_FEATURE,
+} from "../lib/req-feasibility";
 import { enqueueNotification, signLink, hashToken, verifyLink } from "@hireops/notifications";
 import { assertRuleAttachable, IncompatibleApprovalRuleError } from "@hireops/agent-actions";
 import {
@@ -595,6 +621,17 @@ const USERS_ADMIN_ROLES = new Set(["admin"]);
 // RLS still scopes rows to the tenant on top of this persona gate.
 const OFFBOARD_MANAGE_ROLES = new Set(["admin", "hr_ops", "people_ops"]);
 
+// HRHEAD-02 — Market Intelligence + Feasibility (HR-head persona).
+// Market benchmarks READ is a planning surface for anyone who owns or approves
+// reqs: hr_head (the persona), admin (super-role), and hiring_manager (reads the
+// benchmark when shaping a req). WRITE (upsert) is admin-only — the benchmarks
+// are curated governance data an admin maintains. Feasibility generation +
+// read is the HR-head decision surface (hr_head + admin); a real AI call is
+// gated tighter than the benchmark read. RLS still scopes rows to the tenant.
+const MARKET_INTEL_READ_ROLES = new Set(["admin", "hr_head", "hiring_manager"]);
+const MARKET_BENCHMARK_ADMIN_ROLES = new Set(["admin"]);
+const FEASIBILITY_ROLES = new Set(["admin", "hr_head"]);
+
 // The set of internal roles an admin may assign (mirror of api-types'
 // INTERNAL_TENANT_ROLES). A submitted role outside this set is rejected by the
 // zod .input(); this Set is the server-side backstop + the self-demotion guard
@@ -755,6 +792,179 @@ function requireAnyRole(ctx: HonoTRPCContext, allowed: Set<string>, message: str
   if (!ctx.roles.some((r) => allowed.has(r))) {
     throw new TRPCError({ code: "FORBIDDEN", message });
   }
+}
+
+// ─────────────── HRHEAD-02 feasibility / benchmark helpers ───────────────
+
+/** paise (minor) → rupees (major). Benchmarks store minor; positions comp
+ * band + the prompt speak major. */
+function minorToMajor(minor: bigint): number {
+  return Number(minor) / 100;
+}
+
+interface TenantBenchmark {
+  id: string;
+  roleTitle: string;
+  medianSalaryMinor: bigint;
+  currency: string;
+  ttfDays: number;
+  availability: "low" | "medium" | "high";
+  competitorDemand: "low" | "medium" | "high";
+  recommendedRounds: number;
+  trendingSkills: string[];
+  sourceNote: string;
+  updatedAt: Date;
+}
+
+/** Map a market_benchmarks DB row → the wire shape (minor as int number). */
+function benchmarkRowToApi(row: typeof marketBenchmarks.$inferSelect): MarketBenchmarkRow {
+  return {
+    id: row.id,
+    roleTitle: row.roleTitle,
+    medianSalaryMinor: Number(row.medianSalaryMinor),
+    currency: row.currency,
+    ttfDays: row.ttfDays,
+    availability: row.availability as "low" | "medium" | "high",
+    competitorDemand: row.competitorDemand as "low" | "medium" | "high",
+    recommendedRounds: row.recommendedRounds,
+    trendingSkills: normalizeTrendingSkills(row.trendingSkills),
+    sourceNote: row.sourceNote,
+    updatedAt: row.updatedAt.toISOString(),
+  };
+}
+
+function normalizeTrendingSkills(raw: unknown): string[] {
+  if (!Array.isArray(raw)) return [];
+  return raw.filter((s): s is string => typeof s === "string").slice(0, 20);
+}
+
+async function loadTenantBenchmarks(
+  db: TenantBoundDb,
+  tenantId: string,
+): Promise<TenantBenchmark[]> {
+  const rows = await db
+    .select()
+    .from(marketBenchmarks)
+    .where(eq(marketBenchmarks.tenantId, tenantId));
+  return rows.map((r) => ({
+    id: r.id,
+    roleTitle: r.roleTitle,
+    medianSalaryMinor: r.medianSalaryMinor,
+    currency: r.currency,
+    ttfDays: r.ttfDays,
+    availability: r.availability as "low" | "medium" | "high",
+    competitorDemand: r.competitorDemand as "low" | "medium" | "high",
+    recommendedRounds: r.recommendedRounds,
+    trendingSkills: normalizeTrendingSkills(r.trendingSkills),
+    sourceNote: r.sourceNote,
+    updatedAt: r.updatedAt,
+  }));
+}
+
+interface ReqFeasibilityFacet {
+  id: string;
+  status: string;
+  title: string;
+  seniority: string | null;
+  locationType: string;
+  primaryLocation: string | null;
+  compBandMin: string | null;
+  compBandMax: string | null;
+  compCurrency: string | null;
+  jdVersionId: string;
+}
+
+async function loadReqFeasibilityFacet(
+  db: TenantBoundDb,
+  tenantId: string,
+  requisitionId: string,
+): Promise<ReqFeasibilityFacet | null> {
+  const [row] = await db
+    .select({
+      id: requisitions.id,
+      status: requisitions.status,
+      jdVersionId: requisitions.jdVersionId,
+      title: positions.title,
+      seniority: positions.level,
+      locationType: positions.locationType,
+      primaryLocation: positions.primaryLocation,
+      compBandMin: positions.compBandMin,
+      compBandMax: positions.compBandMax,
+      compCurrency: positions.compCurrency,
+    })
+    .from(requisitions)
+    .innerJoin(
+      positions,
+      and(eq(requisitions.tenantId, positions.tenantId), eq(requisitions.positionId, positions.id)),
+    )
+    .where(and(eq(requisitions.tenantId, tenantId), eq(requisitions.id, requisitionId)))
+    .limit(1);
+  if (!row) return null;
+  return {
+    id: row.id,
+    status: row.status,
+    title: row.title,
+    seniority: row.seniority ?? null,
+    locationType: row.locationType,
+    primaryLocation: row.primaryLocation ?? null,
+    compBandMin: row.compBandMin ?? null,
+    compBandMax: row.compBandMax ?? null,
+    compCurrency: row.compCurrency ?? null,
+    jdVersionId: row.jdVersionId,
+  };
+}
+
+interface BuildCardInput {
+  requisitionId: string;
+  title: string;
+  status: string;
+  seniority: string | null;
+  compBandMin: string | null;
+  compBandMax: string | null;
+  compCurrency: string | null;
+  benchmarks: TenantBenchmark[];
+  storedAssessment: unknown;
+  model: string | null;
+  promptVersion: string | null;
+  generatedAt: string | null;
+}
+
+/** Assemble a FeasibilityCard: req + budget + matched benchmark context +
+ * (safely-parsed) cached assessment. Pure over the loaded benchmark list. */
+function buildFeasibilityCard(input: BuildCardInput): FeasibilityCard {
+  const matchedTitle = matchBenchmarkTitle(
+    input.title,
+    input.benchmarks.map((b) => b.roleTitle),
+  );
+  const matched = matchedTitle
+    ? (input.benchmarks.find((b) => b.roleTitle === matchedTitle) ?? null)
+    : null;
+
+  const parsed = input.storedAssessment
+    ? feasibilityAssessmentSchema.safeParse(input.storedAssessment)
+    : null;
+
+  return {
+    requisitionId: input.requisitionId,
+    title: input.title,
+    status: input.status,
+    seniority: input.seniority,
+    compBandMin: input.compBandMin,
+    compBandMax: input.compBandMax,
+    compCurrency: input.compCurrency,
+    benchmark: {
+      matchedRoleTitle: matched?.roleTitle ?? null,
+      medianSalaryMinor: matched ? Number(matched.medianSalaryMinor) : null,
+      currency: matched?.currency ?? null,
+      ttfDays: matched?.ttfDays ?? null,
+      availability: matched?.availability ?? null,
+      competitorDemand: matched?.competitorDemand ?? null,
+    },
+    assessment: parsed && parsed.success ? parsed.data : null,
+    model: input.model,
+    promptVersion: input.promptVersion,
+    generatedAt: input.generatedAt,
+  };
 }
 
 function firstOrThrow<T>(rows: T[], label: string): T {
@@ -11124,6 +11334,359 @@ export const appRouter = router({
       }
       byStage.sort((a, b) => b.count - a.count);
       return { totalSubmissions: total, activeSubmissions: active, placed, byStage };
+    }),
+
+  // ═══════════ HRHEAD-02 — Market Intelligence + Feasibility ═══════════
+  //
+  // Market Intelligence = honest, curated benchmarks (market_benchmarks),
+  // clearly labelled via source_note — NOT a live feed. Feasibility = a REAL
+  // Claude assessment (requisition_feasibility) through the pluggable ai-client,
+  // cached + cost-logged, generated only on an explicit click. See the two
+  // schema files' headers + apps/api/src/lib/req-feasibility.ts.
+
+  /**
+   * listMarketBenchmarks — the Market Intelligence table + trending-skills
+   * cards. hr_head + admin + hiring_manager read. RLS scopes to the tenant.
+   */
+  listMarketBenchmarks: protectedProcedure
+    .input(listMarketBenchmarksInputSchema)
+    .output(listMarketBenchmarksOutputSchema)
+    .query(async ({ ctx }) => {
+      requireAnyRole(
+        ctx,
+        MARKET_INTEL_READ_ROLES,
+        "Market intelligence requires the hr_head, hiring_manager, or admin role",
+      );
+      const db = requireDb(ctx);
+      if (!ctx.tenantId) {
+        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
+      }
+      const rows = await db
+        .select()
+        .from(marketBenchmarks)
+        .where(eq(marketBenchmarks.tenantId, ctx.tenantId))
+        .orderBy(marketBenchmarks.roleTitle);
+      return { rows: rows.map(benchmarkRowToApi) };
+    }),
+
+  /**
+   * upsertMarketBenchmark — admin-only, audited edit of one benchmark row,
+   * keyed by (tenant, role_title). The tenant-editable, honestly-labelled part
+   * of Market Intelligence. Uses the tenant-scoped client (the table's
+   * tenant_isolation policy is FOR ALL, so authenticated writes are allowed +
+   * still tenant-checked); the audit trigger + withAudit record the change.
+   */
+  upsertMarketBenchmark: protectedProcedure
+    .input(upsertMarketBenchmarkInputSchema)
+    .output(upsertMarketBenchmarkOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      return withAudit("upsert_market_benchmark", ctx, input, async () => {
+        requireAnyRole(ctx, MARKET_BENCHMARK_ADMIN_ROLES, "Editing benchmarks is admin-only");
+        const db = requireDb(ctx);
+        if (!ctx.tenantId) {
+          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
+        }
+        const tenantId = ctx.tenantId;
+        const [row] = await db
+          .insert(marketBenchmarks)
+          .values({
+            tenantId,
+            roleTitle: input.roleTitle,
+            medianSalaryMinor: BigInt(input.medianSalaryMinor),
+            currency: input.currency,
+            ttfDays: input.ttfDays,
+            availability: input.availability,
+            competitorDemand: input.competitorDemand,
+            recommendedRounds: input.recommendedRounds,
+            trendingSkills: input.trendingSkills,
+            sourceNote: input.sourceNote,
+            updatedAt: new Date(),
+          })
+          .onConflictDoUpdate({
+            target: [marketBenchmarks.tenantId, marketBenchmarks.roleTitle],
+            set: {
+              medianSalaryMinor: BigInt(input.medianSalaryMinor),
+              currency: input.currency,
+              ttfDays: input.ttfDays,
+              availability: input.availability,
+              competitorDemand: input.competitorDemand,
+              recommendedRounds: input.recommendedRounds,
+              trendingSkills: input.trendingSkills,
+              sourceNote: input.sourceNote,
+              updatedAt: new Date(),
+            },
+          })
+          .returning();
+        if (!row) {
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: "benchmark upsert returned no row",
+          });
+        }
+        return { row: benchmarkRowToApi(row) };
+      });
+    }),
+
+  /**
+   * listRequisitionFeasibility — the Feasibility page grid. One card per
+   * non-terminal requisition, each carrying its budget, its matched benchmark
+   * context, and its cached AI assessment (null = "not generated yet", the
+   * honest empty state). hr_head + admin. No AI calls here — pure reads.
+   */
+  listRequisitionFeasibility: protectedProcedure
+    .input(listRequisitionFeasibilityInputSchema)
+    .output(listRequisitionFeasibilityOutputSchema)
+    .query(async ({ ctx }) => {
+      requireAnyRole(ctx, FEASIBILITY_ROLES, "Feasibility requires the hr_head or admin role");
+      const db = requireDb(ctx);
+      if (!ctx.tenantId) {
+        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
+      }
+      const tenantId = ctx.tenantId;
+      const benchmarks = await loadTenantBenchmarks(db, tenantId);
+      const reqRows = await db
+        .select({
+          id: requisitions.id,
+          status: requisitions.status,
+          title: positions.title,
+          seniority: positions.level,
+          compBandMin: positions.compBandMin,
+          compBandMax: positions.compBandMax,
+          compCurrency: positions.compCurrency,
+          assessment: requisitionFeasibility.assessment,
+          model: requisitionFeasibility.model,
+          promptVersion: requisitionFeasibility.promptVersion,
+          generatedAt: requisitionFeasibility.createdAt,
+        })
+        .from(requisitions)
+        .innerJoin(
+          positions,
+          and(
+            eq(requisitions.tenantId, positions.tenantId),
+            eq(requisitions.positionId, positions.id),
+          ),
+        )
+        .leftJoin(
+          requisitionFeasibility,
+          and(
+            eq(requisitionFeasibility.tenantId, requisitions.tenantId),
+            eq(requisitionFeasibility.requisitionId, requisitions.id),
+          ),
+        )
+        .where(
+          and(
+            eq(requisitions.tenantId, tenantId),
+            notInArray(requisitions.status, ["cancelled", "closed", "filled"]),
+          ),
+        )
+        .orderBy(desc(requisitions.createdAt));
+
+      const cards: FeasibilityCard[] = reqRows.map((r) =>
+        buildFeasibilityCard({
+          requisitionId: r.id,
+          title: r.title,
+          status: r.status,
+          seniority: r.seniority ?? null,
+          compBandMin: r.compBandMin ?? null,
+          compBandMax: r.compBandMax ?? null,
+          compCurrency: r.compCurrency ?? null,
+          benchmarks,
+          storedAssessment: r.assessment ?? null,
+          model: r.model ?? null,
+          promptVersion: r.promptVersion ?? null,
+          generatedAt: r.generatedAt ? r.generatedAt.toISOString() : null,
+        }),
+      );
+      return { cards };
+    }),
+
+  /**
+   * getRequisitionFeasibility — a single card (the read after a generate, or a
+   * deep link). hr_head + admin. No AI call.
+   */
+  getRequisitionFeasibility: protectedProcedure
+    .input(getRequisitionFeasibilityInputSchema)
+    .output(getRequisitionFeasibilityOutputSchema)
+    .query(async ({ ctx, input }) => {
+      requireAnyRole(ctx, FEASIBILITY_ROLES, "Feasibility requires the hr_head or admin role");
+      const db = requireDb(ctx);
+      if (!ctx.tenantId) {
+        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
+      }
+      const tenantId = ctx.tenantId;
+      const benchmarks = await loadTenantBenchmarks(db, tenantId);
+      const facet = await loadReqFeasibilityFacet(db, tenantId, input.requisitionId);
+      if (!facet) return { card: null };
+      const [stored] = await db
+        .select()
+        .from(requisitionFeasibility)
+        .where(
+          and(
+            eq(requisitionFeasibility.tenantId, tenantId),
+            eq(requisitionFeasibility.requisitionId, input.requisitionId),
+          ),
+        )
+        .limit(1);
+      return {
+        card: buildFeasibilityCard({
+          requisitionId: facet.id,
+          title: facet.title,
+          status: facet.status,
+          seniority: facet.seniority,
+          compBandMin: facet.compBandMin,
+          compBandMax: facet.compBandMax,
+          compCurrency: facet.compCurrency,
+          benchmarks,
+          storedAssessment: stored?.assessment ?? null,
+          model: stored?.model ?? null,
+          promptVersion: stored?.promptVersion ?? null,
+          generatedAt: stored?.createdAt ? stored.createdAt.toISOString() : null,
+        }),
+      };
+    }),
+
+  /**
+   * generateRequisitionFeasibility — the ONE real AI call per click. Builds a
+   * structured prompt from the req's JD skills + comp band + the matching
+   * benchmark (fuzzy title match; honest no-benchmark fallback), calls Claude
+   * via completeStructured (feature req_feasibility, cost-logged), and upserts
+   * the assessment (regenerate replaces). hr_head + admin, audited. Honours the
+   * CONF-01 per-tenant req_feasibility kill-switch.
+   */
+  generateRequisitionFeasibility: protectedProcedure
+    .input(generateRequisitionFeasibilityInputSchema)
+    .output(generateRequisitionFeasibilityOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      return withAudit("generate_requisition_feasibility", ctx, input, async () => {
+        requireAnyRole(ctx, FEASIBILITY_ROLES, "Feasibility requires the hr_head or admin role");
+        const db = requireDb(ctx);
+        if (!ctx.tenantId) {
+          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
+        }
+        const tenantId = ctx.tenantId;
+        const membershipId = await resolveActorMembership(db, ctx);
+        if (!membershipId) {
+          throw new TRPCError({
+            code: "FORBIDDEN",
+            message: "Your membership was not found for this tenant",
+          });
+        }
+
+        // CONF-01 kill-switch — disabled → clean error, no model call, no log.
+        const aiSettings = await resolveTenantAiSettingsDb(tenantId);
+        const feasSettings = aiSettings.req_feasibility;
+        if (!feasSettings.enabled) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message:
+              "Feasibility assessment is disabled for this tenant. An admin can re-enable it in Admin → AI settings.",
+          });
+        }
+
+        const facet = await loadReqFeasibilityFacet(db, tenantId, input.requisitionId);
+        if (!facet) {
+          throw new TRPCError({ code: "NOT_FOUND", message: "Requisition not found" });
+        }
+
+        const skillRows = await db
+          .select({
+            skillName: jdSkills.skillName,
+            weight: jdSkills.weight,
+            isRequired: jdSkills.isRequired,
+          })
+          .from(jdSkills)
+          .where(and(eq(jdSkills.tenantId, tenantId), eq(jdSkills.jdVersionId, facet.jdVersionId)));
+
+        const benchmarks = await loadTenantBenchmarks(db, tenantId);
+        const matchedTitle = matchBenchmarkTitle(
+          facet.title,
+          benchmarks.map((b) => b.roleTitle),
+        );
+        const matched = matchedTitle
+          ? (benchmarks.find((b) => b.roleTitle === matchedTitle) ?? null)
+          : null;
+
+        const { system, user } = buildRequisitionFeasibilityPrompt({
+          positionTitle: facet.title,
+          seniority: facet.seniority,
+          locationType: facet.locationType,
+          primaryLocation: facet.primaryLocation,
+          compBandMinMajor: facet.compBandMin != null ? Number(facet.compBandMin) : null,
+          compBandMaxMajor: facet.compBandMax != null ? Number(facet.compBandMax) : null,
+          compCurrency: facet.compCurrency,
+          skills: skillRows.map((s) => ({
+            skillName: s.skillName,
+            weight: Number(s.weight),
+            isRequired: s.isRequired,
+          })),
+          benchmark: matched
+            ? {
+                roleTitle: matched.roleTitle,
+                medianSalaryMajor: minorToMajor(matched.medianSalaryMinor),
+                currency: matched.currency,
+                ttfDays: matched.ttfDays,
+                availability: matched.availability,
+                competitorDemand: matched.competitorDemand,
+                recommendedRounds: matched.recommendedRounds,
+                trendingSkills: matched.trendingSkills,
+              }
+            : null,
+        });
+
+        const client = await getAIClient(tenantId);
+        const raw = await client.completeStructured<FeasibilityAssessment>({
+          prompt: user,
+          system,
+          model: feasSettings.model,
+          temperature: feasSettings.temperature,
+          maxTokens: feasSettings.maxTokens,
+          schema: feasibilityAssessmentJsonSchema,
+          schemaName: REQ_FEASIBILITY_SCHEMA_NAME,
+          feature: REQ_FEASIBILITY_FEATURE,
+          requestId: ctx.requestId,
+          actorMembershipId: membershipId,
+        });
+        // Trust-but-verify: re-parse so a provider quirk can't smuggle a bad
+        // shape into the DB.
+        const assessment = feasibilityAssessmentSchema.parse(raw);
+
+        await db
+          .insert(requisitionFeasibility)
+          .values({
+            tenantId,
+            requisitionId: facet.id,
+            assessment,
+            model: client.provider,
+            promptVersion: REQ_FEASIBILITY_PROMPT_VERSION,
+            generatedByMembershipId: membershipId,
+          })
+          .onConflictDoUpdate({
+            target: [requisitionFeasibility.tenantId, requisitionFeasibility.requisitionId],
+            set: {
+              assessment,
+              model: client.provider,
+              promptVersion: REQ_FEASIBILITY_PROMPT_VERSION,
+              generatedByMembershipId: membershipId,
+              createdAt: new Date(),
+            },
+          });
+
+        const card = buildFeasibilityCard({
+          requisitionId: facet.id,
+          title: facet.title,
+          status: facet.status,
+          seniority: facet.seniority,
+          compBandMin: facet.compBandMin,
+          compBandMax: facet.compBandMax,
+          compCurrency: facet.compCurrency,
+          benchmarks,
+          storedAssessment: assessment,
+          model: client.provider,
+          promptVersion: REQ_FEASIBILITY_PROMPT_VERSION,
+          generatedAt: new Date().toISOString(),
+        });
+        return { card, usedBenchmark: matched != null };
+      });
     }),
 });
 

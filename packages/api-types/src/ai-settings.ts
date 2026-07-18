@@ -82,12 +82,14 @@ function featureDefault(): AiFeatureSettings {
   };
 }
 
-/** The real consumers this surface governs (jd_bias_review added in CONF-02). */
+/** The real consumers this surface governs (jd_bias_review added in CONF-02,
+ * req_feasibility in HRHEAD-02). */
 export const AI_FEATURE_KEYS = [
   "ai_scoring",
   "jd_generation",
   "agent_drafts",
   "jd_bias_review",
+  "req_feasibility",
 ] as const;
 export type AiFeatureKey = (typeof AI_FEATURE_KEYS)[number];
 
@@ -120,6 +122,12 @@ export const AI_FEATURE_META: Record<
     description:
       "An optional, advisory inclusive-language review of a draft JD, run on demand from the wizard. Never blocks a submission — it only adds observations. Disabling hides the 'Review with AI' button and refuses the call.",
   },
+  req_feasibility: {
+    label: "Requisition feasibility assessment",
+    usageFeatures: ["req_feasibility"],
+    description:
+      "Assesses a requisition's fillability against the tenant's curated market benchmarks — skills fit, experience-vs-comp fit, difficulty, and a salary-adjustment recommendation. Runs only on an explicit 'Generate/Refresh' click on the Feasibility page. Disabling makes that button refuse with a clear message instead of calling the model.",
+  },
 };
 
 export const aiSettingsSchema = z.object({
@@ -128,6 +136,7 @@ export const aiSettingsSchema = z.object({
   jd_generation: aiFeatureSettingsSchema.default(featureDefault),
   agent_drafts: aiFeatureSettingsSchema.default(featureDefault),
   jd_bias_review: aiFeatureSettingsSchema.default(featureDefault),
+  req_feasibility: aiFeatureSettingsSchema.default(featureDefault),
   /**
    * Global deterministic PII redaction. When on, candidate-derived prompt
    * text going into scoring + agent-draft calls has emails / phone numbers /

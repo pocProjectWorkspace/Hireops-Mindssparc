@@ -33,6 +33,8 @@ import {
   IconReqApprovals,
   IconInterviews,
   IconPanel,
+  IconMarketIntel,
+  IconFeasibility,
   IconWorkflows,
   IconAudit,
   IconCosts,
@@ -59,6 +61,8 @@ export type PortalNavKey =
   | "exec-audit"
   | "interviews"
   | "panel"
+  | "market-intelligence"
+  | "feasibility"
   | "workflows"
   | "audit"
   | "costs"
@@ -137,6 +141,24 @@ const MAIN_NAV: NavItem[] = [
     label: "Exec audit",
     href: "/exec-audit",
     icon: <IconExecAudit />,
+    roles: ["hr_head", "admin"],
+  },
+  {
+    // HRHEAD-02: the HR-head market-intelligence surface (honest benchmarks).
+    // hr_head + admin. hiring_manager can also READ via the API, but the nav
+    // item stays HR-head-focused to keep the sidebar lean.
+    key: "market-intelligence",
+    label: "Market intel",
+    href: "/market-intelligence",
+    icon: <IconMarketIntel />,
+    roles: ["hr_head", "admin"],
+  },
+  {
+    // HRHEAD-02: per-req feasibility (real AI). hr_head + admin.
+    key: "feasibility",
+    label: "Feasibility",
+    href: "/feasibility",
+    icon: <IconFeasibility />,
     roles: ["hr_head", "admin"],
   },
   {

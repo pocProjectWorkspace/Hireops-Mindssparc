@@ -83,3 +83,6 @@ export * from "./offboarding-tasks";
 export * from "./exit-interviews";
 export * from "./asset-returns";
 export * from "./final-settlements";
+// HR-head market intelligence + feasibility (HRHEAD-02)
+export * from "./market-benchmarks";
+export * from "./requisition-feasibility";
