@@ -1571,6 +1571,12 @@ async function main() {
   // with a reason — a visible red line for the demo).
   for (const id of ONB_APP_IDS) {
     await poolSql`DELETE FROM public.application_state_transitions WHERE application_id = ${id}`;
+    // OFFBOARD-01 anchors offboarding_cases on applications with RESTRICT
+    // (deliberate: departure records must survive recruitment-side deletes in
+    // production). The demo seed cycle is the sanctioned exception — clear
+    // any offboarding cases (children cascade from the case) referencing
+    // this application before the delete-recreate, or the FK blocks it.
+    await poolSql`DELETE FROM public.offboarding_cases WHERE application_id = ${id}`;
     // Deleting the application cascades onboarding_cases → tasks/docs/etc + offers.
     await poolSql`DELETE FROM public.applications WHERE id = ${id}`;
   }
