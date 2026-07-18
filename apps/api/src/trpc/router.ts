@@ -6745,6 +6745,15 @@ export const appRouter = router({
         FROM public.agent_approval_requests ar
         JOIN public.automation_agents aa ON aa.id = ar.agent_id AND aa.tenant_id = ar.tenant_id
         JOIN public.agent_runs run ON run.id = ar.run_id AND run.tenant_id = ar.tenant_id
+        -- SEED-02 Problem 3: mirror getApprovalRequest's INNER joins so the queue
+        -- only lists rows the detail view can open. A pending approval whose
+        -- run_action link or underlying action definition is gone (test/agent
+        -- residue) would otherwise list here but 404 on open ("Couldn't load this
+        -- approval…"). Join-guarding the read excludes those orphans at the source.
+        JOIN public.agent_run_actions run_act
+          ON run_act.id = ar.run_action_id AND run_act.tenant_id = ar.tenant_id
+        JOIN public.agent_actions act
+          ON act.id = run_act.action_id AND act.tenant_id = ar.tenant_id
         WHERE ar.status = 'pending'
           ${input.agentId ? dsql`AND ar.agent_id = ${input.agentId}::uuid` : dsql``}
           ${cursorDate ? dsql`AND ar.proposed_at > ${cursorDate}` : dsql``}

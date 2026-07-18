@@ -138,6 +138,340 @@ const DEMO_RUN_ACTION_G = "00000000-0000-4000-8000-00000000a597";
 const DEMO_OUTBOX_G = "00000000-0000-4000-8000-00000000a598";
 const DEMO_APPROVAL_G = "00000000-0000-4000-8000-00000000a599";
 
+// ─────────────── SEED-02 Problem 3 — H's second pending approval ───────────────
+//
+// A SECOND believable pending approval on the same agent for candidate H
+// (Meera Nair), so /approvals shows TWO entries that OPEN with full detail
+// (Rohan a599 + Meera). Ids in the free a5ax slots (a5a0 is the position; a5a1+
+// are unused). Same halted-draft end-state as G.
+const DEMO_RUN_H = "00000000-0000-4000-8000-00000000a5a1";
+const DEMO_RUN_ACTION_H = "00000000-0000-4000-8000-00000000a5a2";
+const DEMO_OUTBOX_H = "00000000-0000-4000-8000-00000000a5a3";
+const DEMO_APPROVAL_H = "00000000-0000-4000-8000-00000000a5a4";
+
+// ─────────────── SEED-02 Problem 1 — interviews on the demo requisition ─────────
+//
+// Interview PLANS (rounds) live per-requisition; INTERVIEWS instantiate them.
+// Deterministic interview ids in the free a5dx slots (a5d0 is the JD). Panelists
+// + feedback use default ids (they cascade when the interview is deleted).
+const IV_D_SCHEDULED = "00000000-0000-4000-8000-00000000a5d1"; // Karthik (D) — upcoming, pending confirm
+const IV_C_CONFIRMED = "00000000-0000-4000-8000-00000000a5d2"; // Sneha (C) — upcoming, candidate-confirmed
+const IV_E_COMPLETED = "00000000-0000-4000-8000-00000000a5d3"; // Priya (E) — completed w/ panel1 scorecard
+
+const PANEL_EMAIL = "panel1@kyndryl-poc.test";
+const HIRING_MANAGER_EMAIL = "hiringmanager1@kyndryl-poc.test";
+const HR_HEAD_EMAIL = "hrhead1@kyndryl-poc.test";
+
+// ─────────────── SEED-02 Problems 5/6 — extra requisitions + approval spine ────
+//
+// Five more requisitions so the apply portal + HR-head queue + approval history
+// all demo on a fresh seed. All ids in the free a5bx block (a5b0 is the demo BU).
+// Two are POSTED with working public apply URLs (Problem 5); the rest drive the
+// HR-head approvals queue's variety (Problem 6). The approval spine (matrix +
+// chain + requests + decisions) sits in the free a5ex block (a5e0 is the envelope).
+interface ExtraReq {
+  key: string;
+  positionId: string;
+  jdId: string;
+  reqId: string;
+  title: string;
+  slug: string;
+  primaryLocation: string;
+  locationType: "hybrid" | "remote" | "onsite";
+  openings: number;
+  compMin: string; // numeric(12,2) as string
+  compMax: string;
+  jdText: string;
+  skills: string[];
+  knockouts: { question: string; type: string; threshold: unknown }[];
+  // Requisition + approval lifecycle for the demo.
+  reqStatus: "posted" | "pending_approval" | "draft";
+  posted: boolean; // status posted → set posted_at + is_public
+  /** Approval-queue role: how this req appears in the HR-head queue. */
+  approval: "approved" | "pending_clean" | "pending_bias" | "sent_back" | "none";
+}
+
+const EXTRA_REQS: ExtraReq[] = [
+  {
+    key: "data-platform",
+    positionId: "00000000-0000-4000-8000-00000000a5b1",
+    jdId: "00000000-0000-4000-8000-00000000a5b2",
+    reqId: "00000000-0000-4000-8000-00000000a5b3",
+    title: "Data Platform Engineer",
+    slug: "gcc-blr-data-platform-engineer",
+    primaryLocation: "Bengaluru",
+    locationType: "hybrid",
+    openings: 2,
+    compMin: "3800000.00",
+    compMax: "5200000.00",
+    jdText: `# Data Platform Engineer — GCC Bengaluru
+
+## About the role
+Own the batch + streaming data platform the analytics and ML teams build on.
+You'll run the lakehouse, the orchestration layer, and the self-serve data
+tooling that keeps the org's data trustworthy and fast.
+
+## What you'll do
+- Operate Spark / Flink pipelines and an Iceberg-based lakehouse on AWS.
+- Own Airflow orchestration and data-quality contracts across domains.
+- Partner with analytics engineers on dbt models and semantic layers.
+
+## Must-have
+- 4+ years in data engineering (Python + SQL at depth).
+- Spark or Flink in production; strong dimensional-modelling instincts.
+- AWS (S3, Glue, EMR/MSK) and infrastructure-as-code.
+
+## Nice-to-have
+- Iceberg / Delta, dbt, Airflow authoring at scale.
+- Streaming CDC (Debezium / Kafka Connect).
+
+## Logistics
+- Bengaluru, hybrid (3 days/week). L5, reporting to the Data Platform EM.
+`,
+    skills: ["Python", "SQL", "Apache Spark", "AWS", "Airflow"],
+    knockouts: [
+      {
+        question: "Years of data-engineering experience",
+        type: "numeric_min",
+        threshold: { min: 4 },
+      },
+    ],
+    reqStatus: "posted",
+    posted: true,
+    approval: "approved",
+  },
+  {
+    key: "product-designer",
+    positionId: "00000000-0000-4000-8000-00000000a5b4",
+    jdId: "00000000-0000-4000-8000-00000000a5b5",
+    reqId: "00000000-0000-4000-8000-00000000a5b6",
+    title: "Product Designer",
+    slug: "gcc-blr-product-designer",
+    primaryLocation: "Bengaluru",
+    locationType: "hybrid",
+    openings: 1,
+    compMin: "2800000.00",
+    compMax: "4200000.00",
+    jdText: `# Product Designer — GCC Bengaluru
+
+## About the role
+Shape end-to-end product experiences for the internal platform suite — from
+early problem framing through polished, accessible interfaces the whole org
+relies on daily.
+
+## What you'll do
+- Own discovery-to-delivery for a product area; run research and usability tests.
+- Build and extend the design system alongside engineering.
+- Hold the bar on accessibility (WCAG 2.1 AA) and interaction quality.
+
+## Must-have
+- 4+ years designing complex web products (Figma fluency).
+- A portfolio showing systems thinking, not just screens.
+- Comfort partnering closely with PM + engineering.
+
+## Nice-to-have
+- Design-systems / tokens experience.
+- Light prototyping in code (HTML/CSS).
+
+## Logistics
+- Bengaluru, hybrid (3 days/week). Reports to the Head of Design.
+`,
+    skills: ["Figma", "Interaction Design", "User Research", "Design Systems", "Accessibility"],
+    knockouts: [{ question: "Portfolio provided", type: "boolean", threshold: { required: true } }],
+    reqStatus: "posted",
+    posted: true,
+    approval: "none",
+  },
+  {
+    key: "eng-manager",
+    positionId: "00000000-0000-4000-8000-00000000a5b7",
+    jdId: "00000000-0000-4000-8000-00000000a5b8",
+    reqId: "00000000-0000-4000-8000-00000000a5b9",
+    title: "Engineering Manager, Platform",
+    slug: "gcc-blr-engineering-manager-platform",
+    primaryLocation: "Bengaluru",
+    locationType: "hybrid",
+    openings: 1,
+    compMin: "6500000.00",
+    compMax: "9000000.00",
+    jdText: `# Engineering Manager, Platform — GCC Bengaluru
+
+## About the role
+Lead the platform engineering squad — people, delivery, and technical
+direction for the services every internal product depends on.
+
+## What you'll do
+- Manage and grow a team of 6–8 engineers; own hiring and career growth.
+- Partner with product on roadmap and delivery predictability.
+- Keep the platform reliable, observable, and cost-aware.
+
+## Must-have
+- 3+ years managing software engineers.
+- A background building distributed backend services.
+- Track record of shipping and of growing people.
+
+## Logistics
+- Bengaluru, hybrid. Reports to the Director of Engineering.
+`,
+    skills: ["People Management", "Distributed Systems", "Delivery", "Stakeholder Management"],
+    knockouts: [
+      { question: "Years managing engineers", type: "numeric_min", threshold: { min: 3 } },
+    ],
+    reqStatus: "pending_approval",
+    posted: false,
+    approval: "pending_clean",
+  },
+  {
+    key: "data-scientist",
+    positionId: "00000000-0000-4000-8000-00000000a5ba",
+    jdId: "00000000-0000-4000-8000-00000000a5bb",
+    reqId: "00000000-0000-4000-8000-00000000a5bc",
+    title: "Senior Data Scientist",
+    slug: "gcc-blr-senior-data-scientist",
+    primaryLocation: "Bengaluru",
+    locationType: "hybrid",
+    openings: 1,
+    compMin: "4200000.00",
+    compMax: "6000000.00",
+    jdText: `# Senior Data Scientist — GCC Bengaluru
+
+## About the role
+We're after a rockstar data scientist and analytics ninja to own forecasting
+and experimentation across the org. (Deliberately un-inclusive phrasing so the
+HR head sees the bias gate's warnings in the approval view.)
+
+## Must-have
+- 5+ years in applied ML / statistics (Python).
+- Experimentation, causal inference, and forecasting at depth.
+
+## Logistics
+- Bengaluru, hybrid. Reports to the Head of Data Science.
+`,
+    skills: ["Python", "Machine Learning", "Statistics", "Experimentation"],
+    knockouts: [{ question: "Years in applied ML", type: "numeric_min", threshold: { min: 5 } }],
+    reqStatus: "pending_approval",
+    posted: false,
+    approval: "pending_bias",
+  },
+  {
+    key: "principal-sre",
+    positionId: "00000000-0000-4000-8000-00000000a5bd",
+    jdId: "00000000-0000-4000-8000-00000000a5be",
+    reqId: "00000000-0000-4000-8000-00000000a5bf",
+    title: "Principal Site Reliability Engineer",
+    slug: "gcc-blr-principal-sre",
+    primaryLocation: "Bengaluru",
+    locationType: "remote",
+    openings: 1,
+    compMin: "5500000.00",
+    compMax: "7800000.00",
+    jdText: `# Principal Site Reliability Engineer — GCC Bengaluru
+
+## About the role
+Set the reliability strategy for the platform — SLOs, incident response, and
+the automation that keeps a growing system healthy.
+
+## Must-have
+- 8+ years in SRE / infrastructure with production ownership.
+- Deep Kubernetes, observability, and incident-command experience.
+
+## Logistics
+- Remote (India). Reports to the VP of Engineering.
+`,
+    skills: ["Kubernetes", "Observability", "Incident Response", "Terraform"],
+    knockouts: [{ question: "Years in SRE / infra", type: "numeric_min", threshold: { min: 8 } }],
+    reqStatus: "draft",
+    posted: false,
+    approval: "sent_back",
+  },
+];
+
+// Approval-spine ids (a5e0 is the envelope; e1–e8 free).
+const APPROVAL_MATRIX = "00000000-0000-4000-8000-00000000a5e1";
+const APPROVAL_CHAIN = "00000000-0000-4000-8000-00000000a5e2";
+const APPR_REQ_DATA_PLATFORM = "00000000-0000-4000-8000-00000000a5e3";
+const APPR_DEC_DATA_PLATFORM = "00000000-0000-4000-8000-00000000a5e4";
+const APPR_REQ_ENG_MANAGER = "00000000-0000-4000-8000-00000000a5e5";
+const APPR_REQ_DATA_SCIENTIST = "00000000-0000-4000-8000-00000000a5e6";
+const APPR_REQ_PRINCIPAL_SRE = "00000000-0000-4000-8000-00000000a5e7";
+const APPR_DEC_PRINCIPAL_SRE = "00000000-0000-4000-8000-00000000a5e8";
+
+// SEED-02 Problem 4 — seeded onboarding documents (a5f0 is offer E; f1/f2 free).
+const ONB_DOC_VERIFIED = "00000000-0000-4000-8000-00000000a5f1";
+const ONB_DOC_PENDING = "00000000-0000-4000-8000-00000000a5f2";
+
+// SEED-02 Problem 1 — interview_plans round templates. Modes ∈ video|onsite|
+// phone; scorecard_template ∈ technical|manager|hr|general; competencies are the
+// template's criteria keys (advisory display strings).
+interface PlanRound {
+  round: number;
+  name: string;
+  duration: number;
+  mode: "video" | "onsite" | "phone";
+  template: "technical" | "manager" | "hr" | "general";
+  competencies: string[];
+}
+const ENGINEERING_ROUNDS: PlanRound[] = [
+  {
+    round: 1,
+    name: "Technical deep-dive",
+    duration: 60,
+    mode: "video",
+    template: "technical",
+    competencies: ["problem_solving", "technical_depth", "code_quality"],
+  },
+  {
+    round: 2,
+    name: "System design",
+    duration: 60,
+    mode: "video",
+    template: "technical",
+    competencies: ["system_design", "communication"],
+  },
+  {
+    round: 3,
+    name: "Hiring manager conversation",
+    duration: 45,
+    mode: "onsite",
+    template: "manager",
+    competencies: ["ownership", "stakeholder_management"],
+  },
+  {
+    round: 4,
+    name: "HR round",
+    duration: 30,
+    mode: "video",
+    template: "hr",
+    competencies: ["culture_alignment", "motivation"],
+  },
+];
+const DESIGN_ROUNDS: PlanRound[] = [
+  {
+    round: 1,
+    name: "Portfolio review",
+    duration: 60,
+    mode: "video",
+    template: "general",
+    competencies: ["role_competence", "communication"],
+  },
+  {
+    round: 2,
+    name: "Design exercise",
+    duration: 60,
+    mode: "onsite",
+    template: "general",
+    competencies: ["problem_solving", "collaboration"],
+  },
+  {
+    round: 3,
+    name: "Hiring manager conversation",
+    duration: 45,
+    mode: "video",
+    template: "manager",
+    competencies: ["ownership", "stakeholder_management"],
+  },
+];
+
 // ─────────────── ONBOARD-04 onboarding demo namespace ───────────────
 //
 // Six onboarding cases so a fresh seed makes /onboarding look ALIVE. Their
@@ -189,7 +523,14 @@ const ONB_OFFER_IDS = [
   "00000000-0000-4000-8000-00000000a576",
 ] as const;
 
-const DEMO_AGENT_NAME = "Demo Follow-ups Agent";
+// SEED-02 Problem 2: human, client-legible display name (was the ticket-ish
+// "Demo Follow-ups Agent"). Display name only — the agent_type code identifier
+// ('follow_up') is unchanged, and protection everywhere is by id (…a590).
+const DEMO_AGENT_NAME = "Stalled candidate follow-up";
+const DEMO_AGENT_DESCRIPTION =
+  "Watches candidates who have sat in a stage past the SLA and drafts a warm, " +
+  "personalised check-in with Claude — then waits for a recruiter to approve it " +
+  "before anything is sent.";
 const STALE_STAGE = "tech_interview";
 const STALE_DAYS_THRESHOLD = 5;
 const FOLLOWUP_TONE = "friendly";
@@ -1136,6 +1477,284 @@ async function main() {
       admin: adminId,
     };
 
+    // SEED-02: panelist / hiring-manager / hr-head memberships. These drive the
+    // interview panel (Problem 1) and the requisition-approval spine (Problems
+    // 5/6). Resolved via the same helper; a missing persona is a hard error for
+    // the sections that need it, so fail loud if the five-seed runbook order
+    // (test-users first) was skipped.
+    const panelId = await membershipByEmail(PANEL_EMAIL);
+    const hiringManagerId = await membershipByEmail(HIRING_MANAGER_EMAIL);
+    const hrHeadId = await membershipByEmail(HR_HEAD_EMAIL);
+    if (!panelId || !hiringManagerId || !hrHeadId) {
+      console.error(
+        `Missing a required membership (panel1/hiringmanager1/hrhead1) in ${TENANT_SLUG}. ` +
+          `Run pnpm db:seed:test-users first.`,
+      );
+      process.exit(2);
+    }
+
+    // ── SEED-02 helper: (re)seed interview_plans for a requisition ──
+    // Mirrors upsertInterviewPlan's replace-set: delete every plan for the req,
+    // then insert the ordered rounds. default_panel_membership_ids seeded with
+    // panel1 (advisory hint only). Idempotent.
+    async function seedInterviewPlans(
+      reqId: string,
+      rounds: PlanRound[] = ENGINEERING_ROUNDS,
+    ): Promise<void> {
+      await poolSql`DELETE FROM public.interview_plans WHERE tenant_id = ${tid} AND requisition_id = ${reqId}`;
+      for (const r of rounds) {
+        await poolSql`
+          INSERT INTO public.interview_plans
+            (tenant_id, requisition_id, round_number, round_name, duration_minutes,
+             mode, scorecard_template, competency_focus, default_panel_membership_ids)
+          VALUES (${tid}, ${reqId}, ${r.round}, ${r.name}, ${r.duration},
+                  ${r.mode}, ${r.template}, ${JSON.stringify(r.competencies)}::jsonb,
+                  ARRAY[${panelId}]::uuid[])
+        `;
+      }
+    }
+
+    // ── SEED-02 helper: the extra requisitions + approval spine (Problems 5/6) ──
+    async function seedExtraRequisitions(): Promise<void> {
+      // Shared approval matrix + chain (requisition subject). Deterministic ids,
+      // idempotent. resolved_steps: a single hr_head step (mirrors the live shape).
+      const resolvedSteps = [
+        {
+          step_index: 0,
+          order_index: 0,
+          required: true,
+          approver_kind: "role",
+          approver_ref: "hr_head",
+        },
+      ];
+      const matrixRules = {
+        steps: resolvedSteps,
+        note: "SEED-02 demo requisition approval matrix",
+      };
+      await poolSql`
+        INSERT INTO public.approval_matrices
+          (id, tenant_id, subject_type, name, rules, effective_from, created_by_membership_id)
+        VALUES (${APPROVAL_MATRIX}, ${tid}, 'requisition', 'Requisition approvals (demo)',
+                ${JSON.stringify(matrixRules)}::jsonb, now() - interval '60 days', ${hrHeadId})
+        ON CONFLICT (id) DO NOTHING
+      `;
+      await poolSql`
+        INSERT INTO public.approval_chains
+          (id, tenant_id, matrix_id, matrix_version_snapshot, resolved_steps)
+        VALUES (${APPROVAL_CHAIN}, ${tid}, ${APPROVAL_MATRIX},
+                ${JSON.stringify(matrixRules)}::jsonb, ${JSON.stringify(resolvedSteps)}::jsonb)
+        ON CONFLICT (id) DO NOTHING
+      `;
+
+      // Idempotent teardown of the approval spine rows we own (child-first).
+      const ownedRequests = [
+        APPR_REQ_DATA_PLATFORM,
+        APPR_REQ_ENG_MANAGER,
+        APPR_REQ_DATA_SCIENTIST,
+        APPR_REQ_PRINCIPAL_SRE,
+      ];
+      await poolSql`DELETE FROM public.approval_decisions WHERE request_id IN ${poolSql(ownedRequests)}`;
+      await poolSql`DELETE FROM public.approval_requests WHERE id IN ${poolSql(ownedRequests)}`;
+
+      for (const r of EXTRA_REQS) {
+        // position (with location + comp band), jd_version, jd_skills, knockouts.
+        await poolSql`
+          INSERT INTO public.positions
+            (id, tenant_id, business_unit_id, title, location_type, primary_location,
+             comp_band_min, comp_band_max, comp_currency, is_active)
+          VALUES (${r.positionId}, ${tid}, ${DEMO_BU}, ${r.title}, ${r.locationType},
+                  ${r.primaryLocation}, ${r.compMin}::numeric, ${r.compMax}::numeric, 'INR', true)
+          ON CONFLICT (id) DO NOTHING
+        `;
+        await poolSql`
+          INSERT INTO public.jd_versions
+            (id, tenant_id, position_id, version_number, jd_text, status)
+          VALUES (${r.jdId}, ${tid}, ${r.positionId}, 1, ${r.jdText}, 'approved')
+          ON CONFLICT (id) DO NOTHING
+        `;
+        for (const skill of r.skills) {
+          await poolSql`
+            INSERT INTO public.jd_skills (tenant_id, jd_version_id, skill_name, weight, is_required)
+            VALUES (${tid}, ${r.jdId}, ${skill}, 1.00, true)
+            ON CONFLICT DO NOTHING
+          `;
+        }
+
+        // requisition — UPSERT so a re-seed resets the demo status/posting even
+        // if a demo run advanced it. posted → public + posted_at; else neither.
+        const isPosted = r.posted;
+        const postedAtSql = isPosted ? "now() - interval '6 days'" : "NULL";
+        await poolSql.unsafe(
+          `
+          INSERT INTO public.requisitions
+            (id, tenant_id, position_id, jd_version_id, headcount_envelope_id,
+             primary_recruiter_id, hiring_manager_id, status, number_of_openings,
+             target_start_date, is_public, public_slug, posted_at)
+          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9,
+                  (now() + interval '45 days')::date, $10, $11, ${postedAtSql})
+          ON CONFLICT (id) DO UPDATE SET
+            status = EXCLUDED.status,
+            is_public = EXCLUDED.is_public,
+            public_slug = EXCLUDED.public_slug,
+            posted_at = EXCLUDED.posted_at,
+            number_of_openings = EXCLUDED.number_of_openings,
+            updated_at = now()
+        `,
+          [
+            r.reqId,
+            tid,
+            r.positionId,
+            r.jdId,
+            DEMO_ENVELOPE,
+            recruiterId,
+            hiringManagerId,
+            r.reqStatus,
+            r.openings,
+            isPosted,
+            r.slug,
+          ],
+        );
+        await poolSql`
+          INSERT INTO public.requisition_recruiters (tenant_id, requisition_id, recruiter_id)
+          VALUES (${tid}, ${r.reqId}, ${recruiterId})
+          ON CONFLICT DO NOTHING
+        `;
+        // knockouts — delete-then-insert (no natural unique key).
+        await poolSql`DELETE FROM public.requisition_knockouts WHERE requisition_id = ${r.reqId}`;
+        let ko = 0;
+        for (const k of r.knockouts) {
+          await poolSql`
+            INSERT INTO public.requisition_knockouts
+              (tenant_id, requisition_id, question_text, type, threshold_value, source, order_index)
+            VALUES (${tid}, ${r.reqId}, ${k.question}, ${k.type},
+                    ${JSON.stringify(k.threshold)}::jsonb, 'candidate_asserted', ${ko++})
+          `;
+        }
+
+        // Interview plans on the POSTED reqs (Problem 1 — "each seeded req gains
+        // interview plans"). Design req gets the design loop; the rest engineering.
+        if (isPosted) {
+          await seedInterviewPlans(
+            r.reqId,
+            r.key === "product-designer" ? DESIGN_ROUNDS : ENGINEERING_ROUNDS,
+          );
+        }
+      }
+
+      // ── approval spine per requisition (Problem 6 queue variety) ──
+      // context.requisition_title drives the queue label; bias_scan.flags drive
+      // the bias-warning pills. Statuses map (see decideRequisitionApproval):
+      //   approved  → request 'approved'  + decision outcome 'approved'
+      //   pending   → request 'pending'   (clean = no bias_scan; bias = flags)
+      //   sent_back → request 'cancelled' + decision outcome 'abstained'
+      const biasFlags = [
+        {
+          term: "rockstar",
+          category: "superlative_pressure",
+          severity: "warn",
+          suggestion: "Describe the real responsibilities and the impact of the role.",
+        },
+        {
+          term: "ninja",
+          category: "superlative_pressure",
+          severity: "warn",
+          suggestion: "Name the actual skills the role needs.",
+        },
+      ];
+      for (const r of EXTRA_REQS) {
+        if (r.approval === "none") continue;
+        const isBias = r.approval === "pending_bias";
+        const context: Record<string, unknown> = { requisition_title: r.title };
+        if (isBias) {
+          context.bias_scan = {
+            enforcement: "warn",
+            blockingCount: 0,
+            warningCount: biasFlags.length,
+            flags: biasFlags,
+          };
+        }
+        const reqId = r.reqId;
+        const requestId =
+          r.approval === "approved"
+            ? APPR_REQ_DATA_PLATFORM
+            : r.approval === "pending_clean"
+              ? APPR_REQ_ENG_MANAGER
+              : r.approval === "pending_bias"
+                ? APPR_REQ_DATA_SCIENTIST
+                : APPR_REQ_PRINCIPAL_SRE;
+
+        const status =
+          r.approval === "approved"
+            ? "approved"
+            : r.approval === "sent_back"
+              ? "cancelled"
+              : "pending";
+        const decidedAtSql =
+          r.approval === "approved" || r.approval === "sent_back"
+            ? "now() - interval '2 days'"
+            : "NULL";
+        await poolSql.unsafe(
+          `
+          INSERT INTO public.approval_requests
+            (id, tenant_id, chain_id, subject_type, subject_id, status,
+             current_step_index, requested_by_membership_id, requested_at, decided_at, context)
+          VALUES ($1, $2, $3, 'requisition', $4, $5, 0, $6,
+                  now() - interval '5 days', ${decidedAtSql}, $7::jsonb)
+        `,
+          [requestId, tid, APPROVAL_CHAIN, reqId, status, hiringManagerId, JSON.stringify(context)],
+        );
+
+        // decisions for the terminal ones.
+        if (r.approval === "approved") {
+          await poolSql`
+            INSERT INTO public.approval_decisions
+              (id, tenant_id, request_id, step_index, outcome, approver_membership_id, decided_at, comment, metadata)
+            VALUES (${APPR_DEC_DATA_PLATFORM}, ${tid}, ${requestId}, 0, 'approved', ${hrHeadId},
+                    now() - interval '2 days', 'Approved — clear brief and headcount confirmed.',
+                    ${JSON.stringify({ decision: "approve" })}::jsonb)
+          `;
+        } else if (r.approval === "sent_back") {
+          await poolSql`
+            INSERT INTO public.approval_decisions
+              (id, tenant_id, request_id, step_index, outcome, approver_membership_id, decided_at, comment, metadata)
+            VALUES (${APPR_DEC_PRINCIPAL_SRE}, ${tid}, ${requestId}, 0, 'abstained', ${hrHeadId},
+                    now() - interval '2 days',
+                    'Sending back — please add the on-call expectation and confirm the band against the SRE ladder.',
+                    ${JSON.stringify({ decision: "send_back" })}::jsonb)
+          `;
+        }
+
+        // A state transition for realism (queue doesn't read it, but the req
+        // detail history does). Delete-then-insert keyed by req for idempotency.
+        await poolSql`DELETE FROM public.requisition_state_transitions WHERE requisition_id = ${reqId}`;
+        if (r.approval === "approved") {
+          await poolSql.unsafe(
+            `INSERT INTO public.requisition_state_transitions
+               (tenant_id, requisition_id, from_status, to_status, transitioned_at, transitioned_by)
+             VALUES ($1,$2,'draft','pending_approval', now() - interval '5 days', $3),
+                    ($1,$2,'pending_approval','approved', now() - interval '2 days', $4),
+                    ($1,$2,'approved','posted', now() - interval '1 day', $3)`,
+            [tid, reqId, hiringManagerId, hrHeadId],
+          );
+        } else if (r.approval === "sent_back") {
+          await poolSql.unsafe(
+            `INSERT INTO public.requisition_state_transitions
+               (tenant_id, requisition_id, from_status, to_status, transitioned_at, transitioned_by)
+             VALUES ($1,$2,'draft','pending_approval', now() - interval '5 days', $3),
+                    ($1,$2,'pending_approval','draft', now() - interval '2 days', $4)`,
+            [tid, reqId, hiringManagerId, hrHeadId],
+          );
+        } else {
+          await poolSql.unsafe(
+            `INSERT INTO public.requisition_state_transitions
+               (tenant_id, requisition_id, from_status, to_status, transitioned_at, transitioned_by)
+             VALUES ($1,$2,'draft','pending_approval', now() - interval '5 days', $3)`,
+            [tid, reqId, hiringManagerId],
+          );
+        }
+      }
+    }
+
     // ── 1. BU / envelope / position / JD / req / req_recruiter ──────
     await poolSql`
     INSERT INTO public.business_units (id, tenant_id, name, slug)
@@ -1424,7 +2043,7 @@ async function main() {
     INSERT INTO public.automation_agents
       (id, tenant_id, agent_type, name, description, enabled, version, created_by)
     VALUES (${DEMO_AGENT}, ${tid}, 'follow_up', ${DEMO_AGENT_NAME},
-            'Drafts friendly check-in messages to candidates who have sat in a stage past the threshold, then sends on recruiter approval.',
+            ${DEMO_AGENT_DESCRIPTION},
             true, 1, ${recruiterId})
   `;
     await poolSql`
@@ -1557,6 +2176,168 @@ async function main() {
             now() - interval '4 minutes', 'draft_message requires approval',
             ${gDraftPayloadJson}::jsonb, 'owning_recruiter', 'pending', NULL)
   `;
+
+    // ── 4a-bis. SEED-02 Problem 3 — H's second pending approval ──────
+    //
+    // A SECOND openable approval on the SAME agent for candidate H (Meera Nair),
+    // so /approvals shows TWO entries that both open with full detail. Same
+    // halted-draft end-state as G; the child-first teardown above (keyed on
+    // agent_id = DEMO_AGENT) already wipes these rows on a re-run, so nothing
+    // extra to tear down. H therefore no longer relies on a live scanner drain —
+    // the demo shows two robust, pre-seeded approvals.
+    const hTriggerContext = { application_id: APP_H, trigger: "stage_stale", stage: STALE_STAGE };
+    const hTriggerContextJson = JSON.stringify(hTriggerContext);
+    const hDraftText =
+      `Hi Meera,\n\n` +
+      `I wanted to check in on your application for the Senior Backend Engineer ` +
+      `role at ${companyName}. You've been at the technical interview stage for ` +
+      `just under a week, and I didn't want you waiting without an update while we ` +
+      `coordinate the panel.\n\n` +
+      `We're keen to keep things moving — I'm lining up interviewer availability ` +
+      `and expect to share a slot with you shortly. If anything has changed on ` +
+      `your side, or you have any questions, just reply here and I'll come back to ` +
+      `you the same day.\n\n` +
+      `Thanks for your patience.\n\n` +
+      `Warm regards,\nThe Talent Team`;
+    const hDraftPayload = {
+      draft_text: hDraftText,
+      subject: "Update on your application — Senior Backend Engineer",
+      application_id: APP_H,
+      candidate_id: CAND_H,
+      candidate_name: "Meera Nair",
+      candidate_email: "meera.nair@example.test",
+      position_title: "Senior Backend Engineer",
+      company_name: companyName,
+      stage: STALE_STAGE,
+      days_in_stage: 6,
+      template_prompt_id: "follow_up_v1",
+      prompt_version: "followup-v1",
+      tone: FOLLOWUP_TONE,
+    };
+    const hDraftPayloadJson = JSON.stringify(hDraftPayload);
+    const hRunActionInputJson = JSON.stringify({
+      config: {
+        template_prompt_id: "follow_up_v1",
+        tone: FOLLOWUP_TONE,
+        max_tokens: FOLLOWUP_MAX_TOKENS,
+      },
+      triggerContext: hTriggerContext,
+    });
+    await poolSql`
+    INSERT INTO public.agent_runs
+      (id, tenant_id, agent_id, triggered_by, triggered_by_user_id,
+       triggered_at, trigger_context, status, cost_micros)
+    VALUES (${DEMO_RUN_H}, ${tid}, ${DEMO_AGENT}, 'system', NULL,
+            now() - interval '9 minutes', ${hTriggerContextJson}::jsonb,
+            'awaiting_approval', ${"3600"}::bigint)
+  `;
+    await poolSql`
+    INSERT INTO public.agent_run_outbox
+      (id, tenant_id, agent_id, trigger_context, status,
+       enqueued_at, started_at, locked_until, attempt_count)
+    VALUES (${DEMO_OUTBOX_H}, ${tid}, ${DEMO_AGENT}, ${hTriggerContextJson}::jsonb,
+            'awaiting_approval', now() - interval '9 minutes',
+            now() - interval '9 minutes', now() - interval '6 minutes', 1)
+  `;
+    await poolSql`
+    INSERT INTO public.agent_run_actions
+      (id, tenant_id, run_id, action_id, action_order, status,
+       started_at, input, output, approval_request_id)
+    VALUES (${DEMO_RUN_ACTION_H}, ${tid}, ${DEMO_RUN_H}, ${DEMO_DRAFT_ACTION}, 1,
+            'awaiting_approval', now() - interval '9 minutes',
+            ${hRunActionInputJson}::jsonb, ${hDraftPayloadJson}::jsonb,
+            ${DEMO_APPROVAL_H})
+  `;
+    await poolSql`
+    INSERT INTO public.agent_approval_requests
+      (id, tenant_id, run_id, run_action_id, agent_id, proposed_at,
+       proposed_action_summary, proposed_action_payload, approver_role,
+       status, ttl_at)
+    VALUES (${DEMO_APPROVAL_H}, ${tid}, ${DEMO_RUN_H}, ${DEMO_RUN_ACTION_H}, ${DEMO_AGENT},
+            now() - interval '9 minutes', 'draft_message requires approval',
+            ${hDraftPayloadJson}::jsonb, 'owning_recruiter', 'pending', NULL)
+  `;
+
+    // ── 4c. SEED-02 Problem 1 — interview plans + seeded interviews ──
+    //
+    // Interview PLANS (the round loop) for the demo requisition, then three
+    // INTERVIEWS that render on: recruiter /interviews (variety: 2 scheduled +
+    // 1 completed), panel1's "My interviews" (panel1 is a panelist on all three),
+    // and the recruiter decision summary (the completed round carries a submitted
+    // panel1 scorecard). Idempotent: delete-by-scope then reinsert so timestamps
+    // refresh. Deleting an interview CASCADES its panelists + feedback.
+    await seedInterviewPlans(DEMO_REQ);
+    // Clear any prior seeded interviews on these three applications (cascades
+    // panelists + feedback) so re-runs refresh cleanly.
+    for (const appId of [APP_C, APP_D, APP_E]) {
+      await poolSql`DELETE FROM public.interviews WHERE tenant_id = ${tid} AND application_id = ${appId}`;
+    }
+
+    // (1) Karthik (D) — round 1, upcoming, NOT confirmed → "Pending" chip.
+    await poolSql`
+    INSERT INTO public.interviews
+      (id, tenant_id, application_id, requisition_id, round_number, round_name,
+       status, scorecard_template, scheduled_start, scheduled_end, duration_minutes,
+       mode, meeting_url, candidate_confirmed_at, created_by_membership_id)
+    VALUES (${IV_D_SCHEDULED}, ${tid}, ${APP_D}, ${DEMO_REQ}, 1, 'Technical deep-dive',
+            'scheduled', 'technical', now() + interval '2 days',
+            now() + interval '2 days' + interval '60 minutes', 60,
+            'video', 'https://meet.example.test/hireops-demo-d', NULL, ${recruiterId})
+  `;
+    await poolSql`
+    INSERT INTO public.interview_panelists (tenant_id, interview_id, membership_id, is_lead)
+    VALUES (${tid}, ${IV_D_SCHEDULED}, ${panelId}, true)
+  `;
+
+    // (2) Sneha (C) — round 1, upcoming, candidate-confirmed → "Confirmed" chip.
+    await poolSql`
+    INSERT INTO public.interviews
+      (id, tenant_id, application_id, requisition_id, round_number, round_name,
+       status, scorecard_template, scheduled_start, scheduled_end, duration_minutes,
+       mode, meeting_url, candidate_confirmed_at, created_by_membership_id)
+    VALUES (${IV_C_CONFIRMED}, ${tid}, ${APP_C}, ${DEMO_REQ}, 1, 'Technical deep-dive',
+            'scheduled', 'technical', now() + interval '3 days',
+            now() + interval '3 days' + interval '60 minutes', 60,
+            'video', 'https://meet.example.test/hireops-demo-c',
+            now() - interval '1 day', ${recruiterId})
+  `;
+    await poolSql`
+    INSERT INTO public.interview_panelists (tenant_id, interview_id, membership_id, is_lead)
+    VALUES (${tid}, ${IV_C_CONFIRMED}, ${panelId}, true)
+  `;
+
+    // (3) Priya (E) — round 2, COMPLETED, panel1 is lead with a submitted
+    // scorecard (technical template keys) → the recruiter decision summary
+    // renders a full roll-up + lead recommendation.
+    await poolSql`
+    INSERT INTO public.interviews
+      (id, tenant_id, application_id, requisition_id, round_number, round_name,
+       status, scorecard_template, scheduled_start, scheduled_end, duration_minutes,
+       mode, meeting_url, candidate_confirmed_at, created_by_membership_id)
+    VALUES (${IV_E_COMPLETED}, ${tid}, ${APP_E}, ${DEMO_REQ}, 2, 'System design',
+            'completed', 'technical', now() - interval '5 days',
+            now() - interval '5 days' + interval '60 minutes', 60,
+            'video', 'https://meet.example.test/hireops-demo-e',
+            now() - interval '6 days', ${recruiterId})
+  `;
+    await poolSql`
+    INSERT INTO public.interview_panelists (tenant_id, interview_id, membership_id, is_lead)
+    VALUES (${tid}, ${IV_E_COMPLETED}, ${panelId}, true)
+  `;
+    await poolSql`
+    INSERT INTO public.interview_feedback
+      (tenant_id, interview_id, membership_id, scorecard, strengths, concerns,
+       notes, recommendation, submitted_at)
+    VALUES (${tid}, ${IV_E_COMPLETED}, ${panelId},
+            ${JSON.stringify({ problem_solving: 5, technical_depth: 5, code_quality: 4, system_design: 4, communication: 5 })}::jsonb,
+            'Excellent systems thinking; walked through the idempotency + sharding trade-offs unprompted. Clear communicator.',
+            'Slightly light on frontend depth, but not needed for this role.',
+            'Strong hire — would happily have on the platform team.',
+            'strong_yes', now() - interval '4 days')
+  `;
+
+    // ── 4d. SEED-02 Problems 5/6 — extra requisitions + approval spine ──
+    await seedExtraRequisitions();
 
     // ── 4b. ONBOARD-04 onboarding demo cases ────────────────────────
     //
@@ -1776,6 +2557,50 @@ async function main() {
       }
     }
 
+    // ── 4e. SEED-02 Problem 4 — seeded onboarding documents ─────────
+    //
+    // Two uploaded documents (one VERIFIED, one PENDING review) on Kavya Reddy's
+    // pre_boarding case (…a562) so the document section is demoable WITHOUT a live
+    // upload (the recruiter /onboarding case view renders them). Priya stays
+    // pre-accept with a calm empty state (no seeded case) — the "failed to fetch"
+    // she saw on staging was a build-time env issue (NEXT_PUBLIC_API_BASE_URL),
+    // not seed data. The case (…a562) is delete-recreated above, so its documents
+    // cascade away each run; we insert fresh with deterministic ids. document_type
+    // references are resolved from document_types (IN, pre_boarding) so they match
+    // the checklist. storage_ref is a placeholder pointer (no blob needed to show
+    // the row — download would 404, which is fine for a seeded demo artefact).
+    const kavyaCaseId = onbAt(ONB_CASE_IDS, 1); // Kavya Reddy — pre_boarding, IN
+    const docTypes = await poolSql<{ id: string; name: string }[]>`
+      SELECT id::text AS id, name FROM public.document_types
+      WHERE required_for_lifecycle_stage = 'pre_boarding'
+        AND (geography_code IS NULL OR geography_code = 'IN')
+      ORDER BY code
+      LIMIT 2
+    `;
+    const t0 = docTypes[0];
+    const t1 = docTypes[1];
+    if (t0 && t1) {
+      await poolSql`
+        INSERT INTO public.onboarding_documents
+          (id, tenant_id, case_id, document_type_id, storage_ref, file_name, mime_type,
+           size_bytes, verification_status, verified_by_membership_id, verified_at, uploaded_at)
+        VALUES (${ONB_DOC_VERIFIED}, ${tid}, ${kavyaCaseId}, ${t0.id},
+                'seed://onboarding/kavya/verified.pdf', ${`${t0.name}.pdf`}, 'application/pdf',
+                ${"184320"}::bigint, 'verified', ${recruiterId}, now() - interval '2 days',
+                now() - interval '3 days')
+        ON CONFLICT (id) DO NOTHING
+      `;
+      await poolSql`
+        INSERT INTO public.onboarding_documents
+          (id, tenant_id, case_id, document_type_id, storage_ref, file_name, mime_type,
+           size_bytes, verification_status, uploaded_at)
+        VALUES (${ONB_DOC_PENDING}, ${tid}, ${kavyaCaseId}, ${t1.id},
+                'seed://onboarding/kavya/pending.pdf', ${`${t1.name}.pdf`}, 'application/pdf',
+                ${"201728"}::bigint, 'pending', now() - interval '1 day')
+        ON CONFLICT (id) DO NOTHING
+      `;
+    }
+
     // ── 5. summary ──────────────────────────────────────────────────
     const acceptUrl = `${PORTAL_BASE}/offer/${token}`;
     console.log("");
@@ -1800,10 +2625,10 @@ async function main() {
       "  G. Rohan Desai         tech_interview         score=87   7d in stage  (SEED-01 pending approval)",
     );
     console.log(
-      "  H. Meera Nair          tech_interview         score=83   6d in stage  (SEED-01 scanner live-fire)",
+      "  H. Meera Nair          tech_interview         score=83   6d in stage  (SEED-02 2nd pending approval)",
     );
     console.log("");
-    console.log("SEED-01 follow-ups wedge:");
+    console.log("SEED-02 follow-ups wedge:");
     console.log(`  Agent:    ${DEMO_AGENT_NAME}  (${DEMO_AGENT})`);
     console.log(
       `            follow_up · stage_stale · stage=${STALE_STAGE} · days_threshold=${STALE_DAYS_THRESHOLD} · enabled`,
@@ -1814,7 +2639,32 @@ async function main() {
       );
     }
     console.log(
-      `  Approval: ${DEMO_APPROVAL_G}  (pending, owning_recruiter) — G's drafted check-in, visible at /approvals`,
+      `  Approvals: 2 pending, owning_recruiter — both OPEN with full detail at /approvals`,
+    );
+    console.log(`             ${DEMO_APPROVAL_G}  Rohan Desai (G)`);
+    console.log(`             ${DEMO_APPROVAL_H}  Meera Nair (H)`);
+    console.log("");
+    console.log("SEED-02 interviews on the demo requisition (Problem 1):");
+    console.log(
+      `  Karthik (D)  round 1 "Technical deep-dive"  scheduled (+2d)  panel1  · Pending confirm`,
+    );
+    console.log(
+      `  Sneha   (C)  round 1 "Technical deep-dive"  scheduled (+3d)  panel1  · Confirmed`,
+    );
+    console.log(
+      `  Priya   (E)  round 2 "System design"        completed        panel1  · scorecard strong_yes`,
+    );
+    console.log(
+      `  → panel1@ My interviews shows 3; recruiter /interviews shows 2 scheduled + 1 completed.`,
+    );
+    console.log("");
+    console.log("SEED-02 extra requisitions (Problems 5/6):");
+    for (const r of EXTRA_REQS) {
+      const appr = r.approval === "none" ? "" : ` · approval=${r.approval}`;
+      console.log(`  ${r.title.padEnd(38)} ${r.reqStatus.padEnd(16)}${appr}`);
+    }
+    console.log(
+      `  HR-head /requisition-approvals queue: 1 approved · 1 pending clean · 1 pending+bias · 1 sent-back`,
     );
     console.log("");
     console.log(`ONBOARD-04 onboarding cases (${ONB_CASE_SPECS.length}) at /onboarding:`);
@@ -1824,14 +2674,16 @@ async function main() {
     console.log(
       `  buddy/manager assignees: recruiter1${hrOpsId ? " + hr_ops1" : ""}${adminId ? " + admin1" : ""}`,
     );
-    console.log(`  Run:      ${DEMO_RUN_G}  (awaiting_approval, halted on draft_message)`);
-    console.log(`  H (${APP_H}) has NO seeded run — the stage_stale scanner live-fires on it.`);
+    console.log(`  Kavya Reddy's case carries 2 seeded documents (1 verified, 1 pending review).`);
     console.log("");
     console.log("Candidate E offer-accept URL (single-use, expires in 7 days):");
     console.log(`  ${acceptUrl}`);
     console.log("");
-    console.log("Public apply URL (CRS-01, anyone can submit):");
+    console.log("Public apply URLs (CRS-01, anyone can submit — each resolves 200):");
     console.log(`  ${PORTAL_BASE}/t/${TENANT_SLUG}/apply/gcc-blr-senior-backend`);
+    for (const r of EXTRA_REQS) {
+      if (r.posted) console.log(`  ${PORTAL_BASE}/t/${TENANT_SLUG}/apply/${r.slug}`);
+    }
     console.log("");
     console.log("Candidate F is pending real AI scoring (ai_score_outbox row).");
     console.log("Boot apps/workers with ANTHROPIC_API_KEY set to drain via the live");

@@ -17,10 +17,15 @@
  *      hanging off those applications.
  *   2. AD03 cost fixtures in ai_usage_logs — request_id LIKE 'AD03-%'
  *      OR provider = 'ad03-test' (leaked test rows on /admin/costs).
- *   3. The leaked test agent `robust-01-test-stage-validation` — its
- *      ENTIRE subtree, child-first (approval_requests → run_actions →
- *      runs → run_outbox → approval_rules → actions → triggers → agent).
- *      Its pending approval otherwise pollutes /approvals.
+ *   3. Test / leaked automation_agents — every machine-named agent in
+ *      kyndryl-poc that is NOT the seeded demo agent (…a590) and NOT in the
+ *      aXX seed block ("admin-01-test-detail", "agent-02-test-happy",
+ *      "wk01-stage-stale-agent", "robust-01-test-stage-validation", …; marker =
+ *      a name with NO whitespace — seeded/human agents all have spaces). Each
+ *      agent's ENTIRE subtree, child-first (approval_requests → run_actions →
+ *      runs → run_outbox → approval_rules → actions → triggers → agent). Their
+ *      ugly names pollute /admin/workflows and their pending approvals pollute
+ *      /approvals (SEED-02 Problems 2 + 3).
  *   4. Test-created synth tenants (slug ILIKE '%synth%', never
  *      kyndryl-poc) — their orphan ai_usage_logs and, when FK-safe, the
  *      whole tenant (CASCADE clears operational children; append-only
@@ -40,6 +45,15 @@
  *      uses `@example.test`, so no seeded row can match).
  *   8. candidate_accounts residue — accounts tied to a test-marker person,
  *      never Priya's seeded a7xx account (…a701, `@example.test`).
+ *   9. Requisition/position residue (SEED-02 Problem 5) — test-fixture reqs
+ *      ("REQ-03 Data Analyst mrohwt9r", "POLISH01 Staff Engineer", "WK01
+ *      Engineer", …) that 404 the public apply portal and pollute the HR-head
+ *      approvals queue. Markers: the bbXX workday-test id namespace, a position
+ *      title carrying a ticket-code / smoke prefix (REQ-0, POLISH, CONF-0,
+ *      WK<n>, Live Smoke, smoke, synth, E2E), a title with a random 8-char
+ *      suffix, or the uuid-fallback `r-<32hex>` public_slug — never an aXX seed
+ *      req. Swept child-first with the whole approval spine + orphan positions
+ *      (CASCADE jd_versions/jd_skills).
  *
  * HARD PROTECTIONS (enforced, not merely avoided):
  *   - Never deletes a row whose id is in the seed's
@@ -50,8 +64,8 @@
  *     (append-only compliance — residue there is acceptable history).
  *   - Never deletes any tenant other than a synth test tenant; never the
  *     kyndryl-poc tenant row itself.
- *   - Refuses to run (loud error) if the kyndryl-poc tenant or the Demo
- *     Follow-ups Agent (…a590) would be affected by any delete.
+ *   - Refuses to run (loud error) if the kyndryl-poc tenant or the seeded
+ *     demo agent (…a590) would be affected by any delete.
  *
  * Dry-run by default (prints the full inventory, changes nothing).
  * Pass `--execute` to perform the deletion. Idempotent: a second
@@ -76,8 +90,10 @@ const KYNDRYL_SLUG = "kyndryl-poc";
 // Seed fixture namespace — ids of the form 00000000-0000-4000-8000-00000000a5XX.
 const SEED_A5XX_PREFIX = "00000000-0000-4000-8000-00000000a5";
 const DEMO_AGENT_ID = "00000000-0000-4000-8000-00000000a590";
-const DEMO_AGENT_NAME = "Demo Follow-ups Agent";
-const LEAKED_AGENT_NAME = "robust-01-test-stage-validation";
+// SEED-02 Problem 2: the seeded agent's human display name (was "Demo
+// Follow-ups Agent"). Used only for log/guard messages here; protection is by
+// id (DEMO_AGENT_ID), never by name.
+const DEMO_AGENT_NAME = "Stalled candidate follow-up";
 const DEV_LOCAL_EMAIL = "%@hireops-dev.local";
 // ONBOARD-02 test personas carry an `@onb02.test` email marker. The
 // onboarding lifecycle tests clean up after themselves, but an interrupted
@@ -98,6 +114,10 @@ const SYNTH_SLUG = "%synth%";
 // the interview + candidate-account classes protect Priya's …a701 account and
 // every other seeded id, not just the a5xx demo block.
 const SEED_AXX_PREFIX = "00000000-0000-4000-8000-00000000a";
+// SEED-02 Problem 5: the WK01 / workday-test deterministic id namespace —
+// residue requisitions/positions the CI workday tests leave carry ids of the
+// form 00000000-0000-4000-8000-00000000bbXX. Never a seed id (seeds are aXX).
+const TEST_BBXX_PREFIX = "00000000-0000-4000-8000-00000000bb";
 
 // postgres-js Sql instance type, derived from the client export.
 type SqlTag = (typeof import("../client"))["sql"];
@@ -146,7 +166,32 @@ async function scalar(query: Promise<{ n: number }[]>): Promise<number> {
   return row?.n ?? 0;
 }
 
-async function agentSubtreeCounts(sql: SqlTag): Promise<{
+/**
+ * SEED-02 Problem 2: the set of RESIDUE / test automation_agents in kyndryl-poc.
+ * The demo tenant's ONLY legitimate agents are seeded (aXX ids); every other
+ * agent is CI/manual-test residue that leaks onto /admin/workflows with ugly
+ * machine names ("admin-01-test-detail", "agent-02-test-happy", "wk01-stage-
+ * stale-agent", "robust-01-test-stage-validation", …). Marker: a machine name
+ * (NO whitespace — the seeded/human agents all have spaces, e.g. "Stalled
+ * candidate follow-up"), EXCLUDING the protected demo agent (…a590) and the
+ * whole aXX seed block. Reused for the count (gather) and the child-first delete
+ * (tx) so counts and deletes agree by construction. Their pending approvals also
+ * pollute /approvals (SEED-02 Problem 3); removing the agents removes those too.
+ */
+function testAgentIdSub(sql: AnySql, kid: string) {
+  return sql`
+    SELECT id FROM public.automation_agents
+    WHERE tenant_id = ${kid}
+      AND id <> ${DEMO_AGENT_ID}
+      AND id::text NOT LIKE ${SEED_AXX_PREFIX + "%"}
+      AND name NOT LIKE '% %'`;
+}
+
+async function agentSubtreeCounts(
+  sql: SqlTag,
+  kid: string,
+): Promise<{
+  agents: number;
   triggers: number;
   actions: number;
   approvalRules: number;
@@ -155,10 +200,10 @@ async function agentSubtreeCounts(sql: SqlTag): Promise<{
   runOutbox: number;
   approvalRequests: number;
 }> {
-  const agentSub = sql`SELECT id FROM public.automation_agents WHERE name = ${LEAKED_AGENT_NAME}`;
-  const runSub = sql`SELECT id FROM public.agent_runs WHERE agent_id IN (${sql`SELECT id FROM public.automation_agents WHERE name = ${LEAKED_AGENT_NAME}`})`;
+  const runSub = sql`SELECT id FROM public.agent_runs WHERE agent_id IN (${testAgentIdSub(sql, kid)})`;
   const [row] = await sql<
     {
+      agents: number;
       triggers: number;
       actions: number;
       approval_rules: number;
@@ -169,15 +214,17 @@ async function agentSubtreeCounts(sql: SqlTag): Promise<{
     }[]
   >`
     SELECT
-      (SELECT count(*)::int FROM public.agent_triggers WHERE agent_id IN (${agentSub})) AS triggers,
-      (SELECT count(*)::int FROM public.agent_actions WHERE agent_id IN (${sql`SELECT id FROM public.automation_agents WHERE name = ${LEAKED_AGENT_NAME}`})) AS actions,
-      (SELECT count(*)::int FROM public.agent_approval_rules WHERE agent_id IN (${sql`SELECT id FROM public.automation_agents WHERE name = ${LEAKED_AGENT_NAME}`})) AS approval_rules,
-      (SELECT count(*)::int FROM public.agent_runs WHERE agent_id IN (${sql`SELECT id FROM public.automation_agents WHERE name = ${LEAKED_AGENT_NAME}`})) AS runs,
+      (SELECT count(*)::int FROM public.automation_agents WHERE id IN (${testAgentIdSub(sql, kid)})) AS agents,
+      (SELECT count(*)::int FROM public.agent_triggers WHERE agent_id IN (${testAgentIdSub(sql, kid)})) AS triggers,
+      (SELECT count(*)::int FROM public.agent_actions WHERE agent_id IN (${testAgentIdSub(sql, kid)})) AS actions,
+      (SELECT count(*)::int FROM public.agent_approval_rules WHERE agent_id IN (${testAgentIdSub(sql, kid)})) AS approval_rules,
+      (SELECT count(*)::int FROM public.agent_runs WHERE agent_id IN (${testAgentIdSub(sql, kid)})) AS runs,
       (SELECT count(*)::int FROM public.agent_run_actions WHERE run_id IN (${runSub})) AS run_actions,
-      (SELECT count(*)::int FROM public.agent_run_outbox WHERE agent_id IN (${sql`SELECT id FROM public.automation_agents WHERE name = ${LEAKED_AGENT_NAME}`})) AS run_outbox,
-      (SELECT count(*)::int FROM public.agent_approval_requests WHERE agent_id IN (${sql`SELECT id FROM public.automation_agents WHERE name = ${LEAKED_AGENT_NAME}`})) AS approval_requests
+      (SELECT count(*)::int FROM public.agent_run_outbox WHERE agent_id IN (${testAgentIdSub(sql, kid)})) AS run_outbox,
+      (SELECT count(*)::int FROM public.agent_approval_requests WHERE agent_id IN (${testAgentIdSub(sql, kid)})) AS approval_requests
   `;
   return {
+    agents: row?.agents ?? 0,
     triggers: row?.triggers ?? 0,
     actions: row?.actions ?? 0,
     approvalRules: row?.approval_rules ?? 0,
@@ -266,6 +313,54 @@ function candidateAccountResidueSub(sql: AnySql, kid: string) {
       AND ca.id::text NOT LIKE ${SEED_AXX_PREFIX + "%"}`;
 }
 
+/**
+ * SEED-02 Problem 5: the set of RESIDUE requisitions in kyndryl-poc — the
+ * test-fixture reqs the CI smoke/workday runs leave behind that pollute the
+ * public apply portal (a 404 apply link) and the HR-head approvals queue
+ * ("REQ-03 Data Analyst mrohwt9r", "POLISH01 Staff Engineer", "WK01 Engineer",
+ * …). A requisition is residue when its id is NOT in the aXX seed namespace
+ * (hard protection for the seeded a5c0/a6c0 reqs AND the SEED-02 demo reqs) AND
+ * any marker matches:
+ *   - the WK/workday-test bbXX id namespace, OR
+ *   - a position title carrying a ticket-code / smoke prefix
+ *     (REQ-0, POLISH, CONF-0, WK<n>, Live Smoke, smoke, synth, E2E), OR
+ *   - a position title with a random 8-char suffix ("… mrohwt9r"), OR
+ *   - the DB uuid-fallback public_slug ('r-' + 32 hex) — a legit posted req
+ *     always gets a slugified-title slug, never this.
+ * Reused for the count (gather) and the child-first delete (tx) so they agree.
+ */
+function requisitionResidueSub(sql: AnySql, kid: string) {
+  return sql`
+    SELECT r.id
+    FROM public.requisitions r
+    JOIN public.positions p ON p.id = r.position_id AND p.tenant_id = r.tenant_id
+    WHERE r.tenant_id = ${kid}
+      AND r.id::text NOT LIKE ${SEED_AXX_PREFIX + "%"}
+      AND (
+        r.id::text LIKE ${TEST_BBXX_PREFIX + "%"}
+        OR p.title ~* '(^|\\s)(REQ-0|POLISH|CONF-0|WK[0-9]|Live Smoke|smoke|synth|E2E)'
+        OR p.title ~ '\\s[a-z0-9]{8}$'
+        OR r.public_slug ~ '^r-[0-9a-f]{32}$'
+      )`;
+}
+
+/** The positions those residue requisitions point at — swept iff no OTHER
+ *  (non-residue) requisition still references them. Excludes aXX seed positions. */
+function requisitionResiduePositionSub(sql: AnySql, kid: string) {
+  return sql`
+    SELECT DISTINCT r.position_id
+    FROM public.requisitions r
+    WHERE r.tenant_id = ${kid}
+      AND r.id IN (${requisitionResidueSub(sql, kid)})
+      AND r.position_id::text NOT LIKE ${SEED_AXX_PREFIX + "%"}
+      AND NOT EXISTS (
+        SELECT 1 FROM public.requisitions r2
+        WHERE r2.tenant_id = ${kid}
+          AND r2.position_id = r.position_id
+          AND r2.id NOT IN (${requisitionResidueSub(sql, kid)})
+      )`;
+}
+
 async function main(): Promise<void> {
   // Dynamic import so dotenv (above) runs before client.ts reads
   // DATABASE_URL at module init — same pattern as seed-demo-data.ts.
@@ -350,11 +445,9 @@ async function main(): Promise<void> {
         WHERE request_id LIKE 'AD03-%' OR provider = 'ad03-test'
       `);
 
-      // 3. leaked robust-01 agent subtree.
-      const leakedAgents = await scalar(sql<{ n: number }[]>`
-        SELECT count(*)::int AS n FROM public.automation_agents WHERE name = ${LEAKED_AGENT_NAME}
-      `);
-      const subtree = await agentSubtreeCounts(sql);
+      // 3. leaked / test agents (machine-named, non-seed) + their subtree.
+      const subtree = await agentSubtreeCounts(sql, kid);
+      const leakedAgents = subtree.agents;
 
       // 4. synth test tenants.
       const synth = await sql<SynthTenant[]>`
@@ -445,6 +538,41 @@ async function main(): Promise<void> {
         WHERE id IN (${candidateAccountResidueSub(sql, kid)})
       `);
 
+      // 9. requisition/position residue — test-fixture reqs (+ their approval
+      //    spine, knockouts, recruiters, state transitions) that 404 the public
+      //    apply portal and pollute the HR-head approvals queue; never seed reqs.
+      const reqResidue = await scalar(sql<{ n: number }[]>`
+        SELECT count(*)::int AS n FROM public.requisitions WHERE id IN (${requisitionResidueSub(sql, kid)})
+      `);
+      const reqApprReq = await scalar(sql<{ n: number }[]>`
+        SELECT count(*)::int AS n FROM public.approval_requests
+        WHERE tenant_id = ${kid} AND subject_type = 'requisition'
+          AND subject_id IN (${requisitionResidueSub(sql, kid)})
+      `);
+      const reqApprDec = await scalar(sql<{ n: number }[]>`
+        SELECT count(*)::int AS n FROM public.approval_decisions
+        WHERE request_id IN (
+          SELECT id FROM public.approval_requests
+          WHERE tenant_id = ${kid} AND subject_type = 'requisition'
+            AND subject_id IN (${requisitionResidueSub(sql, kid)})
+        )
+      `);
+      const reqKnockouts = await scalar(sql<{ n: number }[]>`
+        SELECT count(*)::int AS n FROM public.requisition_knockouts
+        WHERE requisition_id IN (${requisitionResidueSub(sql, kid)})
+      `);
+      const reqRecruiters = await scalar(sql<{ n: number }[]>`
+        SELECT count(*)::int AS n FROM public.requisition_recruiters
+        WHERE requisition_id IN (${requisitionResidueSub(sql, kid)})
+      `);
+      const reqTransitions = await scalar(sql<{ n: number }[]>`
+        SELECT count(*)::int AS n FROM public.requisition_state_transitions
+        WHERE requisition_id IN (${requisitionResidueSub(sql, kid)})
+      `);
+      const reqPositions = await scalar(sql<{ n: number }[]>`
+        SELECT count(*)::int AS n FROM public.positions WHERE id IN (${requisitionResiduePositionSub(sql, kid)})
+      `);
+
       const rows: Row[] = [
         { klass: "1. CRS-01 dev.local", detail: "persons (kyndryl-poc)", count: crsPersons },
         { klass: "1. CRS-01 dev.local", detail: "candidates", count: crsCands },
@@ -456,19 +584,23 @@ async function main(): Promise<void> {
           count: crsOutbox,
         },
         { klass: "2. AD03 fixtures", detail: "ai_usage_logs (AD03-%/ad03-test)", count: ad03 },
-        { klass: "3. robust-01 agent", detail: "automation_agents", count: leakedAgents },
-        { klass: "3. robust-01 agent", detail: "agent_triggers", count: subtree.triggers },
-        { klass: "3. robust-01 agent", detail: "agent_actions", count: subtree.actions },
         {
-          klass: "3. robust-01 agent",
+          klass: "3. test agents",
+          detail: "automation_agents (machine-named)",
+          count: leakedAgents,
+        },
+        { klass: "3. test agents", detail: "agent_triggers", count: subtree.triggers },
+        { klass: "3. test agents", detail: "agent_actions", count: subtree.actions },
+        {
+          klass: "3. test agents",
           detail: "agent_approval_rules",
           count: subtree.approvalRules,
         },
-        { klass: "3. robust-01 agent", detail: "agent_runs", count: subtree.runs },
-        { klass: "3. robust-01 agent", detail: "agent_run_actions", count: subtree.runActions },
-        { klass: "3. robust-01 agent", detail: "agent_run_outbox", count: subtree.runOutbox },
+        { klass: "3. test agents", detail: "agent_runs", count: subtree.runs },
+        { klass: "3. test agents", detail: "agent_run_actions", count: subtree.runActions },
+        { klass: "3. test agents", detail: "agent_run_outbox", count: subtree.runOutbox },
         {
-          klass: "3. robust-01 agent",
+          klass: "3. test agents",
           detail: "agent_approval_requests",
           count: subtree.approvalRequests,
         },
@@ -503,6 +635,21 @@ async function main(): Promise<void> {
           detail: "candidate_accounts (test personas)",
           count: candAccounts,
         },
+        {
+          klass: "9. requisition residue",
+          detail: "requisitions (test fixtures)",
+          count: reqResidue,
+        },
+        { klass: "9. requisition residue", detail: "approval_requests", count: reqApprReq },
+        { klass: "9. requisition residue", detail: "approval_decisions", count: reqApprDec },
+        { klass: "9. requisition residue", detail: "requisition_knockouts", count: reqKnockouts },
+        { klass: "9. requisition residue", detail: "requisition_recruiters", count: reqRecruiters },
+        {
+          klass: "9. requisition residue",
+          detail: "requisition_state_transitions",
+          count: reqTransitions,
+        },
+        { klass: "9. requisition residue", detail: "positions (now orphan)", count: reqPositions },
       ];
       return { rows, synth };
     }
@@ -545,8 +692,8 @@ async function main(): Promise<void> {
           (SELECT count(*) FROM public.persons WHERE tenant_id = ${kid}
              AND email_primary ILIKE ${DEV_LOCAL_EMAIL}
              AND id::text LIKE ${SEED_A5XX_PREFIX + "%"})
-        + (SELECT count(*) FROM public.automation_agents WHERE name = ${LEAKED_AGENT_NAME}
-             AND id::text LIKE ${SEED_A5XX_PREFIX + "%"})
+        + (SELECT count(*) FROM public.automation_agents WHERE id IN (${testAgentIdSub(sql, kid)})
+             AND id::text LIKE ${SEED_AXX_PREFIX + "%"})
         + (SELECT count(*) FROM public.ai_usage_logs
              WHERE (request_id LIKE 'AD03-%' OR provider = 'ad03-test')
              AND id::text LIKE ${SEED_A5XX_PREFIX + "%"})
@@ -577,14 +724,14 @@ async function main(): Promise<void> {
       process.exit(3);
     }
 
-    // The leaked-agent set must never include the protected …a590 agent.
+    // The test-agent delete set must never include the protected …a590 agent.
     const a590InSet = await scalar(sql<{ n: number }[]>`
       SELECT count(*)::int AS n FROM public.automation_agents
-      WHERE name = ${LEAKED_AGENT_NAME} AND id = ${DEMO_AGENT_ID}
+      WHERE id = ${DEMO_AGENT_ID} AND id IN (${testAgentIdSub(sql, kid)})
     `);
     if (a590InSet > 0) {
       console.error(
-        `FATAL: the Demo Follow-ups Agent (${DEMO_AGENT_ID}) is in a delete set — refusing.`,
+        `FATAL: the protected demo agent (${DEMO_AGENT_ID}) is in a delete set — refusing.`,
       );
       process.exit(3);
     }
@@ -629,6 +776,30 @@ async function main(): Promise<void> {
     if (ivPlanSeedHits > 0) {
       console.error(
         `FATAL: ${ivPlanSeedHits} seed aXX interview_plan(s) on a residue requisition — refusing (seed bug).`,
+      );
+      process.exit(3);
+    }
+
+    // SEED-02 Problem 5: the requisition residue subquery already excludes aXX
+    // ids, but a SEEDED requisition matching a residue marker (e.g. a demo title
+    // that accidentally carries 'smoke') would be a seed bug the delete would
+    // silently skip — refuse loudly so it gets fixed. Protects a5c0/a6c0 + the
+    // SEED-02 demo reqs.
+    const reqSeedHits = await scalar(sql<{ n: number }[]>`
+      SELECT count(*)::int AS n FROM public.requisitions r
+      JOIN public.positions p ON p.id = r.position_id AND p.tenant_id = r.tenant_id
+      WHERE r.tenant_id = ${kid}
+        AND r.id::text LIKE ${SEED_AXX_PREFIX + "%"}
+        AND (
+          r.id::text LIKE ${TEST_BBXX_PREFIX + "%"}
+          OR p.title ~* '(^|\\s)(REQ-0|POLISH|CONF-0|WK[0-9]|Live Smoke|smoke|synth|E2E)'
+          OR p.title ~ '\\s[a-z0-9]{8}$'
+          OR r.public_slug ~ '^r-[0-9a-f]{32}$'
+        )
+    `);
+    if (reqSeedHits > 0) {
+      console.error(
+        `FATAL: ${reqSeedHits} seed aXX requisition(s) match a residue marker — refusing (seed bug).`,
       );
       process.exit(3);
     }
@@ -723,19 +894,19 @@ async function main(): Promise<void> {
       // 2. AD03 cost fixtures (all tenants).
       await tx`DELETE FROM public.ai_usage_logs WHERE request_id LIKE 'AD03-%' OR provider = 'ad03-test'`;
 
-      // 3. leaked robust-01 agent subtree — child-first (agent_run_actions
+      // 3. test / leaked agent subtree(s) — child-first (agent_run_actions
       // → agent_actions is ON DELETE RESTRICT, so run_actions before
-      // actions). Mirrors seed-demo-data's proven teardown order.
-      const agentSub = tx`SELECT id FROM public.automation_agents WHERE name = ${LEAKED_AGENT_NAME}`;
-      const agentSub2 = tx`SELECT id FROM public.automation_agents WHERE name = ${LEAKED_AGENT_NAME}`;
-      await tx`DELETE FROM public.agent_approval_requests WHERE agent_id IN (${agentSub})`;
-      await tx`DELETE FROM public.agent_run_actions WHERE run_id IN (SELECT id FROM public.agent_runs WHERE agent_id IN (${agentSub2}))`;
-      await tx`DELETE FROM public.agent_runs WHERE agent_id IN (${tx`SELECT id FROM public.automation_agents WHERE name = ${LEAKED_AGENT_NAME}`})`;
-      await tx`DELETE FROM public.agent_run_outbox WHERE agent_id IN (${tx`SELECT id FROM public.automation_agents WHERE name = ${LEAKED_AGENT_NAME}`})`;
-      await tx`DELETE FROM public.agent_approval_rules WHERE agent_id IN (${tx`SELECT id FROM public.automation_agents WHERE name = ${LEAKED_AGENT_NAME}`})`;
-      await tx`DELETE FROM public.agent_actions WHERE agent_id IN (${tx`SELECT id FROM public.automation_agents WHERE name = ${LEAKED_AGENT_NAME}`})`;
-      await tx`DELETE FROM public.agent_triggers WHERE agent_id IN (${tx`SELECT id FROM public.automation_agents WHERE name = ${LEAKED_AGENT_NAME}`})`;
-      await tx`DELETE FROM public.automation_agents WHERE name = ${LEAKED_AGENT_NAME}`;
+      // actions). Mirrors seed-demo-data's proven teardown order. testAgentIdSub
+      // is re-derived each step and stays valid until the agents are deleted
+      // LAST; it excludes …a590 + the aXX seed block by construction.
+      await tx`DELETE FROM public.agent_approval_requests WHERE agent_id IN (${testAgentIdSub(tx, kid)})`;
+      await tx`DELETE FROM public.agent_run_actions WHERE run_id IN (SELECT id FROM public.agent_runs WHERE agent_id IN (${testAgentIdSub(tx, kid)}))`;
+      await tx`DELETE FROM public.agent_runs WHERE agent_id IN (${testAgentIdSub(tx, kid)})`;
+      await tx`DELETE FROM public.agent_run_outbox WHERE agent_id IN (${testAgentIdSub(tx, kid)})`;
+      await tx`DELETE FROM public.agent_approval_rules WHERE agent_id IN (${testAgentIdSub(tx, kid)})`;
+      await tx`DELETE FROM public.agent_actions WHERE agent_id IN (${testAgentIdSub(tx, kid)})`;
+      await tx`DELETE FROM public.agent_triggers WHERE agent_id IN (${testAgentIdSub(tx, kid)})`;
+      await tx`DELETE FROM public.automation_agents WHERE id IN (${testAgentIdSub(tx, kid)})`;
 
       // 4. synth test tenants. Per-tenant: delete whole tenant (cascade)
       // when FK-safe (no append-only api_audit/pii rows), else remove only
@@ -759,7 +930,7 @@ async function main(): Promise<void> {
       }
 
       // 5. stray agent_run_outbox rows (agent missing or retired). Runs
-      // AFTER the robust-01 subtree so it only catches genuinely orphaned
+      // AFTER the test-agent subtree so it only catches genuinely orphaned
       // rows. awaiting_approval rows off live agents are left untouched.
       await tx`
         DELETE FROM public.agent_run_outbox o
@@ -769,6 +940,57 @@ async function main(): Promise<void> {
           WHERE aa.id IS NULL OR aa.retired_at IS NOT NULL
         ) stray
         WHERE o.id = stray.id`;
+
+      // 9. requisition/position residue — child-first, FK-safe. Capture the
+      // orphan-position ids FIRST (once the requisitions are gone the position
+      // subquery can't re-derive them). Then: orphan interviews/plans on the
+      // residue reqs → their applications (child-first) → the approval spine →
+      // requisition children → the requisitions → the orphan positions (which
+      // CASCADE jd_versions → jd_skills). requisitionResidueSub excludes aXX by
+      // construction and re-derives valid until the requisitions are deleted.
+      const orphanReqPositions = await tx<{ id: string }[]>`
+        SELECT id::text AS id FROM public.positions WHERE id IN (${requisitionResiduePositionSub(tx, kid)})`;
+      const resReqAppSub = tx`
+        SELECT id FROM public.applications
+        WHERE tenant_id = ${kid} AND requisition_id IN (${requisitionResidueSub(tx, kid)})`;
+      // 9a. interviews + plans on residue reqs (feedback → panelists → interviews).
+      await tx`
+        DELETE FROM public.interview_feedback WHERE interview_id IN (
+          SELECT id FROM public.interviews WHERE requisition_id IN (${requisitionResidueSub(tx, kid)}))`;
+      await tx`
+        DELETE FROM public.interview_panelists WHERE interview_id IN (
+          SELECT id FROM public.interviews WHERE requisition_id IN (${requisitionResidueSub(tx, kid)}))`;
+      await tx`DELETE FROM public.interviews WHERE requisition_id IN (${requisitionResidueSub(tx, kid)})`;
+      await tx`DELETE FROM public.interview_plans WHERE tenant_id = ${kid} AND requisition_id IN (${requisitionResidueSub(tx, kid)})`;
+      // 9b. applications on residue reqs, child-first (direct children only —
+      // residue reqs carry test applications at most; PII persons are left).
+      await tx`DELETE FROM public.application_state_transitions WHERE application_id IN (${resReqAppSub})`;
+      await tx`DELETE FROM public.workday_sync_outbox WHERE subject_application_id IN (${resReqAppSub})`;
+      await tx`DELETE FROM public.ai_score_outbox WHERE application_id IN (${resReqAppSub})`;
+      await tx`DELETE FROM public.candidate_inbound_messages WHERE application_id IN (${resReqAppSub})`;
+      await tx`DELETE FROM public.partner_candidate_messages WHERE application_id IN (${resReqAppSub})`;
+      await tx`DELETE FROM public.candidate_ownership_claims WHERE claimed_via_application_id IN (${resReqAppSub})`;
+      await tx`DELETE FROM public.offers WHERE application_id IN (${resReqAppSub})`;
+      await tx`DELETE FROM public.applications WHERE tenant_id = ${kid} AND requisition_id IN (${requisitionResidueSub(tx, kid)})`;
+      // 9c. approval spine (decisions → requests) for the residue reqs.
+      await tx`
+        DELETE FROM public.approval_decisions WHERE request_id IN (
+          SELECT id FROM public.approval_requests
+          WHERE tenant_id = ${kid} AND subject_type = 'requisition'
+            AND subject_id IN (${requisitionResidueSub(tx, kid)}))`;
+      await tx`
+        DELETE FROM public.approval_requests
+        WHERE tenant_id = ${kid} AND subject_type = 'requisition'
+          AND subject_id IN (${requisitionResidueSub(tx, kid)})`;
+      // 9d. requisition children (RESTRICT transitions; knockouts/recruiters cascade).
+      await tx`DELETE FROM public.requisition_state_transitions WHERE requisition_id IN (${requisitionResidueSub(tx, kid)})`;
+      await tx`DELETE FROM public.requisition_knockouts WHERE requisition_id IN (${requisitionResidueSub(tx, kid)})`;
+      await tx`DELETE FROM public.requisition_recruiters WHERE requisition_id IN (${requisitionResidueSub(tx, kid)})`;
+      // 9e. the requisitions, then the now-orphan positions (CASCADE jd_versions/jd_skills).
+      await tx`DELETE FROM public.requisitions WHERE id IN (${requisitionResidueSub(tx, kid)})`;
+      for (const p of orphanReqPositions) {
+        await tx`DELETE FROM public.positions WHERE id = ${p.id} AND tenant_id = ${kid}`;
+      }
     });
 
     // ── after inventory (idempotency proof surface) ─────────────────
@@ -787,7 +1009,7 @@ async function main(): Promise<void> {
       `  kyndryl-poc tenant intact:           ${kynAfter?.slug === KYNDRYL_SLUG ? "YES" : "NO — ALARM"}`,
     );
     console.log(
-      `  Demo Follow-ups Agent (a590) intact: ${demoAfter && !demoAfter.retired ? "YES (active)" : "NO — ALARM"}`,
+      `  Demo agent …a590 intact:             ${demoAfter && !demoAfter.retired ? "YES (active)" : "NO — ALARM"}`,
     );
     const residueLeft = after.rows.reduce((s, r) => s + r.count, 0);
     console.log("");
