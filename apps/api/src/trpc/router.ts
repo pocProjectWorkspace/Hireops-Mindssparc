@@ -339,12 +339,19 @@ import {
   candidateAcceptOfferOutputSchema,
   candidateGetMyOnboardingOutputSchema,
   getMyDashboardOutputSchema,
+  getHrHeadDashboardExtrasOutputSchema,
   partnerGetDashboardStatsOutputSchema,
   CANDIDATE_STAGE_STEPS,
   type DashboardKpi,
   type DashboardAction,
   type DashboardActivity,
   type GetMyDashboardOutput,
+  type GetHrHeadDashboardExtrasOutput,
+  type RequisitionApprovalPriority,
+  type RequisitionApprovalOutcome,
+  type RequisitionApprovalRow,
+  type HrHeadKpi,
+  type HrHeadApprovalItem,
   type PartnerStageCount,
   type CandidateApplicationRow,
   type CandidateInterviewRow,
@@ -660,6 +667,81 @@ function readBiasFlagsFromContext(context: unknown): RequisitionApprovalBiasFlag
         suggestion: typeof r["suggestion"] === "string" ? (r["suggestion"] as string) : null,
       });
     }
+  }
+  return out;
+}
+
+/**
+ * HRHEAD-01 — the shared age→priority derivation for requisition approvals.
+ * FLAG: there is no stored priority on the approval; this is a pure heuristic
+ * off request age so the HR head can triage the queue at a glance.
+ *   age > 7d → high · age > 3d → medium · else → low.
+ * Reused by both listRequisitionApprovals and getHrHeadDashboardExtras so the
+ * two surfaces never disagree.
+ */
+function deriveApprovalPriority(ageDays: number): RequisitionApprovalPriority {
+  if (ageDays > 7) return "high";
+  if (ageDays > 3) return "medium";
+  return "low";
+}
+
+/** HRHEAD-01 — normalise the raw approval_request status into the queue's
+ *  filter/label vocabulary. send_back lands the request on `cancelled`
+ *  (REQ-03), so the queue reads it as "sent back". */
+function approvalOutcomeFromStatus(status: string): RequisitionApprovalOutcome {
+  switch (status) {
+    case "approved":
+      return "approved";
+    case "cancelled":
+      return "sent_back";
+    case "rejected":
+      return "rejected";
+    case "expired":
+      return "expired";
+    default:
+      return "pending";
+  }
+}
+
+/** HRHEAD-01 — a human comp band from a position's min/max/currency, or null
+ *  when neither bound is set. "18000–24000 USD" / "120000– USD" style. */
+function formatBudgetBand(
+  min: string | null,
+  max: string | null,
+  currency: string | null,
+): string | null {
+  if (!min && !max) return null;
+  // numeric(…) columns arrive as "6500000.00"; drop the trailing cents.
+  const clean = (v: string | null) => (v ? v.replace(/\.0+$/, "") : "?");
+  const cur = currency ? ` ${currency}` : "";
+  return `${clean(min)}–${clean(max)}${cur}`;
+}
+
+/**
+ * HRHEAD-01 — resolve display names for a set of membership ids via the
+ * service-role connection (public.users is self-only under RLS, so an RLS-tx
+ * join would return only the caller's own name). Explicit tenant predicate is
+ * load-bearing — the same idiom listTenantMemberships / onboarding detail use.
+ * Falls back display_name → email-local-part → null.
+ */
+async function resolveMembershipNames(
+  ctx: HonoTRPCContext,
+  tenantId: string,
+  membershipIds: string[],
+): Promise<Map<string, string | null>> {
+  const out = new Map<string, string | null>();
+  const ids = [...new Set(membershipIds.filter((id): id is string => !!id))];
+  if (ids.length === 0) return out;
+  const rows = await ctx.sql<{ id: string; display_name: string | null; email: string | null }[]>`
+    SELECT tum.id::text AS id, u.display_name AS display_name, au.email AS email
+    FROM public.tenant_user_memberships tum
+    JOIN auth.users au ON au.id = tum.user_id
+    LEFT JOIN public.users u ON u.id = tum.user_id
+    WHERE tum.tenant_id = ${tenantId} AND tum.id::text = ANY(${ids})
+  `;
+  for (const r of rows) {
+    const name = r.display_name ?? (r.email ? (r.email.split("@")[0] ?? null) : null);
+    out.set(r.id, name);
   }
   return out;
 }
@@ -1714,15 +1796,25 @@ export const appRouter = router({
         "Requisition-approval access requires the hr_head or admin role",
       );
       const db = requireDb(ctx);
+      if (!ctx.tenantId) {
+        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
+      }
       // REQ-02: enrich the skeleton with the requisition title via an
       // app-layer join subject_id → requisitions → positions. subject_id is
       // deliberately not FK'd, so this is a left join keyed on (tenant, id);
-      // RLS scopes every table to the caller's tenant.
+      // RLS scopes every table to the caller's tenant. HRHEAD-01 widens the
+      // join to the department (business_unit) + comp band and derives the
+      // requester name, age, priority and outcome for the full-table queue.
       const rows = await db
         .select({
           id: approvalRequests.id,
           subjectId: approvalRequests.subjectId,
           title: positions.title,
+          department: businessUnits.name,
+          compBandMin: positions.compBandMin,
+          compBandMax: positions.compBandMax,
+          compCurrency: positions.compCurrency,
+          requestedByMembershipId: approvalRequests.requestedByMembershipId,
           status: approvalRequests.status,
           currentStepIndex: approvalRequests.currentStepIndex,
           requestedAt: approvalRequests.requestedAt,
@@ -1744,20 +1836,45 @@ export const appRouter = router({
             eq(requisitions.positionId, positions.id),
           ),
         )
+        .leftJoin(
+          businessUnits,
+          and(
+            eq(positions.tenantId, businessUnits.tenantId),
+            eq(positions.businessUnitId, businessUnits.id),
+          ),
+        )
         .where(eq(approvalRequests.subjectType, "requisition"))
         .orderBy(desc(approvalRequests.createdAt))
         .limit(input.limit);
+
+      const nameById = await resolveMembershipNames(
+        ctx,
+        ctx.tenantId,
+        rows.map((r) => r.requestedByMembershipId).filter((id): id is string => !!id),
+      );
+
       return {
-        rows: rows.map((r) => ({
-          id: r.id,
-          subjectId: r.subjectId,
-          title: r.title ?? null,
-          status: r.status,
-          currentStepIndex: r.currentStepIndex,
-          requestedAt: r.requestedAt.toISOString(),
-          createdAt: r.createdAt.toISOString(),
-          biasFlags: readBiasFlagsFromContext(r.context),
-        })),
+        rows: rows.map((r): RequisitionApprovalRow => {
+          const ageDays = daysSince(r.requestedAt);
+          return {
+            id: r.id,
+            subjectId: r.subjectId,
+            title: r.title ?? null,
+            status: r.status,
+            currentStepIndex: r.currentStepIndex,
+            requestedAt: r.requestedAt.toISOString(),
+            createdAt: r.createdAt.toISOString(),
+            biasFlags: readBiasFlagsFromContext(r.context),
+            department: r.department ?? null,
+            budgetBand: formatBudgetBand(r.compBandMin, r.compBandMax, r.compCurrency),
+            requestedByName: r.requestedByMembershipId
+              ? (nameById.get(r.requestedByMembershipId) ?? null)
+              : null,
+            ageDays,
+            priority: deriveApprovalPriority(ageDays),
+            outcome: approvalOutcomeFromStatus(r.status),
+          };
+        }),
       };
     }),
 
@@ -10948,6 +11065,28 @@ export const appRouter = router({
       return buildInternalDashboard(db, ctx.tenantId, ctx.roles, membershipId);
     }),
 
+  /**
+   * getHrHeadDashboardExtras (HRHEAD-01) — the bespoke HR-head landing read.
+   * Separate from getMyDashboard (whose flat {kpis, actions} shape feeds the
+   * "Tasks due today" strip) so the hero KPI + delta, stage funnel with
+   * bottleneck, decide-inline approvals list and risk panel each get a typed
+   * home. hr_head + admin only (same gate as the approvals queue).
+   */
+  getHrHeadDashboardExtras: protectedProcedure
+    .output(getHrHeadDashboardExtrasOutputSchema)
+    .query(async ({ ctx }): Promise<GetHrHeadDashboardExtrasOutput> => {
+      requireAnyRole(
+        ctx,
+        REQUISITION_APPROVAL_READ_ROLES,
+        "The HR-head dashboard requires the hr_head or admin role",
+      );
+      const db = requireDb(ctx);
+      if (!ctx.tenantId) {
+        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
+      }
+      return buildHrHeadDashboardExtras(ctx, db, ctx.tenantId);
+    }),
+
   partnerGetDashboardStats: partnerProcedure
     .output(partnerGetDashboardStatsOutputSchema)
     .query(async ({ ctx }) => {
@@ -11787,6 +11926,327 @@ async function buildInternalDashboard(
     actions.push(...s.actions);
   }
   return { variants, kpis, actions };
+}
+
+// ═══════════ HRHEAD-01 — HR-head dashboard extras builder ═══════════
+//
+// A richer, HR-head-specific read: a hero KPI + three siblings (each with a
+// real period-over-period delta where the maths exists), a current-stage
+// pipeline funnel with a bottleneck callout, the decide-inline pending
+// approvals, and a risk/compliance panel. All counts run under the caller's
+// RLS-scoped tx (db.execute) with an explicit tenant predicate as
+// defence-in-depth; requester names resolve via the service-role helper.
+
+/** The forward pipeline, in progression order, for the funnel. Terminal
+ *  negatives (declined/withdrawn/rejected) are excluded — the funnel shows
+ *  the live forward flow, not dead ends. */
+const HRHEAD_FUNNEL_STAGES: ApplicationStage[] = [
+  "application_received",
+  "ai_screening",
+  "recruiter_review",
+  "shortlisted",
+  "tech_interview",
+  "hr_round",
+  "offer_drafted",
+  "offer_accepted",
+];
+
+/** Build a KPI delta from a numeric current/prior pair. `betterWhen` says
+ *  which direction is good. Returns null when there's no prior signal. */
+function buildKpiDelta(
+  current: number,
+  prior: number,
+  betterWhen: "lower" | "higher",
+  format: (magnitude: number) => string,
+  caption: string,
+): HrHeadKpi["delta"] {
+  if (prior <= 0 && current <= 0) return null;
+  const diff = current - prior;
+  if (Math.abs(diff) < 1e-9) {
+    return { label: "no change", direction: "flat", tone: "neutral", caption };
+  }
+  const rose = diff > 0;
+  const good = betterWhen === "lower" ? !rose : rose;
+  return {
+    label: format(Math.abs(diff)),
+    direction: rose ? "up" : "down",
+    tone: good ? "good" : "bad",
+    caption,
+  };
+}
+
+async function buildHrHeadDashboardExtras(
+  ctx: HonoTRPCContext,
+  db: DashDb,
+  tenantId: string,
+): Promise<GetHrHeadDashboardExtrasOutput> {
+  const T = dsql`tenant_id = ${tenantId}::uuid`;
+  const reqAppr = dsql`${T} AND subject_type = 'requisition'`;
+
+  const [
+    pending,
+    stale,
+    raisedThisWeek,
+    raisedPrevWeek,
+    tthCurrent,
+    tthPrior,
+    hiresCurrent,
+    spendCurrentMicros,
+    acceptance,
+    funnelRows,
+  ] = await Promise.all([
+    dashScalar(
+      db,
+      dsql`SELECT count(*)::int AS n FROM public.approval_requests WHERE ${reqAppr} AND status = 'pending'`,
+    ),
+    dashScalar(
+      db,
+      dsql`SELECT count(*)::int AS n FROM public.approval_requests WHERE ${reqAppr} AND status = 'pending' AND requested_at < now() - interval '2 days'`,
+    ),
+    dashScalar(
+      db,
+      dsql`SELECT count(*)::int AS n FROM public.approval_requests WHERE ${reqAppr} AND requested_at >= now() - interval '7 days'`,
+    ),
+    dashScalar(
+      db,
+      dsql`SELECT count(*)::int AS n FROM public.approval_requests WHERE ${reqAppr}
+             AND requested_at >= now() - interval '14 days' AND requested_at < now() - interval '7 days'`,
+    ),
+    // Avg days from application created → first offer_accepted transition, 90d.
+    dashScalar(
+      db,
+      dsql`SELECT COALESCE(AVG(EXTRACT(EPOCH FROM (t.transitioned_at - a.created_at)) / 86400.0), 0)::float AS n
+           FROM public.application_state_transitions t
+           JOIN public.applications a ON a.tenant_id = t.tenant_id AND a.id = t.application_id
+           WHERE t.tenant_id = ${tenantId}::uuid AND t.to_stage = 'offer_accepted'
+             AND t.transitioned_at >= now() - interval '90 days'`,
+    ),
+    dashScalar(
+      db,
+      dsql`SELECT COALESCE(AVG(EXTRACT(EPOCH FROM (t.transitioned_at - a.created_at)) / 86400.0), 0)::float AS n
+           FROM public.application_state_transitions t
+           JOIN public.applications a ON a.tenant_id = t.tenant_id AND a.id = t.application_id
+           WHERE t.tenant_id = ${tenantId}::uuid AND t.to_stage = 'offer_accepted'
+             AND t.transitioned_at >= now() - interval '180 days' AND t.transitioned_at < now() - interval '90 days'`,
+    ),
+    dashScalar(
+      db,
+      dsql`SELECT count(*)::int AS n FROM public.application_state_transitions
+             WHERE ${T} AND to_stage = 'offer_accepted' AND transitioned_at >= now() - interval '90 days'`,
+    ),
+    dashScalar(
+      db,
+      dsql`SELECT COALESCE(SUM(cost_micros), 0)::text AS n FROM public.ai_usage_logs
+             WHERE ${T} AND created_at >= now() - interval '90 days'`,
+    ),
+    dashRows<{ accepted: number; declined: number; accepted_prev: number; declined_prev: number }>(
+      db,
+      dsql`SELECT
+             count(*) FILTER (WHERE accepted_at >= now() - interval '90 days')::int AS accepted,
+             count(*) FILTER (WHERE declined_at >= now() - interval '90 days')::int AS declined,
+             count(*) FILTER (WHERE accepted_at >= now() - interval '180 days' AND accepted_at < now() - interval '90 days')::int AS accepted_prev,
+             count(*) FILTER (WHERE declined_at >= now() - interval '180 days' AND declined_at < now() - interval '90 days')::int AS declined_prev
+           FROM public.offers WHERE ${T}`,
+    ),
+    dashRows<{ stage: string; n: number }>(
+      db,
+      dsql`SELECT current_stage AS stage, count(*)::int AS n
+           FROM public.applications WHERE ${T} GROUP BY current_stage`,
+    ),
+  ]);
+
+  // ── KPIs ──
+  // Round time-to-hire to 1dp before comparing so sub-0.1d noise (same-day
+  // seed hires) doesn't manufacture a spurious "slower/faster" delta.
+  const tthCur1 = Math.round(tthCurrent * 10) / 10;
+  const tthPrev1 = Math.round(tthPrior * 10) / 10;
+  const tthValue = tthCur1 > 0 ? `${tthCur1.toFixed(1)}d` : "—";
+  const acc = acceptance[0] ?? { accepted: 0, declined: 0, accepted_prev: 0, declined_prev: 0 };
+  const accTotal = acc.accepted + acc.declined;
+  const accPct = accTotal > 0 ? acc.accepted / accTotal : 0;
+  const accPrevTotal = acc.accepted_prev + acc.declined_prev;
+  const accPrevPct = accPrevTotal > 0 ? acc.accepted_prev / accPrevTotal : 0;
+  const spendCurrent = spendCurrentMicros;
+  const costPerHire = hiresCurrent > 0 ? spendCurrent / hiresCurrent : 0;
+
+  const kpis: HrHeadKpi[] = [
+    {
+      key: "hrh_pending",
+      label: "Pending approvals",
+      value: String(pending),
+      caption: stale > 0 ? `${stale} over 2 days old` : "queue fresh",
+      delta: buildKpiDelta(
+        raisedThisWeek,
+        raisedPrevWeek,
+        "lower",
+        (m) => `${raisedThisWeek - raisedPrevWeek > 0 ? "+" : "−"}${Math.round(m)}`,
+        "new requests vs prior week",
+      ),
+      hero: true,
+      href: "/requisition-approvals",
+    },
+    {
+      key: "hrh_tth",
+      label: "Avg time-to-hire",
+      value: tthValue,
+      caption: "apply → offer accepted, 90d",
+      delta:
+        tthCur1 > 0 && tthPrev1 > 0
+          ? buildKpiDelta(
+              tthCur1,
+              tthPrev1,
+              "lower",
+              (m) => `${m.toFixed(1)}d ${tthCur1 < tthPrev1 ? "faster" : "slower"}`,
+              "vs prior 90 days",
+            )
+          : null,
+      hero: false,
+      href: "/requisition-approvals",
+    },
+    {
+      key: "hrh_acceptance",
+      label: "Offer acceptance",
+      value: accTotal > 0 ? `${Math.round(accPct * 100)}%` : "—",
+      caption: accTotal > 0 ? `${acc.accepted}/${accTotal} offers, 90d` : "no offers decided",
+      delta:
+        accTotal > 0
+          ? buildKpiDelta(
+              accPct,
+              accPrevPct,
+              "higher",
+              (m) => `${(m * 100).toFixed(0)} pts`,
+              "vs prior 90 days",
+            )
+          : null,
+      hero: false,
+      href: "/requisition-approvals",
+    },
+    {
+      key: "hrh_cost_per_hire",
+      label: "AI cost per hire",
+      value: hiresCurrent > 0 ? formatUsdMicros(costPerHire) : "—",
+      // FLAG: AI spend is the only real cost we track — labelled honestly.
+      caption: hiresCurrent > 0 ? `AI spend ÷ ${hiresCurrent} hires, 90d` : "no hires in period",
+      delta: null,
+      hero: false,
+      href: "/admin/costs",
+    },
+  ];
+
+  // ── Funnel ──
+  // FLAG (interpretation): the ticket says "applications by current stage",
+  // but "largest relative drop" only reads meaningfully on a MONOTONIC funnel.
+  // A raw current-stage snapshot has transient pass-through stages sitting at 0
+  // (ai_screening, shortlisted), which manufacture false "100% drop-off"
+  // callouts. So the bars are cumulative REACH: reach[stage] = applications
+  // currently at that stage OR any later forward stage. This yields a proper
+  // non-increasing funnel where each drop is "how many stopped progressing
+  // here". Terminal-negative outcomes (rejected/declined/withdrawn) leave the
+  // forward set and aren't counted — the funnel shows the live+hired flow.
+  const countByStage = new Map<string, number>();
+  for (const r of funnelRows) countByStage.set(r.stage, r.n);
+  const currentCounts = HRHEAD_FUNNEL_STAGES.map((s) => countByStage.get(s) ?? 0);
+  const reach: number[] = new Array(HRHEAD_FUNNEL_STAGES.length).fill(0);
+  let running = 0;
+  for (let i = HRHEAD_FUNNEL_STAGES.length - 1; i >= 0; i--) {
+    running += currentCounts[i] ?? 0;
+    reach[i] = running;
+  }
+  const topReach = Math.max(1, reach[0] ?? 0);
+  const funnelStages = HRHEAD_FUNNEL_STAGES.map((s, i) => ({
+    stage: s,
+    label: humanizeStage(s),
+    count: reach[i] ?? 0,
+    pct: Math.round(((reach[i] ?? 0) / topReach) * 100),
+  }));
+  // Bottleneck = the largest relative drop between adjacent reach levels,
+  // reported when it clears 30% (and the upstream level had real volume).
+  let bottleneck: string | null = null;
+  let worstDrop = 0.3;
+  for (let i = 1; i < funnelStages.length; i++) {
+    const prevStage = funnelStages[i - 1];
+    const curStage = funnelStages[i];
+    if (!prevStage || !curStage || prevStage.count <= 0) continue;
+    const drop = (prevStage.count - curStage.count) / prevStage.count;
+    if (drop > worstDrop) {
+      worstDrop = drop;
+      bottleneck = `Bottleneck at ${curStage.label} — ${Math.round(drop * 100)}% drop-off from ${prevStage.label}`;
+    }
+  }
+
+  // ── Approvals pending, decide-inline (same enrichment as the queue) ──
+  const apprRows = await dashRows<{
+    id: string;
+    subject_id: string;
+    title: string | null;
+    department: string | null;
+    comp_min: string | null;
+    comp_max: string | null;
+    comp_currency: string | null;
+    requested_by: string | null;
+    requested_at: string | Date;
+    context: unknown;
+  }>(
+    db,
+    dsql`SELECT ar.id::text AS id, ar.subject_id::text AS subject_id, p.title AS title,
+           bu.name AS department, p.comp_band_min AS comp_min, p.comp_band_max AS comp_max,
+           p.comp_currency AS comp_currency, ar.requested_by_membership_id::text AS requested_by,
+           ar.requested_at AS requested_at, ar.context AS context
+         FROM public.approval_requests ar
+         LEFT JOIN public.requisitions r ON r.tenant_id = ar.tenant_id AND r.id = ar.subject_id
+         LEFT JOIN public.positions p ON p.tenant_id = r.tenant_id AND p.id = r.position_id
+         LEFT JOIN public.business_units bu ON bu.tenant_id = p.tenant_id AND bu.id = p.business_unit_id
+         WHERE ar.tenant_id = ${tenantId}::uuid AND ar.subject_type = 'requisition' AND ar.status = 'pending'
+         ORDER BY ar.requested_at ASC
+         LIMIT 8`,
+  );
+  const apprNames = await resolveMembershipNames(
+    ctx,
+    tenantId,
+    apprRows.map((r) => r.requested_by).filter((id): id is string => !!id),
+  );
+  const approvals: HrHeadApprovalItem[] = apprRows.map((r) => {
+    const ageDays = daysSince(r.requested_at);
+    return {
+      approvalRequestId: r.id,
+      requisitionId: r.subject_id,
+      title: r.title ?? null,
+      department: r.department ?? null,
+      budgetBand: formatBudgetBand(r.comp_min, r.comp_max, r.comp_currency),
+      requestedByName: r.requested_by ? (apprNames.get(r.requested_by) ?? null) : null,
+      priority: deriveApprovalPriority(ageDays),
+      ageDays,
+      biasFlags: readBiasFlagsFromContext(r.context),
+    };
+  });
+
+  // ── Risk & compliance ──
+  const lexicon = await resolveTenantBiasLexiconDb(tenantId);
+  // FLAG: the benchmark table (HRHEAD-02, concurrent, not merged) is probed
+  // defensively by name; belowBenchmark stays null until it exists so the row
+  // renders only when the data is present. Assumed name: requisition_benchmarks.
+  const benchmarkExists = await dashScalar(
+    db,
+    dsql`SELECT (to_regclass('public.requisition_benchmarks') IS NOT NULL)::int AS n`,
+  );
+  let belowBenchmark: number | null = null;
+  if (benchmarkExists === 1) {
+    belowBenchmark = await dashScalar(
+      db,
+      dsql`SELECT count(*)::int AS n FROM public.requisition_benchmarks WHERE ${T} AND below_median = true`,
+    );
+  }
+
+  return {
+    kpis,
+    funnel: { stages: funnelStages, bottleneck },
+    approvals,
+    risk: {
+      biasGateEnforcement: lexicon.enforcement,
+      staleApprovals: stale,
+      belowBenchmark,
+    },
+  };
 }
 
 // ─────────────── ONBOARD-05 document helpers ───────────────

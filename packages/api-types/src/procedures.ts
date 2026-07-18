@@ -290,6 +290,31 @@ export const requisitionApprovalBiasFlagSchema = z.object({
 });
 export type RequisitionApprovalBiasFlag = z.infer<typeof requisitionApprovalBiasFlagSchema>;
 
+/**
+ * HRHEAD-01 priority derivation, shared by the dashboard approvals list and the
+ * approvals page. Derived from the age of the pending request (nothing on the
+ * row stores an explicit priority):
+ *   age > 7d → high · age > 3d → medium · else → low.
+ * FLAG: this is a heuristic, not a business field — see the router helper.
+ */
+export const requisitionApprovalPrioritySchema = z.enum(["high", "medium", "low"]);
+export type RequisitionApprovalPriority = z.infer<typeof requisitionApprovalPrioritySchema>;
+
+/**
+ * HRHEAD-01 normalises the four terminal request states into a filter/label
+ * vocabulary. `send_back` moves the request to `cancelled` (REQ-03), so the
+ * queue surfaces it as "sent back" rather than the raw status.
+ *   pending · approved · sent_back (← cancelled) · rejected · expired
+ */
+export const requisitionApprovalOutcomeSchema = z.enum([
+  "pending",
+  "approved",
+  "sent_back",
+  "rejected",
+  "expired",
+]);
+export type RequisitionApprovalOutcome = z.infer<typeof requisitionApprovalOutcomeSchema>;
+
 export const requisitionApprovalRowSchema = z.object({
   id: z.string().uuid(),
   subjectId: z.string().uuid(),
@@ -303,6 +328,19 @@ export const requisitionApprovalRowSchema = z.object({
   createdAt: z.string(),
   /** CONF-02: coded-language flags recorded from the submit-time bias scan. */
   biasFlags: z.array(requisitionApprovalBiasFlagSchema),
+  // ─── HRHEAD-01 enrichment (all additive; older consumers ignore them) ───
+  /** Department (business_unit name) via subject_id → requisition → position. */
+  department: z.string().nullable(),
+  /** Human comp band, e.g. "18–24 LPA" or "120000–160000 USD"; null if unset. */
+  budgetBand: z.string().nullable(),
+  /** Display name of the requesting membership (service-role resolved); null if system-raised or nameless. */
+  requestedByName: z.string().nullable(),
+  /** Whole days since requested_at. */
+  ageDays: z.number().int(),
+  /** Age-derived priority (see requisitionApprovalPrioritySchema). */
+  priority: requisitionApprovalPrioritySchema,
+  /** Normalised outcome for the filter tabs + status chip. */
+  outcome: requisitionApprovalOutcomeSchema,
 });
 
 export const listRequisitionApprovalsInputSchema = z.object({
@@ -3476,6 +3514,98 @@ export const getMyDashboardOutputSchema = z.object({
   activity: z.array(dashboardActivitySchema).optional(),
 });
 export type GetMyDashboardOutput = z.infer<typeof getMyDashboardOutputSchema>;
+
+// ═══════════════ HRHEAD-01: HR-head dashboard extras ═══════════════
+//
+// A bespoke, richer read for the HR-head landing surface — separate from
+// getMyDashboard because its shapes (a hero KPI with a period-over-period
+// delta, a labelled stage funnel with a bottleneck callout, a decide-inline
+// approvals list, a risk/compliance panel) don't fit getMyDashboard's flat
+// {kpis, actions} contract. getMyDashboard's hr_head payload stays as-is and
+// feeds the "Tasks due today" strip; DASH-01 is untouched.
+
+/** Direction of a KPI delta arrow. `flat` renders no arrow. */
+export const hrHeadKpiDeltaDirectionSchema = z.enum(["up", "down", "flat"]);
+export type HrHeadKpiDeltaDirection = z.infer<typeof hrHeadKpiDeltaDirectionSchema>;
+
+/** Semantic read of the delta — decoupled from direction (a falling
+ *  time-to-hire is `good` and points `down`; a rising queue is `bad` up). */
+export const hrHeadKpiDeltaToneSchema = z.enum(["good", "bad", "neutral"]);
+export type HrHeadKpiDeltaTone = z.infer<typeof hrHeadKpiDeltaToneSchema>;
+
+export const hrHeadKpiDeltaSchema = z.object({
+  /** Pre-formatted magnitude, e.g. "1.2d faster" or "+3". */
+  label: z.string(),
+  direction: hrHeadKpiDeltaDirectionSchema,
+  tone: hrHeadKpiDeltaToneSchema,
+  /** The comparison window caption, e.g. "vs prior 90 days". */
+  caption: z.string(),
+});
+export type HrHeadKpiDelta = z.infer<typeof hrHeadKpiDeltaSchema>;
+
+/** One HR-head KPI. `value` is pre-formatted server-side. `hero` marks the
+ *  single accent-filled card; the rest render white. */
+export const hrHeadKpiSchema = z.object({
+  key: z.string(),
+  label: z.string(),
+  value: z.string(),
+  caption: z.string().nullable(),
+  delta: hrHeadKpiDeltaSchema.nullable(),
+  hero: z.boolean(),
+  href: z.string(),
+});
+export type HrHeadKpi = z.infer<typeof hrHeadKpiSchema>;
+
+/** One labelled funnel stage — count sits IN the bar; `pct` sizes the bar
+ *  relative to the busiest stage. */
+export const hrHeadFunnelStageSchema = z.object({
+  stage: z.string(),
+  label: z.string(),
+  count: z.number().int(),
+  pct: z.number(),
+});
+export type HrHeadFunnelStage = z.infer<typeof hrHeadFunnelStageSchema>;
+
+export const hrHeadFunnelSchema = z.object({
+  stages: z.array(hrHeadFunnelStageSchema),
+  /** Bottleneck callout line, e.g. "Bottleneck at Tech Interview — 62% drop-off". Null if no meaningful drop. */
+  bottleneck: z.string().nullable(),
+});
+export type HrHeadFunnel = z.infer<typeof hrHeadFunnelSchema>;
+
+/** One pending approval, decidable inline via the ActionTriad. Reuses the
+ *  same enrichment (dept, budget band, requester, priority, age) as the
+ *  approvals-page rows. */
+export const hrHeadApprovalItemSchema = z.object({
+  approvalRequestId: z.string().uuid(),
+  requisitionId: z.string().uuid(),
+  title: z.string().nullable(),
+  department: z.string().nullable(),
+  budgetBand: z.string().nullable(),
+  requestedByName: z.string().nullable(),
+  priority: requisitionApprovalPrioritySchema,
+  ageDays: z.number().int(),
+  biasFlags: z.array(requisitionApprovalBiasFlagSchema),
+});
+export type HrHeadApprovalItem = z.infer<typeof hrHeadApprovalItemSchema>;
+
+/** Right-rail risk & compliance panel. `belowBenchmark` is null until the
+ *  HRHEAD-02 benchmark table exists (defensive — the row renders only when
+ *  the data is present). */
+export const hrHeadRiskSchema = z.object({
+  biasGateEnforcement: z.enum(["off", "warn", "block"]),
+  staleApprovals: z.number().int(),
+  belowBenchmark: z.number().int().nullable(),
+});
+export type HrHeadRisk = z.infer<typeof hrHeadRiskSchema>;
+
+export const getHrHeadDashboardExtrasOutputSchema = z.object({
+  kpis: z.array(hrHeadKpiSchema),
+  funnel: hrHeadFunnelSchema,
+  approvals: z.array(hrHeadApprovalItemSchema),
+  risk: hrHeadRiskSchema,
+});
+export type GetHrHeadDashboardExtrasOutput = z.infer<typeof getHrHeadDashboardExtrasOutputSchema>;
 
 /**
  * partnerGetDashboardStats — the partner-portal analogue: the org's own

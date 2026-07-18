@@ -1,44 +1,27 @@
 import { requireAuth, sessionUserChip } from "@/lib/auth";
 import { createServerTRPCCaller } from "@/lib/trpc-server";
 import { AppShell } from "@/components/nav/AppShell";
-import { Badge, EmptyState, TableShell, Thead, Th, Tbody, Tr, Td } from "@/components/ui";
-import type { BadgeTone } from "@/components/ui";
 import { RoleNotice } from "@/components/nav/RoleNotice";
+import { PageHeader } from "@/components/patterns";
+import { RequisitionApprovalsTable } from "@/components/requisitions/RequisitionApprovalsTable";
 
 export const dynamic = "force-dynamic"; // Auth-gated + reads live approval state.
 
 /**
- * REQ-01 (Wave A) — the HR-head requisition-approval queue.
+ * REQ-01 → HRHEAD-01 — the HR-head requisition-approval queue.
  *
- * A server-rendered skeleton over approval_requests rows with
- * subject_type='requisition'. The table is real but empty until REQ-02/03
- * wire submission, so the honest empty state explains the flow that fills it
- * rather than pretending there's nothing to do. Decision controls
- * (approve / send-back / reject) are REQ-03 — this ticket only reads.
+ * Server-rendered over the enriched listRequisitionApprovals rows (title, dept,
+ * budget band, requester name, age, priority, outcome). HRHEAD-01 upgrades the
+ * bare skeleton to a PageHeader + filter-tabbed full table; a row opens the
+ * existing decision view on the requisition detail page (approve / send back /
+ * reject live there and inline on the HR-head dashboard).
  *
- * Persona-gated to hr_head / admin: the nav only surfaces it to those roles
- * and the API enforces the same set (recruiter/hiring_manager get FORBIDDEN).
- * A direct hit by another role gets a calm in-shell notice.
+ * Persona-gated to hr_head / admin: the nav only surfaces it to those roles and
+ * the API enforces the same set (recruiter/hiring_manager get FORBIDDEN). A
+ * direct hit by another role gets a calm in-shell notice.
  */
 
 const READ_ROLES = ["hr_head", "admin"];
-
-const STATUS_TONE: Record<string, BadgeTone> = {
-  pending: "warning",
-  approved: "success",
-  rejected: "error",
-  cancelled: "neutral",
-  expired: "neutral",
-};
-
-function statusLabel(status: string): string {
-  return status.replace(/\b\w/g, (c) => c.toUpperCase());
-}
-
-function formatDate(iso: string): string {
-  const d = new Date(iso);
-  return d.toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" });
-}
 
 export default async function RequisitionApprovalsPage() {
   const session = await requireAuth();
@@ -63,55 +46,7 @@ export default async function RequisitionApprovalsPage() {
   }
 
   const caller = createServerTRPCCaller(session);
-  const { rows } = await caller.listRequisitionApprovals({ limit: 50 });
-  const pending = rows.filter((r) => r.status === "pending");
-  const decided = rows.filter((r) => r.status !== "pending");
-
-  function ApprovalTable({ items }: { items: typeof rows }) {
-    return (
-      <TableShell>
-        <Thead>
-          <Th>Requisition</Th>
-          <Th>Status</Th>
-          <Th numeric>Step</Th>
-          <Th>Requested</Th>
-        </Thead>
-        <Tbody>
-          {items.map((r) => (
-            <Tr key={r.id}>
-              <Td className="font-medium text-neutral-900">
-                <a href={`/requisitions/${r.subjectId}`} className="text-brand-700 hover:underline">
-                  {r.title ?? `${r.subjectId.slice(0, 8)}…`}
-                </a>
-                {r.biasFlags.length > 0 ? (
-                  <div className="mt-1 flex flex-wrap gap-1">
-                    {r.biasFlags.map((f) => (
-                      <span
-                        key={`${f.term}-${f.category}`}
-                        title={f.suggestion ?? undefined}
-                        className={`inline-flex items-center rounded-full border px-2 py-0.5 text-[11px] font-normal ${
-                          f.severity === "block"
-                            ? "border-status-error-200 bg-status-error-50 text-status-error-700"
-                            : "border-status-warning-200 bg-status-warning-50 text-status-warning-700"
-                        }`}
-                      >
-                        {f.term}
-                      </span>
-                    ))}
-                  </div>
-                ) : null}
-              </Td>
-              <Td>
-                <Badge tone={STATUS_TONE[r.status] ?? "neutral"}>{statusLabel(r.status)}</Badge>
-              </Td>
-              <Td numeric>{r.currentStepIndex + 1}</Td>
-              <Td>{formatDate(r.requestedAt)}</Td>
-            </Tr>
-          ))}
-        </Tbody>
-      </TableShell>
-    );
-  }
+  const { rows } = await caller.listRequisitionApprovals({ limit: 100 });
 
   return (
     <AppShell
@@ -121,37 +56,12 @@ export default async function RequisitionApprovalsPage() {
       active="requisition-approvals"
       user={sessionUserChip(session)}
     >
-      <div className="mx-auto w-full max-w-5xl space-y-8 px-8 py-6">
-        {rows.length === 0 ? (
-          <EmptyState
-            title="No requisitions awaiting approval"
-            hint="When a hiring manager submits a requisition for approval it lands here for you to approve, send back, or reject. Open a row to review the requisition and decide."
-          />
-        ) : (
-          <>
-            <section>
-              <h2 className="mb-3 text-sm font-semibold text-neutral-900">
-                Awaiting your decision
-              </h2>
-              {pending.length === 0 ? (
-                <p className="text-sm text-neutral-500">Nothing awaiting a decision right now.</p>
-              ) : (
-                <>
-                  <ApprovalTable items={pending} />
-                  <p className="mt-3 text-xs text-neutral-500">
-                    Open a requisition to review it and approve, send back, or reject.
-                  </p>
-                </>
-              )}
-            </section>
-            {decided.length > 0 ? (
-              <section>
-                <h2 className="mb-3 text-sm font-semibold text-neutral-900">Decided</h2>
-                <ApprovalTable items={decided} />
-              </section>
-            ) : null}
-          </>
-        )}
+      <div className="mx-auto w-full max-w-6xl space-y-6 px-8 py-6">
+        <PageHeader
+          title="Requisition approvals"
+          subtitle="Review submitted requisitions and decide — approve, send back, or reject. Open a row for the full requisition and decision panel."
+        />
+        <RequisitionApprovalsTable rows={rows} />
       </div>
     </AppShell>
   );
