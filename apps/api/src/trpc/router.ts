@@ -231,6 +231,7 @@ import {
   type RequisitionApprovalBiasFlag,
   getRecruitmentReportInputSchema,
   getRecruitmentReportOutputSchema,
+  getHrMetricsOutputSchema,
   approveApprovalInputSchema,
   approveApprovalOutputSchema,
   approveApprovalWithEditInputSchema,
@@ -508,6 +509,10 @@ function requireDb(ctx: HonoTRPCContext) {
 // decision, so they need the read. RLS still scopes rows to the tenant.
 const REQUISITION_READ_ROLES = new Set(["admin", "hiring_manager", "recruiter", "hr_head"]);
 const REQUISITION_APPROVAL_READ_ROLES = new Set(["admin", "hr_head"]);
+// METRICS-01 — the HR analytics surface (/metrics, getHrMetrics) is an
+// HR-leadership view: hr_head (the people-metrics owner) + admin. recruiter /
+// hiring_manager / panel_member get FORBIDDEN. RLS still scopes every read.
+const HR_METRICS_READ_ROLES = new Set(["admin", "hr_head"]);
 // REQ-03 decision mutation. hr_head (the approver) + admin. recruiter /
 // hiring_manager get FORBIDDEN.
 const REQUISITION_APPROVAL_DECIDE_ROLES = new Set(["admin", "hr_head"]);
@@ -5323,6 +5328,233 @@ export const appRouter = router({
         },
       };
     }),
+
+  // ─────────────────────── getHrMetrics (METRICS-01) ───────────────────────
+  //
+  // The single aggregate read behind the /metrics analytics surface — the
+  // KPI header + the six-chart grid, all from ONE call (client-side
+  // recharts, server-side numbers). hr_head + admin only (requireAnyRole →
+  // FORBIDDEN for recruiter/hiring_manager/panel_member); RLS scopes every
+  // read on top of the explicit tenant_id filter. Reads only, no withAudit
+  // (matches getRecruitmentReport / getAiUsageSummary).
+  //
+  // Windows: the pipeline/source/offer/score panels are a current-state
+  // snapshot (all-time, tenant-scoped) — consistent with /admin/reports and
+  // demo-stable; AI spend is a fixed last-14-days series (matches
+  // /admin/costs). No date input — the window is fixed by scope. Money +
+  // percentile idioms follow the house rules: cost_micros as ::text,
+  // percentile/avg native to Postgres, funnel + stage + score buckets
+  // zero-filled in JS so the grid always renders every band.
+  getHrMetrics: protectedProcedure.output(getHrMetricsOutputSchema).query(async ({ ctx }) => {
+    requireAnyRole(
+      ctx,
+      HR_METRICS_READ_ROLES,
+      "HR metrics access requires the hr_head or admin role",
+    );
+    const db = requireDb(ctx);
+    if (!ctx.tenantId) {
+      throw new TRPCError({
+        code: "INTERNAL_SERVER_ERROR",
+        message: "protected procedure missing tenantId",
+      });
+    }
+    const tenantId = ctx.tenantId;
+    const asRows = <T>(res: unknown): T[] => (res as { rows?: T[] }).rows ?? (res as T[]);
+
+    // Funnel — current count per stage (zero-filled to the enum below).
+    const funnelRes = await db.execute(dsql`
+        SELECT current_stage AS stage, COUNT(*)::int AS count
+        FROM public.applications
+        WHERE tenant_id = ${tenantId}::uuid
+        GROUP BY current_stage
+      `);
+
+    // KPI header + avg score, one row.
+    const kpiRes = await db.execute(dsql`
+        SELECT
+          COUNT(*)::int AS applications,
+          COUNT(*) FILTER (
+            WHERE current_stage NOT IN
+              ('offer_accepted', 'offer_declined', 'withdrawn', 'recruiter_rejected')
+          )::int AS active,
+          COUNT(*) FILTER (WHERE current_stage = 'offer_accepted')::int AS hired,
+          ROUND(AVG(ai_score), 1)::float8 AS avg_ai_score
+        FROM public.applications
+        WHERE tenant_id = ${tenantId}::uuid
+      `);
+
+    // Source mix — applications per channel, present sources only.
+    const sourceRes = await db.execute(dsql`
+        SELECT source AS source, COUNT(*)::int AS applications
+        FROM public.applications
+        WHERE tenant_id = ${tenantId}::uuid
+        GROUP BY source
+        ORDER BY COUNT(*) DESC, source ASC
+      `);
+
+    // Time in stage — AVG days per stage from consecutive transition pairs
+    // (LEAD gives when the app left the stage it entered; the last
+    // transition per app has a NULL LEAD and is excluded).
+    const stageDurationRes = await db.execute(dsql`
+        WITH ordered AS (
+          SELECT
+            t.to_stage AS stage,
+            t.transitioned_at AS entered_at,
+            LEAD(t.transitioned_at) OVER (
+              PARTITION BY t.application_id ORDER BY t.transitioned_at
+            ) AS left_at
+          FROM public.application_state_transitions t
+          WHERE t.tenant_id = ${tenantId}::uuid
+        ),
+        durations AS (
+          SELECT stage, EXTRACT(EPOCH FROM (left_at - entered_at)) / 86400.0 AS days
+          FROM ordered
+          WHERE left_at IS NOT NULL
+        )
+        SELECT stage, ROUND(AVG(days)::numeric, 2)::float8 AS avg_days
+        FROM durations
+        GROUP BY stage
+      `);
+
+    // Offer funnel — extended (reached the extended state or beyond), then
+    // its two terminals. An accepted/declined/expired offer necessarily
+    // passed through 'extended', so those terminals count toward `extended`
+    // even where the seed left extended_at unstamped — guaranteeing
+    // extended >= accepted + declined (the funnel invariant).
+    const offerRes = await db.execute(dsql`
+        SELECT
+          COUNT(*) FILTER (
+            WHERE extended_at IS NOT NULL
+               OR status IN ('extended', 'accepted', 'declined', 'expired')
+          )::int AS extended,
+          COUNT(*) FILTER (WHERE status = 'accepted')::int AS accepted,
+          COUNT(*) FILTER (WHERE status = 'declined')::int AS declined
+        FROM public.offers
+        WHERE tenant_id = ${tenantId}::uuid
+      `);
+
+    // AI spend — last 14 calendar days, one row per day (session tz),
+    // ascending. Same shape as getAiUsageSummary.byDay.
+    const aiSpendRes = await db.execute(dsql`
+        SELECT
+          to_char(date_trunc('day', created_at), 'YYYY-MM-DD') AS day,
+          COALESCE(SUM(cost_micros), 0)::text AS cost_micros,
+          COUNT(*)::int AS calls
+        FROM public.ai_usage_logs
+        WHERE tenant_id = ${tenantId}::uuid
+          AND created_at >= (now() - interval '14 days')
+        GROUP BY date_trunc('day', created_at)
+        ORDER BY date_trunc('day', created_at) ASC
+      `);
+
+    // Score distribution — width-10 histogram, bucket 0..9 (100 folds into
+    // the 90–100 bucket via LEAST). Zero-filled to all 10 buckets in JS.
+    const scoreRes = await db.execute(dsql`
+        SELECT
+          LEAST(FLOOR(ai_score / 10)::int, 9) AS bucket,
+          COUNT(*)::int AS count
+        FROM public.applications
+        WHERE tenant_id = ${tenantId}::uuid AND ai_score IS NOT NULL
+        GROUP BY LEAST(FLOOR(ai_score / 10)::int, 9)
+      `);
+
+    interface FunnelRow {
+      stage: ApplicationStage;
+      count: number;
+    }
+    interface KpiRow {
+      applications: number;
+      active: number;
+      hired: number;
+      avg_ai_score: number | null;
+    }
+    interface SourceRow {
+      source: string;
+      applications: number;
+    }
+    interface StageDurationRow {
+      stage: ApplicationStage;
+      avg_days: number | null;
+    }
+    interface OfferRow {
+      extended: number;
+      accepted: number;
+      declined: number;
+    }
+    interface AiSpendRow {
+      day: string;
+      cost_micros: string;
+      calls: number;
+    }
+    interface ScoreRow {
+      bucket: number;
+      count: number;
+    }
+
+    const funnelByStage = new Map(asRows<FunnelRow>(funnelRes).map((r) => [r.stage, r.count]));
+    const durationByStage = new Map(
+      asRows<StageDurationRow>(stageDurationRes).map((r) => [r.stage, r.avg_days]),
+    );
+    const countByBucket = new Map(asRows<ScoreRow>(scoreRes).map((r) => [r.bucket, r.count]));
+
+    const kpi = asRows<KpiRow>(kpiRes)[0] ?? {
+      applications: 0,
+      active: 0,
+      hired: 0,
+      avg_ai_score: null,
+    };
+    const offer = asRows<OfferRow>(offerRes)[0] ?? { extended: 0, accepted: 0, declined: 0 };
+
+    const scoreTier = (min: number): "platinum" | "gold" | "silver" | "neutral" => {
+      if (min >= 90) return "platinum";
+      if (min >= 70) return "gold";
+      if (min >= 50) return "silver";
+      return "neutral";
+    };
+
+    return {
+      kpis: {
+        applications: kpi.applications,
+        active: kpi.active,
+        hired: kpi.hired,
+        offers_extended: offer.extended,
+        avg_ai_score: kpi.avg_ai_score,
+      },
+      funnel: applicationStageEnum.enumValues.map((stage) => ({
+        stage,
+        count: funnelByStage.get(stage) ?? 0,
+      })),
+      timeInStage: applicationStageEnum.enumValues.map((stage) => ({
+        stage,
+        avg_days: durationByStage.get(stage) ?? null,
+      })),
+      sourceMix: asRows<SourceRow>(sourceRes).map((r) => ({
+        source: r.source,
+        applications: r.applications,
+      })),
+      offerFunnel: {
+        extended: offer.extended,
+        accepted: offer.accepted,
+        declined: offer.declined,
+      },
+      aiSpend: asRows<AiSpendRow>(aiSpendRes).map((r) => ({
+        day: r.day,
+        cost_micros: r.cost_micros,
+        calls: r.calls,
+      })),
+      scoreDistribution: Array.from({ length: 10 }, (_, i) => {
+        const min = i * 10;
+        const max = i === 9 ? 100 : min + 9;
+        return {
+          label: `${min}–${max}`,
+          min,
+          max,
+          count: countByBucket.get(i) ?? 0,
+          tier: scoreTier(min),
+        };
+      }),
+    };
+  }),
 
   // ─────────────────────── update / retire / toggle (AGENT-04a) ───────────────────────
   //

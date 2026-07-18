@@ -38,6 +38,7 @@ import {
   IconCosts,
   IconAiSettings,
   IconReports,
+  IconMetrics,
   IconIntegrations,
   IconUsers,
   IconSignOut,
@@ -51,6 +52,7 @@ export type PortalNavKey =
   | "offboarding"
   | "requisitions"
   | "requisition-approvals"
+  | "metrics"
   | "interviews"
   | "panel"
   | "workflows"
@@ -102,6 +104,16 @@ const MAIN_NAV: NavItem[] = [
     label: "Req approvals",
     href: "/requisition-approvals",
     icon: <IconReqApprovals />,
+    roles: ["hr_head", "admin"],
+  },
+  {
+    // METRICS-01: the HR analytics surface — hr_head (the people-metrics
+    // owner) + admin only, matching the getHrMetrics API gate. Lives in the
+    // main nav (not Admin) so hr_head, who has no Admin group, can reach it.
+    key: "metrics",
+    label: "Metrics",
+    href: "/metrics",
+    icon: <IconMetrics />,
     roles: ["hr_head", "admin"],
   },
   {

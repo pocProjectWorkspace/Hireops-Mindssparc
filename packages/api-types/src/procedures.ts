@@ -1331,6 +1331,103 @@ export type RecruitmentTimeToHire = z.infer<typeof recruitmentTimeToHireSchema>;
 export type RecruitmentStageDuration = z.infer<typeof recruitmentStageDurationSchema>;
 export type RecruitmentTotals = z.infer<typeof recruitmentTotalsSchema>;
 
+// ─────────────── getHrMetrics (METRICS-01) ───────────────
+
+/**
+ * The HR analytics aggregate read behind /metrics. ONE server-side read
+ * powering the whole chart grid (client-side recharts, server-side
+ * numbers). hr_head + admin only (recruiter/hiring_manager get FORBIDDEN).
+ *
+ * Windows (stated in the UI): the pipeline/source/offer/score panels are a
+ * current tenant-state snapshot (all-time) — consistent with the sibling
+ * /admin/reports and /admin/costs surfaces and demo-stable; AI spend is the
+ * last 14 calendar days (matches the Costs surface). No date-range input:
+ * the window is fixed by ticket scope.
+ */
+
+/** One pipeline-funnel row: applications currently at `stage`. All 11
+ * application_stage labels emitted in enum order, zero-filled. */
+export const hrMetricsFunnelStageSchema = z.object({
+  stage: z.string(),
+  count: z.number().int(),
+});
+
+/** Average days an application spends in `stage`, from consecutive
+ * application_state_transitions pairs. All 11 stages, enum order; a stage
+ * never left (terminal / no completed visit) carries avg_days = null. */
+export const hrMetricsStageDurationSchema = z.object({
+  stage: z.string(),
+  avg_days: z.number().nullable(),
+});
+
+/** Applications per source channel. Present sources only, ordered by
+ * applications desc then source asc; partner_empanelled surfaces as its own
+ * slice when present. */
+export const hrMetricsSourceSchema = z.object({
+  source: z.string(),
+  applications: z.number().int(),
+});
+
+/** Offer funnel counts. extended = offers that reached the extended state or
+ * a post-extended terminal (accepted / declined / expired count toward it,
+ * since those imply a prior extend); accepted / declined = their terminal
+ * states. extended >= accepted + declined by construction. */
+export const hrMetricsOfferFunnelSchema = z.object({
+  extended: z.number().int(),
+  accepted: z.number().int(),
+  declined: z.number().int(),
+});
+
+/** One day of AI spend. cost_micros is USD micros (1 USD = 1,000,000),
+ * crossed as a string like the Costs surface. Ascending, last 14 days. */
+export const hrMetricsAiSpendDaySchema = z.object({
+  day: z.string(),
+  cost_micros: z.string(),
+  calls: z.number().int(),
+});
+
+/** One ai_score histogram bucket (width 10; the top bucket is 90–100
+ * inclusive). `tier` bands the bucket for DESIGN-05 tier-token shading:
+ * platinum 90–100, gold 70–89, silver 50–69, neutral <50. All 10 buckets
+ * emitted low→high, zero-filled. */
+export const hrMetricsScoreBucketSchema = z.object({
+  label: z.string(),
+  min: z.number().int(),
+  max: z.number().int(),
+  count: z.number().int(),
+  tier: z.enum(["platinum", "gold", "silver", "neutral"]),
+});
+
+/** KPI header figures. active = non-terminal stage; hired = offer_accepted;
+ * offers_extended = offers that reached extended; avg_ai_score = mean over
+ * scored applications (null when none scored). */
+export const hrMetricsKpisSchema = z.object({
+  applications: z.number().int(),
+  active: z.number().int(),
+  hired: z.number().int(),
+  offers_extended: z.number().int(),
+  avg_ai_score: z.number().nullable(),
+});
+
+export const getHrMetricsOutputSchema = z.object({
+  kpis: hrMetricsKpisSchema,
+  funnel: z.array(hrMetricsFunnelStageSchema),
+  timeInStage: z.array(hrMetricsStageDurationSchema),
+  sourceMix: z.array(hrMetricsSourceSchema),
+  offerFunnel: hrMetricsOfferFunnelSchema,
+  aiSpend: z.array(hrMetricsAiSpendDaySchema),
+  scoreDistribution: z.array(hrMetricsScoreBucketSchema),
+});
+
+export type GetHrMetricsOutput = z.infer<typeof getHrMetricsOutputSchema>;
+export type HrMetricsFunnelStage = z.infer<typeof hrMetricsFunnelStageSchema>;
+export type HrMetricsStageDuration = z.infer<typeof hrMetricsStageDurationSchema>;
+export type HrMetricsSource = z.infer<typeof hrMetricsSourceSchema>;
+export type HrMetricsOfferFunnel = z.infer<typeof hrMetricsOfferFunnelSchema>;
+export type HrMetricsAiSpendDay = z.infer<typeof hrMetricsAiSpendDaySchema>;
+export type HrMetricsScoreBucket = z.infer<typeof hrMetricsScoreBucketSchema>;
+export type HrMetricsKpis = z.infer<typeof hrMetricsKpisSchema>;
+
 // ─────────────── approval-resolution (AGENT-03) ───────────────
 
 /**
