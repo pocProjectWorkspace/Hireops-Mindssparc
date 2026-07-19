@@ -75,6 +75,8 @@ export * from "./interview-plans";
 export * from "./interviews";
 export * from "./interview-panelists";
 export * from "./interview-feedback";
+// Panel brief real-AI interview prep (PANEL-02)
+export * from "./interview-prep";
 // Candidate accounts (Wave C, CAND-01)
 export * from "./candidate-accounts";
 // Offboarding pillar (OFFBOARD-01)

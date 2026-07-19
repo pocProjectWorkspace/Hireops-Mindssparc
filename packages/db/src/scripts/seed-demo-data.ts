@@ -2380,6 +2380,48 @@ async function main() {
          'kabir.shah.panel@example.test', 'IN', 'Hyderabad'),
         (${PANEL_PERSON_C}, ${tid}, 'Nikhil Verma', 'nikhil.verma.panel@example.test',
          'nikhil.verma.panel@example.test', 'IN', 'Pune')`;
+    // ── 4c. PANEL-02 — panel1 session demo (board + brief + AI prep) ─────
+    //
+    // A self-contained candidate on DEMO_REQ (so real JD skills exist for the
+    // Resume-vs-JD match + interview_prep grounding) with four interviews that
+    // make panel1's "All interviews" board and candidate brief demo well:
+    //   • R1 (completed) — feedback submitted by the hiring manager → the
+    //     prior-round disclosure the brief shows on R2 (rec + notes, NO scores).
+    //     panel1 is NOT on R1.
+    //   • R2 (in window NOW) — panel1 lead, meetingUrl, candidate-confirmed →
+    //     the "in window now" accent + the brief where AI prep is generated.
+    //   • R3 (upcoming) — panel1 lead.
+    //   • R4 (completed, awaiting panel1's scorecard) — panel1 panelist, NO
+    //     feedback row → "Scorecard not started" on a past interview.
+    // Distinct id namespace (a5f3–a5fa) from PANEL-01 / SEED-02. Idempotent by
+    // deterministic id; deleting the application cascades interviews +
+    // panelists + feedback + interview_prep. application_state_transitions do
+    // NOT cascade, so clear them first (same idiom the blocks above use).
+    if (panelId) {
+      const P2_PERSON = "00000000-0000-4000-8000-00000000a5f3";
+      const P2_CAND = "00000000-0000-4000-8000-00000000a5f4";
+      const P2_APP = "00000000-0000-4000-8000-00000000a5f5";
+      const P2_IV_R1 = "00000000-0000-4000-8000-00000000a5f6";
+      const P2_IV_TODAY = "00000000-0000-4000-8000-00000000a5f7";
+      const P2_IV_UPCOMING = "00000000-0000-4000-8000-00000000a5f8";
+      const P2_IV_DONE = "00000000-0000-4000-8000-00000000a5f9";
+      // The prior-round feedback author — the hiring manager, or the recruiter
+      // if that membership isn't seeded. Any membership satisfies the read.
+      const priorPanelistId = hiringManagerId ?? recruiterId;
+
+      await poolSql`DELETE FROM public.application_state_transitions WHERE application_id = ${P2_APP}`;
+      await poolSql`DELETE FROM public.applications WHERE id = ${P2_APP}`;
+      await poolSql`DELETE FROM public.candidates WHERE id = ${P2_CAND}`;
+      await poolSql`DELETE FROM public.persons WHERE id = ${P2_PERSON}`;
+
+      await poolSql`
+      INSERT INTO public.persons
+        (id, tenant_id, full_name, email_primary, email_normalised, phone_primary,
+         phone_normalised, location_country, location_city, linkedin_url)
+      VALUES
+        (${P2_PERSON}, ${tid}, 'Nikhil Menon', 'nikhil.menon.panel@example.test',
+         'nikhil.menon.panel@example.test', '+919812300031', '919812300031', 'IN', 'Chennai',
+         'https://www.linkedin.com/in/nikhil-menon-demo')`;
       await poolSql`
       INSERT INTO public.candidates
         (id, tenant_id, person_id, source, consent_version, parsed_skills, years_of_experience)
@@ -2403,6 +2445,14 @@ async function main() {
          now() - interval '30 hours', ${recruiterId}, now() - interval '8 days', true)`;
 
       // (A) In-window NOW — scheduled, its [start,end] window contains now.
+        (${P2_CAND}, ${tid}, ${P2_PERSON}, 'career_site', 'v1',
+         ${JSON.stringify(["Python", "AWS", "PostgreSQL", "Docker", "System design"])}::jsonb, 6.0)`;
+      await poolSql`
+      INSERT INTO public.applications
+        (id, tenant_id, candidate_id, requisition_id, source, current_stage, stage_entered_at)
+      VALUES (${P2_APP}, ${tid}, ${P2_CAND}, ${DEMO_REQ}, 'career_site', 'tech_interview', now())`;
+
+      // R1 — completed, prior-round feedback by the hiring manager (NOT panel1).
       await poolSql`
       INSERT INTO public.interviews
         (id, tenant_id, application_id, requisition_id, round_number, round_name,
@@ -2417,6 +2467,40 @@ async function main() {
       VALUES (${tid}, ${PANEL_IV_A}, ${panelId}, true)`;
 
       // (B) Completed a few hours ago — pending scorecard (today).
+      VALUES (${P2_IV_R1}, ${tid}, ${P2_APP}, ${DEMO_REQ}, 1, 'Technical screen',
+              'completed', 'technical', now() - interval '4 days',
+              now() - interval '4 days' + interval '60 minutes', 60,
+              'video', 'https://meet.example.test/hireops-panel-r1',
+              now() - interval '5 days', ${recruiterId})`;
+      await poolSql`
+      INSERT INTO public.interview_panelists (tenant_id, interview_id, membership_id, is_lead)
+      VALUES (${tid}, ${P2_IV_R1}, ${priorPanelistId}, true)`;
+      await poolSql`
+      INSERT INTO public.interview_feedback
+        (tenant_id, interview_id, membership_id, scorecard, strengths, concerns,
+         notes, recommendation, submitted_at)
+      VALUES (${tid}, ${P2_IV_R1}, ${priorPanelistId},
+              ${JSON.stringify({ problem_solving: 4, technical_depth: 4, code_quality: 4, system_design: 3, communication: 4 })}::jsonb,
+              'Solid fundamentals; explained a real production incident and the fix clearly.',
+              'Did not go deep on distributed-system failure modes — worth probing next round.',
+              'Move forward to the system-design round.', 'yes', now() - interval '4 days')`;
+
+      // R2 — IN WINDOW NOW: started 15m ago, ends in 45m. panel1 lead, confirmed.
+      await poolSql`
+      INSERT INTO public.interviews
+        (id, tenant_id, application_id, requisition_id, round_number, round_name,
+         status, scorecard_template, scheduled_start, scheduled_end, duration_minutes,
+         mode, meeting_url, candidate_confirmed_at, created_by_membership_id)
+      VALUES (${P2_IV_TODAY}, ${tid}, ${P2_APP}, ${DEMO_REQ}, 2, 'System design',
+              'scheduled', 'technical', now() - interval '15 minutes',
+              now() + interval '45 minutes', 60,
+              'video', 'https://meet.example.test/hireops-panel-now',
+              now() - interval '1 day', ${recruiterId})`;
+      await poolSql`
+      INSERT INTO public.interview_panelists (tenant_id, interview_id, membership_id, is_lead)
+      VALUES (${tid}, ${P2_IV_TODAY}, ${panelId}, true)`;
+
+      // R3 — upcoming (+2 days), panel1 lead, not yet confirmed.
       await poolSql`
       INSERT INTO public.interviews
         (id, tenant_id, application_id, requisition_id, round_number, round_name,
@@ -2431,6 +2515,15 @@ async function main() {
       VALUES (${tid}, ${PANEL_IV_B}, ${panelId}, true)`;
 
       // (C) Completed >24h ago — pending scorecard + OVERDUE (drives the nudge).
+      VALUES (${P2_IV_UPCOMING}, ${tid}, ${P2_APP}, ${DEMO_REQ}, 3, 'Hiring manager',
+              'scheduled', 'manager', now() + interval '2 days',
+              now() + interval '2 days' + interval '45 minutes', 45,
+              'onsite', 'https://meet.example.test/hireops-panel-r3', NULL, ${recruiterId})`;
+      await poolSql`
+      INSERT INTO public.interview_panelists (tenant_id, interview_id, membership_id, is_lead)
+      VALUES (${tid}, ${P2_IV_UPCOMING}, ${panelId}, true)`;
+
+      // R4 — completed but panel1 has NOT submitted a scorecard (awaiting).
       await poolSql`
       INSERT INTO public.interviews
         (id, tenant_id, application_id, requisition_id, round_number, round_name,
@@ -2443,6 +2536,19 @@ async function main() {
       await poolSql`
       INSERT INTO public.interview_panelists (tenant_id, interview_id, membership_id, is_lead)
       VALUES (${tid}, ${PANEL_IV_C}, ${panelId}, true)`;
+      VALUES (${P2_IV_DONE}, ${tid}, ${P2_APP}, ${DEMO_REQ}, 4, 'Bar raiser',
+              'completed', 'general', now() - interval '1 day',
+              now() - interval '1 day' + interval '45 minutes', 45,
+              'video', 'https://meet.example.test/hireops-panel-r4',
+              now() - interval '2 days', ${recruiterId})`;
+      await poolSql`
+      INSERT INTO public.interview_panelists (tenant_id, interview_id, membership_id, is_lead)
+      VALUES (${tid}, ${P2_IV_DONE}, ${panelId}, true)`;
+
+      console.log("PANEL-02 panel1 session demo:");
+      console.log(
+        "  → Nikhil Menon on DEMO_REQ: R2 in-window-now (brief + AI prep), R3 upcoming, R4 awaiting scorecard; R1 carries prior-round feedback.",
+      );
     }
 
     // ── 4c. HROPS-01 HR Ops cases — two candidates AT hr_round ──────────

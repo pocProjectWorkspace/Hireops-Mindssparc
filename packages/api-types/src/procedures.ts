@@ -8,6 +8,7 @@ import {
   type InterviewScorecardTemplate,
 } from "./enums";
 import { jdBiasScanSchema, biasCategorySchema, biasSeveritySchema } from "./bias-lexicon";
+import { skillsMatchResultSchema } from "./panel-prep";
 
 /**
  * Input + output schemas for the initial six tRPC procedures (API-01).
@@ -2844,11 +2845,17 @@ export const getPanelInterviewBriefOutputSchema = z.object({
     // resume-derived summary — the parsed skills already read for the drawer;
     // no new PII join beyond what getCandidateById exposes.
     parsedSkills: z.array(z.string()),
+    // PANEL-02: parsed years-of-experience for the experience summary card.
+    // Rendered only when present (honest empty state otherwise).
+    yearsOfExperience: z.number().nullable(),
   }),
   round: z.object({
     scorecardTemplate: interviewScorecardTemplateSchema,
     competencyFocus: z.array(z.string()),
   }),
+  // PANEL-02: deterministic Resume-vs-JD skills overlap (no AI). Computed
+  // server-side from candidate.parsedSkills vs the requisition's jd_skills.
+  skillsMatch: skillsMatchResultSchema,
   coPanelists: z.array(
     z.object({
       membershipId: z.string().uuid(),

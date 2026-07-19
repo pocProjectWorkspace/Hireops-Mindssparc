@@ -33,6 +33,7 @@ import {
   IconReqApprovals,
   IconInterviews,
   IconPanel,
+  IconPanelBoard,
   IconMarketIntel,
   IconFeasibility,
   IconHrCases,
@@ -68,6 +69,7 @@ export type PortalNavKey =
   | "exec-audit"
   | "interviews"
   | "panel"
+  | "panel-board"
   | "panel-feedback"
   | "panel-history"
   | "hr-documents"
@@ -233,6 +235,15 @@ const MAIN_NAV: NavItem[] = [
     label: "My interviews",
     href: "/panel",
     icon: <IconPanel />,
+    roles: ["panel_member", "admin"],
+  },
+  {
+    // PANEL-02: the session board — my interviews as a filterable board.
+    // panel_member + admin only. "My interviews" (/panel) stays the card list.
+    key: "panel-board",
+    label: "All interviews",
+    href: "/panel/board",
+    icon: <IconPanelBoard />,
     roles: ["panel_member", "admin"],
   },
   {

@@ -498,6 +498,27 @@
       "when": 1784500000003,
       "tag": "0073_hrops_03_audit_triggers",
       "breakpoints": true
+    },
+    {
+      "idx": 74,
+      "version": "7",
+      "when": 1784500000004,
+      "tag": "0074_panel_02_interview_prep",
+      "breakpoints": true
+    },
+    {
+      "idx": 75,
+      "version": "7",
+      "when": 1784500000005,
+      "tag": "0075_panel_02_force_rls",
+      "breakpoints": true
+    },
+    {
+      "idx": 76,
+      "version": "7",
+      "when": 1784500000006,
+      "tag": "0076_panel_02_audit_triggers",
+      "breakpoints": true
     }
   ]
 }

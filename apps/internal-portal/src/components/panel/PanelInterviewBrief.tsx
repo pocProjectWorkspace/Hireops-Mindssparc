@@ -7,20 +7,24 @@ import { Badge, Card } from "@/components/ui";
 import type { BadgeTone } from "@/components/ui";
 import { trpc, handleTRPCError } from "@/lib/trpc-client";
 import type { GetPanelInterviewBriefOutput, InterviewRecommendation } from "@hireops/api-types";
+import { BriefContent } from "./BriefContent";
 
 /**
- * INT-03 — the candidate brief + the scorecard form for one interview.
+ * INT-03 / PANEL-02 — the candidate brief + the scorecard form for one
+ * interview.
  *
- * The brief is read-only context: candidate facet, round competencies,
- * co-panelists, and prior-round submitted feedback (recommendation +
- * strengths + concerns only — no scores, by design). The scorecard is MY
- * single feedback row: 1–5 per criterion, strengths / concerns / notes, and a
- * recommendation. Save draft keeps it editable; Submit (recommendation
- * required, confirm-gated) freezes it — after which the whole form renders
- * read-only.
+ * The brief (read-only context — interview header, experience summary,
+ * Resume-vs-JD skills match, previous-round feedback, and real-AI interview
+ * prep) is rendered by the PANEL-02 `BriefContent` component. This file owns
+ * only the scorecard form below it: MY single feedback row (1–5 per criterion,
+ * strengths / concerns / notes, and a recommendation). Save draft keeps it
+ * editable; Submit (recommendation required, confirm-gated) freezes it — after
+ * which the whole form renders read-only.
+ *
+ * SEAM (PANEL-02): the scorecard block is deliberately preserved as-is for
+ * PANEL-01's parallel scorecard upgrade in the main tree — only the brief
+ * content above it was extracted into BriefContent.tsx.
  */
-
-const MODE_LABEL: Record<string, string> = { video: "Video", onsite: "On-site", phone: "Phone" };
 
 const RECOMMENDATIONS: { value: InterviewRecommendation; label: string; tone: BadgeTone }[] = [
   { value: "strong_yes", label: "Strong yes", tone: "success" },
@@ -187,147 +191,13 @@ export function PanelInterviewBrief({
         ← My interviews
       </a>
 
-      {/* Header */}
-      <Card className="mb-5">
-        <div className="flex flex-wrap items-start justify-between gap-3">
-          <div>
-            <h2 className="text-lg font-semibold text-neutral-900">
-              {brief.candidate.name ?? "Candidate"}
-            </h2>
-            <p className="text-sm text-neutral-600">{iv.positionTitle}</p>
-          </div>
-          <div className="flex flex-col items-end gap-1 text-sm">
-            <span className="font-medium text-neutral-800">
-              Round {iv.roundNumber}: {iv.roundName}
-            </span>
-            <span className="text-neutral-500">
-              {formatWhen(iv.scheduledStart)} · {MODE_LABEL[iv.mode] ?? iv.mode} ·{" "}
-              {iv.durationMinutes}m
-            </span>
-            <div className="flex items-center gap-2">
-              <Badge tone={statusTone(iv.status)}>{iv.status}</Badge>
-              {iv.candidateConfirmedAt ? (
-                <Badge tone="success">Candidate confirmed</Badge>
-              ) : iv.status === "scheduled" ? (
-                <Badge tone="warning">Awaiting confirmation</Badge>
-              ) : null}
-            </div>
-          </div>
-        </div>
-        {iv.meetingUrl ? (
-          <div className="mt-4 border-t border-neutral-100 pt-3">
-            <a
-              href={iv.meetingUrl}
-              target="_blank"
-              rel="noreferrer"
-              className="text-sm font-medium text-brand-700 hover:underline"
-            >
-              Join meeting →
-            </a>
-          </div>
-        ) : null}
-      </Card>
-
-      {/* Candidate facet */}
-      <Card className="mb-5">
-        <SectionTitle>Candidate</SectionTitle>
-        <dl className="grid grid-cols-2 gap-x-6 gap-y-2 text-sm">
-          <Field label="Current stage" value={humanStage(brief.candidate.currentStage)} />
-          <Field label="Location" value={brief.candidate.locationCountry ?? "—"} />
-        </dl>
-        {brief.candidate.parsedSkills.length > 0 ? (
-          <div className="mt-3">
-            <p className="mb-1.5 text-xs font-medium uppercase tracking-wide text-neutral-400">
-              Resume skills
-            </p>
-            <div className="flex flex-wrap gap-1.5">
-              {brief.candidate.parsedSkills.map((s) => (
-                <Badge key={s} tone="neutral">
-                  {s}
-                </Badge>
-              ))}
-            </div>
-          </div>
-        ) : null}
-      </Card>
-
-      {/* Round focus + co-panelists */}
-      <div className="mb-5 grid gap-5 md:grid-cols-2">
-        <Card>
-          <SectionTitle>This round probes</SectionTitle>
-          {brief.round.competencyFocus.length > 0 ? (
-            <div className="flex flex-wrap gap-1.5">
-              {brief.round.competencyFocus.map((c) => (
-                <Badge key={c} tone="info">
-                  {c}
-                </Badge>
-              ))}
-            </div>
-          ) : (
-            <p className="text-sm text-neutral-400">No specific competencies flagged.</p>
-          )}
-          <p className="mt-3 text-xs text-neutral-400">
-            Scorecard template: {brief.round.scorecardTemplate}
-          </p>
-        </Card>
-        <Card>
-          <SectionTitle>Panel</SectionTitle>
-          <ul className="space-y-1 text-sm">
-            {brief.coPanelists.map((p) => (
-              <li key={p.membershipId} className="flex items-center gap-2">
-                <span className={p.isMe ? "font-medium text-neutral-900" : "text-neutral-700"}>
-                  {p.name ?? "Panellist"}
-                  {p.isMe ? " (you)" : ""}
-                </span>
-                {p.isLead ? <Badge tone="accent">Lead</Badge> : null}
-              </li>
-            ))}
-          </ul>
-        </Card>
+      {/* PANEL-02 — the candidate brief content (context, experience, skills
+          match, prior-round feedback, real-AI prep). */}
+      <div className="mb-5">
+        <BriefContent interviewId={interviewId} brief={brief} />
       </div>
 
-      {/* Prior-round feedback — recommendation + strengths + concerns only */}
-      {brief.priorRoundFeedback.length > 0 ? (
-        <Card className="mb-5">
-          <SectionTitle>Earlier rounds</SectionTitle>
-          <p className="mb-3 text-xs text-neutral-400">
-            Summaries only — per-criterion scores are not shared across rounds.
-          </p>
-          <div className="space-y-3">
-            {brief.priorRoundFeedback.map((f) => (
-              <div key={f.interviewId} className="rounded-md border border-neutral-100 p-3">
-                <div className="mb-1.5 flex items-center justify-between">
-                  <span className="text-sm font-medium text-neutral-800">
-                    Round {f.roundNumber}: {f.roundName}
-                    <span className="ml-2 font-normal text-neutral-500">
-                      {f.panelistName ?? "Panellist"}
-                    </span>
-                  </span>
-                  {f.recommendation ? (
-                    <Badge tone={recommendationTone(f.recommendation)}>
-                      {recommendationLabel(f.recommendation)}
-                    </Badge>
-                  ) : null}
-                </div>
-                {f.strengths ? (
-                  <p className="text-sm text-neutral-700">
-                    <span className="text-neutral-400">Strengths: </span>
-                    {f.strengths}
-                  </p>
-                ) : null}
-                {f.concerns ? (
-                  <p className="text-sm text-neutral-700">
-                    <span className="text-neutral-400">Concerns: </span>
-                    {f.concerns}
-                  </p>
-                ) : null}
-              </div>
-            ))}
-          </div>
-        </Card>
-      ) : null}
-
-      {/* Scorecard */}
+      {/* Scorecard — PRESERVED for PANEL-01's parallel upgrade; do not restructure. */}
       <Card>
         <div className="mb-4 flex items-center justify-between">
           <SectionTitle>Your scorecard</SectionTitle>
@@ -501,15 +371,6 @@ function SectionTitle({ children }: { children: React.ReactNode }) {
   return <h3 className="mb-3 text-sm font-semibold text-neutral-900">{children}</h3>;
 }
 
-function Field({ label, value }: { label: string; value: string }) {
-  return (
-    <div>
-      <dt className="text-xs uppercase tracking-wide text-neutral-400">{label}</dt>
-      <dd className="text-neutral-800">{value}</dd>
-    </div>
-  );
-}
-
 function PlainTextArea({
   value,
   onChange,
@@ -552,40 +413,6 @@ function recommendationButtonClass(active: boolean, disabled: boolean): string {
   if (active) return `${base} border-brand-600 bg-brand-600 text-white`;
   if (disabled) return `${base} border-neutral-200 bg-neutral-50 text-neutral-400`;
   return `${base} border-neutral-300 text-neutral-600 hover:bg-neutral-100`;
-}
-
-function statusTone(status: string): BadgeTone {
-  switch (status) {
-    case "scheduled":
-      return "info";
-    case "completed":
-      return "success";
-    case "no_show":
-    case "cancelled":
-      return "warning";
-    default:
-      return "neutral";
-  }
-}
-
-function recommendationTone(rec: InterviewRecommendation): BadgeTone {
-  switch (rec) {
-    case "strong_yes":
-    case "yes":
-      return "success";
-    case "hold":
-      return "warning";
-    case "no":
-      return "error";
-  }
-}
-
-function recommendationLabel(rec: InterviewRecommendation): string {
-  return RECOMMENDATIONS.find((r) => r.value === rec)?.label ?? rec;
-}
-
-function humanStage(stage: string): string {
-  return stage.replace(/_/g, " ").replace(/\b\w/g, (m) => m.toUpperCase());
 }
 
 function formatWhen(iso: string | null): string {

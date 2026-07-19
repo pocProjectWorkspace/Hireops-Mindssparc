@@ -62,6 +62,7 @@ import {
   interviews,
   interviewPanelists,
   interviewFeedback,
+  interviewPrep,
   workdaySyncOutbox,
   aiScoreOutbox,
   automationAgents,
@@ -185,6 +186,15 @@ import {
   feedbackSummarySchema,
   type FeedbackSummary,
   type SummarizeMyFeedbackNotesOutput,
+  // PANEL-02 — panel brief skills match + real-AI interview prep.
+  computeSkillsMatch,
+  getInterviewPrepInputSchema,
+  getInterviewPrepOutputSchema,
+  generateInterviewPrepInputSchema,
+  generateInterviewPrepOutputSchema,
+  interviewPrepAiSchema,
+  type InterviewPrepAi,
+  type InterviewPrepCard,
   completeInterviewInputSchema,
   completeInterviewOutputSchema,
   markInterviewNoShowInputSchema,
@@ -534,6 +544,13 @@ import {
   FEEDBACK_SUMMARY_SCHEMA_NAME,
   FEEDBACK_SUMMARY_FEATURE,
 } from "../lib/feedback-summary";
+import {
+  buildInterviewPrepPrompt,
+  interviewPrepAiJsonSchema,
+  INTERVIEW_PREP_PROMPT_VERSION,
+  INTERVIEW_PREP_SCHEMA_NAME,
+  INTERVIEW_PREP_FEATURE,
+} from "../lib/interview-prep";
 import { enqueueNotification, signLink, hashToken, verifyLink } from "@hireops/notifications";
 import { assertRuleAttachable, IncompatibleApprovalRuleError } from "@hireops/agent-actions";
 import {
@@ -4471,6 +4488,9 @@ export const appRouter = router({
             candidateName: persons.fullName,
             locationCountry: persons.locationCountry,
             parsedSkills: candidates.parsedSkills,
+            // PANEL-02: parsed YoE (experience card) + jd version (skills match).
+            yearsOfExperience: candidates.yearsOfExperience,
+            jdVersionId: requisitions.jdVersionId,
           })
           .from(interviews)
           .innerJoin(applications, eq(applications.id, interviews.applicationId))
@@ -4557,6 +4577,27 @@ export const appRouter = router({
           input.interviewId,
         );
 
+        // PANEL-02 — DETERMINISTIC Resume-vs-JD skills overlap (no AI). Pull
+        // the requisition's JD skills and diff them against the parsed resume
+        // skills with the pure helper (unit-tested in api-types).
+        const parsedSkills = Array.isArray(iv.parsedSkills) ? (iv.parsedSkills as string[]) : [];
+        const jdSkillRows = await db
+          .select({
+            skillName: jdSkills.skillName,
+            weight: jdSkills.weight,
+            isRequired: jdSkills.isRequired,
+          })
+          .from(jdSkills)
+          .where(eq(jdSkills.jdVersionId, iv.jdVersionId));
+        const skillsMatch = computeSkillsMatch(
+          parsedSkills,
+          jdSkillRows.map((s) => ({
+            skillName: s.skillName,
+            weight: Number(s.weight),
+            isRequired: s.isRequired,
+          })),
+        );
+
         // My own feedback (hydrates the form). Criteria are always the full
         // template set; saved scores fill in where present.
         const myFeedbackRow = membershipId
@@ -4595,9 +4636,11 @@ export const appRouter = router({
             name: iv.candidateName,
             currentStage: iv.currentStage,
             locationCountry: iv.locationCountry,
-            parsedSkills: Array.isArray(iv.parsedSkills) ? (iv.parsedSkills as string[]) : [],
+            parsedSkills,
+            yearsOfExperience: iv.yearsOfExperience != null ? Number(iv.yearsOfExperience) : null,
           },
           round: { scorecardTemplate, competencyFocus },
+          skillsMatch,
           coPanelists,
           priorRoundFeedback,
           myFeedback: {
@@ -4843,6 +4886,232 @@ export const appRouter = router({
           return { summary: parsed };
         },
       );
+    }),
+
+  // ─────────────────── real-AI interview prep (PANEL-02) ───────────────────
+  //
+  // Suggested "areas to probe" + probing questions for one interview, grounded
+  // ONLY in the JD + skills, the parsed resume, prior-round recommendations +
+  // qualitative text (NEVER scores), and the round objective. Same feasibility
+  // pattern as req_feasibility / comp_recommendation: cached per interview,
+  // regenerate replaces, cost-logged, kill-switchable. Access is the panel
+  // boundary — a panelist ON this interview, or an admin.
+
+  /** getInterviewPrep — the cached prep card (read after a generate, or a deep
+   * link). Panelist-on-this-interview + admin. No AI call. Also reports whether
+   * the per-tenant kill-switch is on so the UI can render an honest state. */
+  getInterviewPrep: protectedProcedure
+    .input(getInterviewPrepInputSchema)
+    .output(getInterviewPrepOutputSchema)
+    .query(async ({ ctx, input }) => {
+      requireAnyRole(ctx, PANEL_SURFACE_ROLES, "This surface is for interview panellists.");
+      const db = requireDb(ctx);
+      if (!ctx.tenantId) {
+        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
+      }
+      const membershipId = await resolveActorMembership(db, ctx);
+      const isAdmin = ctx.roles.includes("admin");
+
+      // Interview must exist (RLS scopes to tenant) + caller must be on it.
+      const [iv] = await db
+        .select({ id: interviews.id })
+        .from(interviews)
+        .where(eq(interviews.id, input.interviewId))
+        .limit(1);
+      if (!iv) throw new TRPCError({ code: "NOT_FOUND", message: "Interview not found" });
+      const myPanelist = membershipId
+        ? await findPanelistRow(db, input.interviewId, membershipId)
+        : null;
+      if (!isAdmin && !myPanelist) {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: "You are not a panellist on this interview.",
+        });
+      }
+
+      const aiSettings = await resolveTenantAiSettingsDb(ctx.tenantId);
+      const [stored] = await db
+        .select()
+        .from(interviewPrep)
+        .where(
+          and(
+            eq(interviewPrep.tenantId, ctx.tenantId),
+            eq(interviewPrep.interviewId, input.interviewId),
+          ),
+        )
+        .limit(1);
+
+      return {
+        prep: stored ? storedInterviewPrepToCard(stored) : null,
+        aiEnabled: aiSettings.interview_prep.enabled,
+      };
+    }),
+
+  /** generateInterviewPrep — the ONE real AI call per click. Builds a grounded
+   * prompt (JD + skills, parsed resume, prior-round recommendations +
+   * qualitative text — NO scores, round objective), calls Claude via
+   * completeStructured (feature interview_prep, cost-logged), and upserts the
+   * prep (regenerate replaces). Panelist-on-this-interview + admin, audited.
+   * Honours the CONF-01 per-tenant interview_prep kill-switch. */
+  generateInterviewPrep: protectedProcedure
+    .input(generateInterviewPrepInputSchema)
+    .output(generateInterviewPrepOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      return withAudit("generate_interview_prep", ctx, input, async () => {
+        requireAnyRole(ctx, PANEL_SURFACE_ROLES, "This surface is for interview panellists.");
+        const db = requireDb(ctx);
+        if (!ctx.tenantId) {
+          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
+        }
+        const tenantId = ctx.tenantId;
+        const membershipId = await resolveActorMembership(db, ctx);
+        if (!membershipId) {
+          throw new TRPCError({
+            code: "FORBIDDEN",
+            message: "You are not a panellist on this interview.",
+          });
+        }
+        const isAdmin = ctx.roles.includes("admin");
+
+        // The interview + candidate facet + jd version, in one read.
+        const [iv] = await db
+          .select({
+            id: interviews.id,
+            applicationId: interviews.applicationId,
+            requisitionId: interviews.requisitionId,
+            roundNumber: interviews.roundNumber,
+            roundName: interviews.roundName,
+            scorecardTemplateSnapshot: interviews.scorecardTemplate,
+            positionTitle: positions.title,
+            candidateName: persons.fullName,
+            parsedSkills: candidates.parsedSkills,
+            yearsOfExperience: candidates.yearsOfExperience,
+            jdVersionId: requisitions.jdVersionId,
+            jdText: jdVersions.jdText,
+          })
+          .from(interviews)
+          .innerJoin(applications, eq(applications.id, interviews.applicationId))
+          .innerJoin(candidates, eq(candidates.id, applications.candidateId))
+          .innerJoin(persons, eq(persons.id, candidates.personId))
+          .innerJoin(requisitions, eq(requisitions.id, interviews.requisitionId))
+          .innerJoin(positions, eq(positions.id, requisitions.positionId))
+          .innerJoin(jdVersions, eq(jdVersions.id, requisitions.jdVersionId))
+          .where(eq(interviews.id, input.interviewId))
+          .limit(1);
+        if (!iv) throw new TRPCError({ code: "NOT_FOUND", message: "Interview not found" });
+
+        // ENFORCED: caller must be a panelist on THIS interview (or admin).
+        const myPanelist = await findPanelistRow(db, input.interviewId, membershipId);
+        if (!isAdmin && !myPanelist) {
+          throw new TRPCError({
+            code: "FORBIDDEN",
+            message: "You are not a panellist on this interview.",
+          });
+        }
+
+        // CONF-01 kill-switch — disabled → clean error, no model call, no log.
+        const aiSettings = await resolveTenantAiSettingsDb(tenantId);
+        const prepSettings = aiSettings.interview_prep;
+        if (!prepSettings.enabled) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message:
+              "Interview prep is disabled for this tenant. An admin can re-enable it in Admin → AI settings.",
+          });
+        }
+
+        // Round objective (competency focus) from the plan round; JD skills.
+        const [planRound] = await db
+          .select({ competencyFocus: interviewPlans.competencyFocus })
+          .from(interviewPlans)
+          .where(
+            and(
+              eq(interviewPlans.requisitionId, iv.requisitionId),
+              eq(interviewPlans.roundNumber, iv.roundNumber),
+            ),
+          )
+          .limit(1);
+        const competencyFocus = Array.isArray(planRound?.competencyFocus)
+          ? (planRound.competencyFocus as string[])
+          : [];
+
+        const jdSkillRows = await db
+          .select({ skillName: jdSkills.skillName, isRequired: jdSkills.isRequired })
+          .from(jdSkills)
+          .where(eq(jdSkills.jdVersionId, iv.jdVersionId));
+
+        // Prior-round qualitative signal — recommendation + text, NO scores.
+        const priorRounds = await fetchPriorRoundFeedback(db, iv.applicationId, input.interviewId);
+
+        const { system, user } = buildInterviewPrepPrompt({
+          candidateName: iv.candidateName,
+          roleTitle: iv.positionTitle,
+          roundName: iv.roundName,
+          competencyFocus,
+          jdText: iv.jdText,
+          skills: jdSkillRows.map((s) => ({ skillName: s.skillName, isRequired: s.isRequired })),
+          parsedResumeSkills: Array.isArray(iv.parsedSkills) ? (iv.parsedSkills as string[]) : [],
+          yearsOfExperience: iv.yearsOfExperience != null ? Number(iv.yearsOfExperience) : null,
+          priorRounds: priorRounds.map((p) => ({
+            roundNumber: p.roundNumber,
+            roundName: p.roundName,
+            recommendation: p.recommendation,
+            strengths: p.strengths,
+            concerns: p.concerns,
+          })),
+        });
+
+        const client = await getAIClient(tenantId);
+        const raw = await client.completeStructured<InterviewPrepAi>({
+          prompt: user,
+          system,
+          model: prepSettings.model,
+          temperature: prepSettings.temperature,
+          maxTokens: prepSettings.maxTokens,
+          schema: interviewPrepAiJsonSchema,
+          schemaName: INTERVIEW_PREP_SCHEMA_NAME,
+          feature: INTERVIEW_PREP_FEATURE,
+          requestId: ctx.requestId,
+          actorMembershipId: membershipId,
+        });
+        // Trust-but-verify: re-parse so a provider quirk can't smuggle a bad
+        // shape into the DB.
+        const prep = interviewPrepAiSchema.parse(raw);
+
+        const now = new Date();
+        await db
+          .insert(interviewPrep)
+          .values({
+            tenantId,
+            interviewId: input.interviewId,
+            focusAreas: prep.focusAreas,
+            probingQuestions: prep.probingQuestions,
+            model: client.provider,
+            promptVersion: INTERVIEW_PREP_PROMPT_VERSION,
+            generatedByMembershipId: membershipId,
+          })
+          .onConflictDoUpdate({
+            target: [interviewPrep.tenantId, interviewPrep.interviewId],
+            set: {
+              focusAreas: prep.focusAreas,
+              probingQuestions: prep.probingQuestions,
+              model: client.provider,
+              promptVersion: INTERVIEW_PREP_PROMPT_VERSION,
+              generatedByMembershipId: membershipId,
+              updatedAt: now,
+            },
+          });
+
+        return {
+          prep: {
+            focusAreas: prep.focusAreas,
+            probingQuestions: prep.probingQuestions,
+            model: client.provider,
+            promptVersion: INTERVIEW_PREP_PROMPT_VERSION,
+            generatedAt: now.toISOString(),
+          },
+        };
+      });
     }),
 
   // ─────────────────── interview completion (INT-04) ───────────────────
@@ -16664,6 +16933,31 @@ async function fetchPriorRoundFeedback(
     concerns: r.concerns,
     submittedAt: toIsoString(r.submittedAt),
   }));
+}
+
+/**
+ * PANEL-02 — map a stored interview_prep row to the wire card. The jsonb
+ * columns are re-validated by the api-types zod schema at the tRPC output
+ * boundary, so a coarse cast here is safe. `generatedAt` reflects the last
+ * regenerate (updated_at), falling back to created_at.
+ */
+function storedInterviewPrepToCard(row: {
+  focusAreas: unknown;
+  probingQuestions: unknown;
+  model: string | null;
+  promptVersion: string | null;
+  createdAt: Date | string;
+  updatedAt: Date | string;
+}): InterviewPrepCard {
+  return {
+    focusAreas: Array.isArray(row.focusAreas)
+      ? (row.focusAreas as InterviewPrepCard["focusAreas"])
+      : [],
+    probingQuestions: Array.isArray(row.probingQuestions) ? (row.probingQuestions as string[]) : [],
+    model: row.model,
+    promptVersion: row.promptVersion,
+    generatedAt: toIsoString(row.updatedAt ?? row.createdAt),
+  };
 }
 
 /**
