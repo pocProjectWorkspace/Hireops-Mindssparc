@@ -3627,3 +3627,212 @@ export const partnerGetDashboardStatsOutputSchema = z.object({
   byStage: z.array(partnerStageCountSchema),
 });
 export type PartnerGetDashboardStatsOutput = z.infer<typeof partnerGetDashboardStatsOutputSchema>;
+
+// ═══════════════════════════════════════════════════════════════════════
+// HROPS-01 — HR Ops cases workspace + HR round
+// ═══════════════════════════════════════════════════════════════════════
+
+/**
+ * The HR-Ops "case window" — an application is an HR case while it sits in one
+ * of these stages (post-technical-rounds, offer-desk territory). Mirrors the
+ * canonical application_stage enum values; a subset, not a new vocabulary.
+ */
+export const hrCaseStageSchema = z.enum([
+  "tech_interview",
+  "hr_round",
+  "offer_drafted",
+  "offer_accepted",
+]);
+export type HrCaseStage = z.infer<typeof hrCaseStageSchema>;
+
+/** The HR-round assessment recommendation — the deterministic advance gate. */
+export const hrRoundRecommendationSchema = z.enum(["proceed", "hold", "reject"]);
+export type HrRoundRecommendation = z.infer<typeof hrRoundRecommendationSchema>;
+
+/**
+ * One interview round's result as an HR-facing chip — round title + the
+ * submitted recommendation only (NO scores; anti-anchoring convention, same
+ * rule the panel brief uses across rounds). `recommendation` is null when the
+ * round has no submitted feedback yet.
+ */
+export const hrRoundResultSchema = z.object({
+  interviewId: z.string().uuid(),
+  roundNumber: z.number().int(),
+  roundName: z.string(),
+  scorecardTemplate: z.string().nullable(),
+  status: z.string(),
+  recommendation: interviewRecommendationSchema.nullable(),
+});
+export type HrRoundResult = z.infer<typeof hrRoundResultSchema>;
+
+// ─────────── listHrCases ───────────
+
+export const hrCaseListRowSchema = z.object({
+  applicationId: z.string().uuid(),
+  candidateId: z.string().uuid(),
+  candidateName: z.string().nullable(),
+  roleTitle: z.string().nullable(),
+  stage: hrCaseStageSchema,
+  aiScore: z.number().nullable(),
+  roundResults: z.array(hrRoundResultSchema),
+  salaryBand: z.string().nullable(),
+  assignedRecruiterName: z.string().nullable(),
+  lastActivityAt: z.string(),
+  // hr_round stage AND no saved assessment yet — the "HR round pending" bucket.
+  hrRoundPending: z.boolean(),
+  hasAssessment: z.boolean(),
+  assessmentRecommendation: hrRoundRecommendationSchema.nullable(),
+  assessmentRating: z.number().int().nullable(),
+});
+export type HrCaseListRow = z.infer<typeof hrCaseListRowSchema>;
+
+export const hrCaseStatsSchema = z.object({
+  total: z.number().int(),
+  hrRoundPending: z.number().int(),
+  offerStage: z.number().int(),
+  accepted: z.number().int(),
+});
+export type HrCaseStats = z.infer<typeof hrCaseStatsSchema>;
+
+export const listHrCasesInputSchema = z.object({
+  search: z.string().max(200).optional(),
+  stage: hrCaseStageSchema.optional(),
+});
+export const listHrCasesOutputSchema = z.object({
+  rows: z.array(hrCaseListRowSchema),
+  stats: hrCaseStatsSchema,
+});
+export type ListHrCasesInput = z.infer<typeof listHrCasesInputSchema>;
+export type ListHrCasesOutput = z.infer<typeof listHrCasesOutputSchema>;
+
+// ─────────── the assessment record ───────────
+
+export const hrRoundAssessmentSchema = z.object({
+  id: z.string().uuid(),
+  applicationId: z.string().uuid(),
+  motivationDiscussed: z.boolean(),
+  salaryExpectationDiscussed: z.boolean(),
+  cultureFitAssessed: z.boolean(),
+  workAuthorizationVerified: z.boolean(),
+  noticePeriodConfirmed: z.boolean(),
+  relocationWillingness: z.boolean(),
+  notes: z.string().nullable(),
+  rating: z.number().int(),
+  recommendation: hrRoundRecommendationSchema,
+  completedByMembershipId: z.string().uuid().nullable(),
+  completedByName: z.string().nullable(),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+});
+export type HrRoundAssessment = z.infer<typeof hrRoundAssessmentSchema>;
+
+// ─────────── getHrCaseDetail ───────────
+
+/** Prior-round feedback card — recommendation + qualitative summary, NO scores. */
+export const hrCaseFeedbackCardSchema = z.object({
+  interviewId: z.string().uuid(),
+  roundNumber: z.number().int(),
+  roundName: z.string(),
+  panelistName: z.string().nullable(),
+  recommendation: interviewRecommendationSchema.nullable(),
+  strengths: z.string().nullable(),
+  concerns: z.string().nullable(),
+  notes: z.string().nullable(),
+  submittedAt: z.string().nullable(),
+});
+export type HrCaseFeedbackCard = z.infer<typeof hrCaseFeedbackCardSchema>;
+
+export const hrCaseCandidateSchema = z.object({
+  candidateId: z.string().uuid(),
+  name: z.string().nullable(),
+  email: z.string().nullable(),
+  phone: z.string().nullable(),
+  locationCity: z.string().nullable(),
+  locationCountry: z.string().nullable(),
+  linkedinUrl: z.string().nullable(),
+  yearsOfExperience: z.number().nullable(),
+  parsedSkills: z.array(z.string()),
+});
+export type HrCaseCandidate = z.infer<typeof hrCaseCandidateSchema>;
+
+export const hrCasePipelineSchema = z.object({
+  stage: hrCaseStageSchema,
+  aiScore: z.number().nullable(),
+  roleTitle: z.string().nullable(),
+  department: z.string().nullable(),
+  salaryBand: z.string().nullable(),
+  assignedRecruiterName: z.string().nullable(),
+  roundResults: z.array(hrRoundResultSchema),
+  stageEnteredAt: z.string(),
+});
+export type HrCasePipeline = z.infer<typeof hrCasePipelineSchema>;
+
+export const getHrCaseDetailInputSchema = z.object({
+  applicationId: z.string().uuid(),
+});
+export const getHrCaseDetailOutputSchema = z.object({
+  candidate: hrCaseCandidateSchema,
+  pipeline: hrCasePipelineSchema,
+  interviewFeedback: z.array(hrCaseFeedbackCardSchema),
+  assessment: hrRoundAssessmentSchema.nullable(),
+  // Whether a saved proceed-assessment is required before the offer-stage
+  // advance is allowed (true while the case sits at hr_round).
+  advanceRequiresAssessment: z.boolean(),
+});
+export type GetHrCaseDetailOutput = z.infer<typeof getHrCaseDetailOutputSchema>;
+
+// ─────────── saveHrRoundAssessment ───────────
+
+export const saveHrRoundAssessmentInputSchema = z.object({
+  applicationId: z.string().uuid(),
+  motivationDiscussed: z.boolean(),
+  salaryExpectationDiscussed: z.boolean(),
+  cultureFitAssessed: z.boolean(),
+  workAuthorizationVerified: z.boolean(),
+  noticePeriodConfirmed: z.boolean(),
+  relocationWillingness: z.boolean(),
+  notes: z.string().max(4000).nullish(),
+  rating: z.number().int().min(1).max(5),
+  recommendation: hrRoundRecommendationSchema,
+});
+export const saveHrRoundAssessmentOutputSchema = z.object({
+  assessment: hrRoundAssessmentSchema,
+});
+export type SaveHrRoundAssessmentInput = z.infer<typeof saveHrRoundAssessmentInputSchema>;
+export type SaveHrRoundAssessmentOutput = z.infer<typeof saveHrRoundAssessmentOutputSchema>;
+
+// ─────────── listHrRounds ───────────
+
+/** The HR-round scheduler view — one row per HR-round interview (scorecard
+ *  template 'hr'), plus HR-stage cases with no HR interview yet (Pending). */
+export const hrRoundRowSchema = z.object({
+  // interviewId is null for a "pending" row (hr_round case, no HR interview).
+  interviewId: z.string().uuid().nullable(),
+  applicationId: z.string().uuid(),
+  candidateName: z.string().nullable(),
+  roleTitle: z.string().nullable(),
+  scheduledStart: z.string().nullable(),
+  mode: z.string().nullable(),
+  ownerName: z.string().nullable(),
+  // scheduled | completed | cancelled | no_show | pending (synthetic)
+  status: z.string(),
+  rating: z.number().int().nullable(),
+  hasAssessment: z.boolean(),
+  assessmentRecommendation: hrRoundRecommendationSchema.nullable(),
+});
+export type HrRoundRow = z.infer<typeof hrRoundRowSchema>;
+
+export const hrRoundStatsSchema = z.object({
+  total: z.number().int(),
+  scheduled: z.number().int(),
+  completed: z.number().int(),
+  pending: z.number().int(),
+});
+export type HrRoundStats = z.infer<typeof hrRoundStatsSchema>;
+
+export const listHrRoundsInputSchema = z.object({}).optional();
+export const listHrRoundsOutputSchema = z.object({
+  rows: z.array(hrRoundRowSchema),
+  stats: hrRoundStatsSchema,
+});
+export type ListHrRoundsOutput = z.infer<typeof listHrRoundsOutputSchema>;

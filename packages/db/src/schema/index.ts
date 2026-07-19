@@ -86,3 +86,5 @@ export * from "./final-settlements";
 // HR-head market intelligence + feasibility (HRHEAD-02)
 export * from "./market-benchmarks";
 export * from "./requisition-feasibility";
+// HR Ops cases workspace + HR round (HROPS-01)
+export * from "./hr-round-assessments";

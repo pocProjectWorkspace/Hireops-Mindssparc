@@ -84,6 +84,7 @@ import {
   documentTypes,
   marketBenchmarks,
   requisitionFeasibility,
+  hrRoundAssessments,
   approvalRequests,
   approvalDecisions,
   recordPiiAccess,
@@ -397,6 +398,24 @@ import {
   type MarketBenchmarkRow,
   type FeasibilityCard,
   type FeasibilityAssessment,
+  // HROPS-01 HR Ops cases workspace + HR round
+  listHrCasesInputSchema,
+  listHrCasesOutputSchema,
+  getHrCaseDetailInputSchema,
+  getHrCaseDetailOutputSchema,
+  saveHrRoundAssessmentInputSchema,
+  saveHrRoundAssessmentOutputSchema,
+  listHrRoundsInputSchema,
+  listHrRoundsOutputSchema,
+  type HrCaseListRow,
+  type HrRoundResult,
+  type HrCaseStage,
+  type HrRoundAssessment,
+  type HrCaseFeedbackCard,
+  type HrRoundRow,
+  type ListHrCasesOutput,
+  type GetHrCaseDetailOutput,
+  type ListHrRoundsOutput,
 } from "@hireops/api-types";
 import { createClient } from "@supabase/supabase-js";
 import {
@@ -631,6 +650,13 @@ const OFFBOARD_MANAGE_ROLES = new Set(["admin", "hr_ops", "people_ops"]);
 const MARKET_INTEL_READ_ROLES = new Set(["admin", "hr_head", "hiring_manager"]);
 const MARKET_BENCHMARK_ADMIN_ROLES = new Set(["admin"]);
 const FEASIBILITY_ROLES = new Set(["admin", "hr_head"]);
+
+// HROPS-01 — the HR-Ops cases workspace + HR round is the post-technical-rounds
+// offer-desk persona: hr_ops (the persona) + admin (super-role). recruiter /
+// hiring_manager / hr_head / panel_member get FORBIDDEN. Same set gates the
+// case list, case detail, the HR-round scheduler view, and the assessment save.
+// RLS still scopes every row to the tenant on top of this persona gate.
+const HR_OPS_CASE_ROLES = new Set(["admin", "hr_ops"]);
 
 // The set of internal roles an admin may assign (mirror of api-types'
 // INTERNAL_TENANT_ROLES). A submitted role outside this set is rejected by the
@@ -11688,6 +11714,149 @@ export const appRouter = router({
         return { card, usedBenchmark: matched != null };
       });
     }),
+
+  // ═══════════════════ HROPS-01 — HR Ops cases + HR round ═══════════════════
+
+  /**
+   * listHrCases — the HR-Ops workspace list. Every application in the HR-Ops
+   * window (tech_interview / hr_round / offer_drafted / offer_accepted), enriched
+   * with candidate + role, AI score, per-round interview recommendations, salary
+   * band, assigned recruiter, and the saved HR-round assessment (if any). hr_ops
+   * + admin; RLS scopes to the tenant. Search + stage filter applied server-side.
+   */
+  listHrCases: protectedProcedure
+    .input(listHrCasesInputSchema)
+    .output(listHrCasesOutputSchema)
+    .query(async ({ ctx, input }): Promise<ListHrCasesOutput> => {
+      requireAnyRole(ctx, HR_OPS_CASE_ROLES, "The HR cases workspace is for HR Ops.");
+      const db = requireDb(ctx);
+      if (!ctx.tenantId) {
+        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
+      }
+      return buildHrCaseList(db, ctx, ctx.tenantId, input.search ?? null, input.stage ?? null);
+    }),
+
+  /**
+   * getHrCaseDetail — one HR case: the candidate card (real fields only),
+   * pipeline status, prior-round interview feedback (recommendation + summary
+   * text, NO scores — the anti-anchoring convention), and the saved HR-round
+   * assessment. hr_ops + admin; RLS-scoped. Reads candidate PII → PII-logged.
+   */
+  getHrCaseDetail: protectedProcedure
+    .input(getHrCaseDetailInputSchema)
+    .output(getHrCaseDetailOutputSchema)
+    .query(async ({ ctx, input }): Promise<GetHrCaseDetailOutput> => {
+      requireAnyRole(ctx, HR_OPS_CASE_ROLES, "The HR cases workspace is for HR Ops.");
+      return withAudit("get_hr_case_detail", ctx, input, async () => {
+        const db = requireDb(ctx);
+        if (!ctx.tenantId) {
+          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
+        }
+        return buildHrCaseDetail(db, ctx, ctx.tenantId, input.applicationId);
+      });
+    }),
+
+  /**
+   * saveHrRoundAssessment — upsert the deterministic HR-round assessment for an
+   * application (one per tenant+application). Writes the completed_by membership
+   * + an audit row (via the table trigger + withAudit intent). hr_ops + admin;
+   * RLS-scoped. The application must be inside the HR-Ops window.
+   */
+  saveHrRoundAssessment: protectedProcedure
+    .input(saveHrRoundAssessmentInputSchema)
+    .output(saveHrRoundAssessmentOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      requireAnyRole(ctx, HR_OPS_CASE_ROLES, "Saving an HR round assessment is for HR Ops.");
+      return withAudit("save_hr_round_assessment", ctx, input, async () => {
+        const db = requireDb(ctx);
+        if (!ctx.tenantId) {
+          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
+        }
+        // Application must exist, be in this tenant, and be an HR case.
+        const [app] = await db
+          .select({ currentStage: applications.currentStage })
+          .from(applications)
+          .where(eq(applications.id, input.applicationId))
+          .limit(1);
+        if (!app) {
+          throw new TRPCError({ code: "NOT_FOUND", message: "Application not found" });
+        }
+        if (!HR_CASE_STAGES.has(app.currentStage)) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: `Application is not an HR case (stage=${app.currentStage}). HR round assessments apply to the HR-Ops window.`,
+          });
+        }
+        const membershipId = await resolveActorMembership(db, ctx);
+        const now = new Date();
+        const [row] = await db
+          .insert(hrRoundAssessments)
+          .values({
+            tenantId: ctx.tenantId,
+            applicationId: input.applicationId,
+            motivationDiscussed: input.motivationDiscussed,
+            salaryExpectationDiscussed: input.salaryExpectationDiscussed,
+            cultureFitAssessed: input.cultureFitAssessed,
+            workAuthorizationVerified: input.workAuthorizationVerified,
+            noticePeriodConfirmed: input.noticePeriodConfirmed,
+            relocationWillingness: input.relocationWillingness,
+            notes: input.notes ?? null,
+            rating: input.rating,
+            recommendation: input.recommendation,
+            completedByMembershipId: membershipId,
+            updatedAt: now,
+          })
+          .onConflictDoUpdate({
+            target: [hrRoundAssessments.tenantId, hrRoundAssessments.applicationId],
+            set: {
+              motivationDiscussed: input.motivationDiscussed,
+              salaryExpectationDiscussed: input.salaryExpectationDiscussed,
+              cultureFitAssessed: input.cultureFitAssessed,
+              workAuthorizationVerified: input.workAuthorizationVerified,
+              noticePeriodConfirmed: input.noticePeriodConfirmed,
+              relocationWillingness: input.relocationWillingness,
+              notes: input.notes ?? null,
+              rating: input.rating,
+              recommendation: input.recommendation,
+              completedByMembershipId: membershipId,
+              updatedAt: now,
+            },
+          })
+          .returning();
+        if (!row) {
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: "assessment upsert returned no row",
+          });
+        }
+        const names = await resolveMembershipNames(
+          ctx,
+          ctx.tenantId,
+          membershipId ? [membershipId] : [],
+        );
+        return {
+          assessment: hrAssessmentToApi(row, membershipId ? names.get(membershipId) : null),
+        };
+      });
+    }),
+
+  /**
+   * listHrRounds — the HR-round scheduler view. One row per HR-round interview
+   * (scorecard_template 'hr') for cases in the HR-Ops window, PLUS a synthetic
+   * "pending" row for any hr_round case with no HR interview scheduled yet.
+   * Carries the saved assessment's rating/recommendation. hr_ops + admin.
+   */
+  listHrRounds: protectedProcedure
+    .input(listHrRoundsInputSchema)
+    .output(listHrRoundsOutputSchema)
+    .query(async ({ ctx }): Promise<ListHrRoundsOutput> => {
+      requireAnyRole(ctx, HR_OPS_CASE_ROLES, "The HR rounds view is for HR Ops.");
+      const db = requireDb(ctx);
+      if (!ctx.tenantId) {
+        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
+      }
+      return buildHrRoundsList(db, ctx, ctx.tenantId);
+    }),
 });
 
 // ═══════════ DASH-01 — persona-dashboard builders ═══════════
@@ -13176,6 +13345,33 @@ async function transitionApplicationStage(
     });
   }
 
+  // HROPS-01 deterministic gate: advancing an application FORWARD out of
+  // hr_round (→ the offer stages) requires a saved HR-round assessment whose
+  // recommendation is 'proceed'. A hold/reject assessment, or none at all,
+  // blocks the forward move server-side. Negative / lateral moves (reject,
+  // withdraw, offer_declined, or a revert back to tech_interview) are NOT
+  // gated — you can always end or step a candidate back.
+  if (app.currentStage === "hr_round" && HR_ROUND_FORWARD_STAGES.has(targetStage)) {
+    const [assessment] = await db
+      .select({ recommendation: hrRoundAssessments.recommendation })
+      .from(hrRoundAssessments)
+      .where(eq(hrRoundAssessments.applicationId, applicationId))
+      .limit(1);
+    if (!assessment) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message:
+          "HR round assessment required — complete and save the HR round assessment (recommendation: proceed) before advancing this candidate to the offer stage.",
+      });
+    }
+    if (assessment.recommendation !== "proceed") {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: `HR round assessment recommends '${assessment.recommendation}', not 'proceed' — the candidate cannot be advanced to the offer stage until the HR round assessment recommends proceeding.`,
+      });
+    }
+  }
+
   const membershipId = await resolveActorMembership(db, ctx);
 
   const [tx] = await db
@@ -13247,6 +13443,13 @@ async function transitionApplicationStage(
  * Stages the candidate should hear about directly. Wave 1 list — add a
  * stage here only when there's a copy ready for it and product agrees.
  */
+/**
+ * HROPS-01 — the forward-progress stages an application moves to when leaving
+ * hr_round in the good direction. Reaching any of these from hr_round is gated
+ * on a saved 'proceed' HR-round assessment (see transitionApplicationStage).
+ */
+const HR_ROUND_FORWARD_STAGES = new Set<ApplicationStage>(["offer_drafted", "offer_accepted"]);
+
 const CANDIDATE_VISIBLE_STAGES = new Set<ApplicationStage>([
   "shortlisted",
   "tech_interview",
@@ -14352,6 +14555,450 @@ function decodeInterviewCursor(
   } catch {
     return null;
   }
+}
+
+// ═══════════════════ HROPS-01 — HR Ops case helpers ═══════════════════
+
+/** The HR-Ops case window as a Set + ordered list (matches hrCaseStageSchema). */
+const HR_CASE_STAGES = new Set<ApplicationStage>([
+  "tech_interview",
+  "hr_round",
+  "offer_drafted",
+  "offer_accepted",
+]);
+const HR_CASE_STAGE_LIST: ApplicationStage[] = [
+  "tech_interview",
+  "hr_round",
+  "offer_drafted",
+  "offer_accepted",
+];
+
+type InterviewRec = "strong_yes" | "yes" | "hold" | "no";
+type HrRec = "proceed" | "hold" | "reject";
+
+/** Map a stored hr_round_assessments row → the API assessment shape. */
+function hrAssessmentToApi(
+  row: typeof hrRoundAssessments.$inferSelect,
+  completedByName: string | null | undefined,
+): HrRoundAssessment {
+  return {
+    id: row.id,
+    applicationId: row.applicationId,
+    motivationDiscussed: row.motivationDiscussed,
+    salaryExpectationDiscussed: row.salaryExpectationDiscussed,
+    cultureFitAssessed: row.cultureFitAssessed,
+    workAuthorizationVerified: row.workAuthorizationVerified,
+    noticePeriodConfirmed: row.noticePeriodConfirmed,
+    relocationWillingness: row.relocationWillingness,
+    notes: row.notes,
+    rating: row.rating,
+    recommendation: row.recommendation as HrRec,
+    completedByMembershipId: row.completedByMembershipId,
+    completedByName: completedByName ?? null,
+    createdAt: toIsoString(row.createdAt) ?? new Date().toISOString(),
+    updatedAt: toIsoString(row.updatedAt) ?? new Date().toISOString(),
+  };
+}
+
+/**
+ * Per-round interview results for a set of applications, ordered by round. One
+ * entry per non-cancelled interview; `recommendation` is the LATEST submitted
+ * panelist recommendation for that round (NO scores — anti-anchoring).
+ */
+async function fetchHrRoundResults(
+  db: NonNullable<HonoTRPCContext["db"]>,
+  applicationIds: string[],
+): Promise<Map<string, HrRoundResult[]>> {
+  const out = new Map<string, HrRoundResult[]>();
+  if (applicationIds.length === 0) return out;
+  const rows = await db
+    .select({
+      applicationId: interviews.applicationId,
+      interviewId: interviews.id,
+      roundNumber: interviews.roundNumber,
+      roundName: interviews.roundName,
+      scorecardTemplate: interviews.scorecardTemplate,
+      status: interviews.status,
+      recommendation: interviewFeedback.recommendation,
+      submittedAt: interviewFeedback.submittedAt,
+    })
+    .from(interviews)
+    .leftJoin(
+      interviewFeedback,
+      and(
+        eq(interviewFeedback.interviewId, interviews.id),
+        dsql`${interviewFeedback.submittedAt} IS NOT NULL`,
+      ),
+    )
+    .where(
+      and(inArray(interviews.applicationId, applicationIds), ne(interviews.status, "cancelled")),
+    )
+    .orderBy(interviews.roundNumber, desc(interviewFeedback.submittedAt));
+  const seen = new Set<string>();
+  for (const r of rows) {
+    if (seen.has(r.interviewId)) continue;
+    seen.add(r.interviewId);
+    const result: HrRoundResult = {
+      interviewId: r.interviewId,
+      roundNumber: r.roundNumber,
+      roundName: r.roundName,
+      scorecardTemplate: r.scorecardTemplate,
+      status: r.status,
+      recommendation: (r.recommendation as InterviewRec | null) ?? null,
+    };
+    const arr = out.get(r.applicationId) ?? [];
+    arr.push(result);
+    out.set(r.applicationId, arr);
+  }
+  return out;
+}
+
+/** Saved HR-round assessments for a set of applications, keyed by application. */
+async function fetchHrAssessments(
+  db: NonNullable<HonoTRPCContext["db"]>,
+  applicationIds: string[],
+): Promise<Map<string, typeof hrRoundAssessments.$inferSelect>> {
+  const out = new Map<string, typeof hrRoundAssessments.$inferSelect>();
+  if (applicationIds.length === 0) return out;
+  const rows = await db
+    .select()
+    .from(hrRoundAssessments)
+    .where(inArray(hrRoundAssessments.applicationId, applicationIds));
+  for (const r of rows) out.set(r.applicationId, r);
+  return out;
+}
+
+/** The HR-case list + hero stats (stats over the whole window, rows filtered). */
+async function buildHrCaseList(
+  db: NonNullable<HonoTRPCContext["db"]>,
+  ctx: HonoTRPCContext,
+  tenantId: string,
+  search: string | null,
+  stageFilter: HrCaseStage | null,
+): Promise<ListHrCasesOutput> {
+  const appRows = await db
+    .select({
+      applicationId: applications.id,
+      candidateId: applications.candidateId,
+      stage: applications.currentStage,
+      aiScore: applications.aiScore,
+      stageEnteredAt: applications.stageEnteredAt,
+      assignedRecruiterMembershipId: applications.assignedRecruiterMembershipId,
+      candidateName: persons.fullName,
+      roleTitle: positions.title,
+      compBandMin: positions.compBandMin,
+      compBandMax: positions.compBandMax,
+      compCurrency: positions.compCurrency,
+    })
+    .from(applications)
+    .innerJoin(candidates, eq(candidates.id, applications.candidateId))
+    .innerJoin(persons, eq(persons.id, candidates.personId))
+    .innerJoin(requisitions, eq(requisitions.id, applications.requisitionId))
+    .innerJoin(positions, eq(positions.id, requisitions.positionId))
+    .where(inArray(applications.currentStage, HR_CASE_STAGE_LIST))
+    .orderBy(desc(applications.stageEnteredAt));
+
+  const appIds = appRows.map((r) => r.applicationId);
+  const [roundResults, assessments] = await Promise.all([
+    fetchHrRoundResults(db, appIds),
+    fetchHrAssessments(db, appIds),
+  ]);
+  const recruiterIds = appRows
+    .map((r) => r.assignedRecruiterMembershipId)
+    .filter((id): id is string => !!id);
+  const names = await resolveMembershipNames(ctx, tenantId, recruiterIds);
+
+  const allRows: HrCaseListRow[] = appRows.map((r) => {
+    const assessment = assessments.get(r.applicationId) ?? null;
+    return {
+      applicationId: r.applicationId,
+      candidateId: r.candidateId,
+      candidateName: r.candidateName,
+      roleTitle: r.roleTitle,
+      stage: r.stage as HrCaseStage,
+      aiScore: r.aiScore != null ? Number(r.aiScore) : null,
+      roundResults: roundResults.get(r.applicationId) ?? [],
+      salaryBand: formatBudgetBand(r.compBandMin, r.compBandMax, r.compCurrency),
+      assignedRecruiterName: r.assignedRecruiterMembershipId
+        ? (names.get(r.assignedRecruiterMembershipId) ?? null)
+        : null,
+      lastActivityAt: toIsoString(r.stageEnteredAt) ?? new Date().toISOString(),
+      hrRoundPending: r.stage === "hr_round" && !assessment,
+      hasAssessment: !!assessment,
+      assessmentRecommendation: assessment ? (assessment.recommendation as HrRec) : null,
+      assessmentRating: assessment ? assessment.rating : null,
+    };
+  });
+
+  const stats = {
+    total: allRows.length,
+    hrRoundPending: allRows.filter((r) => r.hrRoundPending).length,
+    offerStage: allRows.filter((r) => r.stage === "offer_drafted").length,
+    accepted: allRows.filter((r) => r.stage === "offer_accepted").length,
+  };
+
+  const needle = search?.trim().toLowerCase() ?? "";
+  const rows = allRows.filter((r) => {
+    if (stageFilter && r.stage !== stageFilter) return false;
+    if (needle) {
+      const hay = `${r.candidateName ?? ""} ${r.roleTitle ?? ""}`.toLowerCase();
+      if (!hay.includes(needle)) return false;
+    }
+    return true;
+  });
+
+  return { rows, stats };
+}
+
+/** Prior-round feedback cards for one application — recommendation + summary
+ *  text (strengths / concerns / notes), NO scores. Ordered by round. */
+async function fetchHrCaseFeedbackCards(
+  db: NonNullable<HonoTRPCContext["db"]>,
+  applicationId: string,
+): Promise<HrCaseFeedbackCard[]> {
+  const rows = await db
+    .select({
+      interviewId: interviewFeedback.interviewId,
+      roundNumber: interviews.roundNumber,
+      roundName: interviews.roundName,
+      panelistName: users.displayName,
+      recommendation: interviewFeedback.recommendation,
+      strengths: interviewFeedback.strengths,
+      concerns: interviewFeedback.concerns,
+      notes: interviewFeedback.notes,
+      submittedAt: interviewFeedback.submittedAt,
+    })
+    .from(interviewFeedback)
+    .innerJoin(interviews, eq(interviews.id, interviewFeedback.interviewId))
+    .leftJoin(tenantUserMemberships, eq(tenantUserMemberships.id, interviewFeedback.membershipId))
+    .leftJoin(users, eq(users.id, tenantUserMemberships.userId))
+    .where(
+      and(
+        eq(interviews.applicationId, applicationId),
+        dsql`${interviewFeedback.submittedAt} IS NOT NULL`,
+      ),
+    )
+    .orderBy(interviews.roundNumber);
+  return rows.map((r) => ({
+    interviewId: r.interviewId,
+    roundNumber: r.roundNumber,
+    roundName: r.roundName,
+    panelistName: r.panelistName ?? null,
+    recommendation: (r.recommendation as InterviewRec | null) ?? null,
+    strengths: r.strengths,
+    concerns: r.concerns,
+    notes: r.notes,
+    submittedAt: toIsoString(r.submittedAt),
+  }));
+}
+
+/** One HR case in full — candidate card, pipeline, feedback, assessment. */
+async function buildHrCaseDetail(
+  db: NonNullable<HonoTRPCContext["db"]>,
+  ctx: HonoTRPCContext,
+  tenantId: string,
+  applicationId: string,
+): Promise<GetHrCaseDetailOutput> {
+  const [app] = await db
+    .select({
+      applicationId: applications.id,
+      candidateId: applications.candidateId,
+      stage: applications.currentStage,
+      aiScore: applications.aiScore,
+      stageEnteredAt: applications.stageEnteredAt,
+      assignedRecruiterMembershipId: applications.assignedRecruiterMembershipId,
+      candidateName: persons.fullName,
+      email: persons.emailPrimary,
+      phone: persons.phonePrimary,
+      locationCity: persons.locationCity,
+      locationCountry: persons.locationCountry,
+      linkedinUrl: persons.linkedinUrl,
+      yearsOfExperience: candidates.yearsOfExperience,
+      parsedSkills: candidates.parsedSkills,
+      roleTitle: positions.title,
+      department: businessUnits.name,
+      compBandMin: positions.compBandMin,
+      compBandMax: positions.compBandMax,
+      compCurrency: positions.compCurrency,
+    })
+    .from(applications)
+    .innerJoin(candidates, eq(candidates.id, applications.candidateId))
+    .innerJoin(persons, eq(persons.id, candidates.personId))
+    .innerJoin(requisitions, eq(requisitions.id, applications.requisitionId))
+    .innerJoin(positions, eq(positions.id, requisitions.positionId))
+    .leftJoin(businessUnits, eq(businessUnits.id, positions.businessUnitId))
+    .where(eq(applications.id, applicationId))
+    .limit(1);
+  if (!app || !HR_CASE_STAGES.has(app.stage)) {
+    throw new TRPCError({ code: "NOT_FOUND", message: "HR case not found" });
+  }
+
+  // Reads candidate PII — mirror the getCandidateById / panel-brief PII log.
+  const membershipId = await resolveActorMembership(db, ctx);
+  recordPiiAccess({
+    tenantId,
+    actorUserId: ctx.userId,
+    actorMembershipId: membershipId,
+    actorLabel: "user",
+    entityType: "candidate",
+    entityId: app.candidateId,
+    fieldsAccessed: [
+      "persons.full_name",
+      "persons.email_primary",
+      "persons.phone_primary",
+      "persons.location_country",
+    ],
+    reason: "get_hr_case_detail",
+    requestId: ctx.requestId,
+  });
+
+  const [roundResults, feedback, assessments] = await Promise.all([
+    fetchHrRoundResults(db, [applicationId]),
+    fetchHrCaseFeedbackCards(db, applicationId),
+    fetchHrAssessments(db, [applicationId]),
+  ]);
+  const assessment = assessments.get(applicationId) ?? null;
+
+  const nameIds = [app.assignedRecruiterMembershipId, assessment?.completedByMembershipId].filter(
+    (id): id is string => !!id,
+  );
+  const names = await resolveMembershipNames(ctx, tenantId, nameIds);
+
+  return {
+    candidate: {
+      candidateId: app.candidateId,
+      name: app.candidateName,
+      email: app.email,
+      phone: app.phone,
+      locationCity: app.locationCity,
+      locationCountry: app.locationCountry,
+      linkedinUrl: app.linkedinUrl,
+      yearsOfExperience: app.yearsOfExperience != null ? Number(app.yearsOfExperience) : null,
+      parsedSkills: Array.isArray(app.parsedSkills) ? (app.parsedSkills as string[]) : [],
+    },
+    pipeline: {
+      stage: app.stage as HrCaseStage,
+      aiScore: app.aiScore != null ? Number(app.aiScore) : null,
+      roleTitle: app.roleTitle,
+      department: app.department ?? null,
+      salaryBand: formatBudgetBand(app.compBandMin, app.compBandMax, app.compCurrency),
+      assignedRecruiterName: app.assignedRecruiterMembershipId
+        ? (names.get(app.assignedRecruiterMembershipId) ?? null)
+        : null,
+      roundResults: roundResults.get(applicationId) ?? [],
+      stageEnteredAt: toIsoString(app.stageEnteredAt) ?? new Date().toISOString(),
+    },
+    interviewFeedback: feedback,
+    assessment: assessment
+      ? hrAssessmentToApi(
+          assessment,
+          assessment.completedByMembershipId ? names.get(assessment.completedByMembershipId) : null,
+        )
+      : null,
+    advanceRequiresAssessment: app.stage === "hr_round",
+  };
+}
+
+/** The HR-round scheduler view — HR-round interviews + pending hr_round cases. */
+async function buildHrRoundsList(
+  db: NonNullable<HonoTRPCContext["db"]>,
+  ctx: HonoTRPCContext,
+  tenantId: string,
+): Promise<ListHrRoundsOutput> {
+  // Every HR-case application (for candidate/role + pending detection).
+  const appRows = await db
+    .select({
+      applicationId: applications.id,
+      stage: applications.currentStage,
+      candidateName: persons.fullName,
+      roleTitle: positions.title,
+    })
+    .from(applications)
+    .innerJoin(candidates, eq(candidates.id, applications.candidateId))
+    .innerJoin(persons, eq(persons.id, candidates.personId))
+    .innerJoin(requisitions, eq(requisitions.id, applications.requisitionId))
+    .innerJoin(positions, eq(positions.id, requisitions.positionId))
+    .where(inArray(applications.currentStage, HR_CASE_STAGE_LIST));
+  const appById = new Map(appRows.map((r) => [r.applicationId, r]));
+  const appIds = appRows.map((r) => r.applicationId);
+
+  // HR-round interviews (scorecard_template 'hr'), non-cancelled.
+  const ivRows =
+    appIds.length === 0
+      ? []
+      : await db
+          .select({
+            interviewId: interviews.id,
+            applicationId: interviews.applicationId,
+            scheduledStart: interviews.scheduledStart,
+            mode: interviews.mode,
+            status: interviews.status,
+            createdByMembershipId: interviews.createdByMembershipId,
+          })
+          .from(interviews)
+          .where(
+            and(
+              inArray(interviews.applicationId, appIds),
+              eq(interviews.scorecardTemplate, "hr"),
+              ne(interviews.status, "cancelled"),
+            ),
+          )
+          .orderBy(desc(interviews.scheduledStart));
+
+  const assessments = await fetchHrAssessments(db, appIds);
+  const ownerIds = ivRows.map((r) => r.createdByMembershipId).filter((id): id is string => !!id);
+  const names = await resolveMembershipNames(ctx, tenantId, ownerIds);
+
+  const rows: HrRoundRow[] = [];
+  const appsWithHrInterview = new Set<string>();
+  for (const iv of ivRows) {
+    appsWithHrInterview.add(iv.applicationId);
+    const app = appById.get(iv.applicationId);
+    const assessment = assessments.get(iv.applicationId) ?? null;
+    rows.push({
+      interviewId: iv.interviewId,
+      applicationId: iv.applicationId,
+      candidateName: app?.candidateName ?? null,
+      roleTitle: app?.roleTitle ?? null,
+      scheduledStart: toIsoString(iv.scheduledStart),
+      mode: iv.mode,
+      ownerName: iv.createdByMembershipId ? (names.get(iv.createdByMembershipId) ?? null) : null,
+      status: iv.status,
+      rating: assessment ? assessment.rating : null,
+      hasAssessment: !!assessment,
+      assessmentRecommendation: assessment ? (assessment.recommendation as HrRec) : null,
+    });
+  }
+
+  // Pending: an application sitting at hr_round with no HR interview scheduled.
+  let pendingCount = 0;
+  for (const app of appRows) {
+    if (app.stage !== "hr_round") continue;
+    if (appsWithHrInterview.has(app.applicationId)) continue;
+    pendingCount += 1;
+    const assessment = assessments.get(app.applicationId) ?? null;
+    rows.push({
+      interviewId: null,
+      applicationId: app.applicationId,
+      candidateName: app.candidateName,
+      roleTitle: app.roleTitle,
+      scheduledStart: null,
+      mode: null,
+      ownerName: null,
+      status: "pending",
+      rating: assessment ? assessment.rating : null,
+      hasAssessment: !!assessment,
+      assessmentRecommendation: assessment ? (assessment.recommendation as HrRec) : null,
+    });
+  }
+
+  const stats = {
+    total: rows.length,
+    scheduled: rows.filter((r) => r.status === "scheduled").length,
+    completed: rows.filter((r) => r.status === "completed").length,
+    pending: pendingCount,
+  };
+  return { rows, stats };
 }
 
 export type AppRouter = typeof appRouter;

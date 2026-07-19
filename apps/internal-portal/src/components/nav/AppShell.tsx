@@ -35,6 +35,8 @@ import {
   IconPanel,
   IconMarketIntel,
   IconFeasibility,
+  IconHrCases,
+  IconHrRounds,
   IconWorkflows,
   IconAudit,
   IconCosts,
@@ -63,6 +65,8 @@ export type PortalNavKey =
   | "panel"
   | "market-intelligence"
   | "feasibility"
+  | "hr-cases"
+  | "hr-rounds"
   | "workflows"
   | "audit"
   | "costs"
@@ -99,6 +103,23 @@ const MAIN_NAV: NavItem[] = [
     href: "/offboarding",
     icon: <IconOffboarding />,
     roles: ["hr_ops", "people_ops", "admin"],
+  },
+  {
+    // HROPS-01: the HR-Ops offer-desk workspace — cases post-technical-rounds.
+    // hr_ops + admin, matching the HR_OPS_CASE_ROLES API gate.
+    key: "hr-cases",
+    label: "HR cases",
+    href: "/hr-cases",
+    icon: <IconHrCases />,
+    roles: ["hr_ops", "admin"],
+  },
+  {
+    // HROPS-01: the HR-round scheduler + assessment view. hr_ops + admin.
+    key: "hr-rounds",
+    label: "HR rounds",
+    href: "/hr-rounds",
+    icon: <IconHrRounds />,
+    roles: ["hr_ops", "admin"],
   },
   {
     key: "requisitions",

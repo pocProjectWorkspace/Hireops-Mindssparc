@@ -2336,6 +2336,162 @@ async function main() {
             'strong_yes', now() - interval '4 days')
   `;
 
+    // ── 4c. HROPS-01 HR Ops cases — two candidates AT hr_round ──────────
+    //
+    // The HR-Ops workspace (/hr-cases, /hr-rounds) needs live cases sitting
+    // AT hr_round with real interview feedback so the surfaces demo well.
+    // Two dedicated candidates against DEMO_REQ, each with a completed tech
+    // round (submitted feedback) + an HR round:
+    //   • Aisha  — HR round SCHEDULED, NO assessment  → "HR round pending".
+    //   • Vikram — HR round COMPLETED + a saved 'proceed' assessment (the
+    //     deterministic gate satisfied; shows a rating in /hr-rounds).
+    // Self-cleaning by deterministic id (a5c1–a5cb; deleting the application
+    // cascades interviews + feedback + assessment). application_state_transitions
+    // do NOT cascade, so clear them first — same idiom the onboarding block uses.
+    {
+      const HR_PERSON1 = "00000000-0000-4000-8000-00000000a5c1";
+      const HR_CAND1 = "00000000-0000-4000-8000-00000000a5c2";
+      const HR_APP1 = "00000000-0000-4000-8000-00000000a5c3";
+      const HR_PERSON2 = "00000000-0000-4000-8000-00000000a5c4";
+      const HR_CAND2 = "00000000-0000-4000-8000-00000000a5c5";
+      const HR_APP2 = "00000000-0000-4000-8000-00000000a5c6";
+      const HR_IV1_TECH = "00000000-0000-4000-8000-00000000a5c7";
+      const HR_IV1_HR = "00000000-0000-4000-8000-00000000a5c8";
+      const HR_IV2_TECH = "00000000-0000-4000-8000-00000000a5c9";
+      const HR_IV2_HR = "00000000-0000-4000-8000-00000000a5ca";
+      const HR_ASSESS2 = "00000000-0000-4000-8000-00000000a5cb";
+      const hrApps = [HR_APP1, HR_APP2];
+
+      for (const id of hrApps) {
+        await poolSql`DELETE FROM public.application_state_transitions WHERE application_id = ${id}`;
+        await poolSql`DELETE FROM public.applications WHERE id = ${id}`;
+      }
+      await poolSql`DELETE FROM public.candidates WHERE id IN (${HR_CAND1}, ${HR_CAND2})`;
+      await poolSql`DELETE FROM public.persons WHERE id IN (${HR_PERSON1}, ${HR_PERSON2})`;
+
+      await poolSql`
+      INSERT INTO public.persons
+        (id, tenant_id, full_name, email_primary, email_normalised, phone_primary,
+         phone_normalised, location_country, location_city, linkedin_url)
+      VALUES
+        (${HR_PERSON1}, ${tid}, 'Aisha Khan', 'aisha.khan.hrops@example.test',
+         'aisha.khan.hrops@example.test', '+919812300021', '919812300021', 'IN', 'Bengaluru',
+         'https://www.linkedin.com/in/aisha-khan-demo'),
+        (${HR_PERSON2}, ${tid}, 'Vikram Rao', 'vikram.rao.hrops@example.test',
+         'vikram.rao.hrops@example.test', '+919812300022', '919812300022', 'IN', 'Pune',
+         'https://www.linkedin.com/in/vikram-rao-demo')`;
+      await poolSql`
+      INSERT INTO public.candidates
+        (id, tenant_id, person_id, source, consent_version, parsed_skills, years_of_experience)
+      VALUES
+        (${HR_CAND1}, ${tid}, ${HR_PERSON1}, 'referral', 'v1',
+         ${JSON.stringify(["Java", "Spring Boot", "Kafka", "PostgreSQL"])}::jsonb, 7.0),
+        (${HR_CAND2}, ${tid}, ${HR_PERSON2}, 'job_board', 'v1',
+         ${JSON.stringify(["Go", "Kubernetes", "AWS", "gRPC"])}::jsonb, 9.0)`;
+      await poolSql`
+      INSERT INTO public.applications
+        (id, tenant_id, candidate_id, requisition_id, source, current_stage, stage_entered_at,
+         ai_score, ai_scored_at, ai_score_explanation, assigned_recruiter_membership_id,
+         created_at, knockout_passed)
+      VALUES
+        (${HR_APP1}, ${tid}, ${HR_CAND1}, ${DEMO_REQ}, 'referral', 'hr_round',
+         now() - interval '2 days', 86, now() - interval '9 days',
+         ${JSON.stringify({
+           top_factors: [
+             { factor: "skills_match", score: 0.9, note: "All required skills" },
+             { factor: "interview_signal", score: 0.88, note: "Strong technical round" },
+           ],
+           caveats: [],
+           scored_at: new Date().toISOString(),
+           scored_by: "simulated",
+         })}::jsonb,
+         ${recruiterId}, now() - interval '11 days', true),
+        (${HR_APP2}, ${tid}, ${HR_CAND2}, ${DEMO_REQ}, 'job_board', 'hr_round',
+         now() - interval '1 day', 90, now() - interval '12 days',
+         ${JSON.stringify({
+           top_factors: [
+             { factor: "skills_match", score: 0.92, note: "Distributed-systems depth" },
+             { factor: "experience_level", score: 0.9, note: "9 years — strong L6" },
+           ],
+           caveats: [],
+           scored_at: new Date().toISOString(),
+           scored_by: "simulated",
+         })}::jsonb,
+         ${recruiterId}, now() - interval '14 days', true)`;
+      // Transitions so the pipeline reads honestly (received → … → hr_round).
+      await poolSql`
+      INSERT INTO public.application_state_transitions
+        (tenant_id, application_id, from_stage, to_stage, actor_membership_id, transitioned_at)
+      VALUES
+        (${tid}, ${HR_APP1}, NULL, 'application_received', ${recruiterId}, now() - interval '11 days'),
+        (${tid}, ${HR_APP1}, 'application_received', 'recruiter_review', ${recruiterId}, now() - interval '10 days'),
+        (${tid}, ${HR_APP1}, 'recruiter_review', 'tech_interview', ${recruiterId}, now() - interval '6 days'),
+        (${tid}, ${HR_APP1}, 'tech_interview', 'hr_round', ${recruiterId}, now() - interval '2 days'),
+        (${tid}, ${HR_APP2}, NULL, 'application_received', ${recruiterId}, now() - interval '14 days'),
+        (${tid}, ${HR_APP2}, 'application_received', 'recruiter_review', ${recruiterId}, now() - interval '13 days'),
+        (${tid}, ${HR_APP2}, 'recruiter_review', 'tech_interview', ${recruiterId}, now() - interval '7 days'),
+        (${tid}, ${HR_APP2}, 'tech_interview', 'hr_round', ${recruiterId}, now() - interval '1 day')`;
+      // Completed tech rounds + submitted feedback (recommendation, NO exposure
+      // of scores to HR — the surface hides them).
+      await poolSql`
+      INSERT INTO public.interviews
+        (id, tenant_id, application_id, requisition_id, round_number, round_name, status,
+         scorecard_template, scheduled_start, scheduled_end, duration_minutes, mode,
+         candidate_confirmed_at, created_by_membership_id)
+      VALUES
+        (${HR_IV1_TECH}, ${tid}, ${HR_APP1}, ${DEMO_REQ}, 1, 'Technical deep-dive', 'completed',
+         'technical', now() - interval '5 days', now() - interval '5 days' + interval '60 minutes', 60,
+         'video', now() - interval '6 days', ${recruiterId}),
+        (${HR_IV2_TECH}, ${tid}, ${HR_APP2}, ${DEMO_REQ}, 1, 'Technical deep-dive', 'completed',
+         'technical', now() - interval '6 days', now() - interval '6 days' + interval '60 minutes', 60,
+         'video', now() - interval '7 days', ${recruiterId})`;
+      await poolSql`
+      INSERT INTO public.interview_panelists (tenant_id, interview_id, membership_id, is_lead)
+      VALUES (${tid}, ${HR_IV1_TECH}, ${panelId}, true), (${tid}, ${HR_IV2_TECH}, ${panelId}, true)`;
+      await poolSql`
+      INSERT INTO public.interview_feedback
+        (tenant_id, interview_id, membership_id, scorecard, strengths, concerns, notes,
+         recommendation, submitted_at)
+      VALUES
+        (${tid}, ${HR_IV1_TECH}, ${panelId},
+         ${JSON.stringify({ problem_solving: 4, technical_depth: 4, communication: 5 })}::jsonb,
+         'Solid fundamentals; clean approach to the concurrency problem.',
+         'Wanted a little more depth on failure modes.',
+         'Good hire for the platform team.', 'yes', now() - interval '5 days'),
+        (${tid}, ${HR_IV2_TECH}, ${panelId},
+         ${JSON.stringify({ problem_solving: 5, technical_depth: 5, communication: 4 })}::jsonb,
+         'Exceptional systems design; reasoned about trade-offs unprompted.',
+         'None material.',
+         'Strong hire.', 'strong_yes', now() - interval '6 days')`;
+      // HR rounds: Aisha SCHEDULED (upcoming), Vikram COMPLETED.
+      await poolSql`
+      INSERT INTO public.interviews
+        (id, tenant_id, application_id, requisition_id, round_number, round_name, status,
+         scorecard_template, scheduled_start, scheduled_end, duration_minutes, mode,
+         candidate_confirmed_at, created_by_membership_id)
+      VALUES
+        (${HR_IV1_HR}, ${tid}, ${HR_APP1}, ${DEMO_REQ}, 2, 'HR round', 'scheduled',
+         'hr', now() + interval '2 days', now() + interval '2 days' + interval '45 minutes', 45,
+         'phone', now() - interval '1 day', ${recruiterId}),
+        (${HR_IV2_HR}, ${tid}, ${HR_APP2}, ${DEMO_REQ}, 2, 'HR round', 'completed',
+         'hr', now() - interval '1 day', now() - interval '1 day' + interval '45 minutes', 45,
+         'phone', now() - interval '2 days', ${recruiterId})`;
+      await poolSql`
+      INSERT INTO public.interview_panelists (tenant_id, interview_id, membership_id, is_lead)
+      VALUES (${tid}, ${HR_IV1_HR}, ${hrHeadId}, true), (${tid}, ${HR_IV2_HR}, ${hrHeadId}, true)`;
+      // Vikram's saved HR-round assessment (proceed) — the gate satisfied.
+      await poolSql`
+      INSERT INTO public.hr_round_assessments
+        (id, tenant_id, application_id, motivation_discussed, salary_expectation_discussed,
+         culture_fit_assessed, work_authorization_verified, notice_period_confirmed,
+         relocation_willingness, notes, rating, recommendation, completed_by_membership_id,
+         created_at, updated_at)
+      VALUES
+        (${HR_ASSESS2}, ${tid}, ${HR_APP2}, true, true, true, true, true, false,
+         'Motivated by the platform charter; comp expectation within band; 30-day notice; open to hybrid Pune.',
+         4, 'proceed', ${hrHeadId}, now() - interval '1 day', now() - interval '1 day')`;
+    }
+
     // ── 4d. SEED-02 Problems 5/6 — extra requisitions + approval spine ──
     await seedExtraRequisitions();
 
