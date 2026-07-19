@@ -39,6 +39,9 @@ import {
   IconHrRounds,
   IconCompOffers,
   IconHrAnalytics,
+  IconDocuments,
+  IconCaseAudit,
+  IconPolicies,
   IconWorkflows,
   IconAudit,
   IconCosts,
@@ -65,6 +68,9 @@ export type PortalNavKey =
   | "exec-audit"
   | "interviews"
   | "panel"
+  | "hr-documents"
+  | "case-audit"
+  | "hr-policies"
   | "market-intelligence"
   | "feasibility"
   | "hr-cases"
@@ -185,6 +191,31 @@ const MAIN_NAV: NavItem[] = [
     href: "/feasibility",
     icon: <IconFeasibility />,
     roles: ["hr_head", "admin"],
+  },
+  {
+    // HROPS-03: pre-offer documents & verification — hr_ops + admin only,
+    // matching the HR_OPS_DOC_ROLES API gate.
+    key: "hr-documents",
+    label: "Documents",
+    href: "/hr-documents",
+    icon: <IconDocuments />,
+    roles: ["hr_ops", "admin"],
+  },
+  {
+    // HROPS-03: per-case audit trail — hr_ops + admin only.
+    key: "case-audit",
+    label: "Case audit",
+    href: "/case-audit",
+    icon: <IconCaseAudit />,
+    roles: ["hr_ops", "admin"],
+  },
+  {
+    // HROPS-03: curated templates & policies library — hr_ops + admin only.
+    key: "hr-policies",
+    label: "Policies",
+    href: "/hr-policies",
+    icon: <IconPolicies />,
+    roles: ["hr_ops", "admin"],
   },
   {
     key: "interviews",

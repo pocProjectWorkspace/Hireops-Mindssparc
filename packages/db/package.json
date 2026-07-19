@@ -25,6 +25,7 @@
     "db:seed:candidate-demo": "tsx src/scripts/seed-candidate-demo.ts",
     "db:seed:offboard-demo": "tsx src/scripts/seed-offboard-demo.ts",
     "db:seed:benchmarks": "tsx src/scripts/seed-benchmarks.ts",
+    "db:seed:hr-policies": "tsx src/scripts/seed-hr-policies.ts",
     "db:groom:demo-data": "tsx src/scripts/groom-demo-data.ts",
     "db:store:demo-ai-credential": "tsx src/scripts/store-demo-ai-credential.ts"
   },

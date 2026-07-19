@@ -90,3 +90,7 @@ export * from "./requisition-feasibility";
 export * from "./hr-round-assessments";
 // Comp & offer desk — cached AI comp rationale (HROPS-02)
 export * from "./comp-recommendations";
+// HR-ops documents, case audit notes, policies (HROPS-03)
+export * from "./application-documents";
+export * from "./hr-case-notes";
+export * from "./hr-policy-documents";

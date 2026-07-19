@@ -86,6 +86,9 @@ import {
   requisitionFeasibility,
   hrRoundAssessments,
   compRecommendations,
+  applicationDocuments,
+  hrCaseNotes,
+  hrPolicyDocuments,
   approvalRequests,
   approvalDecisions,
   recordPiiAccess,
@@ -440,6 +443,32 @@ import {
   type CompRationaleAi,
   type OfferApprovalStatus,
   type BenefitKey,
+  // HROPS-03 documents & verification, case audit, policies
+  listApplicationDocumentCandidatesInputSchema,
+  listApplicationDocumentCandidatesOutputSchema,
+  listRequestableDocumentTypesOutputSchema,
+  requestApplicationDocumentsInputSchema,
+  requestApplicationDocumentsOutputSchema,
+  verifyApplicationDocumentInputSchema,
+  verifyApplicationDocumentOutputSchema,
+  rejectApplicationDocumentInputSchema,
+  rejectApplicationDocumentOutputSchema,
+  candidateListMyApplicationDocumentsOutputSchema,
+  candidateAttachApplicationDocumentInputSchema,
+  candidateAttachApplicationDocumentOutputSchema,
+  listCaseAuditCasesInputSchema,
+  listCaseAuditCasesOutputSchema,
+  getCaseAuditTimelineInputSchema,
+  getCaseAuditTimelineOutputSchema,
+  addCaseAuditNoteInputSchema,
+  addCaseAuditNoteOutputSchema,
+  listHrPoliciesOutputSchema,
+  type ApplicationDocumentRow,
+  type ApplicationDocumentCandidateRow,
+  type ApplicationDocumentOverall,
+  type CandidateApplicationDocumentGroup,
+  type CandidateApplicationDocumentSlot,
+  type CaseAuditEvent,
 } from "@hireops/api-types";
 import { createClient } from "@supabase/supabase-js";
 import {
@@ -515,6 +544,7 @@ import {
 } from "../lib/offboarding-case";
 import { getStorageClient } from "../lib/storage";
 import { attachDocumentToCase, matchDocumentCollectionTask } from "../lib/onboarding-document";
+import { attachApplicationDocumentBlob } from "../lib/application-document";
 import { acceptOfferAtomically, runOfferAcceptSideEffects } from "../lib/offer-accept";
 
 /**
@@ -703,6 +733,22 @@ const HR_OPS_CASE_ROLES = new Set(["admin", "hr_ops"]);
 // RLS still scopes rows to the tenant on top of every gate.
 const COMP_DESK_ROLES = new Set(["admin", "hr_ops"]);
 const OFFER_APPROVAL_DECIDE_ROLES = new Set(["admin", "hr_head"]);
+// HROPS-03 — Documents & verification, Case audit, Policies. The hr_ops
+// persona owns pre-offer document verification, the per-case audit trail, and
+// the policies library; admin is the super-role. recruiter / hiring_manager /
+// hr_head / panel get FORBIDDEN on these surfaces (matches the AppShell nav
+// gate). RLS still scopes every read/write to the tenant on top of this gate.
+const HR_OPS_DOC_ROLES = new Set(["admin", "hr_ops"]);
+
+// The application stages that make up the pre-offer / HR-ops window: a
+// candidate deep enough in the pipeline to collect documents on, up to and
+// including offer-accept. Shared by /hr-documents and /case-audit.
+const HR_OPS_WINDOW_STAGES: ApplicationStage[] = [
+  "tech_interview",
+  "hr_round",
+  "offer_drafted",
+  "offer_accepted",
+];
 
 // The set of internal roles an admin may assign (mirror of api-types'
 // INTERNAL_TENANT_ROLES). A submitted role outside this set is rejected by the
@@ -13036,6 +13082,892 @@ export const appRouter = router({
       },
     };
   }),
+  // ═══════════════════ HROPS-03 — documents & verification ═══════════════════
+  //
+  // Pre-offer document verification for hr_ops. Real machinery reuse: the
+  // application_documents table follows onboarding_documents' RLS/audit/PII
+  // discipline; downloads proxy through the PII-logged REST route; the candidate
+  // uploads via the same blob endpoint they use for onboarding docs. Every
+  // procedure is HR_OPS_DOC_ROLES-gated; RLS scopes rows to the tenant on top.
+
+  /**
+   * listApplicationDocumentCandidates — one row per application in the HR-ops
+   * window that has at least one requested document, with its per-doc status +
+   * an overall rollup, plus the hero stats. Search matches candidate name /
+   * role; the status filter narrows which candidates appear (a candidate stays
+   * if any of their docs is in that status). Stats are computed over the
+   * search-scoped set, independent of the status filter, so the strip is stable.
+   */
+  listApplicationDocumentCandidates: protectedProcedure
+    .input(listApplicationDocumentCandidatesInputSchema)
+    .output(listApplicationDocumentCandidatesOutputSchema)
+    .query(async ({ ctx, input }) => {
+      requireAnyRole(ctx, HR_OPS_DOC_ROLES, "Documents & verification is an HR-ops surface.");
+      const db = requireDb(ctx);
+      if (!ctx.tenantId) {
+        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
+      }
+      const tenantId = ctx.tenantId;
+
+      const rows = await db
+        .select({
+          applicationId: applicationDocuments.applicationId,
+          candidateId: applications.candidateId,
+          stage: applications.currentStage,
+          candidateName: persons.fullName,
+          roleTitle: positions.title,
+          docId: applicationDocuments.id,
+          documentTypeId: applicationDocuments.documentTypeId,
+          documentTypeName: documentTypes.name,
+          status: applicationDocuments.status,
+          fileName: applicationDocuments.fileName,
+          mimeType: applicationDocuments.mimeType,
+          rejectionReason: applicationDocuments.rejectionReason,
+          requestedAt: applicationDocuments.requestedAt,
+          uploadedAt: applicationDocuments.uploadedAt,
+          verifiedAt: applicationDocuments.verifiedAt,
+          verifiedBy: applicationDocuments.verifiedByMembershipId,
+        })
+        .from(applicationDocuments)
+        .innerJoin(
+          applications,
+          and(
+            eq(applications.tenantId, applicationDocuments.tenantId),
+            eq(applications.id, applicationDocuments.applicationId),
+          ),
+        )
+        .leftJoin(
+          candidates,
+          and(
+            eq(candidates.tenantId, applications.tenantId),
+            eq(candidates.id, applications.candidateId),
+          ),
+        )
+        .leftJoin(
+          persons,
+          and(eq(persons.tenantId, applications.tenantId), eq(persons.id, candidates.personId)),
+        )
+        .leftJoin(
+          requisitions,
+          and(
+            eq(requisitions.tenantId, applications.tenantId),
+            eq(requisitions.id, applications.requisitionId),
+          ),
+        )
+        .leftJoin(
+          positions,
+          and(
+            eq(positions.tenantId, applications.tenantId),
+            eq(positions.id, requisitions.positionId),
+          ),
+        )
+        .leftJoin(documentTypes, eq(documentTypes.id, applicationDocuments.documentTypeId))
+        .where(
+          and(
+            eq(applicationDocuments.tenantId, tenantId),
+            inArray(applications.currentStage, HR_OPS_WINDOW_STAGES),
+          ),
+        )
+        .orderBy(desc(applicationDocuments.requestedAt));
+
+      const verifierNames = await resolveMembershipNames(
+        ctx,
+        tenantId,
+        rows.map((r) => r.verifiedBy).filter((v): v is string => !!v),
+      );
+
+      const search = input.search?.trim().toLowerCase();
+      const groups = new Map<string, ApplicationDocumentCandidateRow>();
+      for (const r of rows) {
+        const name = r.candidateName ?? null;
+        const role = r.roleTitle ?? null;
+        if (
+          search &&
+          !(name?.toLowerCase().includes(search) || role?.toLowerCase().includes(search))
+        ) {
+          continue;
+        }
+        let g = groups.get(r.applicationId);
+        if (!g) {
+          g = {
+            applicationId: r.applicationId,
+            candidateId: r.candidateId,
+            candidateName: name,
+            roleTitle: role,
+            stage: r.stage,
+            documents: [],
+            overall: "none",
+          };
+          groups.set(r.applicationId, g);
+        }
+        const doc: ApplicationDocumentRow = {
+          id: r.docId,
+          applicationId: r.applicationId,
+          documentTypeId: r.documentTypeId,
+          documentTypeName: r.documentTypeName ?? null,
+          status: r.status as ApplicationDocumentRow["status"],
+          fileName: r.fileName ?? null,
+          mimeType: r.mimeType ?? null,
+          rejectionReason: r.rejectionReason ?? null,
+          requestedAt: toIsoString(r.requestedAt) ?? new Date(0).toISOString(),
+          uploadedAt: toIsoString(r.uploadedAt),
+          verifiedAt: toIsoString(r.verifiedAt),
+          verifierName: r.verifiedBy ? (verifierNames.get(r.verifiedBy) ?? null) : null,
+        };
+        g.documents.push(doc);
+      }
+
+      let verifiedDocs = 0;
+      let pendingDocs = 0;
+      let totalDocs = 0;
+      for (const g of groups.values()) {
+        g.overall = computeDocOverall(g.documents.map((d) => d.status));
+        for (const d of g.documents) {
+          totalDocs += 1;
+          if (d.status === "verified") verifiedDocs += 1;
+          else if (d.status === "requested" || d.status === "uploaded") pendingDocs += 1;
+        }
+      }
+
+      let items = [...groups.values()];
+      if (input.status) {
+        items = items.filter((g) => g.documents.some((d) => d.status === input.status));
+      }
+      items = items.slice(0, input.limit);
+
+      return {
+        items,
+        stats: { candidates: groups.size, verifiedDocs, pendingDocs, totalDocs },
+      };
+    }),
+
+  /**
+   * listRequestableDocumentTypes — the tenant-agnostic document_types catalogue,
+   * for the "Request documents" modal. Reads the reference table (permissive
+   * SELECT policy); no tenant scoping (the table has no tenant_id).
+   */
+  listRequestableDocumentTypes: protectedProcedure
+    .output(listRequestableDocumentTypesOutputSchema)
+    .query(async ({ ctx }) => {
+      requireAnyRole(ctx, HR_OPS_DOC_ROLES, "Documents & verification is an HR-ops surface.");
+      const db = requireDb(ctx);
+      const rows = await db
+        .select({
+          id: documentTypes.id,
+          code: documentTypes.code,
+          name: documentTypes.name,
+          geographyCode: documentTypes.geographyCode,
+        })
+        .from(documentTypes)
+        .orderBy(dsql`${documentTypes.geographyCode} ASC NULLS FIRST`, documentTypes.name);
+      return {
+        items: rows.map((r) => ({
+          id: r.id,
+          code: r.code,
+          name: r.name,
+          geographyCode: r.geographyCode ?? null,
+        })),
+      };
+    }),
+
+  /**
+   * requestApplicationDocuments — hr_ops requests one or more document types for
+   * an application. Creates a 'requested' row per type (no blob yet), idempotent
+   * on (tenant, application, document_type) so a re-request skips existing rows.
+   * The candidate sees the requests in their portal and uploads against them —
+   * the same pull model onboarding document collection uses (no per-request
+   * email; consistent with how onboarding requests surface).
+   */
+  requestApplicationDocuments: protectedProcedure
+    .input(requestApplicationDocumentsInputSchema)
+    .output(requestApplicationDocumentsOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      return withAudit("request_application_documents", ctx, input, async () => {
+        requireAnyRole(ctx, HR_OPS_DOC_ROLES, "Documents & verification is an HR-ops surface.");
+        const db = requireDb(ctx);
+        if (!ctx.tenantId) {
+          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
+        }
+        const tenantId = ctx.tenantId;
+
+        const [app] = await db
+          .select({ id: applications.id, stage: applications.currentStage })
+          .from(applications)
+          .where(and(eq(applications.tenantId, tenantId), eq(applications.id, input.applicationId)))
+          .limit(1);
+        if (!app) {
+          throw new TRPCError({ code: "NOT_FOUND", message: "Application not found" });
+        }
+
+        // Validate the document type ids against the reference table.
+        const typeRows = await db
+          .select({ id: documentTypes.id })
+          .from(documentTypes)
+          .where(inArray(documentTypes.id, input.documentTypeIds));
+        const validTypeIds = new Set(typeRows.map((t) => t.id));
+        const requestTypes = input.documentTypeIds.filter((id) => validTypeIds.has(id));
+        if (requestTypes.length === 0) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "No valid document types" });
+        }
+
+        const membershipId = await resolveCallerMembershipId(ctx, tenantId);
+        const inserted = await db
+          .insert(applicationDocuments)
+          .values(
+            requestTypes.map((documentTypeId) => ({
+              tenantId,
+              applicationId: input.applicationId,
+              documentTypeId,
+              status: "requested",
+              requestedByMembershipId: membershipId,
+            })),
+          )
+          .onConflictDoNothing({
+            target: [
+              applicationDocuments.tenantId,
+              applicationDocuments.applicationId,
+              applicationDocuments.documentTypeId,
+            ],
+          })
+          .returning({ id: applicationDocuments.id });
+
+        return {
+          applicationId: input.applicationId,
+          requested: inserted.length,
+          skipped: requestTypes.length - inserted.length,
+        };
+      });
+    }),
+
+  /**
+   * verifyApplicationDocument — hr_ops marks an uploaded document verified.
+   * Stamps the reviewer + verified_at, clears any prior rejection reason. A
+   * still-'requested' document (no blob uploaded) can't be verified (400).
+   */
+  verifyApplicationDocument: protectedProcedure
+    .input(verifyApplicationDocumentInputSchema)
+    .output(verifyApplicationDocumentOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      return withAudit("verify_application_document", ctx, input, async () => {
+        requireAnyRole(ctx, HR_OPS_DOC_ROLES, "Documents & verification is an HR-ops surface.");
+        const db = requireDb(ctx);
+        if (!ctx.tenantId) {
+          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
+        }
+        const tenantId = ctx.tenantId;
+
+        const [doc] = await db
+          .select({ id: applicationDocuments.id, status: applicationDocuments.status })
+          .from(applicationDocuments)
+          .where(
+            and(
+              eq(applicationDocuments.tenantId, tenantId),
+              eq(applicationDocuments.id, input.documentId),
+            ),
+          )
+          .limit(1);
+        if (!doc) {
+          throw new TRPCError({ code: "NOT_FOUND", message: "Application document not found" });
+        }
+        if (doc.status === "requested") {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: "Cannot verify a document that hasn't been uploaded yet",
+          });
+        }
+
+        const membershipId = await resolveCallerMembershipId(ctx, tenantId);
+        const now = new Date();
+        const [updated] = await db
+          .update(applicationDocuments)
+          .set({
+            status: "verified",
+            verifiedByMembershipId: membershipId,
+            verifiedAt: now,
+            rejectionReason: null,
+            updatedAt: now,
+          })
+          .where(
+            and(
+              eq(applicationDocuments.tenantId, tenantId),
+              eq(applicationDocuments.id, input.documentId),
+            ),
+          )
+          .returning({ status: applicationDocuments.status });
+        if (!updated) {
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: "verify application document returned no row",
+          });
+        }
+        return { documentId: doc.id, status: updated.status as "verified" };
+      });
+    }),
+
+  /**
+   * rejectApplicationDocument — hr_ops rejects an uploaded document with a
+   * REQUIRED reason (400 without). The candidate re-uploads (→ 'uploaded').
+   */
+  rejectApplicationDocument: protectedProcedure
+    .input(rejectApplicationDocumentInputSchema)
+    .output(rejectApplicationDocumentOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      return withAudit("reject_application_document", ctx, input, async () => {
+        requireAnyRole(ctx, HR_OPS_DOC_ROLES, "Documents & verification is an HR-ops surface.");
+        const db = requireDb(ctx);
+        if (!ctx.tenantId) {
+          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
+        }
+        const tenantId = ctx.tenantId;
+        const reason = input.rejectionReason.trim();
+        if (reason.length === 0) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: "rejectionReason is required to reject a document",
+          });
+        }
+
+        const [doc] = await db
+          .select({ id: applicationDocuments.id, status: applicationDocuments.status })
+          .from(applicationDocuments)
+          .where(
+            and(
+              eq(applicationDocuments.tenantId, tenantId),
+              eq(applicationDocuments.id, input.documentId),
+            ),
+          )
+          .limit(1);
+        if (!doc) {
+          throw new TRPCError({ code: "NOT_FOUND", message: "Application document not found" });
+        }
+        if (doc.status === "requested") {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: "Cannot reject a document that hasn't been uploaded yet",
+          });
+        }
+
+        const membershipId = await resolveCallerMembershipId(ctx, tenantId);
+        const now = new Date();
+        const [updated] = await db
+          .update(applicationDocuments)
+          .set({
+            status: "rejected",
+            verifiedByMembershipId: membershipId,
+            verifiedAt: now,
+            rejectionReason: reason,
+            updatedAt: now,
+          })
+          .where(
+            and(
+              eq(applicationDocuments.tenantId, tenantId),
+              eq(applicationDocuments.id, input.documentId),
+            ),
+          )
+          .returning({
+            status: applicationDocuments.status,
+            rejectionReason: applicationDocuments.rejectionReason,
+          });
+        if (!updated) {
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: "reject application document returned no row",
+          });
+        }
+        return {
+          documentId: doc.id,
+          status: updated.status as "rejected",
+          rejectionReason: updated.rejectionReason ?? null,
+        };
+      });
+    }),
+
+  // ─────────── candidate side: pre-offer documents ───────────
+
+  /**
+   * candidateListMyApplicationDocuments — the requested pre-offer documents on
+   * the candidate's own applications, grouped by application. Person-scoped:
+   * every row traces application → candidate → person = the caller.
+   */
+  candidateListMyApplicationDocuments: candidateProcedure
+    .output(candidateListMyApplicationDocumentsOutputSchema)
+    .query(async ({ ctx }) => {
+      const db = ctx.db;
+      if (!db) {
+        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "candidate ctx.db missing" });
+      }
+      const rows = await db
+        .select({
+          applicationId: applicationDocuments.applicationId,
+          roleTitle: positions.title,
+          docId: applicationDocuments.id,
+          documentTypeId: applicationDocuments.documentTypeId,
+          documentTypeName: documentTypes.name,
+          status: applicationDocuments.status,
+          fileName: applicationDocuments.fileName,
+          rejectionReason: applicationDocuments.rejectionReason,
+          uploadedAt: applicationDocuments.uploadedAt,
+          requestedAt: applicationDocuments.requestedAt,
+        })
+        .from(applicationDocuments)
+        .innerJoin(
+          applications,
+          and(
+            eq(applications.tenantId, applicationDocuments.tenantId),
+            eq(applications.id, applicationDocuments.applicationId),
+          ),
+        )
+        .innerJoin(
+          candidates,
+          and(
+            eq(candidates.tenantId, applications.tenantId),
+            eq(candidates.id, applications.candidateId),
+          ),
+        )
+        .leftJoin(
+          requisitions,
+          and(
+            eq(requisitions.tenantId, applications.tenantId),
+            eq(requisitions.id, applications.requisitionId),
+          ),
+        )
+        .leftJoin(
+          positions,
+          and(
+            eq(positions.tenantId, applications.tenantId),
+            eq(positions.id, requisitions.positionId),
+          ),
+        )
+        .leftJoin(documentTypes, eq(documentTypes.id, applicationDocuments.documentTypeId))
+        .where(
+          and(
+            eq(applicationDocuments.tenantId, ctx.candidate.tenantId),
+            eq(candidates.personId, ctx.candidate.personId),
+          ),
+        )
+        .orderBy(desc(applicationDocuments.requestedAt));
+
+      const groups = new Map<string, CandidateApplicationDocumentGroup>();
+      for (const r of rows) {
+        let g = groups.get(r.applicationId);
+        if (!g) {
+          g = { applicationId: r.applicationId, roleTitle: r.roleTitle ?? null, documents: [] };
+          groups.set(r.applicationId, g);
+        }
+        const slot: CandidateApplicationDocumentSlot = {
+          documentId: r.docId,
+          documentTypeId: r.documentTypeId,
+          documentTypeName: r.documentTypeName ?? null,
+          status: r.status as CandidateApplicationDocumentSlot["status"],
+          fileName: r.fileName ?? null,
+          rejectionReason: r.rejectionReason ?? null,
+          uploadedAt: toIsoString(r.uploadedAt),
+        };
+        g.documents.push(slot);
+      }
+      return { groups: [...groups.values()] };
+    }),
+
+  /**
+   * candidateAttachApplicationDocument — the candidate uploads a blob (via the
+   * shared /api/candidate-documents/upload endpoint) then attaches it here to a
+   * requested document row they own. Person-scoped ownership check, then the
+   * shared attach write-path moves the row to 'uploaded' for hr_ops review.
+   */
+  candidateAttachApplicationDocument: candidateProcedure
+    .input(candidateAttachApplicationDocumentInputSchema)
+    .output(candidateAttachApplicationDocumentOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      return withAudit(
+        "candidate_attach_application_document",
+        ctx,
+        { documentId: input.documentId },
+        async () => {
+          const db = ctx.db;
+          if (!db) {
+            throw new TRPCError({
+              code: "INTERNAL_SERVER_ERROR",
+              message: "candidate ctx.db missing",
+            });
+          }
+          // Person-scoped ownership: document → application → candidate → person.
+          const [owned] = await db
+            .select({ id: applicationDocuments.id })
+            .from(applicationDocuments)
+            .innerJoin(
+              applications,
+              and(
+                eq(applications.tenantId, applicationDocuments.tenantId),
+                eq(applications.id, applicationDocuments.applicationId),
+              ),
+            )
+            .innerJoin(
+              candidates,
+              and(
+                eq(candidates.tenantId, applications.tenantId),
+                eq(candidates.id, applications.candidateId),
+              ),
+            )
+            .where(
+              and(
+                eq(applicationDocuments.tenantId, ctx.candidate.tenantId),
+                eq(applicationDocuments.id, input.documentId),
+                eq(candidates.personId, ctx.candidate.personId),
+              ),
+            )
+            .limit(1);
+          if (!owned) {
+            throw new TRPCError({ code: "NOT_FOUND", message: "application_document_not_found" });
+          }
+
+          const result = await attachApplicationDocumentBlob(db, ctx.candidate.tenantId, {
+            documentId: input.documentId,
+            storageKey: input.storageKey,
+            fileName: input.fileName,
+            mimeType: input.mimeType,
+            sizeBytes: input.sizeBytes,
+          });
+          return { documentId: result.documentId, status: result.status as "uploaded" };
+        },
+      );
+    }),
+
+  // ═══════════════════ HROPS-03 — case audit trail ═══════════════════
+  //
+  // Read + note-write over the REAL audit_logs stream. The timeline for an
+  // application unions the trigger-written rows for the application itself
+  // (stage transitions), its offers, its pre-offer documents, and its
+  // hr_case_notes. Notes are written to a durable table whose audit trigger
+  // produces the audit_logs row the timeline renders — no synthetic audit rows.
+  // Tenant-scoped throughout (RLS + explicit predicate); HR_OPS_DOC_ROLES-gated.
+
+  /**
+   * listCaseAuditCases — one row per application in the HR-ops window, with its
+   * total audit-event count + last activity, newest activity first. Search
+   * matches candidate name / role.
+   */
+  listCaseAuditCases: protectedProcedure
+    .input(listCaseAuditCasesInputSchema)
+    .output(listCaseAuditCasesOutputSchema)
+    .query(async ({ ctx, input }) => {
+      requireAnyRole(ctx, HR_OPS_DOC_ROLES, "Case audit is an HR-ops surface.");
+      const db = requireDb(ctx);
+      if (!ctx.tenantId) {
+        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
+      }
+      const tenantId = ctx.tenantId;
+      const search = input.search?.trim();
+      const searchClause = search
+        ? dsql`AND (p.full_name ILIKE ${"%" + search + "%"} OR pos.title ILIKE ${"%" + search + "%"})`
+        : dsql``;
+
+      const result = await db.execute(dsql`
+        WITH app_events AS (
+          SELECT al.entity_id AS application_id, al.created_at
+          FROM public.audit_logs al
+          WHERE al.tenant_id = ${tenantId} AND al.entity_type = 'applications'
+          UNION ALL
+          SELECT o.application_id, al.created_at
+          FROM public.audit_logs al
+          JOIN public.offers o ON o.id = al.entity_id AND o.tenant_id = al.tenant_id
+          WHERE al.tenant_id = ${tenantId} AND al.entity_type = 'offers'
+          UNION ALL
+          SELECT ad.application_id, al.created_at
+          FROM public.audit_logs al
+          JOIN public.application_documents ad ON ad.id = al.entity_id AND ad.tenant_id = al.tenant_id
+          WHERE al.tenant_id = ${tenantId} AND al.entity_type = 'application_documents'
+          UNION ALL
+          SELECT n.application_id, al.created_at
+          FROM public.audit_logs al
+          JOIN public.hr_case_notes n ON n.id = al.entity_id AND n.tenant_id = al.tenant_id
+          WHERE al.tenant_id = ${tenantId} AND al.entity_type = 'hr_case_notes'
+        ),
+        ev AS (
+          SELECT application_id, count(*)::int AS cnt, max(created_at) AS last_at
+          FROM app_events GROUP BY application_id
+        ),
+        nc AS (
+          SELECT application_id, count(*)::int AS notes
+          FROM public.hr_case_notes WHERE tenant_id = ${tenantId} GROUP BY application_id
+        )
+        SELECT
+          a.id::text AS application_id,
+          a.current_stage AS stage,
+          p.full_name AS candidate_name,
+          pos.title AS role_title,
+          COALESCE(ev.cnt, 0) AS event_count,
+          ev.last_at::text AS last_at,
+          COALESCE(nc.notes, 0) AS note_count,
+          a.stage_entered_at::text AS stage_entered_at
+        FROM public.applications a
+        LEFT JOIN public.candidates c ON c.id = a.candidate_id AND c.tenant_id = a.tenant_id
+        LEFT JOIN public.persons p ON p.id = c.person_id AND p.tenant_id = a.tenant_id
+        LEFT JOIN public.requisitions r ON r.id = a.requisition_id AND r.tenant_id = a.tenant_id
+        LEFT JOIN public.positions pos ON pos.id = r.position_id AND pos.tenant_id = a.tenant_id
+        LEFT JOIN ev ON ev.application_id = a.id
+        LEFT JOIN nc ON nc.application_id = a.id
+        WHERE a.tenant_id = ${tenantId}
+          AND a.current_stage IN ('tech_interview', 'hr_round', 'offer_drafted', 'offer_accepted')
+          ${searchClause}
+        ORDER BY ev.last_at DESC NULLS LAST, a.stage_entered_at DESC
+        LIMIT ${input.limit}
+      `);
+      const rows =
+        (result as unknown as { rows?: CaseAuditListSqlRow[] }).rows ??
+        (result as unknown as CaseAuditListSqlRow[]);
+
+      let events = 0;
+      let notes = 0;
+      const items = rows.map((r) => {
+        events += Number(r.event_count);
+        notes += Number(r.note_count);
+        return {
+          applicationId: r.application_id,
+          caseRef: `CASE-${r.application_id.slice(0, 8).toUpperCase()}`,
+          candidateName: r.candidate_name ?? null,
+          roleTitle: r.role_title ?? null,
+          stage: r.stage as ApplicationStage,
+          eventCount: Number(r.event_count),
+          lastActivityAt: r.last_at ? new Date(r.last_at).toISOString() : null,
+        };
+      });
+
+      return { items, stats: { cases: items.length, events, notes } };
+    }),
+
+  /**
+   * getCaseAuditTimeline — the full audit timeline for one application: every
+   * trigger-written audit_logs row for the application, its offers, its pre-offer
+   * documents, and its hr_case_notes, newest first, projected to display events.
+   */
+  getCaseAuditTimeline: protectedProcedure
+    .input(getCaseAuditTimelineInputSchema)
+    .output(getCaseAuditTimelineOutputSchema)
+    .query(async ({ ctx, input }) => {
+      requireAnyRole(ctx, HR_OPS_DOC_ROLES, "Case audit is an HR-ops surface.");
+      const db = requireDb(ctx);
+      if (!ctx.tenantId) {
+        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
+      }
+      const tenantId = ctx.tenantId;
+
+      const [app] = await db
+        .select({
+          id: applications.id,
+          stage: applications.currentStage,
+          candidateName: persons.fullName,
+          roleTitle: positions.title,
+        })
+        .from(applications)
+        .leftJoin(
+          candidates,
+          and(
+            eq(candidates.tenantId, applications.tenantId),
+            eq(candidates.id, applications.candidateId),
+          ),
+        )
+        .leftJoin(
+          persons,
+          and(eq(persons.tenantId, applications.tenantId), eq(persons.id, candidates.personId)),
+        )
+        .leftJoin(
+          requisitions,
+          and(
+            eq(requisitions.tenantId, applications.tenantId),
+            eq(requisitions.id, applications.requisitionId),
+          ),
+        )
+        .leftJoin(
+          positions,
+          and(
+            eq(positions.tenantId, applications.tenantId),
+            eq(positions.id, requisitions.positionId),
+          ),
+        )
+        .where(and(eq(applications.tenantId, tenantId), eq(applications.id, input.applicationId)))
+        .limit(1);
+      if (!app) {
+        throw new TRPCError({ code: "NOT_FOUND", message: "Application not found" });
+      }
+
+      // Related entity ids + label maps (doc type names, note text/authors).
+      const offerRows = await db
+        .select({ id: offers.id })
+        .from(offers)
+        .where(and(eq(offers.tenantId, tenantId), eq(offers.applicationId, input.applicationId)));
+      const docRows = await db
+        .select({
+          id: applicationDocuments.id,
+          typeName: documentTypes.name,
+        })
+        .from(applicationDocuments)
+        .leftJoin(documentTypes, eq(documentTypes.id, applicationDocuments.documentTypeId))
+        .where(
+          and(
+            eq(applicationDocuments.tenantId, tenantId),
+            eq(applicationDocuments.applicationId, input.applicationId),
+          ),
+        );
+      const noteRows = await db
+        .select({
+          id: hrCaseNotes.id,
+          note: hrCaseNotes.note,
+          author: hrCaseNotes.authorMembershipId,
+        })
+        .from(hrCaseNotes)
+        .where(
+          and(
+            eq(hrCaseNotes.tenantId, tenantId),
+            eq(hrCaseNotes.applicationId, input.applicationId),
+          ),
+        );
+
+      const docTypeById = new Map(docRows.map((d) => [d.id, d.typeName ?? null]));
+      const noteById = new Map(noteRows.map((n) => [n.id, n.note]));
+      const noteAuthorNames = await resolveMembershipNames(
+        ctx,
+        tenantId,
+        noteRows.map((n) => n.author).filter((v): v is string => !!v),
+      );
+      const noteAuthorById = new Map(
+        noteRows.map((n) => [n.id, n.author ? (noteAuthorNames.get(n.author) ?? null) : null]),
+      );
+
+      const allIds = [
+        input.applicationId,
+        ...offerRows.map((o) => o.id),
+        ...docRows.map((d) => d.id),
+        ...noteRows.map((n) => n.id),
+      ];
+      const idList = dsql.join(
+        allIds.map((id) => dsql`${id}::uuid`),
+        dsql`, `,
+      );
+
+      const auditRows = await db
+        .select({
+          id: auditLogs.id,
+          entityType: auditLogs.entityType,
+          entityId: auditLogs.entityId,
+          action: auditLogs.action,
+          changedColumns: auditLogs.changedColumns,
+          beforeData: auditLogs.beforeData,
+          afterData: auditLogs.afterData,
+          createdAt: auditLogs.createdAt,
+        })
+        .from(auditLogs)
+        .where(and(eq(auditLogs.tenantId, tenantId), dsql`${auditLogs.entityId} IN (${idList})`))
+        .orderBy(desc(auditLogs.createdAt), desc(auditLogs.id));
+
+      const events: CaseAuditEvent[] = auditRows.map((r) =>
+        projectCaseAuditEvent(r, docTypeById, noteById, noteAuthorById),
+      );
+
+      return {
+        applicationId: app.id,
+        candidateName: app.candidateName ?? null,
+        roleTitle: app.roleTitle ?? null,
+        stage: app.stage,
+        events,
+      };
+    }),
+
+  /**
+   * addCaseAuditNote — hr_ops adds a free-text note to an application's case.
+   * Inserts an hr_case_notes row; the audit_record_change() trigger writes the
+   * REAL audit_logs event the timeline renders as a note.
+   */
+  addCaseAuditNote: protectedProcedure
+    .input(addCaseAuditNoteInputSchema)
+    .output(addCaseAuditNoteOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      return withAudit(
+        "add_case_audit_note",
+        ctx,
+        { applicationId: input.applicationId },
+        async () => {
+          requireAnyRole(ctx, HR_OPS_DOC_ROLES, "Case audit is an HR-ops surface.");
+          const db = requireDb(ctx);
+          if (!ctx.tenantId) {
+            throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
+          }
+          const tenantId = ctx.tenantId;
+          const note = input.note.trim();
+          if (note.length === 0) {
+            throw new TRPCError({ code: "BAD_REQUEST", message: "Note text is required" });
+          }
+
+          const [app] = await db
+            .select({ id: applications.id })
+            .from(applications)
+            .where(
+              and(eq(applications.tenantId, tenantId), eq(applications.id, input.applicationId)),
+            )
+            .limit(1);
+          if (!app) {
+            throw new TRPCError({ code: "NOT_FOUND", message: "Application not found" });
+          }
+
+          const membershipId = await resolveCallerMembershipId(ctx, tenantId);
+          const [row] = await db
+            .insert(hrCaseNotes)
+            .values({
+              tenantId,
+              applicationId: input.applicationId,
+              note,
+              authorMembershipId: membershipId,
+            })
+            .returning({ id: hrCaseNotes.id, createdAt: hrCaseNotes.createdAt });
+          if (!row) {
+            throw new TRPCError({
+              code: "INTERNAL_SERVER_ERROR",
+              message: "add case note returned no row",
+            });
+          }
+          return {
+            noteId: row.id,
+            createdAt: toIsoString(row.createdAt) ?? new Date().toISOString(),
+          };
+        },
+      );
+    }),
+
+  // ═══════════════════ HROPS-03 — templates & policies ═══════════════════
+
+  /**
+   * listHrPolicies — the tenant's curated templates & policies library
+   * (/hr-policies). Read-only; seeded by db:seed:hr-policies as curated
+   * reference content (labelled in the UI). Tenant-scoped (RLS + predicate).
+   */
+  listHrPolicies: protectedProcedure.output(listHrPoliciesOutputSchema).query(async ({ ctx }) => {
+    requireAnyRole(ctx, HR_OPS_DOC_ROLES, "Policies is an HR-ops surface.");
+    const db = requireDb(ctx);
+    if (!ctx.tenantId) {
+      throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
+    }
+    const rows = await db
+      .select({
+        id: hrPolicyDocuments.id,
+        title: hrPolicyDocuments.title,
+        category: hrPolicyDocuments.category,
+        summary: hrPolicyDocuments.summary,
+        bodyMd: hrPolicyDocuments.bodyMd,
+        updatedAt: hrPolicyDocuments.updatedAt,
+      })
+      .from(hrPolicyDocuments)
+      .where(eq(hrPolicyDocuments.tenantId, ctx.tenantId))
+      .orderBy(hrPolicyDocuments.category, hrPolicyDocuments.title);
+    return {
+      items: rows.map((r) => ({
+        id: r.id,
+        title: r.title,
+        category: r.category as "offers" | "benefits" | "policies",
+        summary: r.summary,
+        bodyMd: r.bodyMd,
+        updatedAt: toIsoString(r.updatedAt) ?? new Date(0).toISOString(),
+      })),
+    };
+  }),
 });
 
 // ═══════════ DASH-01 — persona-dashboard builders ═══════════
@@ -14191,6 +15123,130 @@ async function resolveCallerMembershipId(
     LIMIT 1
   `;
   return rows[0]?.id ?? null;
+}
+
+// ─────────────── HROPS-03 case-audit + document helpers ───────────────
+
+/** Raw row shape from the listCaseAuditCases aggregate query. */
+interface CaseAuditListSqlRow {
+  application_id: string;
+  stage: string;
+  candidate_name: string | null;
+  role_title: string | null;
+  event_count: number | string;
+  last_at: string | null;
+  note_count: number | string;
+  stage_entered_at: string | null;
+}
+
+/** The audit_logs projection input for a single timeline event. */
+interface AuditRowForProjection {
+  id: string;
+  entityType: string;
+  entityId: string;
+  action: string;
+  changedColumns: string[] | null;
+  beforeData: unknown;
+  afterData: unknown;
+  createdAt: Date | string;
+}
+
+function asRecord(v: unknown): Record<string, unknown> {
+  return v && typeof v === "object" ? (v as Record<string, unknown>) : {};
+}
+
+/**
+ * Per-candidate document rollup: rejected wins, then all-verified, then partial.
+ */
+function computeDocOverall(statuses: string[]): ApplicationDocumentOverall {
+  if (statuses.length === 0) return "none";
+  if (statuses.some((s) => s === "rejected")) return "rejected";
+  if (statuses.every((s) => s === "verified")) return "all_verified";
+  return "partial";
+}
+
+/**
+ * Projects one trigger-written audit_logs row into a display timeline event.
+ * Actors are null for trigger rows (the existing convention — the UI renders
+ * "System"); notes carry their author resolved from hr_case_notes.
+ */
+function projectCaseAuditEvent(
+  r: AuditRowForProjection,
+  docTypeById: Map<string, string | null>,
+  noteById: Map<string, string>,
+  noteAuthorById: Map<string, string | null>,
+): CaseAuditEvent {
+  const before = asRecord(r.beforeData);
+  const after = asRecord(r.afterData);
+  const ts = toIsoString(r.createdAt) ?? new Date(0).toISOString();
+  const base = { id: r.id, actorName: null as string | null, isNote: false, timestamp: ts };
+
+  if (r.entityType === "hr_case_notes") {
+    return {
+      ...base,
+      kind: "note",
+      title: "Note added",
+      description: noteById.get(r.entityId) ?? (typeof after.note === "string" ? after.note : null),
+      actorName: noteAuthorById.get(r.entityId) ?? null,
+      isNote: true,
+    };
+  }
+  if (r.entityType === "applications") {
+    if (r.action === "insert") {
+      return { ...base, kind: "stage", title: "Application created", description: null };
+    }
+    const cols = r.changedColumns ?? [];
+    if (cols.includes("current_stage")) {
+      const from = typeof before.current_stage === "string" ? before.current_stage : "?";
+      const to = typeof after.current_stage === "string" ? after.current_stage : "?";
+      return {
+        ...base,
+        kind: "stage",
+        title: "Stage changed",
+        description: `${from.replace(/_/g, " ")} → ${to.replace(/_/g, " ")}`,
+      };
+    }
+    return {
+      ...base,
+      kind: "stage",
+      title: "Application updated",
+      description: cols.length ? cols.join(", ") : null,
+    };
+  }
+  if (r.entityType === "offers") {
+    if (r.action === "insert") {
+      return { ...base, kind: "offer", title: "Offer drafted", description: null };
+    }
+    if (r.action === "delete") {
+      return { ...base, kind: "offer", title: "Offer removed", description: null };
+    }
+    const status = typeof after.status === "string" ? after.status : null;
+    return {
+      ...base,
+      kind: "offer",
+      title: status ? `Offer ${status.replace(/_/g, " ")}` : "Offer updated",
+      description: null,
+    };
+  }
+  if (r.entityType === "application_documents") {
+    const typeName = docTypeById.get(r.entityId) ?? "document";
+    const statusRaw = r.action === "delete" ? before.status : after.status;
+    const status = typeof statusRaw === "string" ? statusRaw : null;
+    let title: string;
+    if (r.action === "insert") title = `Document requested: ${typeName}`;
+    else if (status === "uploaded") title = `Document uploaded: ${typeName}`;
+    else if (status === "verified") title = `Document verified: ${typeName}`;
+    else if (status === "rejected") title = `Document rejected: ${typeName}`;
+    else title = `Document updated: ${typeName}`;
+    const reason = typeof after.rejection_reason === "string" ? after.rejection_reason : null;
+    return {
+      ...base,
+      kind: "document",
+      title,
+      description: status === "rejected" ? reason : null,
+    };
+  }
+  return { ...base, kind: "other", title: `${r.entityType} ${r.action}`, description: null };
 }
 
 // ─────────────── ONBOARD-02 case status transition guard ───────────────

@@ -11,6 +11,7 @@ import { testRoutes } from "./routes/test";
 import { uploadRoutes } from "./routes/upload";
 import { onboardingDocumentRoutes } from "./routes/onboarding-documents";
 import { candidateDocumentRoutes } from "./routes/candidate-documents";
+import { applicationDocumentRoutes } from "./routes/application-documents";
 import { linksRoutes } from "./routes/links";
 import { offersRoutes } from "./routes/offers";
 import { interviewsRoutes } from "./routes/interviews";
@@ -84,6 +85,14 @@ app.route("/api/upload", uploadRoutes);
 // download route writes a pii_access_log row per read (PII-01).
 app.use("/api/onboarding-documents/*", tenantContext);
 app.route("/api/onboarding-documents", onboardingDocumentRoutes);
+
+// Pre-offer application-document download (HROPS-03). Behind the STRICT
+// tenant-context middleware — pre-offer ID/eligibility docs carry heavy PII,
+// so this 401s without an hr_ops JWT and runs RLS-scoped. The download route
+// writes a pii_access_log row per read (PII-01). Uploads reuse the candidate
+// blob endpoint below.
+app.use("/api/application-documents/*", tenantContext);
+app.route("/api/application-documents", applicationDocumentRoutes);
 
 // Candidate document upload + self-download (CAND-02). NOT behind the strict
 // tenantContext middleware — the candidate JWT has no `tid` claim (see

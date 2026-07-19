@@ -3840,3 +3840,272 @@ export const listHrRoundsOutputSchema = z.object({
   stats: hrRoundStatsSchema,
 });
 export type ListHrRoundsOutput = z.infer<typeof listHrRoundsOutputSchema>;
+
+// ═══════════════════════ HROPS-03 — documents & verification, ═══════════════════════
+// ═══════════════════════ case audit trail, templates & policies ═════════════════════
+
+/**
+ * application_documents lifecycle (HROPS-03): pre-offer document verification.
+ * requested (hr_ops asked for it, no blob yet) → uploaded (candidate uploaded)
+ * → verified | rejected (hr_ops decision; rejected returns to uploaded on a
+ * re-upload). Mirrors the DB CHECK constraint.
+ */
+export const applicationDocumentStatusSchema = z.enum([
+  "requested",
+  "uploaded",
+  "verified",
+  "rejected",
+]);
+export type ApplicationDocumentStatus = z.infer<typeof applicationDocumentStatusSchema>;
+
+/**
+ * Overall per-candidate document rollup. none = no docs requested; all_verified
+ * = every requested doc verified; rejected = at least one rejected; partial =
+ * some uploaded/verified but not all verified.
+ */
+export const applicationDocumentOverallSchema = z.enum([
+  "none",
+  "partial",
+  "all_verified",
+  "rejected",
+]);
+export type ApplicationDocumentOverall = z.infer<typeof applicationDocumentOverallSchema>;
+
+/** One requested/uploaded document for an application. */
+export const applicationDocumentRowSchema = z.object({
+  id: z.string().uuid(),
+  applicationId: z.string().uuid(),
+  documentTypeId: z.string().uuid(),
+  documentTypeName: z.string().nullable(),
+  status: applicationDocumentStatusSchema,
+  fileName: z.string().nullable(),
+  mimeType: z.string().nullable(),
+  rejectionReason: z.string().nullable(),
+  requestedAt: z.string(),
+  uploadedAt: z.string().nullable(),
+  verifiedAt: z.string().nullable(),
+  verifierName: z.string().nullable(),
+});
+export type ApplicationDocumentRow = z.infer<typeof applicationDocumentRowSchema>;
+
+/** One candidate row on /hr-documents — application + its requested docs. */
+export const applicationDocumentCandidateRowSchema = z.object({
+  applicationId: z.string().uuid(),
+  candidateId: z.string().uuid(),
+  candidateName: z.string().nullable(),
+  roleTitle: z.string().nullable(),
+  stage: applicationStageSchema,
+  documents: z.array(applicationDocumentRowSchema),
+  overall: applicationDocumentOverallSchema,
+});
+export type ApplicationDocumentCandidateRow = z.infer<typeof applicationDocumentCandidateRowSchema>;
+
+export const listApplicationDocumentCandidatesInputSchema = z.object({
+  search: z.string().max(200).optional(),
+  status: applicationDocumentStatusSchema.optional(),
+  limit: z.number().int().positive().max(200).default(100),
+});
+export const listApplicationDocumentCandidatesOutputSchema = z.object({
+  items: z.array(applicationDocumentCandidateRowSchema),
+  stats: z.object({
+    candidates: z.number().int(),
+    verifiedDocs: z.number().int(),
+    pendingDocs: z.number().int(),
+    totalDocs: z.number().int(),
+  }),
+});
+export type ListApplicationDocumentCandidatesInput = z.infer<
+  typeof listApplicationDocumentCandidatesInputSchema
+>;
+export type ListApplicationDocumentCandidatesOutput = z.infer<
+  typeof listApplicationDocumentCandidatesOutputSchema
+>;
+
+/** Requestable document types (from the tenant-agnostic document_types table). */
+export const requestableDocumentTypeSchema = z.object({
+  id: z.string().uuid(),
+  code: z.string(),
+  name: z.string(),
+  geographyCode: z.string().nullable(),
+});
+export type RequestableDocumentType = z.infer<typeof requestableDocumentTypeSchema>;
+export const listRequestableDocumentTypesOutputSchema = z.object({
+  items: z.array(requestableDocumentTypeSchema),
+});
+export type ListRequestableDocumentTypesOutput = z.infer<
+  typeof listRequestableDocumentTypesOutputSchema
+>;
+
+export const requestApplicationDocumentsInputSchema = z.object({
+  applicationId: z.string().uuid(),
+  documentTypeIds: z.array(z.string().uuid()).min(1).max(20),
+});
+export const requestApplicationDocumentsOutputSchema = z.object({
+  applicationId: z.string().uuid(),
+  requested: z.number().int(),
+  skipped: z.number().int(),
+});
+export type RequestApplicationDocumentsInput = z.infer<
+  typeof requestApplicationDocumentsInputSchema
+>;
+export type RequestApplicationDocumentsOutput = z.infer<
+  typeof requestApplicationDocumentsOutputSchema
+>;
+
+export const verifyApplicationDocumentInputSchema = z.object({
+  documentId: z.string().uuid(),
+});
+export const verifyApplicationDocumentOutputSchema = z.object({
+  documentId: z.string().uuid(),
+  status: applicationDocumentStatusSchema,
+});
+export type VerifyApplicationDocumentInput = z.infer<typeof verifyApplicationDocumentInputSchema>;
+export type VerifyApplicationDocumentOutput = z.infer<typeof verifyApplicationDocumentOutputSchema>;
+
+export const rejectApplicationDocumentInputSchema = z.object({
+  documentId: z.string().uuid(),
+  rejectionReason: z.string().min(1).max(1000),
+});
+export const rejectApplicationDocumentOutputSchema = z.object({
+  documentId: z.string().uuid(),
+  status: applicationDocumentStatusSchema,
+  rejectionReason: z.string().nullable(),
+});
+export type RejectApplicationDocumentInput = z.infer<typeof rejectApplicationDocumentInputSchema>;
+export type RejectApplicationDocumentOutput = z.infer<typeof rejectApplicationDocumentOutputSchema>;
+
+// ─────────── candidate side: pre-offer documents ───────────
+
+/** A candidate's view of one requested pre-offer document. */
+export const candidateApplicationDocumentSlotSchema = z.object({
+  documentId: z.string().uuid(),
+  documentTypeId: z.string().uuid(),
+  documentTypeName: z.string().nullable(),
+  status: applicationDocumentStatusSchema,
+  fileName: z.string().nullable(),
+  rejectionReason: z.string().nullable(),
+  uploadedAt: z.string().nullable(),
+});
+export type CandidateApplicationDocumentSlot = z.infer<
+  typeof candidateApplicationDocumentSlotSchema
+>;
+export const candidateApplicationDocumentGroupSchema = z.object({
+  applicationId: z.string().uuid(),
+  roleTitle: z.string().nullable(),
+  documents: z.array(candidateApplicationDocumentSlotSchema),
+});
+export type CandidateApplicationDocumentGroup = z.infer<
+  typeof candidateApplicationDocumentGroupSchema
+>;
+export const candidateListMyApplicationDocumentsOutputSchema = z.object({
+  groups: z.array(candidateApplicationDocumentGroupSchema),
+});
+export type CandidateListMyApplicationDocumentsOutput = z.infer<
+  typeof candidateListMyApplicationDocumentsOutputSchema
+>;
+
+export const candidateAttachApplicationDocumentInputSchema = z.object({
+  documentId: z.string().uuid(),
+  storageKey: z.string().min(1),
+  fileName: z.string().min(1).max(255),
+  mimeType: z.string().min(1).max(255),
+  sizeBytes: z.number().int().nonnegative(),
+});
+export const candidateAttachApplicationDocumentOutputSchema = z.object({
+  documentId: z.string().uuid(),
+  status: applicationDocumentStatusSchema,
+});
+export type CandidateAttachApplicationDocumentInput = z.infer<
+  typeof candidateAttachApplicationDocumentInputSchema
+>;
+export type CandidateAttachApplicationDocumentOutput = z.infer<
+  typeof candidateAttachApplicationDocumentOutputSchema
+>;
+
+// ─────────── case audit trail (/case-audit) ───────────
+
+/**
+ * One case-audit timeline event, projected from an audit_logs row. `kind`
+ * classifies the event for styling (stage / offer / document / note / other);
+ * `isNote` flags the hr_case_notes rows the surface renders distinctly.
+ */
+export const caseAuditEventSchema = z.object({
+  id: z.string().uuid(),
+  kind: z.enum(["stage", "offer", "document", "note", "other"]),
+  title: z.string(),
+  description: z.string().nullable(),
+  actorName: z.string().nullable(),
+  isNote: z.boolean(),
+  timestamp: z.string(),
+});
+export type CaseAuditEvent = z.infer<typeof caseAuditEventSchema>;
+
+export const caseAuditCaseRowSchema = z.object({
+  applicationId: z.string().uuid(),
+  caseRef: z.string(),
+  candidateName: z.string().nullable(),
+  roleTitle: z.string().nullable(),
+  stage: applicationStageSchema,
+  eventCount: z.number().int(),
+  lastActivityAt: z.string().nullable(),
+});
+export type CaseAuditCaseRow = z.infer<typeof caseAuditCaseRowSchema>;
+
+export const listCaseAuditCasesInputSchema = z.object({
+  search: z.string().max(200).optional(),
+  limit: z.number().int().positive().max(200).default(100),
+});
+export const listCaseAuditCasesOutputSchema = z.object({
+  items: z.array(caseAuditCaseRowSchema),
+  stats: z.object({
+    cases: z.number().int(),
+    events: z.number().int(),
+    notes: z.number().int(),
+  }),
+});
+export type ListCaseAuditCasesInput = z.infer<typeof listCaseAuditCasesInputSchema>;
+export type ListCaseAuditCasesOutput = z.infer<typeof listCaseAuditCasesOutputSchema>;
+
+export const getCaseAuditTimelineInputSchema = z.object({
+  applicationId: z.string().uuid(),
+});
+export const getCaseAuditTimelineOutputSchema = z.object({
+  applicationId: z.string().uuid(),
+  candidateName: z.string().nullable(),
+  roleTitle: z.string().nullable(),
+  stage: applicationStageSchema,
+  events: z.array(caseAuditEventSchema),
+});
+export type GetCaseAuditTimelineInput = z.infer<typeof getCaseAuditTimelineInputSchema>;
+export type GetCaseAuditTimelineOutput = z.infer<typeof getCaseAuditTimelineOutputSchema>;
+
+export const addCaseAuditNoteInputSchema = z.object({
+  applicationId: z.string().uuid(),
+  note: z.string().min(1).max(2000),
+});
+export const addCaseAuditNoteOutputSchema = z.object({
+  noteId: z.string().uuid(),
+  createdAt: z.string(),
+});
+export type AddCaseAuditNoteInput = z.infer<typeof addCaseAuditNoteInputSchema>;
+export type AddCaseAuditNoteOutput = z.infer<typeof addCaseAuditNoteOutputSchema>;
+
+// ─────────── templates & policies (/hr-policies) ───────────
+
+export const hrPolicyCategorySchema = z.enum(["offers", "benefits", "policies"]);
+export type HrPolicyCategory = z.infer<typeof hrPolicyCategorySchema>;
+
+export const hrPolicyDocumentRowSchema = z.object({
+  id: z.string().uuid(),
+  title: z.string(),
+  category: hrPolicyCategorySchema,
+  summary: z.string(),
+  bodyMd: z.string(),
+  updatedAt: z.string(),
+});
+export type HrPolicyDocumentRow = z.infer<typeof hrPolicyDocumentRowSchema>;
+
+export const listHrPoliciesOutputSchema = z.object({
+  items: z.array(hrPolicyDocumentRowSchema),
+});
+export type ListHrPoliciesOutput = z.infer<typeof listHrPoliciesOutputSchema>;

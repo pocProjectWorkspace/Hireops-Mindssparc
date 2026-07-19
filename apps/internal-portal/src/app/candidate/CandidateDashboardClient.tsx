@@ -8,7 +8,11 @@ import { CandidateShell } from "@/components/candidate/CandidateShell";
 import { trpc } from "@/lib/trpc-client";
 import { getSupabaseBrowserClient } from "@/lib/supabase-client";
 import { TRPCClientError } from "@trpc/client";
-import type { CandidateInterviewRow, CandidateDocumentSlot } from "@hireops/api-types";
+import type {
+  CandidateInterviewRow,
+  CandidateDocumentSlot,
+  CandidateApplicationDocumentSlot,
+} from "@hireops/api-types";
 
 /**
  * Candidate dashboard — applications (stage stepper), interviews (confirm),
@@ -136,8 +140,145 @@ export function CandidateDashboardClient() {
       <MyOfferSection />
       <ApplicationsSection />
       <InterviewsSection />
+      <PreOfferDocumentsSection />
       <MyDocumentsSection />
     </CandidateShell>
+  );
+}
+
+/**
+ * Pre-offer documents (HROPS-03) — documents HR has requested BEFORE an offer
+ * (identity / eligibility verification), distinct from the onboarding
+ * checklist below. Same upload flow as onboarding docs (shared blob endpoint,
+ * then attach); status + rejection reasons render per document.
+ */
+function PreOfferDocumentsSection() {
+  const docs = trpc.candidateListMyApplicationDocuments.useQuery();
+
+  if (docs.isLoading || !docs.data || docs.data.groups.length === 0) {
+    return null;
+  }
+
+  return (
+    <section className="flex flex-col gap-3">
+      <h2 className="text-sm font-semibold uppercase tracking-wide text-neutral-500">
+        Verification documents
+      </h2>
+      {docs.data.groups.map((group) => (
+        <Card key={group.applicationId} className="flex flex-col divide-y divide-neutral-100 p-0">
+          {group.roleTitle ? (
+            <p className="px-5 pb-1 pt-3.5 text-xs font-medium text-neutral-500">
+              For your {group.roleTitle} application
+            </p>
+          ) : null}
+          {group.documents.map((slot) => (
+            <PreOfferDocumentSlot key={slot.documentId} slot={slot} />
+          ))}
+        </Card>
+      ))}
+    </section>
+  );
+}
+
+function preOfferStatusBadge(status: string) {
+  if (status === "verified") return <Badge tone="success">Verified</Badge>;
+  if (status === "rejected") return <Badge tone="warning">Needs re-upload</Badge>;
+  if (status === "uploaded") return <Badge tone="accent">Pending review</Badge>;
+  return <Badge tone="neutral">Requested</Badge>;
+}
+
+function PreOfferDocumentSlot({ slot }: { slot: CandidateApplicationDocumentSlot }) {
+  const utils = trpc.useUtils();
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const attach = trpc.candidateAttachApplicationDocument.useMutation({
+    onSuccess: () => void utils.candidateListMyApplicationDocuments.invalidate(),
+    onError: (e) => setError(e.message),
+  });
+  const working = busy || attach.isPending;
+  const rejected = slot.status === "rejected";
+
+  async function onPickFile(e: ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0] ?? null;
+    e.target.value = "";
+    if (!file) return;
+    setError(null);
+    setBusy(true);
+    try {
+      const fd = new FormData();
+      fd.append("file", file);
+      const res = await fetch(`${API_BASE}/api/candidate-documents/upload`, {
+        method: "POST",
+        headers: await candidateAuthHeaders(),
+        body: fd,
+      });
+      if (!res.ok) {
+        const body = (await res.json().catch(() => ({}))) as { error?: string };
+        throw new Error(body.error ?? `Upload failed (${res.status})`);
+      }
+      const json = (await res.json()) as {
+        storageKey: string;
+        sizeBytes: number;
+        contentType: string;
+      };
+      await attach.mutateAsync({
+        documentId: slot.documentId,
+        storageKey: json.storageKey,
+        fileName: file.name,
+        mimeType: json.contentType,
+        sizeBytes: json.sizeBytes,
+      });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Upload failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="flex flex-col gap-2 px-5 py-3.5">
+      <div className="flex flex-wrap items-start justify-between gap-2">
+        <div className="min-w-0">
+          <p className="truncate text-sm font-medium text-neutral-900">
+            {slot.documentTypeName ?? "Document"}
+          </p>
+          {slot.status === "requested" ? (
+            <p className="mt-0.5 text-xs text-neutral-400">Not uploaded yet</p>
+          ) : (
+            <p className="mt-0.5 truncate text-xs text-neutral-500">
+              {slot.fileName ?? "Uploaded"}
+              {slot.uploadedAt ? (
+                <span className="text-neutral-400"> · uploaded {slot.uploadedAt.slice(0, 10)}</span>
+              ) : null}
+            </p>
+          )}
+        </div>
+        {preOfferStatusBadge(slot.status)}
+      </div>
+
+      {rejected && slot.rejectionReason ? (
+        <p className="text-xs text-status-error-700">Reason: {slot.rejectionReason}</p>
+      ) : null}
+
+      {error ? (
+        <p role="alert" className="text-xs text-status-error-700">
+          {error}
+        </p>
+      ) : null}
+
+      {slot.status === "verified" ? null : (
+        <label className="inline-flex w-fit cursor-pointer items-center gap-2 rounded-md border border-neutral-200 px-3 py-1.5 text-sm font-medium text-neutral-700 transition-colors hover:bg-neutral-50">
+          <input
+            type="file"
+            accept={DOC_ACCEPT}
+            className="hidden"
+            onChange={onPickFile}
+            disabled={working}
+          />
+          {working ? "Uploading…" : slot.status === "requested" ? "Upload file" : "Replace file"}
+        </label>
+      )}
+    </div>
   );
 }
 

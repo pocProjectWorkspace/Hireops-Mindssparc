@@ -5,6 +5,8 @@ import type {
   InterviewRecommendation,
   HrRoundRecommendation,
   HrCaseStage,
+  ApplicationDocumentStatus,
+  ApplicationDocumentOverall,
 } from "@hireops/api-types";
 
 /**
@@ -165,6 +167,72 @@ const STAGE_META: Record<HrCaseStage, { label: string; cls: string }> = {
 
 export function StageChip({ stage, className }: { stage: HrCaseStage; className?: string }) {
   const meta = STAGE_META[stage];
+  return (
+    <span
+      className={cn(
+        "inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-medium",
+        meta.cls,
+        className,
+      )}
+    >
+      {meta.label}
+    </span>
+  );
+}
+
+// ─────────── HROPS-03 additive chips (documents & verification) ───────────
+
+const DOC_STATUS_META: Record<ApplicationDocumentStatus, { label: string; cls: string }> = {
+  requested: { label: "Pending", cls: "bg-status-warning-50 text-status-warning-800" },
+  uploaded: { label: "Uploaded", cls: "bg-status-info-50 text-status-info-800" },
+  verified: { label: "Verified", cls: "bg-status-positive-50 text-status-positive-700" },
+  rejected: { label: "Rejected", cls: "bg-status-error-50 text-status-error-700" },
+};
+
+/**
+ * DocStatusChip — one pre-offer document's status, optionally prefixed with the
+ * document-type name ("Passport: Uploaded"). Same tinted-ground pill language
+ * as OutcomeChip.
+ */
+export function DocStatusChip({
+  status,
+  name,
+  className,
+}: {
+  status: ApplicationDocumentStatus;
+  name?: string | null;
+  className?: string;
+}) {
+  const meta = DOC_STATUS_META[status];
+  return (
+    <span
+      className={cn(
+        "inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-medium",
+        meta.cls,
+        className,
+      )}
+    >
+      {name ? `${name}: ${meta.label}` : meta.label}
+    </span>
+  );
+}
+
+const DOC_OVERALL_META: Record<ApplicationDocumentOverall, { label: string; cls: string }> = {
+  none: { label: "No docs", cls: "bg-neutral-100 text-neutral-600" },
+  partial: { label: "Partial", cls: "bg-status-warning-50 text-status-warning-800" },
+  all_verified: { label: "All verified", cls: "bg-status-positive-50 text-status-positive-700" },
+  rejected: { label: "Rejected", cls: "bg-status-error-50 text-status-error-700" },
+};
+
+/** DocOverallChip — the per-candidate rollup on /hr-documents rows. */
+export function DocOverallChip({
+  overall,
+  className,
+}: {
+  overall: ApplicationDocumentOverall;
+  className?: string;
+}) {
+  const meta = DOC_OVERALL_META[overall];
   return (
     <span
       className={cn(

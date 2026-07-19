@@ -14,7 +14,15 @@ export { ActionTriad } from "./ActionTriad";
 export type { ActionTriadProps } from "./ActionTriad";
 export { AlertCard } from "./AlertCard";
 export type { AlertCardProps, AlertSeverity } from "./AlertCard";
-export { PriorityChip, OutcomeChip, RecommendationChip, HrRecChip, StageChip } from "./Chips";
+export {
+  PriorityChip,
+  OutcomeChip,
+  RecommendationChip,
+  HrRecChip,
+  StageChip,
+  DocStatusChip,
+  DocOverallChip,
+} from "./Chips";
 export {
   CheckIcon,
   UndoIcon,

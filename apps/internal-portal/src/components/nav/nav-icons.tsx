@@ -291,3 +291,36 @@ export function IconSignOut() {
     </Svg>
   );
 }
+
+// HROPS-03 nav icons.
+export function IconDocuments() {
+  return (
+    <Svg>
+      <path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z" />
+      <path d="M14 3v5h5" />
+      <path d="M9.5 14l1.5 1.5 3.5-3.5" />
+    </Svg>
+  );
+}
+
+export function IconCaseAudit() {
+  return (
+    <Svg>
+      <line x1="7" y1="4" x2="7" y2="20" />
+      <circle cx="7" cy="8" r="2" />
+      <circle cx="7" cy="16" r="2" />
+      <line x1="12" y1="8" x2="20" y2="8" />
+      <line x1="12" y1="16" x2="18" y2="16" />
+    </Svg>
+  );
+}
+
+export function IconPolicies() {
+  return (
+    <Svg>
+      <path d="M4 5a2 2 0 0 1 2-2h9l5 5v11a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2z" />
+      <line x1="8" y1="11" x2="16" y2="11" />
+      <line x1="8" y1="15" x2="13" y2="15" />
+    </Svg>
+  );
+}
