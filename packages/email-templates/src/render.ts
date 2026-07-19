@@ -1,5 +1,6 @@
 import { render } from "@react-email/render";
-import type { TemplateKey } from "@hireops/notifications";
+import type { TemplateKey, EmailAttachment } from "@hireops/notifications";
+import { buildInterviewIcs } from "./ics";
 import {
   ApplicationReceived,
   type ApplicationReceivedProps,
@@ -53,6 +54,9 @@ export interface RenderedTemplate {
   subject: string;
   html: string;
   text: string;
+  /** Optional file attachments (A13 — the interview .ics). The dispatcher
+   * forwards these to the EmailProvider. */
+  attachments?: EmailAttachment[];
 }
 
 export async function renderTemplate(
@@ -90,10 +94,29 @@ export async function renderTemplate(
     case "candidate.interview_invitation": {
       const props = data as unknown as InterviewInvitationProps;
       const element = InterviewInvitation(props);
+      // A13 honest slice — attach a REAL generated .ics when we have a concrete
+      // start instant. A TBC interview gets no calendar file (we don't invent a
+      // time). No third-party API, no fake sync.
+      const ics =
+        props.interviewStartIso && props.interviewId
+          ? buildInterviewIcs({
+              interviewId: props.interviewId,
+              candidateName: props.candidateName,
+              companyName: props.companyName,
+              positionTitle: props.positionTitle,
+              roundName: props.roundName,
+              interviewStartIso: props.interviewStartIso,
+              durationMinutes: props.durationMinutes,
+              modeLabel: props.modeLabel,
+              meetingUrl: props.meetingUrl,
+              confirmUrl: props.confirmUrl,
+            })
+          : null;
       return {
         subject: `Interview invitation — ${props.roundName} for ${props.positionTitle}`,
         html: await render(element),
         text: await render(element, { plainText: true }),
+        ...(ics ? { attachments: [ics] } : {}),
       };
     }
     case "candidate.interview_cancelled": {

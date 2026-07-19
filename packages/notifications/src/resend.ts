@@ -61,6 +61,17 @@ export class ResendEmailProvider implements EmailProvider {
           subject: msg.subject,
           html: msg.html,
           text: msg.text,
+          // A13 — Resend's attachment contract: [{ filename, content(base64) }].
+          // Carries the real interview .ics when present.
+          ...(msg.attachments && msg.attachments.length > 0
+            ? {
+                attachments: msg.attachments.map((a) => ({
+                  filename: a.filename,
+                  content: a.content,
+                  content_type: a.contentType,
+                })),
+              }
+            : {}),
         }),
         // Hard cap so a hung request can't wedge the worker's drain loop.
         signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),

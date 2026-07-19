@@ -34,6 +34,15 @@ export type ReqDifficultyWire = z.infer<typeof reqDifficultySchema>;
 
 // ─────────────────────────── My Requisitions v2 ───────────────────────────
 
+/** A weighted skill chip for the recruiter card-grid ("React (9)"). Weight is
+ * the jd_skills weight (0–10); required flags a must-have. */
+export const requisitionSkillChipSchema = z.object({
+  name: z.string(),
+  weight: z.number().int(),
+  required: z.boolean(),
+});
+export type RequisitionSkillChip = z.infer<typeof requisitionSkillChipSchema>;
+
 export const requirementOwnerReqRowSchema = z.object({
   id: z.string().uuid(),
   title: z.string().nullable(),
@@ -46,6 +55,17 @@ export const requirementOwnerReqRowSchema = z.object({
   createdAt: z.string(),
   /** Draft is complete enough to submit for approval (health gate). */
   canSubmit: z.boolean(),
+  // ─── RECR-01 card-grid facets (additive; the RO table ignores them) ───
+  /** Weighted skill chips, highest-weight first (top 4 for the card). */
+  skills: z.array(requisitionSkillChipSchema),
+  /** Live (non-terminal) candidates on this requisition. */
+  candidateCount: z.number().int(),
+  /** Configured interview-plan rounds. */
+  interviewRounds: z.number().int(),
+  /** Budget band formatted as INR with Indian grouping (₹65,00,000 – ₹85,00,000)
+   * when the currency is INR; falls back to the plain band otherwise. null when
+   * no band is set. */
+  salaryInr: z.string().nullable(),
 });
 export type RequirementOwnerReqRow = z.infer<typeof requirementOwnerReqRowSchema>;
 

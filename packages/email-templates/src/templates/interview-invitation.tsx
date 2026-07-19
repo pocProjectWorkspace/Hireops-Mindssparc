@@ -24,6 +24,11 @@ export interface InterviewInvitationProps {
   /** Meeting join URL if the round has one; empty string otherwise. */
   meetingUrl: string;
   confirmUrl: string;
+  /** A13 — raw ISO start + stable interview id, used to build the .ics
+   * attachment (not rendered in the email body). Optional so older enqueues
+   * without them still render; a missing start simply yields no calendar file. */
+  interviewStartIso?: string;
+  interviewId?: string;
 }
 
 /**

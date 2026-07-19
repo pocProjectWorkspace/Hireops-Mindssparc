@@ -25,7 +25,7 @@ async function seed() {
     .insert(tenants)
     .values({
       slug: "kyndryl-poc",
-      displayName: "Kyndryl POC (Development)",
+      displayName: "NovaChem GCC",
       primaryRegion: "ap-northeast-1", // dev region; production tenant will be ap-south-1
       status: "active",
       tier: "sandbox",

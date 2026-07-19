@@ -34,6 +34,21 @@ export type TemplateKey =
   | "recruiter.offer_accepted"
   | "recruiter.offer_declined";
 
+/**
+ * A file attached to an outgoing email. Content is base64 (matches Resend's
+ * REST attachment contract, and keeps the type provider-agnostic). Wave-1 use:
+ * the honest `.ics` calendar file on interview invitations (A13) — a REAL
+ * generated VEVENT, no third-party calendar API.
+ */
+export interface EmailAttachment {
+  /** File name the client shows, e.g. "interview.ics". */
+  filename: string;
+  /** Base64-encoded file content. */
+  content: string;
+  /** MIME type, e.g. "text/calendar". */
+  contentType: string;
+}
+
 export interface EmailMessage {
   /** Render target. */
   to: string;
@@ -43,6 +58,9 @@ export interface EmailMessage {
   html: string;
   /** Pre-rendered plain-text body (mandatory; fall-through for clients that block HTML). */
   text: string;
+  /** Optional file attachments (e.g. the interview .ics). Providers that can't
+   * carry attachments (LocalEmailProvider) note them but don't fail. */
+  attachments?: EmailAttachment[];
   /** Provenance for dev_email_outbox + structured logs. */
   templateKey: TemplateKey;
   /** Tenant for dev_email_outbox row scope. */

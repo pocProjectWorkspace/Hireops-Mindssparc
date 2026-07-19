@@ -510,6 +510,12 @@ import {
   reqRevisionAiSchema,
   listMyRequisitionsV2InputSchema,
   listMyRequisitionsV2OutputSchema,
+  getRecruiterDashboardExtrasOutputSchema,
+  type GetRecruiterDashboardExtrasOutput,
+  type RecruiterTask,
+  type RecruiterFollowUp,
+  type RecruiterInsight,
+  type RecruiterFunnelStage,
   getRequirementOwnerDashboardOutputSchema,
   getApprovalTrackerOutputSchema,
   REQUISITION_APPROVAL_SLA_DAYS,
@@ -765,6 +771,11 @@ const HM_INSIGHTS_ROLES = new Set(["admin", "hiring_manager"]);
 // view, which hr_head also reads). A partner/candidate-less identity is
 // FORBIDDEN. RLS still scopes rows to the tenant on top of these gates.
 const INTERVIEW_MANAGE_ROLES = new Set(["admin", "hiring_manager", "recruiter"]);
+
+// RECR-01 recruiter dashboard extras. The elevated recruiter landing read
+// (funnel, tasks, follow-ups, insights) is the recruiter's; admin is the
+// super-role. RLS scopes rows to the tenant on top.
+const RECRUITER_DASHBOARD_ROLES = new Set(["admin", "recruiter"]);
 
 // INT-03 panel persona. The "my interviews" + brief + scorecard surface is the
 // interviewer's. panel_member is the role; admin is the super-role. NOTE this
@@ -1156,6 +1167,8 @@ interface RoReqFacet {
   weightedSkillCount: number;
   mustHaveCount: number;
   skillNames: string[];
+  /** RECR-01 — weighted skill chips for the recruiter card grid. */
+  skills: { name: string; weight: number; required: boolean }[];
   interviewRounds: number;
   candidatesInFlight: number;
   interviewingCount: number;
@@ -1251,6 +1264,7 @@ async function loadRequirementOwnerFacets(
     weightedSkillCount: 0,
     mustHaveCount: 0,
     skillNames: [],
+    skills: [],
     interviewRounds: 0,
     candidatesInFlight: 0,
     interviewingCount: 0,
@@ -1288,6 +1302,11 @@ async function loadRequirementOwnerFacets(
     if (Number(s.weight) > 0) f.weightedSkillCount += 1;
     if (s.isRequired) f.mustHaveCount += 1;
     f.skillNames.push(s.skillName);
+    f.skills.push({
+      name: s.skillName,
+      weight: Math.round(Number(s.weight) || 0),
+      required: !!s.isRequired,
+    });
   }
 
   // Interview-plan rounds (per requisition).
@@ -1452,8 +1471,31 @@ function matchFacetBenchmark(f: RoReqFacet, benchmarks: TenantBenchmark[]): Tena
   return title ? (benchmarks.find((b) => b.roleTitle === title) ?? null) : null;
 }
 
+/** Format a comp band as INR with Indian digit grouping (₹65,00,000 – ₹85,00,000)
+ * when the currency is INR; otherwise fall back to the plain band. Values are
+ * MAJOR rupees (same units the difficulty maths already assumes). */
+function formatInrBand(
+  min: string | null,
+  max: string | null,
+  currency: string | null,
+): string | null {
+  if (!min && !max) return null;
+  if ((currency ?? "INR").toUpperCase() !== "INR") {
+    return formatBudgetBand(min, max, currency);
+  }
+  const fmt = (v: string | null): string => {
+    const n = v == null ? NaN : Number(v);
+    if (!Number.isFinite(n)) return "?";
+    return `₹${Math.round(n).toLocaleString("en-IN")}`;
+  };
+  return `${fmt(min)} – ${fmt(max)}`;
+}
+
 function facetToOwnerRow(f: RoReqFacet, benchmarks: TenantBenchmark[]): RequirementOwnerReqRow {
   const benchmark = matchFacetBenchmark(f, benchmarks);
+  const skills = [...f.skills]
+    .sort((a, b) => b.weight - a.weight || a.name.localeCompare(b.name))
+    .slice(0, 4);
   return {
     id: f.id,
     title: f.title,
@@ -1465,6 +1507,10 @@ function facetToOwnerRow(f: RoReqFacet, benchmarks: TenantBenchmark[]): Requirem
     openings: f.openings,
     createdAt: f.createdAt.toISOString(),
     canSubmit: facetCanSubmit(f),
+    skills,
+    candidateCount: f.candidatesInFlight,
+    interviewRounds: f.interviewRounds,
+    salaryInr: formatInrBand(f.compBandMin, f.compBandMax, f.compCurrency),
   };
 }
 
@@ -12835,6 +12881,31 @@ export const appRouter = router({
       return buildHrHeadDashboardExtras(ctx, db, ctx.tenantId);
     }),
 
+  /**
+   * getRecruiterDashboardExtras (RECR-01) — the bespoke recruiter landing read,
+   * beyond the getMyDashboard KPI + action payload. Everything is DETERMINISTIC
+   * and tenant-scoped: a real stage-count pipeline funnel with conversion
+   * deltas, priority-tagged tasks derived from live signals, stalled-candidate
+   * follow-ups (Ping routes to the human-in-loop approvals flow), computed AI
+   * insights (observations that link to the real SkillWeightsEditor — never an
+   * auto-adjust magic button), data-completeness %, and risk flags. NO invented
+   * probability tile. recruiter + admin only.
+   */
+  getRecruiterDashboardExtras: protectedProcedure
+    .output(getRecruiterDashboardExtrasOutputSchema)
+    .query(async ({ ctx }): Promise<GetRecruiterDashboardExtrasOutput> => {
+      requireAnyRole(
+        ctx,
+        RECRUITER_DASHBOARD_ROLES,
+        "The recruiter dashboard requires the recruiter or admin role",
+      );
+      const db = requireDb(ctx);
+      if (!ctx.tenantId) {
+        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
+      }
+      return buildRecruiterDashboardExtras(db, ctx.tenantId);
+    }),
+
   partnerGetDashboardStats: partnerProcedure
     .output(partnerGetDashboardStatsOutputSchema)
     .query(async ({ ctx }) => {
@@ -16220,6 +16291,319 @@ async function recruiterSection(db: DashDb, tenantId: string): Promise<DashSecti
   return { kpis, actions };
 }
 
+// ═══════════ RECR-01 — recruiter dashboard extras builder ═══════════
+//
+// A richer, recruiter-specific read layered on top of getMyDashboard's KPIs:
+// a real stage-count pipeline funnel with conversion deltas, priority-tagged
+// tasks derived from live signals, stalled-candidate follow-ups (Ping routes
+// to the human-in-loop approvals surface, NEVER a send), computed AI insights
+// (observations that link to the real SkillWeightsEditor — no auto-adjust
+// magic), data-completeness %, and risk flags. All counts run under the
+// caller's RLS-scoped tx with an explicit tenant predicate as defence-in-depth.
+// EVERY number is a real count — no invented probability tile.
+
+/** The recruiter funnel, mapped from OUR 11 canonical stages into the five
+ * progression buckets the recruiter thinks in. Terminal negatives are excluded
+ * — the funnel shows the live forward flow. This is deliberately OUR pipeline,
+ * not the prototype's fictional Round 1 / Round 2 split we do not track. */
+const RECRUITER_FUNNEL_BUCKETS: { key: string; label: string; stages: ApplicationStage[] }[] = [
+  {
+    key: "screening",
+    label: "Screening",
+    stages: ["application_received", "ai_screening", "recruiter_review"],
+  },
+  { key: "shortlisted", label: "Shortlisted", stages: ["shortlisted"] },
+  { key: "tech_interview", label: "Tech interview", stages: ["tech_interview"] },
+  { key: "hr_round", label: "HR round", stages: ["hr_round"] },
+  { key: "offer", label: "Offer", stages: ["offer_drafted", "offer_accepted"] },
+];
+
+const RECRUITER_TERMINAL_STAGES = "('offer_declined', 'withdrawn', 'recruiter_rejected')";
+/** Below this AI match score an in-flight candidate is flagged skill-mismatch. */
+const RECRUITER_MISMATCH_SCORE = 60;
+/** At/above this score a candidate counts as "strong" for the insights. */
+const RECRUITER_STRONG_SCORE = 80;
+
+async function buildRecruiterDashboardExtras(
+  db: DashDb,
+  tenantId: string,
+): Promise<GetRecruiterDashboardExtrasOutput> {
+  const T = dsql`tenant_id = ${tenantId}::uuid`;
+  const live = dsql`current_stage NOT IN ${dsql.raw(RECRUITER_TERMINAL_STAGES)}`;
+  const breach = slaBreachSql();
+
+  const [
+    stageRows,
+    scoreRow,
+    completeRow,
+    skillMismatch,
+    salaryGap,
+    riskTotal,
+    newTriage,
+    breaches,
+    toSchedule,
+    toComplete,
+    offers,
+    agentApprovals,
+    followRows,
+  ] = await Promise.all([
+    dashRows<{ stage: string; n: number | string }>(
+      db,
+      dsql`SELECT current_stage AS stage, count(*)::int AS n FROM public.applications
+             WHERE ${T} AND ${live} GROUP BY current_stage`,
+    ),
+    dashRows<{ avg: number | string | null; scored: number | string; strong: number | string }>(
+      db,
+      dsql`SELECT avg(ai_score)::float AS avg,
+                  count(*) FILTER (WHERE ai_score IS NOT NULL)::int AS scored,
+                  count(*) FILTER (WHERE ai_score IS NOT NULL AND ai_score >= ${RECRUITER_STRONG_SCORE}
+                    AND current_stage IN ('application_received','ai_screening','recruiter_review'))::int AS strong
+             FROM public.applications WHERE ${T} AND ${live}`,
+    ),
+    dashRows<{ complete: number | string; total: number | string }>(
+      db,
+      dsql`SELECT count(*) FILTER (WHERE ai_score IS NOT NULL AND expected_salary_inr_paise IS NOT NULL)::int AS complete,
+                  count(*)::int AS total
+             FROM public.applications WHERE ${T} AND ${live}`,
+    ),
+    dashScalar(
+      db,
+      dsql`SELECT count(*)::int AS n FROM public.applications
+             WHERE ${T} AND ${live} AND ai_score IS NOT NULL AND ai_score < ${RECRUITER_MISMATCH_SCORE}`,
+    ),
+    dashScalar(
+      db,
+      dsql`SELECT count(*)::int AS n FROM public.applications a
+             JOIN public.requisitions r ON r.tenant_id = a.tenant_id AND r.id = a.requisition_id
+             JOIN public.positions p ON p.tenant_id = r.tenant_id AND p.id = r.position_id
+             WHERE a.tenant_id = ${tenantId}::uuid AND a.current_stage NOT IN ${dsql.raw(RECRUITER_TERMINAL_STAGES)}
+               AND a.expected_salary_inr_paise IS NOT NULL AND p.comp_band_max IS NOT NULL
+               AND a.expected_salary_inr_paise > (p.comp_band_max * 100)`,
+    ),
+    dashScalar(
+      db,
+      dsql`SELECT count(*)::int AS n FROM public.applications a
+             JOIN public.requisitions r ON r.tenant_id = a.tenant_id AND r.id = a.requisition_id
+             JOIN public.positions p ON p.tenant_id = r.tenant_id AND p.id = r.position_id
+             WHERE a.tenant_id = ${tenantId}::uuid AND a.current_stage NOT IN ${dsql.raw(RECRUITER_TERMINAL_STAGES)}
+               AND ( (a.ai_score IS NOT NULL AND a.ai_score < ${RECRUITER_MISMATCH_SCORE})
+                     OR (a.expected_salary_inr_paise IS NOT NULL AND p.comp_band_max IS NOT NULL
+                         AND a.expected_salary_inr_paise > (p.comp_band_max * 100)) )`,
+    ),
+    dashScalar(
+      db,
+      dsql`SELECT count(*)::int AS n FROM public.applications WHERE ${T} AND current_stage = 'application_received'`,
+    ),
+    dashScalar(
+      db,
+      dsql`SELECT count(*)::int AS n FROM public.applications WHERE ${T} AND ${breach}`,
+    ),
+    dashScalar(
+      db,
+      dsql`SELECT count(*)::int AS n FROM public.applications a WHERE a.tenant_id = ${tenantId}::uuid
+             AND a.current_stage IN ('shortlisted', 'tech_interview', 'hr_round')
+             AND NOT EXISTS (SELECT 1 FROM public.interviews i WHERE i.tenant_id = a.tenant_id
+               AND i.application_id = a.id AND i.status = 'scheduled')`,
+    ),
+    dashScalar(
+      db,
+      dsql`SELECT count(*)::int AS n FROM public.interviews i WHERE i.tenant_id = ${tenantId}::uuid
+             AND i.status = 'scheduled'
+             AND EXISTS (SELECT 1 FROM public.interview_panelists p WHERE p.tenant_id = i.tenant_id AND p.interview_id = i.id)
+             AND NOT EXISTS (SELECT 1 FROM public.interview_panelists p WHERE p.tenant_id = i.tenant_id AND p.interview_id = i.id
+               AND NOT EXISTS (SELECT 1 FROM public.interview_feedback f WHERE f.tenant_id = i.tenant_id
+                 AND f.interview_id = i.id AND f.membership_id = p.membership_id AND f.submitted_at IS NOT NULL))`,
+    ),
+    dashScalar(
+      db,
+      dsql`SELECT count(*)::int AS n FROM public.offers WHERE ${T} AND status IN ('drafted', 'extended')`,
+    ),
+    dashScalar(
+      db,
+      dsql`SELECT count(*)::int AS n FROM public.agent_approval_requests WHERE ${T} AND status = 'pending'`,
+    ),
+    dashRows<{
+      application_id: string;
+      candidate_id: string;
+      candidate_name: string | null;
+      days: number | string;
+    }>(
+      db,
+      dsql`SELECT i.application_id::text AS application_id, a.candidate_id::text AS candidate_id,
+                  pe.full_name AS candidate_name,
+                  floor(extract(epoch FROM (now() - i.created_at)) / 86400.0)::int AS days
+             FROM public.interviews i
+             JOIN public.applications a ON a.tenant_id = i.tenant_id AND a.id = i.application_id
+             JOIN public.candidates c ON c.tenant_id = a.tenant_id AND c.id = a.candidate_id
+             JOIN public.persons pe ON pe.tenant_id = c.tenant_id AND pe.id = c.person_id
+             WHERE i.tenant_id = ${tenantId}::uuid AND i.status = 'scheduled'
+               AND i.candidate_confirmed_at IS NULL
+               AND i.created_at < now() - interval '48 hours'
+             ORDER BY i.created_at ASC
+             LIMIT 6`,
+    ),
+  ]);
+
+  // ─── funnel ───
+  const countByStage = new Map<string, number>();
+  for (const r of stageRows) countByStage.set(r.stage, Number(r.n) || 0);
+  const bucketCounts = RECRUITER_FUNNEL_BUCKETS.map((b) => ({
+    ...b,
+    count: b.stages.reduce((sum, s) => sum + (countByStage.get(s) ?? 0), 0),
+  }));
+  const headCount = bucketCounts[0]?.count ?? 0;
+  const total = bucketCounts.reduce((sum, b) => sum + b.count, 0);
+  let worstDrop: { label: string; prev: string; pct: number } | null = null;
+  const stages: RecruiterFunnelStage[] = bucketCounts.map((b, i) => {
+    const prev = i > 0 ? bucketCounts[i - 1] : null;
+    const conversionPct =
+      prev && prev.count > 0 ? Math.round((b.count / prev.count) * 100) : prev ? 0 : null;
+    if (prev && prev.count > 0 && conversionPct !== null) {
+      const dropPct = 100 - conversionPct;
+      if (dropPct > 0 && (worstDrop === null || dropPct > 100 - worstDrop.pct)) {
+        worstDrop = { label: b.label, prev: prev.label, pct: conversionPct };
+      }
+    }
+    return {
+      stage: b.key,
+      label: b.label,
+      count: b.count,
+      pct: headCount > 0 ? Math.round((b.count / headCount) * 100) : 0,
+      conversionPct,
+    };
+  });
+  const wd = worstDrop as { label: string; prev: string; pct: number } | null;
+  const bottleneck =
+    wd && 100 - wd.pct >= 30
+      ? `Biggest drop-off: ${wd.prev} → ${wd.label} (${wd.pct}% carry-through).`
+      : null;
+
+  // ─── averages + completeness + risk ───
+  const avgRaw = scoreRow[0]?.avg;
+  const avgMatchScore =
+    avgRaw != null && Number.isFinite(Number(avgRaw)) ? Math.round(Number(avgRaw)) : null;
+  const scoredCount = Number(scoreRow[0]?.scored ?? 0);
+  const strongInScreening = Number(scoreRow[0]?.strong ?? 0);
+  const completeCount = Number(completeRow[0]?.complete ?? 0);
+  const inFlightTotal = Number(completeRow[0]?.total ?? 0);
+  const dataCompleteness = {
+    pct: inFlightTotal > 0 ? Math.round((completeCount / inFlightTotal) * 100) : 100,
+    needInfoCount: Math.max(0, inFlightTotal - completeCount),
+  };
+  const riskFlags = { total: riskTotal, skillMismatch, salaryGap };
+
+  // ─── tasks (priority-tagged, from live signals) ───
+  const tasks: RecruiterTask[] = [];
+  const pushTask = (t: RecruiterTask) => tasks.push(t);
+  if (breaches > 0)
+    pushTask({
+      key: "task_sla",
+      label: `Clear ${breaches} SLA breach${breaches === 1 ? "" : "es"} in triage`,
+      priority: "high",
+      href: "/triage",
+    });
+  if (newTriage > 0)
+    pushTask({
+      key: "task_triage",
+      label: `Review ${newTriage} new applicant${newTriage === 1 ? "" : "s"} in triage`,
+      priority: "high",
+      href: "/triage",
+    });
+  if (toComplete > 0)
+    pushTask({
+      key: "task_complete",
+      label: `Close ${toComplete} interview${toComplete === 1 ? "" : "s"} — all feedback in`,
+      priority: "medium",
+      href: "/interviews",
+    });
+  if (toSchedule > 0)
+    pushTask({
+      key: "task_schedule",
+      label: `Schedule ${toSchedule} interview${toSchedule === 1 ? "" : "s"}`,
+      priority: "medium",
+      href: "/interviews",
+    });
+  if (agentApprovals > 0)
+    pushTask({
+      key: "task_agents",
+      label: `Review ${agentApprovals} agent draft${agentApprovals === 1 ? "" : "s"} awaiting approval`,
+      priority: "medium",
+      href: "/approvals",
+    });
+  if (offers > 0)
+    pushTask({
+      key: "task_offers",
+      label: `Finalise ${offers} outstanding offer${offers === 1 ? "" : "s"}`,
+      priority: "low",
+      href: "/triage",
+    });
+
+  // ─── smart follow-ups (stalled = interview invite unconfirmed > 48h) ───
+  const followUps: RecruiterFollowUp[] = followRows.map((r, i) => {
+    const days = Math.max(2, Number(r.days) || 2);
+    return {
+      key: `follow_${r.application_id}_${i}`,
+      candidateName: r.candidate_name ?? "Candidate",
+      reason: `Interview invite unconfirmed · ${days}d`,
+      applicationId: r.application_id,
+      candidateId: r.candidate_id,
+      // Human-in-loop: routes to the agent-approval queue, never a one-click send.
+      href: "/approvals",
+    };
+  });
+
+  // ─── AI insights (deterministic observations) ───
+  const insights: RecruiterInsight[] = [];
+  const skillWeightsCta = { label: "Review skill weights", href: "/requisitions" };
+  if (wd && 100 - wd.pct >= 30) {
+    insights.push({
+      key: "insight_bottleneck",
+      severity: 100 - wd.pct >= 50 ? "critical" : "warning",
+      title: `High drop-off: ${wd.prev} → ${wd.label}`,
+      body: `Only ${wd.pct}% of candidates carry through from ${wd.prev} to ${wd.label}. Review interviewer calibration or the JD skill weights.`,
+      cta: skillWeightsCta,
+    });
+  }
+  if (scoredCount > 0 && skillMismatch / scoredCount >= 0.4) {
+    const pct = Math.round((skillMismatch / scoredCount) * 100);
+    insights.push({
+      key: "insight_mismatch",
+      severity: pct >= 60 ? "critical" : "warning",
+      title: `${pct}% of scored candidates below the match threshold`,
+      body: `${skillMismatch} of ${scoredCount} scored candidates fall below ${RECRUITER_MISMATCH_SCORE}%. Skill weights may be miscalibrated for the sourcing pool.`,
+      cta: skillWeightsCta,
+    });
+  }
+  if (strongInScreening > 0) {
+    insights.push({
+      key: "insight_strong_screening",
+      severity: "info",
+      title: `${strongInScreening} strong candidate${strongInScreening === 1 ? "" : "s"} still in screening`,
+      body: `${strongInScreening} candidate${strongInScreening === 1 ? " scores" : "s score"} ${RECRUITER_STRONG_SCORE}%+ but ${strongInScreening === 1 ? "is" : "are"} still awaiting triage. Expedite to avoid losing them.`,
+      cta: { label: "Open triage", href: "/triage" },
+    });
+  }
+  if (salaryGap > 0) {
+    insights.push({
+      key: "insight_salary_gap",
+      severity: "warning",
+      title: `${salaryGap} candidate${salaryGap === 1 ? "" : "s"} above the budget band`,
+      body: `${salaryGap} in-flight candidate${salaryGap === 1 ? " expects" : "s expect"} more than the requisition budget max. Comp gaps may stall offers — revisit the band or the shortlist.`,
+      cta: { label: "Review requisitions", href: "/requisitions" },
+    });
+  }
+
+  return {
+    funnel: { stages, total, bottleneck },
+    tasks,
+    followUps,
+    insights,
+    dataCompleteness,
+    riskFlags,
+    avgMatchScore,
+  };
+}
+
 async function panelSection(
   db: DashDb,
   tenantId: string,
@@ -18595,6 +18979,15 @@ async function selectInterviewRows(
       createdAt: interviews.createdAt,
       candidateName: persons.fullName,
       positionTitle: positions.title,
+      // A13 honest slice — when the candidate interview-invitation (with the
+      // .ics attachment) was enqueued for this interview. Reflects a REAL
+      // notification_outbox row keyed by the schedule dedup_key.
+      invitationSentAt: dsql<Date | null>`(
+        SELECT n.created_at FROM public.notification_outbox n
+        WHERE n.tenant_id = ${interviews.tenantId}
+          AND n.dedup_key = 'interview_invitation:' || ${interviews.id}::text
+        ORDER BY n.created_at DESC LIMIT 1
+      )`,
     })
     .from(interviews)
     .innerJoin(applications, eq(applications.id, interviews.applicationId))
@@ -18628,6 +19021,7 @@ async function selectInterviewRows(
     positionTitle: r.positionTitle,
     panel: panels.get(r.id) ?? [],
     createdAt: r.createdAt.toISOString(),
+    invitationSentAt: toIsoString(r.invitationSentAt),
   }));
 }
 
@@ -18807,6 +19201,12 @@ async function doScheduleRound(
           durationMinutes,
           meetingUrl: input.meetingUrl ?? "",
           confirmUrl,
+          // A13 honest slice — the raw start ISO + a stable id let the template
+          // build a REAL .ics VEVENT (deterministic, no third-party API) and
+          // attach it. The candidate's mail client offers a genuine
+          // "add to calendar", not a fake two-way sync.
+          interviewStartIso: scheduledStart.toISOString(),
+          interviewId,
         },
         dedupKey: `interview_invitation:${interviewId}`,
       });

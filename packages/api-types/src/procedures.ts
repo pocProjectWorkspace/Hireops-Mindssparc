@@ -2729,6 +2729,12 @@ export const interviewRowSchema = z.object({
   positionTitle: z.string(),
   panel: z.array(interviewPanelistViewSchema),
   createdAt: z.string(),
+  /** A13 honest slice (RECR-01): when the candidate interview-invitation
+   * notification (with the generated .ics attachment) was enqueued for this
+   * interview — reflects a REAL notification_outbox row. null when no invite
+   * has been sent (e.g. no candidate email on file). Drives the "invite sent
+   * (.ics)" badge — deliberately NOT "calendar synced". */
+  invitationSentAt: z.string().nullable(),
 });
 export type InterviewRow = z.infer<typeof interviewRowSchema>;
 

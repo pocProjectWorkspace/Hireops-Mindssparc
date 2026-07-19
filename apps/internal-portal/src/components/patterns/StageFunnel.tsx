@@ -16,6 +16,10 @@ export interface StageFunnelStage {
   label: string;
   count: number;
   pct: number;
+  /** Optional stage-to-stage carry-through delta, rendered to the right of the
+   * bar (e.g. "−17%"). Negative = drop-off. Omit on the first stage. Additive:
+   * callers that don't compute conversions (HRHEAD-01) simply leave it unset. */
+  deltaPct?: number | null;
 }
 
 export function StageFunnel({
@@ -35,15 +39,30 @@ export function StageFunnel({
             <span className="text-xs font-medium text-neutral-600">{s.label}</span>
             <span className="text-xs tabular-nums text-neutral-400">{s.count}</span>
           </div>
-          <div className="h-6 w-full overflow-hidden rounded-md bg-neutral-100">
-            <div
-              className="flex h-full items-center justify-end rounded-md bg-gradient-to-r from-brand-400 to-brand-600 px-2 transition-[width] duration-300"
-              style={{ width: `${Math.max(3, Math.min(100, s.pct))}%` }}
-            >
-              {s.count > 0 ? (
-                <span className="text-[11px] font-semibold tabular-nums text-white">{s.count}</span>
-              ) : null}
+          <div className="flex items-center gap-2">
+            <div className="h-6 flex-1 overflow-hidden rounded-md bg-neutral-100">
+              <div
+                className="flex h-full items-center justify-end rounded-md bg-gradient-to-r from-brand-400 to-brand-600 px-2 transition-[width] duration-300"
+                style={{ width: `${Math.max(3, Math.min(100, s.pct))}%` }}
+              >
+                {s.count > 0 ? (
+                  <span className="text-[11px] font-semibold tabular-nums text-white">
+                    {s.count}
+                  </span>
+                ) : null}
+              </div>
             </div>
+            {s.deltaPct != null ? (
+              <span
+                className={cn(
+                  "w-12 shrink-0 text-right text-xs font-medium tabular-nums",
+                  s.deltaPct < 0 ? "text-status-error-600" : "text-status-positive-700",
+                )}
+              >
+                {s.deltaPct > 0 ? "+" : ""}
+                {s.deltaPct}%
+              </span>
+            ) : null}
           </div>
         </div>
       ))}

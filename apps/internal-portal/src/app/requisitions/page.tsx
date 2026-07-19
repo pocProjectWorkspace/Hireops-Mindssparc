@@ -3,6 +3,7 @@ import { createServerTRPCCaller } from "@/lib/trpc-server";
 import { AppShell } from "@/components/nav/AppShell";
 import { RoleNotice } from "@/components/nav/RoleNotice";
 import { RequisitionsListV2 } from "@/components/requirements/RequisitionsListV2";
+import { RequisitionsCardGrid } from "@/components/requirements/RequisitionsCardGrid";
 
 export const dynamic = "force-dynamic"; // Auth-gated + reads live requisition state.
 
@@ -62,6 +63,12 @@ export default async function RequisitionsPage({
   const caller = createServerTRPCCaller(session);
   const initial = await caller.listMyRequisitionsV2({ limit: 100 });
 
+  // Recruiters (who read but don't own the create/submit flow) get the card-grid
+  // library view (RECR-01). Requirement owners / admins keep the RO-01 table
+  // with its submit-for-approval row actions.
+  const isRecruiterView =
+    session.roles.includes("recruiter") && !session.roles.includes("hiring_manager");
+
   return (
     <AppShell
       title="Requisitions"
@@ -71,7 +78,11 @@ export default async function RequisitionsPage({
       user={sessionUserChip(session)}
       actions={<LinkButton href="/requisitions/new">New requisition</LinkButton>}
     >
-      <RequisitionsListV2 initial={initial} initialStatus={status ?? "all"} />
+      {isRecruiterView ? (
+        <RequisitionsCardGrid initial={initial} />
+      ) : (
+        <RequisitionsListV2 initial={initial} initialStatus={status ?? "all"} />
+      )}
     </AppShell>
   );
 }

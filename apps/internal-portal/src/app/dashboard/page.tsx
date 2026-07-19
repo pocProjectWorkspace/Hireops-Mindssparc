@@ -3,6 +3,7 @@ import { createServerTRPCCaller } from "@/lib/trpc-server";
 import { AppShell } from "@/components/nav/AppShell";
 import { PersonaDashboard } from "@/components/dashboard/PersonaDashboard";
 import { HrHeadDashboard } from "@/components/dashboard/HrHeadDashboard";
+import { RecruiterDashboard } from "@/components/dashboard/RecruiterDashboard";
 import { PanelDashboard } from "@/components/panel/PanelDashboard";
 import { RequirementOwnerDashboard } from "@/components/requirements/RequirementOwnerDashboard";
 
@@ -39,6 +40,13 @@ export default async function DashboardPage() {
     !session.roles.includes("admin") &&
     !session.roles.includes("hr_head") &&
     !session.roles.includes("panel_member");
+  // recruiter (not admin/hr_head; and not primarily a requirement owner) gets
+  // the bespoke recruiter dashboard (RECR-01).
+  const isRecruiter =
+    session.roles.includes("recruiter") &&
+    !session.roles.includes("admin") &&
+    !session.roles.includes("hr_head") &&
+    !isRequirementOwner;
 
   return (
     <AppShell
@@ -63,6 +71,15 @@ export default async function DashboardPage() {
       ) : isRequirementOwner ? (
         <RequirementOwnerDashboard
           initial={await caller.getRequirementOwnerDashboard()}
+          displayName={session.email?.split("@")[0] ?? "there"}
+        />
+      ) : isRecruiter ? (
+        <RecruiterDashboard
+          initialExtras={await caller.getRecruiterDashboardExtras()}
+          initialInterviews={
+            (await caller.listUpcomingInterviews({ status: "scheduled", limit: 5 })).rows
+          }
+          kpis={data.kpis}
           displayName={session.email?.split("@")[0] ?? "there"}
         />
       ) : (

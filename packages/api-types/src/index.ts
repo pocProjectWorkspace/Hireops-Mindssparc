@@ -20,3 +20,4 @@ export * from "./comp";
 export * from "./panel-prep";
 export * from "./req-revision";
 export * from "./requirement-owner";
+export * from "./recruiter";

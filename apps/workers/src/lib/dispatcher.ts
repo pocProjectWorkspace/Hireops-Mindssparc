@@ -96,6 +96,7 @@ export async function drainOutboxOnce(opts: DispatcherOpts): Promise<{
         subject: rendered.subject,
         html: rendered.html,
         text: rendered.text,
+        ...(rendered.attachments ? { attachments: rendered.attachments } : {}),
         templateKey: row.template_key as TemplateKey,
         tenantId: row.tenant_id,
         outboxId: row.id,
