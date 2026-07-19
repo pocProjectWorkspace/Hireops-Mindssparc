@@ -3,7 +3,7 @@
 import { useState, type ChangeEvent } from "react";
 import { Card, EmptyState } from "@/components/ui";
 import { DocStatusChip } from "@/components/patterns";
-import { CandidatePortalShell } from "@/components/candidate/CandidatePortalShell";
+import { CandidateShell } from "@/components/candidate/CandidateShell";
 import { trpc } from "@/lib/trpc-client";
 import { getSupabaseBrowserClient } from "@/lib/supabase-client";
 import { TRPCClientError } from "@trpc/client";
@@ -57,14 +57,14 @@ export function CandidateDocumentsClient() {
   if (me.isError) {
     const forbidden = me.error instanceof TRPCClientError && me.error.data?.code === "FORBIDDEN";
     return (
-      <CandidatePortalShell active="documents">
+      <CandidateShell variant="portal" active="documents">
         <Card className="p-6">
           <EmptyState
             title={forbidden ? "This isn't a candidate account" : "We couldn't load your documents"}
             hint={forbidden ? "You're signed in, but not as a candidate." : "Please try again."}
           />
         </Card>
-      </CandidatePortalShell>
+      </CandidateShell>
     );
   }
 
@@ -76,7 +76,7 @@ export function CandidateDocumentsClient() {
     !loading && preOfferGroups.length === 0 && (!onboardingCase || onboardingDocs.length === 0);
 
   return (
-    <CandidatePortalShell active="documents">
+    <CandidateShell variant="portal" active="documents">
       <div className="flex flex-col gap-6">
         <div>
           <h1 className="text-2xl font-semibold tracking-tight text-neutral-900">Documents</h1>
@@ -141,7 +141,7 @@ export function CandidateDocumentsClient() {
           </>
         )}
       </div>
-    </CandidatePortalShell>
+    </CandidateShell>
   );
 }
 

@@ -3,7 +3,7 @@
 import { useMemo, useState } from "react";
 import { Button, Input } from "@hireops/ui";
 import { Card, EmptyState } from "@/components/ui";
-import { CandidatePortalShell } from "@/components/candidate/CandidatePortalShell";
+import { CandidateShell } from "@/components/candidate/CandidateShell";
 import { trpc } from "@/lib/trpc-client";
 import { TRPCClientError } from "@trpc/client";
 import type { CandidateProfile } from "@hireops/api-types";
@@ -18,11 +18,11 @@ export function CandidateProfileClient() {
 
   if (profileQuery.isLoading || (!profileQuery.data && !profileQuery.isError)) {
     return (
-      <CandidatePortalShell active="profile">
+      <CandidateShell variant="portal" active="profile">
         <Card className="p-6">
           <EmptyState title="Loading your profile…" />
         </Card>
-      </CandidatePortalShell>
+      </CandidateShell>
     );
   }
 
@@ -31,7 +31,7 @@ export function CandidateProfileClient() {
       profileQuery.error instanceof TRPCClientError &&
       profileQuery.error.data?.code === "FORBIDDEN";
     return (
-      <CandidatePortalShell active="profile">
+      <CandidateShell variant="portal" active="profile">
         <Card className="p-6">
           <EmptyState
             title={forbidden ? "This isn't a candidate account" : "We couldn't load your profile"}
@@ -42,14 +42,14 @@ export function CandidateProfileClient() {
             }
           />
         </Card>
-      </CandidatePortalShell>
+      </CandidateShell>
     );
   }
 
   return (
-    <CandidatePortalShell active="profile">
+    <CandidateShell variant="portal" active="profile">
       <ProfileForm initial={profileQuery.data.profile} />
-    </CandidatePortalShell>
+    </CandidateShell>
   );
 }
 

@@ -1,7 +1,7 @@
 "use client";
 
 import { Card, EmptyState, cn } from "@/components/ui";
-import { CandidatePortalShell } from "@/components/candidate/CandidatePortalShell";
+import { CandidateShell } from "@/components/candidate/CandidateShell";
 import { trpc } from "@/lib/trpc-client";
 import { TRPCClientError } from "@trpc/client";
 import type { CandidateNotificationCategory, CandidateNotificationRow } from "@hireops/api-types";
@@ -44,7 +44,7 @@ export function CandidateNotificationsClient() {
     const forbidden =
       feed.error instanceof TRPCClientError && feed.error.data?.code === "FORBIDDEN";
     return (
-      <CandidatePortalShell active="notifications">
+      <CandidateShell variant="portal" active="notifications">
         <Card className="p-6">
           <EmptyState
             title={
@@ -53,7 +53,7 @@ export function CandidateNotificationsClient() {
             hint={forbidden ? "You're signed in, but not as a candidate." : "Please try again."}
           />
         </Card>
-      </CandidatePortalShell>
+      </CandidateShell>
     );
   }
 
@@ -61,7 +61,7 @@ export function CandidateNotificationsClient() {
   const unread = feed.data?.unreadCount ?? 0;
 
   return (
-    <CandidatePortalShell active="notifications">
+    <CandidateShell variant="portal" active="notifications">
       <div className="flex flex-col gap-6">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="flex items-center gap-3">
@@ -105,7 +105,7 @@ export function CandidateNotificationsClient() {
           </Card>
         )}
       </div>
-    </CandidatePortalShell>
+    </CandidateShell>
   );
 }
 
