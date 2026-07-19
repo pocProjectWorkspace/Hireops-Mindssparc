@@ -162,6 +162,29 @@ const PANEL_EMAIL = "panel1@kyndryl-poc.test";
 const HIRING_MANAGER_EMAIL = "hiringmanager1@kyndryl-poc.test";
 const HR_HEAD_EMAIL = "hrhead1@kyndryl-poc.test";
 
+// ─────────────── PANEL-01 — panel1 workboard demo spread ───────────────
+//
+// Three extra interviews for panel1 so the PANEL-01 dashboard / feedback queue /
+// history all demo with a real spread: (A) an interview whose window contains
+// NOW ("In window now" + today), (B) one completed a few hours ago with NO
+// scorecard yet (pending, today), and (C) one completed >24h ago with NO
+// scorecard (pending + overdue → the nudge). Priya (E, above) remains the one
+// SUBMITTED scorecard, giving history + "avg score I've given" real numbers.
+// Ids in the free 0be1 namespace; self-cleaning by id (deleting the application
+// cascades its interviews + panelists + feedback).
+const PANEL_PERSON_A = "00000000-0000-4000-8000-0000000be1a1";
+const PANEL_CAND_A = "00000000-0000-4000-8000-0000000be1a2";
+const PANEL_APP_A = "00000000-0000-4000-8000-0000000be1a3";
+const PANEL_IV_A = "00000000-0000-4000-8000-0000000be1a4";
+const PANEL_PERSON_B = "00000000-0000-4000-8000-0000000be1b1";
+const PANEL_CAND_B = "00000000-0000-4000-8000-0000000be1b2";
+const PANEL_APP_B = "00000000-0000-4000-8000-0000000be1b3";
+const PANEL_IV_B = "00000000-0000-4000-8000-0000000be1b4";
+const PANEL_PERSON_C = "00000000-0000-4000-8000-0000000be1c1";
+const PANEL_CAND_C = "00000000-0000-4000-8000-0000000be1c2";
+const PANEL_APP_C = "00000000-0000-4000-8000-0000000be1c3";
+const PANEL_IV_C = "00000000-0000-4000-8000-0000000be1c4";
+
 // ─────────────── SEED-02 Problems 5/6 — extra requisitions + approval spine ────
 //
 // Five more requisitions so the apply portal + HR-head queue + approval history
@@ -2335,6 +2358,92 @@ async function main() {
             'Strong hire — would happily have on the platform team.',
             'strong_yes', now() - interval '4 days')
   `;
+
+    // ── 4c. PANEL-01 panel1 workboard spread — in-window / pending / overdue ──
+    {
+      // Clean by scope first (delete app cascades interviews + panelists + feedback);
+      // application_state_transitions don't cascade, so clear them explicitly.
+      for (const id of [PANEL_APP_A, PANEL_APP_B, PANEL_APP_C]) {
+        await poolSql`DELETE FROM public.application_state_transitions WHERE application_id = ${id}`;
+        await poolSql`DELETE FROM public.applications WHERE id = ${id}`;
+      }
+      await poolSql`DELETE FROM public.candidates WHERE id IN (${PANEL_CAND_A}, ${PANEL_CAND_B}, ${PANEL_CAND_C})`;
+      await poolSql`DELETE FROM public.persons WHERE id IN (${PANEL_PERSON_A}, ${PANEL_PERSON_B}, ${PANEL_PERSON_C})`;
+
+      await poolSql`
+      INSERT INTO public.persons
+        (id, tenant_id, full_name, email_primary, email_normalised, location_country, location_city)
+      VALUES
+        (${PANEL_PERSON_A}, ${tid}, 'Devika Menon', 'devika.menon.panel@example.test',
+         'devika.menon.panel@example.test', 'IN', 'Bengaluru'),
+        (${PANEL_PERSON_B}, ${tid}, 'Kabir Shah', 'kabir.shah.panel@example.test',
+         'kabir.shah.panel@example.test', 'IN', 'Hyderabad'),
+        (${PANEL_PERSON_C}, ${tid}, 'Nikhil Verma', 'nikhil.verma.panel@example.test',
+         'nikhil.verma.panel@example.test', 'IN', 'Pune')`;
+      await poolSql`
+      INSERT INTO public.candidates
+        (id, tenant_id, person_id, source, consent_version, parsed_skills, years_of_experience)
+      VALUES
+        (${PANEL_CAND_A}, ${tid}, ${PANEL_PERSON_A}, 'career_site', 'v1',
+         ${JSON.stringify(["TypeScript", "React", "Node.js", "PostgreSQL"])}::jsonb, 6.0),
+        (${PANEL_CAND_B}, ${tid}, ${PANEL_PERSON_B}, 'referral', 'v1',
+         ${JSON.stringify(["Java", "Spring", "Kafka", "AWS"])}::jsonb, 8.0),
+        (${PANEL_CAND_C}, ${tid}, ${PANEL_PERSON_C}, 'job_board', 'v1',
+         ${JSON.stringify(["Python", "Django", "Redis", "GCP"])}::jsonb, 5.0)`;
+      await poolSql`
+      INSERT INTO public.applications
+        (id, tenant_id, candidate_id, requisition_id, source, current_stage, stage_entered_at,
+         assigned_recruiter_membership_id, created_at, knockout_passed)
+      VALUES
+        (${PANEL_APP_A}, ${tid}, ${PANEL_CAND_A}, ${DEMO_REQ}, 'career_site', 'tech_interview',
+         now() - interval '3 days', ${recruiterId}, now() - interval '10 days', true),
+        (${PANEL_APP_B}, ${tid}, ${PANEL_CAND_B}, ${DEMO_REQ}, 'referral', 'tech_interview',
+         now() - interval '3 hours', ${recruiterId}, now() - interval '9 days', true),
+        (${PANEL_APP_C}, ${tid}, ${PANEL_CAND_C}, ${DEMO_REQ}, 'job_board', 'tech_interview',
+         now() - interval '30 hours', ${recruiterId}, now() - interval '8 days', true)`;
+
+      // (A) In-window NOW — scheduled, its [start,end] window contains now.
+      await poolSql`
+      INSERT INTO public.interviews
+        (id, tenant_id, application_id, requisition_id, round_number, round_name,
+         status, scorecard_template, scheduled_start, scheduled_end, duration_minutes,
+         mode, meeting_url, candidate_confirmed_at, created_by_membership_id)
+      VALUES (${PANEL_IV_A}, ${tid}, ${PANEL_APP_A}, ${DEMO_REQ}, 1, 'Technical deep-dive',
+              'scheduled', 'technical', now() - interval '15 minutes',
+              now() + interval '45 minutes', 60, 'video',
+              'https://meet.example.test/hireops-panel-a', now() - interval '1 day', ${recruiterId})`;
+      await poolSql`
+      INSERT INTO public.interview_panelists (tenant_id, interview_id, membership_id, is_lead)
+      VALUES (${tid}, ${PANEL_IV_A}, ${panelId}, true)`;
+
+      // (B) Completed a few hours ago — pending scorecard (today).
+      await poolSql`
+      INSERT INTO public.interviews
+        (id, tenant_id, application_id, requisition_id, round_number, round_name,
+         status, scorecard_template, scheduled_start, scheduled_end, duration_minutes,
+         mode, meeting_url, candidate_confirmed_at, created_by_membership_id)
+      VALUES (${PANEL_IV_B}, ${tid}, ${PANEL_APP_B}, ${DEMO_REQ}, 1, 'Technical deep-dive',
+              'completed', 'technical', now() - interval '3 hours',
+              now() - interval '2 hours', 60, 'video',
+              'https://meet.example.test/hireops-panel-b', now() - interval '2 days', ${recruiterId})`;
+      await poolSql`
+      INSERT INTO public.interview_panelists (tenant_id, interview_id, membership_id, is_lead)
+      VALUES (${tid}, ${PANEL_IV_B}, ${panelId}, true)`;
+
+      // (C) Completed >24h ago — pending scorecard + OVERDUE (drives the nudge).
+      await poolSql`
+      INSERT INTO public.interviews
+        (id, tenant_id, application_id, requisition_id, round_number, round_name,
+         status, scorecard_template, scheduled_start, scheduled_end, duration_minutes,
+         mode, meeting_url, candidate_confirmed_at, created_by_membership_id)
+      VALUES (${PANEL_IV_C}, ${tid}, ${PANEL_APP_C}, ${DEMO_REQ}, 1, 'Technical deep-dive',
+              'completed', 'technical', now() - interval '30 hours',
+              now() - interval '29 hours', 60, 'video',
+              'https://meet.example.test/hireops-panel-c', now() - interval '3 days', ${recruiterId})`;
+      await poolSql`
+      INSERT INTO public.interview_panelists (tenant_id, interview_id, membership_id, is_lead)
+      VALUES (${tid}, ${PANEL_IV_C}, ${panelId}, true)`;
+    }
 
     // ── 4c. HROPS-01 HR Ops cases — two candidates AT hr_round ──────────
     //

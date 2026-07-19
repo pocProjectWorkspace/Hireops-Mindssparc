@@ -4109,3 +4109,97 @@ export const listHrPoliciesOutputSchema = z.object({
   items: z.array(hrPolicyDocumentRowSchema),
 });
 export type ListHrPoliciesOutput = z.infer<typeof listHrPoliciesOutputSchema>;
+
+// ═══════════════════════ PANEL-01 — panel-member workboard ═══════════════════════
+//
+// The panel persona's landing experience + feedback loop. Reuses the INT-03
+// interview_feedback machinery (per-criterion scorecard jsonb, recommendation,
+// draft→submitted lifecycle) and the interviewRow shape; adds three reads that
+// aggregate "my" work honestly (mine only, RLS/tenant scoped): the dashboard
+// stat strip + pending/submitted lists (getPanelDashboard), and the
+// "Summarise my notes" AI assist (summarizeMyFeedbackNotes). No new tables.
+
+/** The hero stat strip on the panel dashboard. Every number is server-computed
+ * from the caller's own interviews + submitted scorecards. `avgScoreGiven` is
+ * null when the panellist has submitted no scored criteria yet. `inWindowNow`
+ * is honest ("in window", not "live"): a scheduled interview whose
+ * [scheduledStart, scheduledEnd] window contains now. */
+export const panelDashboardStatsSchema = z.object({
+  todayInterviews: z.number().int().nonnegative(),
+  pendingFeedback: z.number().int().nonnegative(),
+  avgScoreGiven: z.number().nullable(),
+  completedToday: z.number().int().nonnegative(),
+  inWindowNow: z.number().int().nonnegative(),
+});
+export type PanelDashboardStats = z.infer<typeof panelDashboardStatsSchema>;
+
+/** One interview awaiting MY scorecard: completed (or past its window) with no
+ * submitted feedback of mine. `completedAt` is the window end (fallback start);
+ * `overdue` is true when that instant is > 24h ago (drives the nudge). */
+export const panelPendingFeedbackItemSchema = z.object({
+  interviewId: z.string().uuid(),
+  candidateName: z.string().nullable(),
+  roleTitle: z.string(),
+  roundNumber: z.number().int(),
+  roundName: z.string(),
+  mode: interviewModeSchema,
+  scheduledStart: z.string().nullable(),
+  completedAt: z.string().nullable(),
+  overdue: z.boolean(),
+});
+export type PanelPendingFeedbackItem = z.infer<typeof panelPendingFeedbackItemSchema>;
+
+/** One interview whose scorecard I've submitted — for the queue's Submitted
+ * section + the history table. `avgScore` is the mean of MY per-criterion
+ * scores on that scorecard (null when I recorded none). */
+export const panelSubmittedFeedbackItemSchema = z.object({
+  interviewId: z.string().uuid(),
+  candidateName: z.string().nullable(),
+  roleTitle: z.string(),
+  roundNumber: z.number().int(),
+  roundName: z.string(),
+  submittedAt: z.string().nullable(),
+  recommendation: interviewRecommendationSchema.nullable(),
+  avgScore: z.number().nullable(),
+});
+export type PanelSubmittedFeedbackItem = z.infer<typeof panelSubmittedFeedbackItemSchema>;
+
+/** getPanelDashboard — one aggregate read powering the panel dashboard (stats +
+ * urgent banner + overdue nudge), the /panel/feedback queue, and the
+ * /panel/history table. panel_member + admin; RLS + membership scoped to "me". */
+export const getPanelDashboardOutputSchema = z.object({
+  stats: panelDashboardStatsSchema,
+  pending: z.array(panelPendingFeedbackItemSchema),
+  submitted: z.array(panelSubmittedFeedbackItemSchema),
+});
+export type GetPanelDashboardOutput = z.infer<typeof getPanelDashboardOutputSchema>;
+
+/**
+ * summarizeMyFeedbackNotes (feature `feedback_summary`) — the "Summarise my
+ * notes" AI assist. Sends the panellist's OWN draft text (strengths / concerns
+ * / notes) to the tenant's configured model and returns tightened prose INTO
+ * the same three editable fields. Nothing is persisted or submitted — the
+ * panellist reviews and edits before saving. Kill-switchable + cost-logged.
+ * At least one of the three fields must carry text.
+ */
+export const summarizeMyFeedbackNotesInputSchema = z
+  .object({
+    interviewId: z.string().uuid(),
+    strengths: z.string().max(4000).nullish(),
+    concerns: z.string().max(4000).nullish(),
+    notes: z.string().max(4000).nullish(),
+  })
+  .refine((v) => Boolean(v.strengths?.trim() || v.concerns?.trim() || v.notes?.trim()), {
+    message: "Write some notes first — there is nothing to summarise yet.",
+  });
+export const feedbackSummarySchema = z.object({
+  strengths: z.string(),
+  concerns: z.string(),
+  notes: z.string(),
+});
+export type FeedbackSummary = z.infer<typeof feedbackSummarySchema>;
+export const summarizeMyFeedbackNotesOutputSchema = z.object({
+  summary: feedbackSummarySchema,
+});
+export type SummarizeMyFeedbackNotesInput = z.infer<typeof summarizeMyFeedbackNotesInputSchema>;
+export type SummarizeMyFeedbackNotesOutput = z.infer<typeof summarizeMyFeedbackNotesOutputSchema>;

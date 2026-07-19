@@ -367,13 +367,14 @@ describe("INT-04 completion + stage transitions", () => {
     );
     assert.equal(errCode(noReason), "BAD_REQUEST");
 
-    // panel1 submits → all-submitted.
+    // panel1 submits (notes mandatory since PANEL-01) → all-submitted.
     const submit = await trpcMutation<{ state: string }>(
       "saveInterviewFeedback",
       {
         interviewId: I4_IV1,
         scorecard: { problem_solving: 5, technical_depth: 5, system_design: 5 },
         recommendation: "strong_yes",
+        notes: "Excellent technical depth across the board; ready to close the loop.",
         action: "submit",
       },
       panelJwt,

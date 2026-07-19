@@ -398,7 +398,8 @@ describe("POLISH-01 recruiter-surface polish batch", () => {
       WHERE interview_id = ${IV_REOPEN} AND membership_id = ${panelMembershipId}`;
     assert.equal(fb?.submitted_at, null, "submitted_at cleared");
 
-    // Panelist can now resubmit (immutability guard passes on a null submitted_at).
+    // Panelist can now resubmit (immutability guard passes on a null submitted_at;
+    // notes mandatory since PANEL-01).
     const resubmit = data<{ state: string }>(
       await trpcMutation(
         "saveInterviewFeedback",
@@ -407,6 +408,7 @@ describe("POLISH-01 recruiter-surface polish batch", () => {
           scorecard: TECH_SCORECARD,
           action: "submit",
           recommendation: "strong_yes",
+          notes: "Re-checked after the reopen — recommendation stands.",
         },
         panelJwt,
       ),

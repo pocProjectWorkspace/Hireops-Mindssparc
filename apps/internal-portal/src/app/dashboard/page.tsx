@@ -3,6 +3,7 @@ import { createServerTRPCCaller } from "@/lib/trpc-server";
 import { AppShell } from "@/components/nav/AppShell";
 import { PersonaDashboard } from "@/components/dashboard/PersonaDashboard";
 import { HrHeadDashboard } from "@/components/dashboard/HrHeadDashboard";
+import { PanelDashboard } from "@/components/panel/PanelDashboard";
 
 export const dynamic = "force-dynamic"; // Auth-gated, per-session data.
 
@@ -24,6 +25,12 @@ export default async function DashboardPage() {
 
   // hr_head (but not the admin superset) gets the bespoke surface.
   const isHrHead = session.roles.includes("hr_head") && !session.roles.includes("admin");
+  // panel_member (but not the admin superset, and not also an hr_head) gets the
+  // bespoke panel workboard as home (PANEL-01).
+  const isPanel =
+    session.roles.includes("panel_member") &&
+    !session.roles.includes("admin") &&
+    !session.roles.includes("hr_head");
 
   return (
     <AppShell
@@ -37,6 +44,12 @@ export default async function DashboardPage() {
         <HrHeadDashboard
           initialExtras={await caller.getHrHeadDashboardExtras()}
           tasks={data.actions}
+          displayName={session.email?.split("@")[0] ?? "there"}
+        />
+      ) : isPanel ? (
+        <PanelDashboard
+          initialBoard={await caller.getPanelDashboard()}
+          initialInterviews={(await caller.listMyPanelInterviews({})).rows}
           displayName={session.email?.split("@")[0] ?? "there"}
         />
       ) : (

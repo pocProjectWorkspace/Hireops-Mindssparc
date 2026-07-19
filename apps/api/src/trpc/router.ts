@@ -176,6 +176,15 @@ import {
   type GetPanelInterviewBriefOutput,
   type SaveInterviewFeedbackOutput,
   type PriorRoundFeedback,
+  getPanelDashboardOutputSchema,
+  type GetPanelDashboardOutput,
+  type PanelPendingFeedbackItem,
+  type PanelSubmittedFeedbackItem,
+  summarizeMyFeedbackNotesInputSchema,
+  summarizeMyFeedbackNotesOutputSchema,
+  feedbackSummarySchema,
+  type FeedbackSummary,
+  type SummarizeMyFeedbackNotesOutput,
   completeInterviewInputSchema,
   completeInterviewOutputSchema,
   markInterviewNoShowInputSchema,
@@ -519,6 +528,12 @@ import {
   COMP_RATIONALE_SCHEMA_NAME,
   COMP_RATIONALE_FEATURE,
 } from "../lib/comp-recommendation";
+import {
+  buildFeedbackSummaryPrompt,
+  feedbackSummaryJsonSchema,
+  FEEDBACK_SUMMARY_SCHEMA_NAME,
+  FEEDBACK_SUMMARY_FEATURE,
+} from "../lib/feedback-summary";
 import { enqueueNotification, signLink, hashToken, verifyLink } from "@hireops/notifications";
 import { assertRuleAttachable, IncompatibleApprovalRuleError } from "@hireops/agent-actions";
 import {
@@ -4684,6 +4699,14 @@ export const appRouter = router({
             message: "A recommendation is required to submit your scorecard.",
           });
         }
+        // PANEL-01: detailed notes are mandatory on submit (additive to the
+        // existing recommendation gate). Draft saves are unaffected.
+        if (isSubmit && !input.notes?.trim()) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: "Add detailed notes before submitting your scorecard.",
+          });
+        }
 
         const now = new Date();
         const values = {
@@ -4716,6 +4739,110 @@ export const appRouter = router({
           submittedAt: isSubmit ? now.toISOString() : null,
         };
       });
+    }),
+
+  // ─────────────────── PANEL-01 — panel-member workboard ───────────────────
+  //
+  // getPanelDashboard powers the panel dashboard (hero stat strip + urgent
+  // banner + overdue nudge), the /panel/feedback queue, and the /panel/history
+  // table in one aggregate read. Every number is computed from the caller's OWN
+  // interviews + submitted scorecards, RLS + membership scoped to "me".
+  getPanelDashboard: protectedProcedure
+    .output(getPanelDashboardOutputSchema)
+    .query(async ({ ctx }): Promise<GetPanelDashboardOutput> => {
+      requireAnyRole(ctx, PANEL_SURFACE_ROLES, "This surface is for interview panellists.");
+      const db = requireDb(ctx);
+      if (!ctx.tenantId) {
+        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
+      }
+      const membershipId = await resolveActorMembership(db, ctx);
+      // No membership (e.g. an admin with none) → an empty, honest board.
+      if (!membershipId) {
+        return {
+          stats: {
+            todayInterviews: 0,
+            pendingFeedback: 0,
+            avgScoreGiven: null,
+            completedToday: 0,
+            inWindowNow: 0,
+          },
+          pending: [],
+          submitted: [],
+        };
+      }
+      return buildPanelDashboard(db, ctx.tenantId, membershipId);
+    }),
+
+  // summarizeMyFeedbackNotes — the "Summarise my notes" AI assist (feature
+  // feedback_summary). Tidies the panellist's OWN draft text and returns it
+  // into the editable fields; nothing is persisted or submitted here. Kill-
+  // switchable, cost-logged, audited. panel_member + admin (panellist-on-this-
+  // interview enforced, exactly like saveInterviewFeedback).
+  summarizeMyFeedbackNotes: protectedProcedure
+    .input(summarizeMyFeedbackNotesInputSchema)
+    .output(summarizeMyFeedbackNotesOutputSchema)
+    .mutation(async ({ ctx, input }): Promise<SummarizeMyFeedbackNotesOutput> => {
+      requireAnyRole(ctx, PANEL_SURFACE_ROLES, "This surface is for interview panellists.");
+      return withAudit(
+        "summarize_my_feedback_notes",
+        ctx,
+        { interviewId: input.interviewId },
+        async () => {
+          const db = requireDb(ctx);
+          if (!ctx.tenantId) {
+            throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
+          }
+          const tenantId = ctx.tenantId;
+          const membershipId = await resolveActorMembership(db, ctx);
+          if (!membershipId) {
+            throw new TRPCError({
+              code: "FORBIDDEN",
+              message: "You are not a panellist on this interview.",
+            });
+          }
+          // Enforce panellist-on-this-interview (writes/assists are never
+          // admin-on-behalf — only the interviewer's own notes are summarised).
+          const myPanelist = await findPanelistRow(db, input.interviewId, membershipId);
+          if (!myPanelist) {
+            throw new TRPCError({
+              code: "FORBIDDEN",
+              message: "You are not a panellist on this interview.",
+            });
+          }
+
+          // Kill-switch — disabled → clean error, no model call, no usage log.
+          const aiSettings = await resolveTenantAiSettingsDb(tenantId);
+          const featureSettings = aiSettings.feedback_summary;
+          if (!featureSettings.enabled) {
+            throw new TRPCError({
+              code: "BAD_REQUEST",
+              message:
+                "Note summarising is disabled for this tenant. An admin can re-enable it in Admin → AI settings.",
+            });
+          }
+
+          const { system, user } = buildFeedbackSummaryPrompt({
+            strengths: input.strengths ?? null,
+            concerns: input.concerns ?? null,
+            notes: input.notes ?? null,
+          });
+          const client = await getAIClient(tenantId);
+          const raw = await client.completeStructured<FeedbackSummary>({
+            prompt: user,
+            system,
+            model: featureSettings.model,
+            temperature: featureSettings.temperature,
+            maxTokens: featureSettings.maxTokens,
+            schema: feedbackSummaryJsonSchema,
+            schemaName: FEEDBACK_SUMMARY_SCHEMA_NAME,
+            feature: FEEDBACK_SUMMARY_FEATURE,
+            requestId: ctx.requestId,
+            actorMembershipId: membershipId,
+          });
+          const parsed = feedbackSummarySchema.parse(raw);
+          return { summary: parsed };
+        },
+      );
     }),
 
   // ─────────────────── interview completion (INT-04) ───────────────────
@@ -16278,6 +16405,165 @@ async function fetchMyFeedbackStates(
     map.set(r.interviewId, deriveFeedbackState(r.id, r.submittedAt));
   }
   return map;
+}
+
+/**
+ * PANEL-01 — the aggregate panel workboard for one panellist: the hero stat
+ * strip, the pending-feedback list (completed/past interviews with no submitted
+ * scorecard of mine, overdue-flagged), and the submitted list (my recommendation
+ * + my scorecard's mean score). Every read is scoped to `tenantId` + the
+ * caller's own `membershipId` — this is the "mine only" boundary the tests
+ * assert. `avgScore` averages the numeric values of a scorecard jsonb blob.
+ */
+async function buildPanelDashboard(
+  db: DashDb,
+  tenantId: string,
+  membershipId: string,
+): Promise<GetPanelDashboardOutput> {
+  const T = dsql`i.tenant_id = ${tenantId}::uuid`;
+  const onPanel = dsql`EXISTS (SELECT 1 FROM public.interview_panelists p
+    WHERE p.tenant_id = i.tenant_id AND p.interview_id = i.id AND p.membership_id = ${membershipId}::uuid)`;
+  const myFeedbackDone = dsql`EXISTS (SELECT 1 FROM public.interview_feedback f
+    WHERE f.tenant_id = i.tenant_id AND f.interview_id = i.id AND f.membership_id = ${membershipId}::uuid
+      AND f.submitted_at IS NOT NULL)`;
+  // Past its window (or explicitly completed) — the "ready for a scorecard" gate.
+  const isPast = dsql`(i.status = 'completed' OR (i.scheduled_end IS NOT NULL AND i.scheduled_end < now()))`;
+
+  const [todayInterviews, completedToday, inWindowNow, avgRows, pendingRows, submittedRows] =
+    await Promise.all([
+      dashScalar(
+        db,
+        dsql`SELECT count(*)::int AS n FROM public.interviews i
+             WHERE ${T} AND ${onPanel} AND i.status <> 'cancelled'
+               AND i.scheduled_start >= date_trunc('day', now())
+               AND i.scheduled_start < date_trunc('day', now()) + interval '1 day'`,
+      ),
+      dashScalar(
+        db,
+        dsql`SELECT count(*)::int AS n FROM public.interviews i
+             WHERE ${T} AND ${onPanel} AND i.status = 'completed'
+               AND i.scheduled_start >= date_trunc('day', now())
+               AND i.scheduled_start < date_trunc('day', now()) + interval '1 day'`,
+      ),
+      dashScalar(
+        db,
+        dsql`SELECT count(*)::int AS n FROM public.interviews i
+             WHERE ${T} AND ${onPanel} AND i.status = 'scheduled'
+               AND i.scheduled_start IS NOT NULL AND i.scheduled_end IS NOT NULL
+               AND i.scheduled_start <= now() AND i.scheduled_end >= now()`,
+      ),
+      dashRows<{ avg: number | string | null }>(
+        db,
+        dsql`SELECT AVG(e.val)::float AS avg
+             FROM public.interview_feedback f
+             CROSS JOIN LATERAL jsonb_each(f.scorecard) AS kv(key, value)
+             CROSS JOIN LATERAL (SELECT (kv.value #>> '{}')::numeric AS val
+                                 WHERE jsonb_typeof(kv.value) = 'number') AS e
+             WHERE f.tenant_id = ${tenantId}::uuid AND f.membership_id = ${membershipId}::uuid
+               AND f.submitted_at IS NOT NULL`,
+      ),
+      dashRows<{
+        interview_id: string;
+        candidate_name: string | null;
+        role_title: string;
+        round_number: number;
+        round_name: string;
+        mode: string;
+        scheduled_start: string | Date | null;
+        completed_at: string | Date | null;
+        overdue: boolean;
+      }>(
+        db,
+        dsql`SELECT i.id::text AS interview_id, p.full_name AS candidate_name,
+                    pos.title AS role_title, i.round_number, i.round_name, i.mode,
+                    i.scheduled_start,
+                    COALESCE(i.scheduled_end, i.scheduled_start) AS completed_at,
+                    (COALESCE(i.scheduled_end, i.scheduled_start) < now() - interval '24 hours') AS overdue
+             FROM public.interviews i
+             JOIN public.applications a ON a.id = i.application_id
+             JOIN public.candidates c ON c.id = a.candidate_id
+             JOIN public.persons p ON p.id = c.person_id
+             JOIN public.requisitions r ON r.id = i.requisition_id
+             JOIN public.positions pos ON pos.id = r.position_id
+             WHERE ${T} AND ${onPanel} AND i.status <> 'cancelled'
+               AND ${isPast} AND NOT ${myFeedbackDone}
+             ORDER BY completed_at ASC NULLS LAST`,
+      ),
+      dashRows<{
+        interview_id: string;
+        candidate_name: string | null;
+        role_title: string;
+        round_number: number;
+        round_name: string;
+        submitted_at: string | Date | null;
+        recommendation: string | null;
+        avg_score: number | string | null;
+      }>(
+        db,
+        dsql`SELECT i.id::text AS interview_id, p.full_name AS candidate_name,
+                    pos.title AS role_title, i.round_number, i.round_name,
+                    f.submitted_at, f.recommendation,
+                    (SELECT AVG(e.val)::float
+                     FROM jsonb_each(f.scorecard) AS kv(key, value)
+                     CROSS JOIN LATERAL (SELECT (kv.value #>> '{}')::numeric AS val
+                                         WHERE jsonb_typeof(kv.value) = 'number') AS e) AS avg_score
+             FROM public.interview_feedback f
+             JOIN public.interviews i ON i.id = f.interview_id
+             JOIN public.applications a ON a.id = i.application_id
+             JOIN public.candidates c ON c.id = a.candidate_id
+             JOIN public.persons p ON p.id = c.person_id
+             JOIN public.requisitions r ON r.id = i.requisition_id
+             JOIN public.positions pos ON pos.id = r.position_id
+             WHERE f.tenant_id = ${tenantId}::uuid AND f.membership_id = ${membershipId}::uuid
+               AND f.submitted_at IS NOT NULL
+             ORDER BY f.submitted_at DESC`,
+      ),
+    ]);
+
+  const avgRaw = avgRows[0]?.avg ?? null;
+  const avgScoreGiven =
+    avgRaw === null
+      ? null
+      : Math.round((typeof avgRaw === "string" ? Number(avgRaw) : avgRaw) * 10) / 10;
+
+  const pending: PanelPendingFeedbackItem[] = pendingRows.map((r) => ({
+    interviewId: r.interview_id,
+    candidateName: r.candidate_name,
+    roleTitle: r.role_title,
+    roundNumber: r.round_number,
+    roundName: r.round_name,
+    mode: r.mode as "video" | "onsite" | "phone",
+    scheduledStart: toIsoString(r.scheduled_start),
+    completedAt: toIsoString(r.completed_at),
+    overdue: Boolean(r.overdue),
+  }));
+
+  const submitted: PanelSubmittedFeedbackItem[] = submittedRows.map((r) => {
+    const s = r.avg_score;
+    const score = s === null ? null : Math.round((typeof s === "string" ? Number(s) : s) * 10) / 10;
+    return {
+      interviewId: r.interview_id,
+      candidateName: r.candidate_name,
+      roleTitle: r.role_title,
+      roundNumber: r.round_number,
+      roundName: r.round_name,
+      submittedAt: toIsoString(r.submitted_at),
+      recommendation: (r.recommendation as "strong_yes" | "yes" | "hold" | "no" | null) ?? null,
+      avgScore: score,
+    };
+  });
+
+  return {
+    stats: {
+      todayInterviews,
+      pendingFeedback: pending.length,
+      avgScoreGiven,
+      completedToday,
+      inWindowNow,
+    },
+    pending,
+    submitted,
+  };
 }
 
 /** Is this membership a panelist on this interview? Returns the row or null. */

@@ -83,7 +83,8 @@ function featureDefault(): AiFeatureSettings {
 }
 
 /** The real consumers this surface governs (jd_bias_review added in CONF-02,
- * req_feasibility in HRHEAD-02, comp_recommendation in HROPS-02). */
+ * req_feasibility in HRHEAD-02, comp_recommendation in HROPS-02,
+ * feedback_summary in PANEL-01). */
 export const AI_FEATURE_KEYS = [
   "ai_scoring",
   "jd_generation",
@@ -91,6 +92,7 @@ export const AI_FEATURE_KEYS = [
   "jd_bias_review",
   "req_feasibility",
   "comp_recommendation",
+  "feedback_summary",
 ] as const;
 export type AiFeatureKey = (typeof AI_FEATURE_KEYS)[number];
 
@@ -135,6 +137,12 @@ export const AI_FEATURE_META: Record<
     description:
       "Writes a short prose rationale around the deterministic comp verdict on the Comp & offer desk — grounded ONLY in the candidate's expected salary, the role's comp band, and the curated benchmarks (never invented market claims). The verdict itself is always rule-computed and unaffected. Runs only on an explicit 'Generate rationale' click. Disabling makes that button refuse with a clear message instead of calling the model.",
   },
+  feedback_summary: {
+    label: "Scorecard note summary",
+    usageFeatures: ["feedback_summary"],
+    description:
+      "Tidies a panellist's OWN draft scorecard text (strengths / concerns / notes) into clearer prose, on demand from the scorecard form. It only ever rewrites the interviewer's own words back into the editable fields — it never scores, never submits, and never invents claims about the candidate. Disabling hides the 'Summarise my notes' button and refuses the call.",
+  },
 };
 
 export const aiSettingsSchema = z.object({
@@ -145,6 +153,7 @@ export const aiSettingsSchema = z.object({
   jd_bias_review: aiFeatureSettingsSchema.default(featureDefault),
   req_feasibility: aiFeatureSettingsSchema.default(featureDefault),
   comp_recommendation: aiFeatureSettingsSchema.default(featureDefault),
+  feedback_summary: aiFeatureSettingsSchema.default(featureDefault),
   /**
    * Global deterministic PII redaction. When on, candidate-derived prompt
    * text going into scoring + agent-draft calls has emails / phone numbers /

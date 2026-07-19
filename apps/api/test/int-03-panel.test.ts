@@ -342,13 +342,14 @@ describe("INT-03 panel persona", () => {
     );
     assert.equal(errCode(noRec), "BAD_REQUEST");
 
-    // Submit WITH a recommendation → submitted.
+    // Submit WITH a recommendation (+ notes — mandatory since PANEL-01) → submitted.
     const submit = await trpcMutation<{ state: string; submittedAt: string | null }>(
       "saveInterviewFeedback",
       {
         interviewId: I3_IV2,
         scorecard: { ownership: 4, communication: 5 },
         recommendation: "strong_yes",
+        notes: "Owned the delivery narrative end-to-end; clear stakeholder story.",
         action: "submit",
       },
       panelJwt,

@@ -68,6 +68,8 @@ export type PortalNavKey =
   | "exec-audit"
   | "interviews"
   | "panel"
+  | "panel-feedback"
+  | "panel-history"
   | "hr-documents"
   | "case-audit"
   | "hr-policies"
@@ -231,6 +233,22 @@ const MAIN_NAV: NavItem[] = [
     label: "My interviews",
     href: "/panel",
     icon: <IconPanel />,
+    roles: ["panel_member", "admin"],
+  },
+  {
+    // PANEL-01: the panellist's feedback queue (pending + submitted scorecards).
+    key: "panel-feedback",
+    label: "Feedback",
+    href: "/panel/feedback",
+    icon: <IconApprovals />,
+    roles: ["panel_member", "admin"],
+  },
+  {
+    // PANEL-01: the panellist's past interviews (my scores + recommendations).
+    key: "panel-history",
+    label: "History",
+    href: "/panel/history",
+    icon: <IconCaseAudit />,
     roles: ["panel_member", "admin"],
   },
   {

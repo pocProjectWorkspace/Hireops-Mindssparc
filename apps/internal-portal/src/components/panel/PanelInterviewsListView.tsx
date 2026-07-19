@@ -1,19 +1,22 @@
 "use client";
 
 import { useMemo } from "react";
-import { Badge, EmptyState, TableShell, Thead, Th, Tbody, Tr, Td } from "@/components/ui";
-import type { BadgeTone } from "@/components/ui";
+import { Card, EmptyState } from "@/components/ui";
 import { trpc } from "@/lib/trpc-client";
-import type { FeedbackState, PanelInterviewRow } from "@hireops/api-types";
+import type { PanelInterviewRow } from "@hireops/api-types";
+import { InterviewCard } from "./InterviewCard";
 
 /**
- * INT-03 — "My interviews" list. The interviews the signed-in panellist is on,
- * split into Upcoming (scheduled) and Past, each row badged with the
- * panellist's own feedback state (none/draft/submitted) and linking to the
- * brief + scorecard at /panel/[interviewId].
+ * INT-03 / PANEL-01 — "My interviews". The interviews the signed-in panellist is
+ * on, split into Upcoming and Past, rendered as the shared InterviewCard so this
+ * surface reads consistently with the PANEL-01 dashboard.
  */
 
-const MODE_LABEL: Record<string, string> = { video: "Video", onsite: "On-site", phone: "Phone" };
+function inWindowNow(iv: PanelInterviewRow): boolean {
+  if (iv.status !== "scheduled" || !iv.scheduledStart || !iv.scheduledEnd) return false;
+  const now = Date.now();
+  return new Date(iv.scheduledStart).getTime() <= now && new Date(iv.scheduledEnd).getTime() >= now;
+}
 
 export function PanelInterviewsListView() {
   const list = trpc.listMyPanelInterviews.useQuery({}, { placeholderData: (prev) => prev });
@@ -31,6 +34,8 @@ export function PanelInterviewsListView() {
       if (r.status === "cancelled" || isPast) pastRows.push(r);
       else up.push(r);
     }
+    up.sort((a, b) => (a.scheduledStart ?? "").localeCompare(b.scheduledStart ?? ""));
+    pastRows.sort((a, b) => (b.scheduledStart ?? "").localeCompare(a.scheduledStart ?? ""));
     return { upcoming: up, past: pastRows };
   }, [rows]);
 
@@ -78,94 +83,16 @@ function PanelSection({
         <span className="ml-2 font-normal text-neutral-400">{rows.length}</span>
       </h2>
       {rows.length === 0 ? (
-        <p className="text-sm text-neutral-400">{emptyHint}</p>
+        <Card>
+          <p className="text-sm text-neutral-400">{emptyHint}</p>
+        </Card>
       ) : (
-        <TableShell>
-          <Thead>
-            <Tr>
-              <Th>Candidate</Th>
-              <Th>Role</Th>
-              <Th>Round</Th>
-              <Th>When</Th>
-              <Th>Status</Th>
-              <Th>My scorecard</Th>
-              <Th> </Th>
-            </Tr>
-          </Thead>
-          <Tbody>
-            {rows.map((iv) => (
-              <Tr key={iv.id}>
-                <Td>{iv.candidateName ?? "—"}</Td>
-                <Td>{iv.positionTitle}</Td>
-                <Td>
-                  {iv.roundNumber}. {iv.roundName}
-                  <span className="ml-1 text-xs text-neutral-400">
-                    ({MODE_LABEL[iv.mode] ?? iv.mode})
-                  </span>
-                </Td>
-                <Td>{formatWhen(iv.scheduledStart)}</Td>
-                <Td>
-                  <Badge tone={statusTone(iv.status)}>{iv.status.replace(/_/g, " ")}</Badge>
-                </Td>
-                <Td>
-                  <Badge tone={feedbackTone(iv.myFeedbackState)}>
-                    {feedbackLabel(iv.myFeedbackState)}
-                  </Badge>
-                </Td>
-                <Td>
-                  <a
-                    href={`/panel/${iv.id}`}
-                    className="text-sm font-medium text-brand-700 hover:underline"
-                  >
-                    Open brief
-                  </a>
-                </Td>
-              </Tr>
-            ))}
-          </Tbody>
-        </TableShell>
+        <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+          {rows.map((iv) => (
+            <InterviewCard key={iv.id} interview={iv} inWindowNow={inWindowNow(iv)} />
+          ))}
+        </div>
       )}
     </section>
   );
-}
-
-function statusTone(status: string): BadgeTone {
-  switch (status) {
-    case "scheduled":
-      return "info";
-    case "completed":
-      return "success";
-    case "no_show":
-    case "cancelled":
-      return "warning";
-    default:
-      return "neutral";
-  }
-}
-
-function feedbackTone(state: FeedbackState): BadgeTone {
-  switch (state) {
-    case "submitted":
-      return "success";
-    case "draft":
-      return "warning";
-    default:
-      return "neutral";
-  }
-}
-
-function feedbackLabel(state: FeedbackState): string {
-  switch (state) {
-    case "submitted":
-      return "Submitted";
-    case "draft":
-      return "Draft saved";
-    default:
-      return "Not started";
-  }
-}
-
-function formatWhen(iso: string | null): string {
-  if (!iso) return "TBC";
-  return `${iso.slice(0, 10)} ${iso.slice(11, 16)}`;
 }
