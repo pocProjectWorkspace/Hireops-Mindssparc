@@ -4287,3 +4287,178 @@ export const summarizeMyFeedbackNotesOutputSchema = z.object({
 });
 export type SummarizeMyFeedbackNotesInput = z.infer<typeof summarizeMyFeedbackNotesInputSchema>;
 export type SummarizeMyFeedbackNotesOutput = z.infer<typeof summarizeMyFeedbackNotesOutputSchema>;
+
+// ─────────────────────────── RO-03 — JD library, panel setup, insights ───────────────────────────
+//
+// The hiring-manager persona surfaces. Everything is scoped to MY requisitions
+// (requisitions.hiring_manager_id = the caller's membership) — except admin,
+// the super-role, which sees every requisition in the tenant. Real data only:
+// keyword chips derive from jd_skills / aiMetadata keywords, JD status from the
+// jd_versions.status vocabulary (draft | approved | archived), analytics from
+// live pipeline / scorecards / curated benchmarks. No demographic anything, no
+// psychometric radar, no offer-acceptance probability, no AI-recommendation
+// block — those are deliberate refusals documented in the ticket charter.
+
+// --- /jd-library ---
+
+export const listJdLibraryInputSchema = z.object({
+  limit: z.number().int().min(1).max(200).default(100),
+});
+export const jdLibraryRowSchema = z.object({
+  requisitionId: z.string().uuid(),
+  positionId: z.string().uuid(),
+  title: z.string().nullable(),
+  department: z.string().nullable(),
+  reqStatus: z.string(),
+  // jd_versions.status vocabulary — draft | approved | archived.
+  jdStatus: z.string(),
+  keywords: z.array(z.string()),
+  createdAt: z.string(),
+});
+export type JdLibraryRow = z.infer<typeof jdLibraryRowSchema>;
+export const listJdLibraryOutputSchema = z.object({
+  rows: z.array(jdLibraryRowSchema),
+});
+export type ListJdLibraryOutput = z.infer<typeof listJdLibraryOutputSchema>;
+
+export const getJdVersionHistoryInputSchema = z.object({
+  requisitionId: z.string().uuid(),
+});
+export const jdVersionHistoryItemSchema = z.object({
+  id: z.string().uuid(),
+  versionNumber: z.number().int(),
+  status: z.string(),
+  summary: z.string().nullable(),
+  jdText: z.string(),
+  isCurrent: z.boolean(),
+  createdAt: z.string(),
+});
+export type JdVersionHistoryItem = z.infer<typeof jdVersionHistoryItemSchema>;
+export const getJdVersionHistoryOutputSchema = z.object({
+  requisitionId: z.string().uuid(),
+  title: z.string().nullable(),
+  versions: z.array(jdVersionHistoryItemSchema),
+});
+export type GetJdVersionHistoryOutput = z.infer<typeof getJdVersionHistoryOutputSchema>;
+
+// --- /panel-setup ---
+
+export const listPanelSetupRequisitionsInputSchema = z.object({
+  limit: z.number().int().min(1).max(200).default(100),
+});
+export const panelSetupRequisitionRowSchema = z.object({
+  requisitionId: z.string().uuid(),
+  title: z.string().nullable(),
+  department: z.string().nullable(),
+  status: z.string(),
+  roundCount: z.number().int(),
+  totalDurationMinutes: z.number().int(),
+  templatesUsed: z.array(z.string()),
+});
+export type PanelSetupRequisitionRow = z.infer<typeof panelSetupRequisitionRowSchema>;
+export const listPanelSetupRequisitionsOutputSchema = z.object({
+  rows: z.array(panelSetupRequisitionRowSchema),
+});
+export type ListPanelSetupRequisitionsOutput = z.infer<
+  typeof listPanelSetupRequisitionsOutputSchema
+>;
+
+export const getPanelSetupInputSchema = z.object({ requisitionId: z.string().uuid() });
+export const panelSetupRoundSchema = z.object({
+  roundNumber: z.number().int(),
+  roundName: z.string(),
+  durationMinutes: z.number().int(),
+  mode: interviewModeSchema,
+  scorecardTemplate: interviewScorecardTemplateSchema,
+  // Read-only default panellists carried by the plan (resolved display names).
+  // Actual per-round panel assignment happens at scheduling (/interviews).
+  defaultPanelists: z.array(z.string()),
+});
+export type PanelSetupRound = z.infer<typeof panelSetupRoundSchema>;
+export const getPanelSetupOutputSchema = z.object({
+  requisitionId: z.string().uuid(),
+  title: z.string().nullable(),
+  status: z.string(),
+  rounds: z.array(panelSetupRoundSchema),
+  totalDurationMinutes: z.number().int(),
+});
+export type GetPanelSetupOutput = z.infer<typeof getPanelSetupOutputSchema>;
+
+// --- /insights ---
+
+export const getRequisitionInsightsInputSchema = z.object({
+  // null / omitted → the "all my reqs" rollup; a uuid → single-req analytics.
+  requisitionId: z.string().uuid().nullish(),
+});
+export const insightsReqOptionSchema = z.object({
+  id: z.string().uuid(),
+  title: z.string().nullable(),
+});
+export const insightsScoreBucketSchema = z.object({
+  key: z.enum(["excellent", "good", "partial", "low"]),
+  label: z.string(),
+  range: z.string(),
+  count: z.number().int(),
+});
+export const insightsFunnelStageSchema = z.object({
+  stage: applicationStageSchema,
+  count: z.number().int(),
+  // % lost relative to the previous stage's count; null for the first stage
+  // and where the previous stage was empty.
+  dropOffPct: z.number().nullable(),
+});
+export const insightsSkillGapSchema = z.object({
+  skillName: z.string(),
+  isRequired: z.boolean(),
+  gapPct: z.number(),
+  candidatesMissing: z.number().int(),
+  totalCandidates: z.number().int(),
+});
+export const insightsSalaryBandSchema = z
+  .object({
+    currency: z.string(),
+    budgetMin: z.number().nullable(),
+    budgetMax: z.number().nullable(),
+    // Curated benchmark (market_benchmarks) — median only exists in the data;
+    // there is no synthetic band. Labelled "Curated benchmarks" in the UI.
+    benchmarkMedian: z.number().nullable(),
+    benchmarkTtfDays: z.number().int().nullable(),
+    sourceNote: z.string().nullable(),
+  })
+  .nullable();
+export const insightsSlaTileSchema = z.object({
+  stage: applicationStageSchema,
+  avgAgeHours: z.number().nullable(),
+  targetHours: z.number().nullable(),
+  breach: z.boolean(),
+  count: z.number().int(),
+});
+export const insightsPanelTrendSchema = z.object({
+  roundNumber: z.number().int(),
+  roundName: z.string(),
+  avgScore: z.number().nullable(),
+  passRate: z.number().nullable(),
+  submittedCount: z.number().int(),
+});
+export const getRequisitionInsightsOutputSchema = z.object({
+  scope: z.enum(["single", "all"]),
+  selectedRequisitionId: z.string().uuid().nullable(),
+  reqOptions: z.array(insightsReqOptionSchema),
+  kpis: z.object({
+    // Labelled "historical average" in the UI — never a prediction.
+    avgTimeToHireDays: z.number().nullable(),
+    fillRate: z.object({ hires: z.number().int(), openings: z.number().int() }),
+    activeCandidates: z.number().int(),
+    offerAcceptRate: z.object({ accepted: z.number().int(), extended: z.number().int() }),
+  }),
+  funnel: z.array(insightsFunnelStageSchema),
+  scoreDistribution: z.array(insightsScoreBucketSchema),
+  // Single-req only (empty for the rollup — a gap needs one JD to compare to).
+  skillGap: z.array(insightsSkillGapSchema),
+  // Single-req only (null for the rollup).
+  salaryBand: insightsSalaryBandSchema,
+  slaTiles: z.array(insightsSlaTileSchema),
+  bottleneckNote: z.string().nullable(),
+  panelFeedbackTrends: z.array(insightsPanelTrendSchema),
+});
+export type GetRequisitionInsightsOutput = z.infer<typeof getRequisitionInsightsOutputSchema>;

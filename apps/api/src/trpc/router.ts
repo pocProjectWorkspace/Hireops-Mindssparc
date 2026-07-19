@@ -263,6 +263,17 @@ import {
   getRecruitmentReportInputSchema,
   getRecruitmentReportOutputSchema,
   getHrMetricsOutputSchema,
+  listJdLibraryInputSchema,
+  listJdLibraryOutputSchema,
+  getJdVersionHistoryInputSchema,
+  getJdVersionHistoryOutputSchema,
+  listPanelSetupRequisitionsInputSchema,
+  listPanelSetupRequisitionsOutputSchema,
+  getPanelSetupInputSchema,
+  getPanelSetupOutputSchema,
+  getRequisitionInsightsInputSchema,
+  getRequisitionInsightsOutputSchema,
+  type GetRequisitionInsightsOutput,
   approveApprovalInputSchema,
   approveApprovalOutputSchema,
   approveApprovalWithEditInputSchema,
@@ -739,6 +750,14 @@ const REQUISITION_POST_ROLES = new Set(["admin", "hiring_manager", "recruiter"])
 // note in the ticket); a recruiter hitting a mutation gets FORBIDDEN. RLS
 // still scopes rows to the tenant on top of this persona gate.
 const REQUISITION_WRITE_ROLES = new Set(["admin", "hiring_manager"]);
+
+// RO-03 — the hiring-manager persona surfaces (/jd-library, /panel-setup,
+// /insights). hiring_manager (the requirement owner) + admin (super-role).
+// recruiter / hr_head / panel_member get FORBIDDEN. Every read is additionally
+// scoped to the caller's OWN requisitions (hiring_manager_id = the caller's
+// membership); admin, the super-role, sees every requisition in the tenant.
+// RLS still scopes every row to the tenant on top.
+const HM_INSIGHTS_ROLES = new Set(["admin", "hiring_manager"]);
 
 // INT-02 interview scheduling. Plan editing + scheduling is the
 // recruiter/hiring-manager surface (admin super-role always). Plan READ
@@ -15480,6 +15499,342 @@ export const appRouter = router({
       })),
     };
   }),
+
+  // ═══════════ RO-03 — JD library, panel setup, requisition insights ═══════════
+  //
+  // The hiring-manager persona surfaces. Every read is scoped to the caller's
+  // OWN requisitions (resolveMyRequisitionScope) — admin sees the whole tenant.
+  // Real data only; the deliberate refusals (demographics, psychometric radar,
+  // offer-acceptance probability) are simply absent from the shape.
+
+  /**
+   * listJdLibrary (/jd-library) — a searchable table over MY requisitions'
+   * current JD version: role, department, keyword chips (jd_skills, falling
+   * back to aiMetadata.keywords — real data), req status + JD status
+   * (draft|approved|archived per jd_versions.status), created. Rows link to the
+   * requisition detail; the client owns per-req version history (below).
+   */
+  listJdLibrary: protectedProcedure
+    .input(listJdLibraryInputSchema)
+    .output(listJdLibraryOutputSchema)
+    .query(async ({ ctx, input }) => {
+      requireAnyRole(ctx, HM_INSIGHTS_ROLES, "JD library is a hiring-manager surface.");
+      const db = requireDb(ctx);
+      const scope = await resolveMyRequisitionScope(db, ctx);
+      if (scope.ids.length === 0) return { rows: [] };
+
+      const rows = await db
+        .select({
+          requisitionId: requisitions.id,
+          positionId: positions.id,
+          title: positions.title,
+          department: businessUnits.name,
+          reqStatus: requisitions.status,
+          createdAt: requisitions.createdAt,
+          jdVersionId: jdVersions.id,
+          jdStatus: jdVersions.status,
+          jdMetadata: jdVersions.aiMetadata,
+        })
+        .from(requisitions)
+        .innerJoin(
+          positions,
+          and(
+            eq(requisitions.tenantId, positions.tenantId),
+            eq(requisitions.positionId, positions.id),
+          ),
+        )
+        .leftJoin(
+          businessUnits,
+          and(
+            eq(positions.tenantId, businessUnits.tenantId),
+            eq(positions.businessUnitId, businessUnits.id),
+          ),
+        )
+        .innerJoin(
+          jdVersions,
+          and(
+            eq(requisitions.tenantId, jdVersions.tenantId),
+            eq(requisitions.jdVersionId, jdVersions.id),
+          ),
+        )
+        .where(inArray(requisitions.id, scope.ids))
+        .orderBy(desc(requisitions.createdAt))
+        .limit(input.limit);
+
+      // Keyword chips: prefer the JD version's real skills; fall back to
+      // aiMetadata.keywords. Both are real curated/parsed data — never invented.
+      const skillRows =
+        rows.length > 0
+          ? await db
+              .select({ jdVersionId: jdSkills.jdVersionId, skillName: jdSkills.skillName })
+              .from(jdSkills)
+              .where(
+                inArray(
+                  jdSkills.jdVersionId,
+                  rows.map((r) => r.jdVersionId),
+                ),
+              )
+          : [];
+      const skillsByVersion = new Map<string, string[]>();
+      for (const s of skillRows) {
+        const list = skillsByVersion.get(s.jdVersionId) ?? [];
+        list.push(s.skillName);
+        skillsByVersion.set(s.jdVersionId, list);
+      }
+
+      return {
+        rows: rows.map((r) => {
+          let keywords = skillsByVersion.get(r.jdVersionId) ?? [];
+          if (keywords.length === 0) {
+            const meta = (r.jdMetadata ?? {}) as Record<string, unknown>;
+            const kw = meta.keywords;
+            if (Array.isArray(kw)) {
+              keywords = kw.filter((k): k is string => typeof k === "string");
+            }
+          }
+          return {
+            requisitionId: r.requisitionId,
+            positionId: r.positionId,
+            title: r.title ?? null,
+            department: r.department ?? null,
+            reqStatus: r.reqStatus,
+            jdStatus: r.jdStatus,
+            keywords: keywords.slice(0, 12),
+            createdAt: r.createdAt.toISOString(),
+          };
+        }),
+      };
+    }),
+
+  /**
+   * getJdVersionHistory (/jd-library expando) — every JD version for a
+   * requisition's position, newest first: version number, status, summary
+   * snippet, and the full JD text for the read-only view modal. The requisition
+   * must be one of MINE (or any, for admin) — else NOT_FOUND under the scope
+   * guard, mirroring how a cross-tenant req 404s under RLS.
+   */
+  getJdVersionHistory: protectedProcedure
+    .input(getJdVersionHistoryInputSchema)
+    .output(getJdVersionHistoryOutputSchema)
+    .query(async ({ ctx, input }) => {
+      requireAnyRole(ctx, HM_INSIGHTS_ROLES, "JD library is a hiring-manager surface.");
+      const db = requireDb(ctx);
+      const scope = await resolveMyRequisitionScope(db, ctx);
+      if (!scope.ids.includes(input.requisitionId)) {
+        throw new TRPCError({ code: "NOT_FOUND", message: "Requisition not found" });
+      }
+      const [req] = await db
+        .select({
+          positionId: requisitions.positionId,
+          currentJdVersionId: requisitions.jdVersionId,
+          title: positions.title,
+        })
+        .from(requisitions)
+        .innerJoin(
+          positions,
+          and(
+            eq(requisitions.tenantId, positions.tenantId),
+            eq(requisitions.positionId, positions.id),
+          ),
+        )
+        .where(eq(requisitions.id, input.requisitionId))
+        .limit(1);
+      if (!req) throw new TRPCError({ code: "NOT_FOUND", message: "Requisition not found" });
+
+      const versions = await db
+        .select({
+          id: jdVersions.id,
+          versionNumber: jdVersions.versionNumber,
+          status: jdVersions.status,
+          summary: jdVersions.summary,
+          jdText: jdVersions.jdText,
+          createdAt: jdVersions.createdAt,
+        })
+        .from(jdVersions)
+        .where(eq(jdVersions.positionId, req.positionId))
+        .orderBy(desc(jdVersions.versionNumber));
+
+      return {
+        requisitionId: input.requisitionId,
+        title: req.title ?? null,
+        versions: versions.map((v) => ({
+          id: v.id,
+          versionNumber: v.versionNumber,
+          status: v.status,
+          summary: v.summary ?? null,
+          jdText: v.jdText,
+          isCurrent: v.id === req.currentJdVersionId,
+          createdAt: v.createdAt.toISOString(),
+        })),
+      };
+    }),
+
+  /**
+   * listPanelSetupRequisitions (/panel-setup) — MY requisitions with an
+   * interview-plan summary: round count, total duration, templates used. The
+   * pick-a-requisition list; per-req detail is getPanelSetup + the embedded
+   * InterviewPlanSection editor.
+   */
+  listPanelSetupRequisitions: protectedProcedure
+    .input(listPanelSetupRequisitionsInputSchema)
+    .output(listPanelSetupRequisitionsOutputSchema)
+    .query(async ({ ctx, input }) => {
+      requireAnyRole(ctx, HM_INSIGHTS_ROLES, "Panel setup is a hiring-manager surface.");
+      const db = requireDb(ctx);
+      const scope = await resolveMyRequisitionScope(db, ctx);
+      if (scope.ids.length === 0) return { rows: [] };
+
+      const reqRows = await db
+        .select({
+          requisitionId: requisitions.id,
+          title: positions.title,
+          department: businessUnits.name,
+          status: requisitions.status,
+          createdAt: requisitions.createdAt,
+        })
+        .from(requisitions)
+        .innerJoin(
+          positions,
+          and(
+            eq(requisitions.tenantId, positions.tenantId),
+            eq(requisitions.positionId, positions.id),
+          ),
+        )
+        .leftJoin(
+          businessUnits,
+          and(
+            eq(positions.tenantId, businessUnits.tenantId),
+            eq(positions.businessUnitId, businessUnits.id),
+          ),
+        )
+        .where(inArray(requisitions.id, scope.ids))
+        .orderBy(desc(requisitions.createdAt))
+        .limit(input.limit);
+
+      const planRows = await db
+        .select({
+          requisitionId: interviewPlans.requisitionId,
+          durationMinutes: interviewPlans.durationMinutes,
+          scorecardTemplate: interviewPlans.scorecardTemplate,
+        })
+        .from(interviewPlans)
+        .where(inArray(interviewPlans.requisitionId, scope.ids));
+
+      const planByReq = new Map<string, { rounds: number; duration: number; tmpl: Set<string> }>();
+      for (const p of planRows) {
+        const agg = planByReq.get(p.requisitionId) ?? { rounds: 0, duration: 0, tmpl: new Set() };
+        agg.rounds += 1;
+        agg.duration += p.durationMinutes ?? 0;
+        if (p.scorecardTemplate) agg.tmpl.add(p.scorecardTemplate);
+        planByReq.set(p.requisitionId, agg);
+      }
+
+      return {
+        rows: reqRows.map((r) => {
+          const agg = planByReq.get(r.requisitionId);
+          return {
+            requisitionId: r.requisitionId,
+            title: r.title ?? null,
+            department: r.department ?? null,
+            status: r.status,
+            roundCount: agg?.rounds ?? 0,
+            totalDurationMinutes: agg?.duration ?? 0,
+            templatesUsed: agg ? Array.from(agg.tmpl) : [],
+          };
+        }),
+      };
+    }),
+
+  /**
+   * getPanelSetup (/panel-setup detail) — the interview plan as a pipeline: an
+   * ordered list of rounds with name, duration, mode, scorecard, and the
+   * plan's advisory default panellists resolved to display names (READ-ONLY —
+   * actual per-round assignment happens at scheduling, /interviews). Feeds the
+   * numbered-dot pipeline visualization above the embedded plan editor.
+   */
+  getPanelSetup: protectedProcedure
+    .input(getPanelSetupInputSchema)
+    .output(getPanelSetupOutputSchema)
+    .query(async ({ ctx, input }) => {
+      requireAnyRole(ctx, HM_INSIGHTS_ROLES, "Panel setup is a hiring-manager surface.");
+      const db = requireDb(ctx);
+      const scope = await resolveMyRequisitionScope(db, ctx);
+      if (!scope.ids.includes(input.requisitionId)) {
+        throw new TRPCError({ code: "NOT_FOUND", message: "Requisition not found" });
+      }
+      const [req] = await db
+        .select({ title: positions.title, status: requisitions.status })
+        .from(requisitions)
+        .innerJoin(
+          positions,
+          and(
+            eq(requisitions.tenantId, positions.tenantId),
+            eq(requisitions.positionId, positions.id),
+          ),
+        )
+        .where(eq(requisitions.id, input.requisitionId))
+        .limit(1);
+      if (!req) throw new TRPCError({ code: "NOT_FOUND", message: "Requisition not found" });
+
+      const rounds = await db
+        .select()
+        .from(interviewPlans)
+        .where(eq(interviewPlans.requisitionId, input.requisitionId))
+        .orderBy(interviewPlans.roundNumber);
+
+      // Resolve default-panellist display names once (read-only surfacing).
+      const allIds = Array.from(
+        new Set(rounds.flatMap((r) => r.defaultPanelMembershipIds ?? [])),
+      ).filter((id): id is string => !!id);
+      const nameById =
+        allIds.length > 0 && ctx.tenantId
+          ? await resolveMembershipNames(ctx, ctx.tenantId, allIds)
+          : new Map<string, string>();
+
+      let totalDurationMinutes = 0;
+      const shaped = rounds.map((r) => {
+        totalDurationMinutes += r.durationMinutes ?? 0;
+        return {
+          roundNumber: r.roundNumber,
+          roundName: r.roundName,
+          durationMinutes: r.durationMinutes,
+          mode: r.mode as "video" | "onsite" | "phone",
+          scorecardTemplate: (r.scorecardTemplate ?? "general") as
+            | "technical"
+            | "manager"
+            | "hr"
+            | "general",
+          defaultPanelists: (r.defaultPanelMembershipIds ?? [])
+            .map((id) => nameById.get(id))
+            .filter((n): n is string => !!n),
+        };
+      });
+
+      return {
+        requisitionId: input.requisitionId,
+        title: req.title ?? null,
+        status: req.status,
+        rounds: shaped,
+        totalDurationMinutes,
+      };
+    }),
+
+  /**
+   * getRequisitionInsights (/insights) — per-requisition analytics (or an "all
+   * my reqs" rollup when requisitionId is null). Everything is a real,
+   * deterministic query over the live pipeline / scorecards / curated
+   * benchmarks. NO psychometric radar, NO offer-acceptance probability, NO
+   * AI-recommendation block (deliberate refusals). Time-to-hire is a HISTORICAL
+   * AVERAGE, never a prediction.
+   */
+  getRequisitionInsights: protectedProcedure
+    .input(getRequisitionInsightsInputSchema)
+    .output(getRequisitionInsightsOutputSchema)
+    .query(async ({ ctx, input }): Promise<GetRequisitionInsightsOutput> => {
+      requireAnyRole(ctx, HM_INSIGHTS_ROLES, "Insights is a hiring-manager surface.");
+      const db = requireDb(ctx);
+      return buildRequisitionInsights(db, ctx, input.requisitionId ?? null);
+    }),
 });
 
 // ═══════════ DASH-01 — persona-dashboard builders ═══════════
@@ -18930,6 +19285,477 @@ async function buildHrRoundsList(
     pending: pendingCount,
   };
   return { rows, stats };
+}
+
+// ═══════════ RO-03 — requisition-scope + insights builders ═══════════
+
+type InsightsDb = NonNullable<HonoTRPCContext["db"]>;
+
+/**
+ * The set of requisitions the caller "owns" for the hiring-manager surfaces:
+ * requisitions.hiring_manager_id = the caller's membership. admin, the
+ * super-role, gets EVERY requisition in the tenant (RLS already scopes to the
+ * tenant, so a plain unfiltered select is correct there). Returns the id list
+ * so callers can `inArray(...)` or membership-check a single id.
+ */
+async function resolveMyRequisitionScope(
+  db: InsightsDb,
+  ctx: HonoTRPCContext,
+): Promise<{ ids: string[]; isAdmin: boolean; membershipId: string | null }> {
+  const isAdmin = ctx.roles.includes("admin");
+  const membershipId = await resolveActorMembership(db, ctx);
+  const rows = await db
+    .select({ id: requisitions.id, hm: requisitions.hiringManagerId })
+    .from(requisitions);
+  const ids = rows
+    .filter((r) => isAdmin || (membershipId != null && r.hm === membershipId))
+    .map((r) => r.id);
+  return { ids, isAdmin, membershipId };
+}
+
+const INSIGHTS_TERMINAL_STAGES = new Set<ApplicationStage>([
+  "offer_accepted",
+  "offer_declined",
+  "withdrawn",
+  "recruiter_rejected",
+]);
+
+/** Mean of a scorecard's numeric criterion values (1..5), or null if empty. */
+function scorecardMean(scorecard: unknown): number | null {
+  if (!scorecard || typeof scorecard !== "object") return null;
+  const nums = Object.values(scorecard as Record<string, unknown>).filter(
+    (v): v is number => typeof v === "number" && Number.isFinite(v),
+  );
+  if (nums.length === 0) return null;
+  return nums.reduce((a, b) => a + b, 0) / nums.length;
+}
+
+/** Case-insensitive skill tokens from a candidate's parsed_skills.skills array. */
+function parsedSkillTokens(parsed: unknown): Set<string> {
+  const out = new Set<string>();
+  if (parsed && typeof parsed === "object") {
+    const skills = (parsed as Record<string, unknown>).skills;
+    if (Array.isArray(skills)) {
+      for (const s of skills) {
+        if (typeof s === "string") out.add(s.trim().toLowerCase());
+      }
+    }
+  }
+  return out;
+}
+
+async function buildRequisitionInsights(
+  db: InsightsDb,
+  ctx: HonoTRPCContext,
+  requisitionId: string | null,
+): Promise<GetRequisitionInsightsOutput> {
+  const scope = await resolveMyRequisitionScope(db, ctx);
+
+  // Requisition selector — my reqs, newest first.
+  const optionRows =
+    scope.ids.length > 0
+      ? await db
+          .select({
+            id: requisitions.id,
+            title: positions.title,
+            createdAt: requisitions.createdAt,
+          })
+          .from(requisitions)
+          .innerJoin(
+            positions,
+            and(
+              eq(requisitions.tenantId, positions.tenantId),
+              eq(requisitions.positionId, positions.id),
+            ),
+          )
+          .where(inArray(requisitions.id, scope.ids))
+          .orderBy(desc(requisitions.createdAt))
+      : [];
+  const reqOptions = optionRows.map((r) => ({ id: r.id, title: r.title ?? null }));
+
+  let single = false;
+  let targetIds = scope.ids;
+  if (requisitionId) {
+    if (!scope.ids.includes(requisitionId)) {
+      throw new TRPCError({ code: "NOT_FOUND", message: "Requisition not found" });
+    }
+    single = true;
+    targetIds = [requisitionId];
+  }
+
+  const scopeLabel = single ? ("single" as const) : ("all" as const);
+  const emptyScoreDist = [
+    { key: "excellent" as const, label: "Excellent", range: "85–100", count: 0 },
+    { key: "good" as const, label: "Good", range: "70–84", count: 0 },
+    { key: "partial" as const, label: "Partial", range: "50–69", count: 0 },
+    { key: "low" as const, label: "Low", range: "0–49", count: 0 },
+  ];
+  const emptySla = (Object.entries(SLA_THRESHOLDS_HOURS) as [ApplicationStage, number | null][])
+    .filter(([, h]) => h !== null)
+    .map(([stage, h]) => ({
+      stage,
+      avgAgeHours: null,
+      targetHours: h,
+      breach: false,
+      count: 0,
+    }));
+
+  if (targetIds.length === 0) {
+    return {
+      scope: scopeLabel,
+      selectedRequisitionId: requisitionId,
+      reqOptions,
+      kpis: {
+        avgTimeToHireDays: null,
+        fillRate: { hires: 0, openings: 0 },
+        activeCandidates: 0,
+        offerAcceptRate: { accepted: 0, extended: 0 },
+      },
+      funnel: applicationStageEnum.enumValues.map((stage) => ({
+        stage,
+        count: 0,
+        dropOffPct: null,
+      })),
+      scoreDistribution: emptyScoreDist,
+      skillGap: [],
+      salaryBand: null,
+      slaTiles: emptySla,
+      bottleneckNote: null,
+      panelFeedbackTrends: [],
+    };
+  }
+
+  // ── applications in scope ──
+  const apps = await db
+    .select({
+      id: applications.id,
+      candidateId: applications.candidateId,
+      requisitionId: applications.requisitionId,
+      currentStage: applications.currentStage,
+      aiScore: applications.aiScore,
+      stageEnteredAt: applications.stageEnteredAt,
+      createdAt: applications.createdAt,
+    })
+    .from(applications)
+    .where(inArray(applications.requisitionId, targetIds));
+
+  const now = Date.now();
+
+  // Funnel + drop-off (enum order).
+  const countByStage = new Map<ApplicationStage, number>();
+  for (const a of apps) {
+    countByStage.set(a.currentStage, (countByStage.get(a.currentStage) ?? 0) + 1);
+  }
+  const funnel = applicationStageEnum.enumValues.map((stage, i) => {
+    const count = countByStage.get(stage) ?? 0;
+    let dropOffPct: number | null = null;
+    const prevStage = i > 0 ? applicationStageEnum.enumValues[i - 1] : undefined;
+    if (prevStage) {
+      const prev = countByStage.get(prevStage) ?? 0;
+      dropOffPct = prev > 0 ? Math.round(((prev - count) / prev) * 1000) / 10 : null;
+    }
+    return { stage, count, dropOffPct };
+  });
+
+  // Score distribution — real AI scores bucketed.
+  const buckets = { excellent: 0, good: 0, partial: 0, low: 0 };
+  for (const a of apps) {
+    if (a.aiScore == null) continue;
+    const s = Number(a.aiScore);
+    if (s >= 85) buckets.excellent += 1;
+    else if (s >= 70) buckets.good += 1;
+    else if (s >= 50) buckets.partial += 1;
+    else buckets.low += 1;
+  }
+  const scoreDistribution = [
+    { key: "excellent" as const, label: "Excellent", range: "85–100", count: buckets.excellent },
+    { key: "good" as const, label: "Good", range: "70–84", count: buckets.good },
+    { key: "partial" as const, label: "Partial", range: "50–69", count: buckets.partial },
+    { key: "low" as const, label: "Low", range: "0–49", count: buckets.low },
+  ];
+
+  // Active candidates (non-terminal stages).
+  const activeCandidates = apps.filter((a) => !INSIGHTS_TERMINAL_STAGES.has(a.currentStage)).length;
+  const hires = apps.filter((a) => a.currentStage === "offer_accepted").length;
+
+  // Openings (fill rate denominator).
+  const openingRows = await db
+    .select({ openings: requisitions.numberOfOpenings })
+    .from(requisitions)
+    .where(inArray(requisitions.id, targetIds));
+  const openings = openingRows.reduce((s, r) => s + (r.openings ?? 0), 0);
+
+  // Historical average time-to-hire — days from application created to the
+  // offer_accepted transition (labelled historical in the UI, never predicted).
+  const appIds = apps.map((a) => a.id);
+  const createdByApp = new Map(apps.map((a) => [a.id, a.createdAt.getTime()]));
+  let avgTimeToHireDays: number | null = null;
+  if (appIds.length > 0) {
+    const accepts = await db
+      .select({
+        applicationId: applicationStateTransitions.applicationId,
+        transitionedAt: applicationStateTransitions.transitionedAt,
+      })
+      .from(applicationStateTransitions)
+      .where(
+        and(
+          inArray(applicationStateTransitions.applicationId, appIds),
+          eq(applicationStateTransitions.toStage, "offer_accepted"),
+        ),
+      );
+    const firstAcceptByApp = new Map<string, number>();
+    for (const t of accepts) {
+      const ts = t.transitionedAt.getTime();
+      const prev = firstAcceptByApp.get(t.applicationId);
+      if (prev === undefined || ts < prev) firstAcceptByApp.set(t.applicationId, ts);
+    }
+    const durations: number[] = [];
+    for (const [appId, acceptedAt] of firstAcceptByApp) {
+      const created = createdByApp.get(appId);
+      if (created != null && acceptedAt >= created) {
+        durations.push((acceptedAt - created) / 86_400_000);
+      }
+    }
+    if (durations.length > 0) {
+      avgTimeToHireDays =
+        Math.round((durations.reduce((a, b) => a + b, 0) / durations.length) * 10) / 10;
+    }
+  }
+
+  // Offer accept rate (accepted / extended) over in-scope applications.
+  let acceptedOffers = 0;
+  let extendedOffers = 0;
+  if (appIds.length > 0) {
+    const offerRows = await db
+      .select({ status: offers.status, extendedAt: offers.extendedAt })
+      .from(offers)
+      .where(inArray(offers.applicationId, appIds));
+    for (const o of offerRows) {
+      const extended =
+        o.extendedAt != null ||
+        (o.status != null && ["extended", "accepted", "declined", "expired"].includes(o.status));
+      if (extended) extendedOffers += 1;
+      if (o.status === "accepted") acceptedOffers += 1;
+    }
+  }
+
+  // SLA & bottleneck — per-stage average age of applications CURRENTLY in that
+  // stage vs the sla-thresholds target.
+  const ageByStage = new Map<ApplicationStage, { sum: number; n: number }>();
+  for (const a of apps) {
+    const ageHours = (now - a.stageEnteredAt.getTime()) / 3_600_000;
+    const agg = ageByStage.get(a.currentStage) ?? { sum: 0, n: 0 };
+    agg.sum += ageHours;
+    agg.n += 1;
+    ageByStage.set(a.currentStage, agg);
+  }
+  const slaTiles = (Object.entries(SLA_THRESHOLDS_HOURS) as [ApplicationStage, number | null][])
+    .filter(([, h]) => h !== null)
+    .map(([stage, target]) => {
+      const agg = ageByStage.get(stage);
+      const avgAgeHours = agg && agg.n > 0 ? Math.round((agg.sum / agg.n) * 10) / 10 : null;
+      const breach = avgAgeHours != null && target != null && avgAgeHours > target;
+      return { stage, avgAgeHours, targetHours: target, breach, count: agg?.n ?? 0 };
+    });
+  // Deterministic bottleneck note — the worst breaching stage by age/target.
+  let bottleneckNote: string | null = null;
+  const ratio = (t: { avgAgeHours: number | null; targetHours: number | null }): number =>
+    t.avgAgeHours != null && t.targetHours != null && t.targetHours > 0
+      ? t.avgAgeHours / t.targetHours
+      : 0;
+  const breaching = slaTiles
+    .filter((t) => t.breach && t.targetHours != null)
+    .sort((a, b) => ratio(b) - ratio(a));
+  const worst = breaching[0];
+  if (worst) {
+    const label = worst.stage.replace(/_/g, " ");
+    bottleneckNote = `${worst.count} candidate${worst.count === 1 ? "" : "s"} are sitting in "${label}" for ${worst.avgAgeHours}h on average — past the ${worst.targetHours}h SLA target. This is the current bottleneck.`;
+  } else if (apps.length > 0) {
+    bottleneckNote = "No stage is currently over its SLA target.";
+  }
+
+  // Skill gap — single-req only (a gap needs one JD to compare candidates to).
+  let skillGap: GetRequisitionInsightsOutput["skillGap"] = [];
+  let salaryBand: GetRequisitionInsightsOutput["salaryBand"] = null;
+  if (single && requisitionId) {
+    const [req] = await db
+      .select({
+        jdVersionId: requisitions.jdVersionId,
+        title: positions.title,
+        compBandMin: positions.compBandMin,
+        compBandMax: positions.compBandMax,
+        compCurrency: positions.compCurrency,
+      })
+      .from(requisitions)
+      .innerJoin(
+        positions,
+        and(
+          eq(requisitions.tenantId, positions.tenantId),
+          eq(requisitions.positionId, positions.id),
+        ),
+      )
+      .where(eq(requisitions.id, requisitionId))
+      .limit(1);
+
+    if (req) {
+      const jdSkillRows = await db
+        .select({ skillName: jdSkills.skillName, isRequired: jdSkills.isRequired })
+        .from(jdSkills)
+        .where(eq(jdSkills.jdVersionId, req.jdVersionId))
+        .orderBy(desc(jdSkills.isRequired));
+
+      const candidateIds = Array.from(new Set(apps.map((a) => a.candidateId)));
+      const candRows =
+        candidateIds.length > 0
+          ? await db
+              .select({ id: candidates.id, parsedSkills: candidates.parsedSkills })
+              .from(candidates)
+              .where(inArray(candidates.id, candidateIds))
+          : [];
+      const tokensByCandidate = candRows
+        .filter((c) => c.parsedSkills != null)
+        .map((c) => parsedSkillTokens(c.parsedSkills));
+      const totalCandidates = tokensByCandidate.length;
+
+      skillGap = jdSkillRows.map((s) => {
+        const needle = s.skillName.trim().toLowerCase();
+        let missing = 0;
+        for (const toks of tokensByCandidate) {
+          const has = Array.from(toks).some(
+            (t) => t === needle || t.includes(needle) || needle.includes(t),
+          );
+          if (!has) missing += 1;
+        }
+        const gapPct =
+          totalCandidates > 0 ? Math.round((missing / totalCandidates) * 1000) / 10 : 0;
+        return {
+          skillName: s.skillName,
+          isRequired: s.isRequired,
+          gapPct,
+          candidatesMissing: missing,
+          totalCandidates,
+        };
+      });
+
+      // Salary band vs curated benchmark (labelled "Curated benchmarks").
+      const benchRows = await db
+        .select({
+          roleTitle: marketBenchmarks.roleTitle,
+          medianSalaryMinor: marketBenchmarks.medianSalaryMinor,
+          currency: marketBenchmarks.currency,
+          ttfDays: marketBenchmarks.ttfDays,
+          sourceNote: marketBenchmarks.sourceNote,
+        })
+        .from(marketBenchmarks);
+      const title = (req.title ?? "").trim().toLowerCase();
+      const bench =
+        benchRows.find((b) => b.roleTitle.trim().toLowerCase() === title) ??
+        benchRows.find(
+          (b) =>
+            title.length > 0 &&
+            (title.includes(b.roleTitle.trim().toLowerCase()) ||
+              b.roleTitle.trim().toLowerCase().includes(title)),
+        ) ??
+        null;
+      const budgetMin = req.compBandMin != null ? Number(req.compBandMin) : null;
+      const budgetMax = req.compBandMax != null ? Number(req.compBandMax) : null;
+      salaryBand = {
+        currency: req.compCurrency ?? bench?.currency ?? "INR",
+        budgetMin,
+        budgetMax,
+        // market_benchmarks stores MINOR units (paise); positions store MAJOR
+        // (rupees). Convert minor→major so the bars share a scale.
+        benchmarkMedian: bench ? Number(bench.medianSalaryMinor) / 100 : null,
+        benchmarkTtfDays: bench ? bench.ttfDays : null,
+        sourceNote: bench ? bench.sourceNote : null,
+      };
+    }
+  }
+
+  // Panel feedback trends — per completed round, aggregates only (NO panellist
+  // identity ever leaves this procedure). Submitted scorecards only.
+  const completedInterviews = await db
+    .select({
+      id: interviews.id,
+      roundNumber: interviews.roundNumber,
+      roundName: interviews.roundName,
+    })
+    .from(interviews)
+    .where(and(inArray(interviews.requisitionId, targetIds), eq(interviews.status, "completed")));
+  let panelFeedbackTrends: GetRequisitionInsightsOutput["panelFeedbackTrends"] = [];
+  if (completedInterviews.length > 0) {
+    const ivIds = completedInterviews.map((i) => i.id);
+    const fb = await db
+      .select({
+        interviewId: interviewFeedback.interviewId,
+        scorecard: interviewFeedback.scorecard,
+        recommendation: interviewFeedback.recommendation,
+        submittedAt: interviewFeedback.submittedAt,
+      })
+      .from(interviewFeedback)
+      .where(inArray(interviewFeedback.interviewId, ivIds));
+    const ivMeta = new Map(completedInterviews.map((i) => [i.id, i]));
+    // group by roundNumber + roundName
+    const byRound = new Map<
+      string,
+      {
+        roundNumber: number;
+        roundName: string;
+        scores: number[];
+        passes: number;
+        submitted: number;
+      }
+    >();
+    for (const f of fb) {
+      if (f.submittedAt == null) continue; // aggregates over SUBMITTED only
+      const meta = ivMeta.get(f.interviewId);
+      if (!meta) continue;
+      const key = `${meta.roundNumber}::${meta.roundName}`;
+      const agg = byRound.get(key) ?? {
+        roundNumber: meta.roundNumber,
+        roundName: meta.roundName,
+        scores: [] as number[],
+        passes: 0,
+        submitted: 0,
+      };
+      agg.submitted += 1;
+      const mean = scorecardMean(f.scorecard);
+      if (mean != null) agg.scores.push(mean);
+      if (f.recommendation === "strong_yes" || f.recommendation === "yes") agg.passes += 1;
+      byRound.set(key, agg);
+    }
+    panelFeedbackTrends = Array.from(byRound.values())
+      .sort((a, b) => a.roundNumber - b.roundNumber)
+      .map((r) => ({
+        roundNumber: r.roundNumber,
+        roundName: r.roundName,
+        avgScore:
+          r.scores.length > 0
+            ? Math.round((r.scores.reduce((a, b) => a + b, 0) / r.scores.length) * 10) / 10
+            : null,
+        passRate: r.submitted > 0 ? Math.round((r.passes / r.submitted) * 1000) / 10 : null,
+        submittedCount: r.submitted,
+      }));
+  }
+
+  return {
+    scope: scopeLabel,
+    selectedRequisitionId: requisitionId,
+    reqOptions,
+    kpis: {
+      avgTimeToHireDays,
+      fillRate: { hires, openings },
+      activeCandidates,
+      offerAcceptRate: { accepted: acceptedOffers, extended: extendedOffers },
+    },
+    funnel,
+    scoreDistribution,
+    skillGap,
+    salaryBand,
+    slaTiles,
+    bottleneckNote,
+    panelFeedbackTrends,
+  };
 }
 
 export type AppRouter = typeof appRouter;

@@ -67,6 +67,9 @@ export type PortalNavKey =
   | "skill-weighting"
   | "requisition-approvals"
   | "approval-tracker"
+  | "jd-library"
+  | "panel-setup"
+  | "insights"
   | "metrics"
   | "governance"
   | "exec-audit"
@@ -171,6 +174,30 @@ const MAIN_NAV: NavItem[] = [
     href: "/requisition-approvals",
     icon: <IconReqApprovals />,
     roles: ["hr_head", "admin"],
+  },
+  // RO-03: the hiring-manager persona surfaces. hiring_manager + admin only,
+  // matching the HM_INSIGHTS_ROLES API gate; every read is scoped to the
+  // caller's own requisitions.
+  {
+    key: "jd-library",
+    label: "JD library",
+    href: "/jd-library",
+    icon: <IconDocuments />,
+    roles: ["hiring_manager", "admin"],
+  },
+  {
+    key: "panel-setup",
+    label: "Panel setup",
+    href: "/panel-setup",
+    icon: <IconInterviews />,
+    roles: ["hiring_manager", "admin"],
+  },
+  {
+    key: "insights",
+    label: "Insights",
+    href: "/insights",
+    icon: <IconHrAnalytics />,
+    roles: ["hiring_manager", "admin"],
   },
   {
     // METRICS-01: the HR analytics surface — hr_head (the people-metrics
