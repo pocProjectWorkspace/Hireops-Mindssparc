@@ -352,3 +352,13 @@ export function IconPolicies() {
     </Svg>
   );
 }
+
+export function IconMissingInfo() {
+  return (
+    <Svg>
+      <path d="M10.3 3.9 1.8 18a1.9 1.9 0 0 0 1.6 2.9h17.2a1.9 1.9 0 0 0 1.6-2.9L13.7 3.9a1.9 1.9 0 0 0-3.4 0Z" />
+      <line x1="12" y1="9" x2="12" y2="13" />
+      <line x1="12" y1="17" x2="12.01" y2="17" />
+    </Svg>
+  );
+}

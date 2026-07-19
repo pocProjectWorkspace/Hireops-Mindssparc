@@ -95,6 +95,8 @@ import {
   approvalDecisions,
   recordPiiAccess,
   applicationStageEnum,
+  missingInfoRequests,
+  recruiterBrief,
   type ApplicationStage,
   type TenantBoundDb,
 } from "@hireops/db";
@@ -534,6 +536,32 @@ import {
   type RoActionKind,
   type RoMarketInsight,
   type ApprovalTrackerHistoryRow,
+  // RECR-03 recruiter: AI brief drawer + missing info tracker
+  getRecruiterBriefInputSchema,
+  getRecruiterBriefOutputSchema,
+  generateRecruiterBriefInputSchema,
+  generateRecruiterBriefOutputSchema,
+  listMissingInfoInputSchema,
+  listMissingInfoOutputSchema,
+  requestMissingInfoInputSchema,
+  requestMissingInfoOutputSchema,
+  resolveMissingInfoInputSchema,
+  resolveMissingInfoOutputSchema,
+  strengthsRisksAiSchema,
+  screenScriptAiSchema,
+  availabilityDraftAiSchema,
+  type GetRecruiterBriefOutput,
+  type GenerateRecruiterBriefOutput,
+  type ListMissingInfoOutput,
+  type MissingInfoRow,
+  type MissingInfoStatus,
+  type RecruiterBriefKind,
+  type RecruiterBriefCard,
+  type RecruiterBriefContent,
+  type RecruiterBriefGap,
+  type StrengthsRisksAi,
+  type ScreenScriptAi,
+  type AvailabilityDraftAi,
 } from "@hireops/api-types";
 import { createClient } from "@supabase/supabase-js";
 import {
@@ -604,6 +632,22 @@ import {
   REQ_REVISION_SCHEMA_NAME,
   REQ_REVISION_FEATURE,
 } from "../lib/req-revision";
+import {
+  computeMissingInfo,
+  blocksAdvanceLabelFor,
+  fieldDef as missingInfoFieldDef,
+  isMissingInfoFieldKey,
+  type FieldPresence,
+  type MissingInfoFieldKey,
+} from "../lib/missing-info";
+import {
+  buildRecruiterBriefPrompt,
+  recruiterBriefJsonSchema,
+  RECRUITER_BRIEF_PROMPT_VERSION,
+  RECRUITER_BRIEF_SCHEMA_NAME,
+  RECRUITER_BRIEF_FEATURE,
+  type RecruiterBriefSkillContext,
+} from "../lib/recruiter-brief";
 import {
   computeReqHealth,
   computeReqDifficulty,
@@ -796,6 +840,11 @@ const RECRUITER_DASHBOARD_ROLES = new Set(["admin", "recruiter"]);
 // is not on the interview gets FORBIDDEN), so the role set alone is not the
 // authorisation boundary. RLS still scopes rows to the tenant on top.
 const PANEL_SURFACE_ROLES = new Set(["admin", "panel_member"]);
+
+// RECR-03 — the recruiter's own surfaces (AI brief drawer, Missing Info
+// Tracker). recruiter (the persona) + admin (super-role). RLS still scopes
+// every row to the tenant on top.
+const RECRUITER_SURFACE_ROLES = new Set(["admin", "recruiter"]);
 
 // CONF-01 per-tenant AI settings. Admin-only on both read and write —
 // unlike the /admin/costs read (page-gated only), these procedures enforce
@@ -2378,6 +2427,235 @@ async function offerExtendBlockReason(
     .limit(1);
   if (appr?.status === "approved") return null;
   return "This offer's base salary exceeds the role's comp band. It needs HR-head approval before it can be extended.";
+}
+
+// ═══════════ RECR-03 — recruiter brief + missing-info shared helpers ═══════════
+
+/** Narrowed view of the parsed-resume jsonb (parsed_skills). Every field is
+ * optional + defensively read — a partial or absent parse must never throw. */
+interface ParsedResumeView {
+  skills?: unknown;
+  work_history?: unknown;
+  notice_period_days?: unknown;
+  availability_date?: unknown;
+  work_authorization?: unknown;
+  achievements?: unknown;
+  education?: unknown;
+  personal?: Record<string, unknown>;
+}
+function narrowParsedResume(value: unknown): ParsedResumeView {
+  if (!value || typeof value !== "object") return {};
+  return value as ParsedResumeView;
+}
+function asString(v: unknown): string | null {
+  return typeof v === "string" && v.trim().length > 0 ? v.trim() : null;
+}
+function asStringArray(v: unknown): string[] {
+  return Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : [];
+}
+
+/**
+ * Deterministic field-presence for the Missing Info Tracker. `true` = the value
+ * is on the application / parsed resume; `false` = genuinely missing (drives a
+ * pending row). Reads only real fields — no inference.
+ */
+function computeFieldPresence(args: {
+  expectedSalaryInrPaise: bigint | null;
+  parsed: ParsedResumeView;
+  personLocationCountry: string | null;
+}): FieldPresence {
+  const { parsed } = args;
+  const personal = parsed.personal ?? {};
+  const noticePresent =
+    typeof parsed.notice_period_days === "number" ||
+    typeof personal.notice_period_days === "number";
+  const availabilityPresent =
+    asString(parsed.availability_date) != null || asString(personal.availability_date) != null;
+  const workAuthPresent =
+    asString(parsed.work_authorization) != null || asString(personal.work_authorization) != null;
+  const locationPresent =
+    asString(args.personLocationCountry) != null || asString(personal.location_country) != null;
+  const skillsPresent = asStringArray(parsed.skills).length > 0;
+  const educationYearPresent =
+    Array.isArray(parsed.education) &&
+    parsed.education.some(
+      (e) => e && typeof e === "object" && (e as Record<string, unknown>).year != null,
+    );
+
+  return {
+    expected_salary: args.expectedSalaryInrPaise != null,
+    notice_period: noticePresent,
+    availability_date: availabilityPresent,
+    work_authorization: workAuthPresent,
+    current_location: locationPresent,
+    skills_confirmation: skillsPresent,
+    education_year: educationYearPresent,
+  };
+}
+
+/** Parsed resume highlights (deterministic — flattened from work_history +
+ * any explicit achievements). Bounded so a huge parse can't balloon the wire. */
+function extractResumeHighlights(parsed: ParsedResumeView): {
+  keyProjects: string[];
+  achievements: string[];
+} {
+  const work = Array.isArray(parsed.work_history) ? parsed.work_history : [];
+  const keyProjects: string[] = [];
+  for (const w of work) {
+    if (!w || typeof w !== "object") continue;
+    for (const h of asStringArray((w as Record<string, unknown>).highlights)) {
+      keyProjects.push(h);
+      if (keyProjects.length >= 6) break;
+    }
+    if (keyProjects.length >= 6) break;
+  }
+  return {
+    keyProjects,
+    achievements: asStringArray(parsed.achievements).slice(0, 6),
+  };
+}
+
+interface RecruiterBriefContextRow {
+  applicationId: string;
+  candidateId: string;
+  candidateName: string | null;
+  candidateRef: string | null;
+  candidateEmail: string | null;
+  source: string | null;
+  currentStage: ApplicationStage;
+  aiScore: number | null;
+  expectedSalaryInrPaise: bigint | null;
+  personLocationCountry: string | null;
+  parsedSkills: unknown;
+  yearsOfExperience: number | null;
+  positionTitle: string;
+  companyName: string;
+  jdVersionId: string;
+  jdText: string | null;
+}
+
+/** One read that assembles everything the recruiter brief / missing-info rows
+ * need for an application. RLS scopes it to the tenant. Null when not found. */
+async function loadRecruiterBriefContext(
+  db: NonNullable<HonoTRPCContext["db"]>,
+  applicationId: string,
+): Promise<{
+  row: RecruiterBriefContextRow;
+  jdSkills: RecruiterBriefSkillContext[];
+  skillsMatch: ReturnType<typeof computeSkillsMatch>;
+} | null> {
+  const [row] = await db
+    .select({
+      applicationId: applications.id,
+      candidateId: candidates.id,
+      candidateName: persons.fullName,
+      candidateEmail: persons.emailPrimary,
+      source: candidates.source,
+      currentStage: applications.currentStage,
+      aiScore: applications.aiScore,
+      expectedSalaryInrPaise: applications.expectedSalaryInrPaise,
+      personLocationCountry: persons.locationCountry,
+      parsedSkills: candidates.parsedSkills,
+      yearsOfExperience: candidates.yearsOfExperience,
+      positionTitle: positions.title,
+      companyName: tenants.displayName,
+      jdVersionId: requisitions.jdVersionId,
+      jdText: jdVersions.jdText,
+    })
+    .from(applications)
+    .innerJoin(candidates, eq(candidates.id, applications.candidateId))
+    .innerJoin(persons, eq(persons.id, candidates.personId))
+    .innerJoin(requisitions, eq(requisitions.id, applications.requisitionId))
+    .innerJoin(positions, eq(positions.id, requisitions.positionId))
+    .innerJoin(tenants, eq(tenants.id, applications.tenantId))
+    .innerJoin(jdVersions, eq(jdVersions.id, requisitions.jdVersionId))
+    .where(eq(applications.id, applicationId))
+    .limit(1);
+  if (!row) return null;
+
+  const jdSkillRows = await db
+    .select({
+      skillName: jdSkills.skillName,
+      weight: jdSkills.weight,
+      isRequired: jdSkills.isRequired,
+    })
+    .from(jdSkills)
+    .where(eq(jdSkills.jdVersionId, row.jdVersionId));
+
+  const parsed = narrowParsedResume(row.parsedSkills);
+  const parsedSkillNames = asStringArray(parsed.skills);
+  const match = computeSkillsMatch(
+    parsedSkillNames,
+    jdSkillRows.map((s) => ({
+      skillName: s.skillName,
+      weight: Number(s.weight),
+      isRequired: s.isRequired,
+    })),
+  );
+  const skills: RecruiterBriefSkillContext[] = match.items.map((it) => ({
+    skillName: it.skill,
+    isRequired: it.isRequired,
+    matched: it.matched,
+  }));
+
+  return {
+    row: {
+      applicationId: row.applicationId,
+      candidateId: row.candidateId,
+      candidateName: row.candidateName,
+      // A short candidate reference — first 8 of the id, upper (stable, opaque).
+      candidateRef: `RC-${row.candidateId.slice(0, 6).toUpperCase()}`,
+      candidateEmail: row.candidateEmail,
+      source: row.source,
+      currentStage: row.currentStage as ApplicationStage,
+      aiScore: row.aiScore != null ? Number(row.aiScore) : null,
+      expectedSalaryInrPaise: row.expectedSalaryInrPaise,
+      personLocationCountry: row.personLocationCountry,
+      parsedSkills: row.parsedSkills,
+      yearsOfExperience: row.yearsOfExperience != null ? Number(row.yearsOfExperience) : null,
+      positionTitle: row.positionTitle,
+      companyName: row.companyName,
+      jdVersionId: row.jdVersionId,
+      jdText: row.jdText,
+    },
+    jdSkills: skills,
+    skillsMatch: match,
+  };
+}
+
+/** Deterministic must-have coverage — weighted match over REQUIRED JD skills
+ * only, 0–100. Null when the JD has no required skills. */
+function mustHaveCoveragePct(match: ReturnType<typeof computeSkillsMatch>): number | null {
+  const required = match.items.filter((i) => i.isRequired && i.weight > 0);
+  const total = required.reduce((s, i) => s + i.weight, 0);
+  if (total <= 0) return null;
+  const matched = required.reduce((s, i) => s + (i.matched ? i.weight : 0), 0);
+  return Math.round((matched / total) * 100);
+}
+
+const RECRUITER_BRIEF_KIND_SET = new Set<string>([
+  "strengths_risks",
+  "screen_script",
+  "availability_draft",
+]);
+function isRecruiterBriefKind(kind: string): kind is RecruiterBriefKind {
+  return RECRUITER_BRIEF_KIND_SET.has(kind);
+}
+
+/** The stored recruiter_brief content is validated per-kind before it reaches
+ * the wire (a stale row from an older prompt shape falls back to null). */
+function parseRecruiterBriefContent(
+  kind: RecruiterBriefKind,
+  raw: unknown,
+): RecruiterBriefContent | null {
+  const schema =
+    kind === "strengths_risks"
+      ? strengthsRisksAiSchema
+      : kind === "screen_script"
+        ? screenScriptAiSchema
+        : availabilityDraftAiSchema;
+  const parsed = schema.safeParse(raw);
+  return parsed.success ? parsed.data : null;
 }
 
 export const appRouter = router({
@@ -16216,6 +16494,549 @@ export const appRouter = router({
         rows: shaped as never,
       };
     }),
+
+  // ═══════════ RECR-03 — recruiter AI brief drawer + Missing Info Tracker ═══════════
+
+  /**
+   * getRecruiterBrief (/candidate brief drawer) — everything the drawer renders
+   * for ONE application. The candidate snapshot, the resume-vs-JD skills match
+   * (DETERMINISTIC — reuses computeSkillsMatch, no AI), the gaps/missing-info
+   * list (deterministic requiredness + real stage-gate), and the parsed resume
+   * highlights are computed live. Any previously-generated AI aids are returned
+   * from cache. `aiEnabled` mirrors the recruiter_brief kill-switch. Recruiter +
+   * admin; PII-logged (reads name/location/parsed resume).
+   */
+  getRecruiterBrief: protectedProcedure
+    .input(getRecruiterBriefInputSchema)
+    .output(getRecruiterBriefOutputSchema)
+    .query(async ({ ctx, input }): Promise<GetRecruiterBriefOutput> => {
+      requireAnyRole(ctx, RECRUITER_SURFACE_ROLES, "The candidate brief is a recruiter surface.");
+      return withAudit("get_recruiter_brief", ctx, input, async () => {
+        const db = requireDb(ctx);
+        if (!ctx.tenantId) {
+          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
+        }
+        const loaded = await loadRecruiterBriefContext(db, input.applicationId);
+        if (!loaded) throw new TRPCError({ code: "NOT_FOUND", message: "Application not found" });
+        const { row, skillsMatch } = loaded;
+
+        const membershipId = await resolveActorMembership(db, ctx);
+        recordPiiAccess({
+          tenantId: ctx.tenantId,
+          actorUserId: ctx.userId,
+          actorMembershipId: membershipId,
+          actorLabel: "user",
+          entityType: "candidate",
+          entityId: row.candidateId,
+          fieldsAccessed: [
+            "persons.full_name",
+            "persons.location_country",
+            "candidates.parsed_skills",
+          ],
+          reason: "get_recruiter_brief",
+          requestId: ctx.requestId,
+        });
+
+        const parsed = narrowParsedResume(row.parsedSkills);
+        const presence = computeFieldPresence({
+          expectedSalaryInrPaise: row.expectedSalaryInrPaise,
+          parsed,
+          personLocationCountry: row.personLocationCountry,
+        });
+        const verdicts = computeMissingInfo(presence);
+
+        const reqRows = await db
+          .select({ fieldKey: missingInfoRequests.fieldKey, status: missingInfoRequests.status })
+          .from(missingInfoRequests)
+          .where(
+            and(
+              eq(missingInfoRequests.tenantId, ctx.tenantId),
+              eq(missingInfoRequests.applicationId, input.applicationId),
+            ),
+          );
+        const statusByField = new Map(reqRows.map((r) => [r.fieldKey, r.status]));
+        const gaps: RecruiterBriefGap[] = verdicts.map((v) => ({
+          fieldKey: v.fieldKey,
+          fieldLabel: v.fieldLabel,
+          requiredness: v.requiredness,
+          status: ((statusByField.get(v.fieldKey) as MissingInfoStatus) ??
+            "pending") as MissingInfoStatus,
+          blocksAdvanceLabel: v.blocksAdvanceLabel,
+        }));
+
+        const aiSettings = await resolveTenantAiSettingsDb(ctx.tenantId);
+        const briefRows = await db
+          .select()
+          .from(recruiterBrief)
+          .where(
+            and(
+              eq(recruiterBrief.tenantId, ctx.tenantId),
+              eq(recruiterBrief.applicationId, input.applicationId),
+            ),
+          );
+        const briefs: RecruiterBriefCard[] = [];
+        for (const b of briefRows) {
+          if (!isRecruiterBriefKind(b.kind)) continue;
+          const content = parseRecruiterBriefContent(b.kind, b.content);
+          if (!content) continue;
+          briefs.push({
+            kind: b.kind,
+            content,
+            model: b.model,
+            promptVersion: b.promptVersion,
+            generatedAt: toIsoString(b.updatedAt),
+          });
+        }
+
+        return {
+          snapshot: {
+            candidateId: row.candidateId,
+            applicationId: row.applicationId,
+            name: row.candidateName ?? "(no name)",
+            roleTitle: row.positionTitle,
+            contextLabel: STAGE_LABELS[row.currentStage] ?? row.currentStage.replace(/_/g, " "),
+            aiScore: row.aiScore,
+            mustHavePct: mustHaveCoveragePct(skillsMatch),
+            source: row.source,
+          },
+          skillsMatch,
+          gaps,
+          resumeHighlights: extractResumeHighlights(parsed),
+          briefs,
+          aiEnabled: aiSettings.recruiter_brief.enabled,
+        };
+      });
+    }),
+
+  /**
+   * generateRecruiterBrief — the ONE real AI call per click. Builds a grounded
+   * prompt (JD + skills, deterministic skills-match, parsed resume, application
+   * data) for ONE of three kinds, calls Claude via completeStructured (feature
+   * recruiter_brief, cost-logged), re-parses, and upserts the cache (regenerate
+   * replaces). The availability_draft is a DRAFT — it is cached + returned but
+   * NEVER auto-sent; sending routes through the normal approval path. Honours
+   * the recruiter_brief kill-switch. Recruiter + admin, audited.
+   */
+  generateRecruiterBrief: protectedProcedure
+    .input(generateRecruiterBriefInputSchema)
+    .output(generateRecruiterBriefOutputSchema)
+    .mutation(async ({ ctx, input }): Promise<GenerateRecruiterBriefOutput> => {
+      return withAudit("generate_recruiter_brief", ctx, input, async () => {
+        requireAnyRole(ctx, RECRUITER_SURFACE_ROLES, "The candidate brief is a recruiter surface.");
+        const db = requireDb(ctx);
+        if (!ctx.tenantId) {
+          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
+        }
+        const tenantId = ctx.tenantId;
+        const membershipId = await resolveActorMembership(db, ctx);
+        if (!membershipId) {
+          throw new TRPCError({ code: "FORBIDDEN", message: "No membership for this actor." });
+        }
+
+        const loaded = await loadRecruiterBriefContext(db, input.applicationId);
+        if (!loaded) throw new TRPCError({ code: "NOT_FOUND", message: "Application not found" });
+        const { row, jdSkills, skillsMatch } = loaded;
+
+        const aiSettings = await resolveTenantAiSettingsDb(tenantId);
+        const settings = aiSettings.recruiter_brief;
+        if (!settings.enabled) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message:
+              "The recruiter AI brief is disabled for this tenant. An admin can re-enable it in Admin → AI settings.",
+          });
+        }
+
+        const parsed = narrowParsedResume(row.parsedSkills);
+        const highlights = extractResumeHighlights(parsed);
+        const { system, user } = buildRecruiterBriefPrompt(input.kind, {
+          candidateName: row.candidateName,
+          roleTitle: row.positionTitle,
+          stageLabel: STAGE_LABELS[row.currentStage] ?? row.currentStage.replace(/_/g, " "),
+          jdText: row.jdText,
+          skills: jdSkills,
+          parsedResumeSkills: asStringArray(parsed.skills),
+          yearsOfExperience: row.yearsOfExperience,
+          resumeHighlights: [...highlights.keyProjects, ...highlights.achievements],
+          coveragePct: skillsMatch.coveragePct,
+          companyName: row.companyName,
+        });
+
+        const client = await getAIClient(tenantId);
+        const raw = await client.completeStructured<unknown>({
+          prompt: user,
+          system,
+          model: settings.model,
+          temperature: settings.temperature,
+          maxTokens: settings.maxTokens,
+          schema: recruiterBriefJsonSchema[input.kind],
+          schemaName: RECRUITER_BRIEF_SCHEMA_NAME[input.kind],
+          feature: RECRUITER_BRIEF_FEATURE,
+          requestId: ctx.requestId,
+          actorMembershipId: membershipId,
+        });
+        // Trust-but-verify — re-parse against the kind's strict schema.
+        const content: RecruiterBriefContent =
+          input.kind === "strengths_risks"
+            ? (strengthsRisksAiSchema.parse(raw) as StrengthsRisksAi)
+            : input.kind === "screen_script"
+              ? (screenScriptAiSchema.parse(raw) as ScreenScriptAi)
+              : (availabilityDraftAiSchema.parse(raw) as AvailabilityDraftAi);
+
+        const now = new Date();
+        await db
+          .insert(recruiterBrief)
+          .values({
+            tenantId,
+            applicationId: input.applicationId,
+            kind: input.kind,
+            content,
+            model: client.provider,
+            promptVersion: RECRUITER_BRIEF_PROMPT_VERSION,
+            generatedByMembershipId: membershipId,
+          })
+          .onConflictDoUpdate({
+            target: [recruiterBrief.tenantId, recruiterBrief.applicationId, recruiterBrief.kind],
+            set: {
+              content,
+              model: client.provider,
+              promptVersion: RECRUITER_BRIEF_PROMPT_VERSION,
+              generatedByMembershipId: membershipId,
+              updatedAt: now,
+            },
+          });
+
+        return {
+          brief: {
+            kind: input.kind,
+            content,
+            model: client.provider,
+            promptVersion: RECRUITER_BRIEF_PROMPT_VERSION,
+            generatedAt: now.toISOString(),
+          },
+        };
+      });
+    }),
+
+  /**
+   * listMissingInfo (/missing-info) — the Missing Info Tracker. For every
+   * in-flight application, DETERMINISTICALLY classifies each tracked field as
+   * present or missing (apps/api/src/lib/missing-info.ts), joins the four-state
+   * lifecycle from missing_info_requests, and returns the stat cards + table
+   * rows. "Required vs Optional" and "Blocks Advance to <stage>" are pure rule
+   * outputs — there is NO score-impact / cap column. Recruiter + admin.
+   */
+  listMissingInfo: protectedProcedure
+    .input(listMissingInfoInputSchema)
+    .output(listMissingInfoOutputSchema)
+    .query(async ({ ctx, input }): Promise<ListMissingInfoOutput> => {
+      requireAnyRole(ctx, RECRUITER_SURFACE_ROLES, "Missing Info is a recruiter surface.");
+      return withAudit("list_missing_info", ctx, input, async () => {
+        const db = requireDb(ctx);
+        if (!ctx.tenantId) {
+          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
+        }
+        const tenantId = ctx.tenantId;
+
+        // In-flight applications only (terminal stages carry no live chase).
+        const appRows = await db
+          .select({
+            applicationId: applications.id,
+            candidateId: candidates.id,
+            candidateName: persons.fullName,
+            currentStage: applications.currentStage,
+            expectedSalaryInrPaise: applications.expectedSalaryInrPaise,
+            personLocationCountry: persons.locationCountry,
+            parsedSkills: candidates.parsedSkills,
+            positionTitle: positions.title,
+          })
+          .from(applications)
+          .innerJoin(candidates, eq(candidates.id, applications.candidateId))
+          .innerJoin(persons, eq(persons.id, candidates.personId))
+          .innerJoin(requisitions, eq(requisitions.id, applications.requisitionId))
+          .innerJoin(positions, eq(positions.id, requisitions.positionId))
+          .where(eq(applications.tenantId, tenantId))
+          .limit(500);
+
+        const requestRows = await db
+          .select({
+            applicationId: missingInfoRequests.applicationId,
+            fieldKey: missingInfoRequests.fieldKey,
+            status: missingInfoRequests.status,
+            lastContactAt: missingInfoRequests.lastContactAt,
+            requestId: missingInfoRequests.id,
+          })
+          .from(missingInfoRequests)
+          .where(eq(missingInfoRequests.tenantId, tenantId));
+        const requestByKey = new Map(
+          requestRows.map((r) => [`${r.applicationId}::${r.fieldKey}`, r]),
+        );
+
+        const rows: MissingInfoRow[] = [];
+        for (const a of appRows) {
+          if (TERMINAL_APP_STAGES.has(a.currentStage)) continue;
+          const parsed = narrowParsedResume(a.parsedSkills);
+          const presence = computeFieldPresence({
+            expectedSalaryInrPaise: a.expectedSalaryInrPaise,
+            parsed,
+            personLocationCountry: a.personLocationCountry,
+          });
+          const verdicts = computeMissingInfo(presence);
+          const candidateRef = `RC-${a.candidateId.slice(0, 6).toUpperCase()}`;
+
+          // Union: currently-missing fields (pending unless a row upgrades them)
+          // + any existing request rows (persist through received/verified).
+          const seen = new Set<string>();
+          const emit = (fieldKey: MissingInfoFieldKey) => {
+            if (seen.has(fieldKey)) return;
+            seen.add(fieldKey);
+            const def = missingInfoFieldDef(fieldKey);
+            if (!def) return;
+            const req = requestByKey.get(`${a.applicationId}::${fieldKey}`);
+            const status = (req?.status as MissingInfoStatus) ?? "pending";
+            rows.push({
+              applicationId: a.applicationId,
+              candidateId: a.candidateId,
+              candidateName: a.candidateName ?? "(no name)",
+              candidateRef,
+              roleTitle: a.positionTitle,
+              fieldKey,
+              fieldLabel: def.label,
+              requiredness: def.requiredness,
+              status,
+              lastContactAt: req?.lastContactAt ? toIsoString(req.lastContactAt) : null,
+              blocksAdvanceStage: def.blocksAdvanceStage,
+              blocksAdvanceLabel: blocksAdvanceLabelFor(fieldKey),
+              requestId: req?.requestId ?? null,
+            });
+          };
+          for (const v of verdicts) emit(v.fieldKey);
+          for (const r of requestRows) {
+            if (r.applicationId !== a.applicationId) continue;
+            if (isMissingInfoFieldKey(r.fieldKey)) emit(r.fieldKey);
+          }
+        }
+
+        // Filters.
+        let filtered = rows;
+        if (input.status) filtered = filtered.filter((r) => r.status === input.status);
+        if (input.fieldKey) filtered = filtered.filter((r) => r.fieldKey === input.fieldKey);
+        if (input.search && input.search.trim().length > 0) {
+          const q = input.search.trim().toLowerCase();
+          filtered = filtered.filter(
+            (r) =>
+              r.candidateName.toLowerCase().includes(q) ||
+              r.roleTitle.toLowerCase().includes(q) ||
+              (r.candidateRef ?? "").toLowerCase().includes(q),
+          );
+        }
+
+        // Stats over the UNFILTERED set (the four honest cards; dismissed excluded).
+        const stats = { pending: 0, requested: 0, received: 0, verified: 0 };
+        for (const r of rows) {
+          if (r.status === "pending") stats.pending += 1;
+          else if (r.status === "requested") stats.requested += 1;
+          else if (r.status === "received") stats.received += 1;
+          else if (r.status === "verified") stats.verified += 1;
+        }
+
+        return { stats, rows: filtered };
+      });
+    }),
+
+  /**
+   * requestMissingInfo — the recruiter chases ONE missing field. Upserts the
+   * missing_info_requests row to 'requested' (re-request re-stamps last_contact)
+   * and enqueues a REAL candidate notification (candidate.agent_message, a
+   * deterministic templated ask — NOT AI-generated). Notification failure never
+   * rolls back the request row. Recruiter + admin, audited.
+   */
+  requestMissingInfo: protectedProcedure
+    .input(requestMissingInfoInputSchema)
+    .output(requestMissingInfoOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      return withAudit("request_missing_info", ctx, input, async () => {
+        requireAnyRole(ctx, RECRUITER_SURFACE_ROLES, "Missing Info is a recruiter surface.");
+        const db = requireDb(ctx);
+        if (!ctx.tenantId) {
+          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
+        }
+        const tenantId = ctx.tenantId;
+        if (!isMissingInfoFieldKey(input.fieldKey)) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "Unknown missing-info field." });
+        }
+        const def = missingInfoFieldDef(input.fieldKey);
+        if (!def)
+          throw new TRPCError({ code: "BAD_REQUEST", message: "Unknown missing-info field." });
+
+        const [app] = await db
+          .select({ id: applications.id })
+          .from(applications)
+          .where(and(eq(applications.tenantId, tenantId), eq(applications.id, input.applicationId)))
+          .limit(1);
+        if (!app) throw new TRPCError({ code: "NOT_FOUND", message: "Application not found" });
+
+        const membershipId = await resolveActorMembership(db, ctx);
+        if (!membershipId) {
+          throw new TRPCError({ code: "FORBIDDEN", message: "No membership for this actor." });
+        }
+
+        // Real candidate notification — a deterministic, human-initiated ask
+        // (NOT AI-drafted, so no approval gate needed; same directness as the
+        // stage-advance / interview-invite emails). Wrapped so a notify failure
+        // never blocks recording the chase.
+        let notificationOutboxId: string | null = null;
+        const meta = await fetchTransitionEmailContext(db, input.applicationId);
+        if (meta) {
+          try {
+            const subject = `Quick info needed for your ${meta.positionTitle} application`;
+            const body =
+              `Hi ${meta.candidateName},\n\n` +
+              `To keep your application for ${meta.positionTitle} at ${meta.companyName} moving, ` +
+              `could you please confirm your ${def.label.toLowerCase()}?\n\n` +
+              `Just reply to this email and we'll update your file.\n\n` +
+              `Thanks,\nThe ${meta.companyName} Recruitment Team`;
+            const { outboxId } = await enqueueNotification(db, {
+              tenantId,
+              recipientType: "candidate",
+              recipientEmail: meta.candidateEmail,
+              recipientCandidateId: meta.candidateId,
+              templateKey: "candidate.agent_message",
+              templateData: {
+                candidateName: meta.candidateName,
+                companyName: meta.companyName,
+                positionTitle: meta.positionTitle,
+                body,
+                subject,
+              },
+              subject,
+              dedupKey: `missing_info:${input.applicationId}:${input.fieldKey}:${Date.now()}`,
+            });
+            notificationOutboxId = outboxId;
+          } catch (err) {
+            ctx.log.warn(
+              { err, request_id: ctx.requestId, application_id: input.applicationId },
+              "requestMissingInfo: enqueueNotification failed",
+            );
+          }
+        }
+
+        const now = new Date();
+        const [saved] = await db
+          .insert(missingInfoRequests)
+          .values({
+            tenantId,
+            applicationId: input.applicationId,
+            fieldKey: input.fieldKey,
+            status: "requested",
+            requestedByMembershipId: membershipId,
+            notificationOutboxId,
+            requestedAt: now,
+            lastContactAt: now,
+          })
+          .onConflictDoUpdate({
+            target: [
+              missingInfoRequests.tenantId,
+              missingInfoRequests.applicationId,
+              missingInfoRequests.fieldKey,
+            ],
+            set: {
+              status: "requested",
+              lastContactAt: now,
+              notificationOutboxId,
+              updatedAt: now,
+            },
+          })
+          .returning({ id: missingInfoRequests.id, status: missingInfoRequests.status });
+        if (!saved) {
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: "missing_info_requests upsert returned no row",
+          });
+        }
+
+        return {
+          requestId: saved.id,
+          status: saved.status as MissingInfoStatus,
+          notified: notificationOutboxId != null,
+        };
+      });
+    }),
+
+  /**
+   * resolveMissingInfo — move a chased field along its lifecycle: 'received'
+   * (candidate replied), 'verified' (recruiter confirmed), or 'dismissed' (the
+   * honest "N/A" — this field does not apply to this candidate). Upserts so a
+   * recruiter can mark a still-pending field directly. Recruiter + admin.
+   */
+  resolveMissingInfo: protectedProcedure
+    .input(resolveMissingInfoInputSchema)
+    .output(resolveMissingInfoOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      return withAudit("resolve_missing_info", ctx, input, async () => {
+        requireAnyRole(ctx, RECRUITER_SURFACE_ROLES, "Missing Info is a recruiter surface.");
+        const db = requireDb(ctx);
+        if (!ctx.tenantId) {
+          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
+        }
+        const tenantId = ctx.tenantId;
+        if (!isMissingInfoFieldKey(input.fieldKey)) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "Unknown missing-info field." });
+        }
+
+        const [app] = await db
+          .select({ id: applications.id })
+          .from(applications)
+          .where(and(eq(applications.tenantId, tenantId), eq(applications.id, input.applicationId)))
+          .limit(1);
+        if (!app) throw new TRPCError({ code: "NOT_FOUND", message: "Application not found" });
+
+        const membershipId = await resolveActorMembership(db, ctx);
+        if (!membershipId) {
+          throw new TRPCError({ code: "FORBIDDEN", message: "No membership for this actor." });
+        }
+
+        const now = new Date();
+        const receivedAt = input.action === "received" ? now : null;
+        const verifiedAt = input.action === "verified" ? now : null;
+        const [saved] = await db
+          .insert(missingInfoRequests)
+          .values({
+            tenantId,
+            applicationId: input.applicationId,
+            fieldKey: input.fieldKey,
+            status: input.action,
+            requestedByMembershipId: membershipId,
+            resolvedByMembershipId: membershipId,
+            requestedAt: now,
+            receivedAt,
+            verifiedAt,
+          })
+          .onConflictDoUpdate({
+            target: [
+              missingInfoRequests.tenantId,
+              missingInfoRequests.applicationId,
+              missingInfoRequests.fieldKey,
+            ],
+            set: {
+              status: input.action,
+              resolvedByMembershipId: membershipId,
+              ...(input.action === "received" ? { receivedAt: now } : {}),
+              ...(input.action === "verified" ? { verifiedAt: now } : {}),
+              updatedAt: now,
+            },
+          })
+          .returning({ id: missingInfoRequests.id, status: missingInfoRequests.status });
+        if (!saved) {
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: "missing_info_requests resolve returned no row",
+          });
+        }
+
+        return { requestId: saved.id, status: saved.status as MissingInfoStatus };
+      });
+    }),
 });
 
 // ═══════════ RECR-02 — recruiter surface helpers ═══════════
@@ -16227,9 +17048,9 @@ export const appRouter = router({
 // rollup, missing-info) — the latter READ-ONLY until RECR-03's missing-info
 // lib merges (candidateMissingInfoSchema is the seam).
 
-/** Recruiter-facing roles that may see the candidates + shortlist surfaces.
- * admin is the super-role (requireAnyRole includes it explicitly). */
-const RECRUITER_SURFACE_ROLES = new Set(["admin", "recruiter"]);
+// RECRUITER_SURFACE_ROLES is declared once, module-level, above appRouter
+// (shared by the RECR-02 candidates/shortlist and RECR-03 brief/missing-info
+// procedures — merge-dedup of two identical declarations).
 
 /** Short, stable, human-readable candidate code from the uuid — a DISPLAY id
  * (first 6 hex of the real id), not fabricated data. */

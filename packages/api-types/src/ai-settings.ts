@@ -96,6 +96,7 @@ export const AI_FEATURE_KEYS = [
   "feedback_summary",
   "interview_prep",
   "req_revision",
+  "recruiter_brief",
 ] as const;
 export type AiFeatureKey = (typeof AI_FEATURE_KEYS)[number];
 
@@ -158,6 +159,12 @@ export const AI_FEATURE_META: Record<
     description:
       "For a REJECTED requisition, drafts 3–5 concrete revision suggestions grounded ONLY in the rejection reason, the requisition's own fields (budget, skills, level, location), and the tenant's curated market benchmarks — never invented market claims or any demographic reference. Nothing auto-applies: the requirement owner reviews the suggestions and resubmits through the normal edit path. Runs only on an explicit 'Generate suggestions' click. Disabling makes that button refuse with a clear message instead of calling the model.",
   },
+  recruiter_brief: {
+    label: "Recruiter AI brief",
+    usageFeatures: ["recruiter_brief"],
+    description:
+      "On the recruiter's candidate brief, drafts three grounded aids on demand — top 3 strengths + 2 risks vs the JD, a ~10-minute structured phone-screen script, and a DRAFT notice-period / availability confirmation message. Grounded ONLY in the JD + skills, the deterministic resume-vs-JD skills match, the parsed resume, and the application's own data — never invented facts, demographic inference, or sentiment claims. The availability draft is a DRAFT ONLY: it is never auto-sent; the recruiter reviews and sends it through the normal approval path. The deterministic skills-match and missing-info parts of the brief are unaffected. Runs only on an explicit 'Generate' click per aid. Disabling makes those buttons refuse with a clear message instead of calling the model.",
+  },
 };
 
 export const aiSettingsSchema = z.object({
@@ -171,6 +178,7 @@ export const aiSettingsSchema = z.object({
   feedback_summary: aiFeatureSettingsSchema.default(featureDefault),
   interview_prep: aiFeatureSettingsSchema.default(featureDefault),
   req_revision: aiFeatureSettingsSchema.default(featureDefault),
+  recruiter_brief: aiFeatureSettingsSchema.default(featureDefault),
   /**
    * Global deterministic PII redaction. When on, candidate-derived prompt
    * text going into scoring + agent-draft calls has emails / phone numbers /

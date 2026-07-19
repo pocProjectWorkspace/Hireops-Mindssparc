@@ -98,3 +98,6 @@ export * from "./hr-case-notes";
 export * from "./hr-policy-documents";
 // Requirement-owner AI revision suggestions — cached per rejected req (RO-01)
 export * from "./req-revision-suggestions";
+// Recruiter Missing Info Tracker + AI brief cache (RECR-03)
+export * from "./missing-info-requests";
+export * from "./recruiter-brief";

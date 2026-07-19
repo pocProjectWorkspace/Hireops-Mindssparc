@@ -54,6 +54,7 @@ import {
   IconExecAudit,
   IconIntegrations,
   IconUsers,
+  IconMissingInfo,
   IconSignOut,
 } from "./nav-icons";
 
@@ -76,6 +77,7 @@ export type PortalNavKey =
   | "governance"
   | "exec-audit"
   | "interviews"
+  | "missing-info"
   | "panel"
   | "panel-board"
   | "panel-feedback"
@@ -296,6 +298,17 @@ const MAIN_NAV: NavItem[] = [
     href: "/interviews",
     icon: <IconInterviews />,
     roles: ["hiring_manager", "recruiter", "admin"],
+  },
+  {
+    // RECR-03: the recruiter's Missing Info Tracker — deterministic
+    // required/optional + real stage-gate, four-state chase lifecycle over the
+    // REAL candidate-notification flow. recruiter + admin, matching the
+    // RECRUITER_SURFACE_ROLES API gate.
+    key: "missing-info",
+    label: "Missing info",
+    href: "/missing-info",
+    icon: <IconMissingInfo />,
+    roles: ["recruiter", "admin"],
   },
   {
     // INT-03: the interviewer's own surface — distinct from /interviews (the

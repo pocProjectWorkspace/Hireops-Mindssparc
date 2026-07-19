@@ -21,3 +21,4 @@ export * from "./panel-prep";
 export * from "./req-revision";
 export * from "./requirement-owner";
 export * from "./recruiter";
+export * from "./recruiter-brief";
