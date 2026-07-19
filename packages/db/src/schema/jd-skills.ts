@@ -4,6 +4,7 @@ import {
   uuid,
   text,
   numeric,
+  integer,
   boolean,
   timestamp,
   uniqueIndex,
@@ -35,6 +36,13 @@ export const jdSkills = pgTable(
     category: text("category"),
     weight: numeric("weight", { precision: 4, scale: 2 }).notNull().default("1.00"),
     isRequired: boolean("is_required").notNull().default(false),
+    // RO-02 (migration 0080): additive per-skill metadata for the wizard v2
+    // skill-weighting step. Both NULLABLE — pre-RO-02 inserts are unaffected.
+    // min_years_experience is captured for interviewers + future scoring; the
+    // current AI evaluator reads OVERALL years of experience via knockouts,
+    // not per-skill minimums. notes is advisory free text (no parser).
+    minYearsExperience: integer("min_years_experience"),
+    notes: text("notes"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [

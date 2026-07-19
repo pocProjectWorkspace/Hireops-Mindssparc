@@ -10,6 +10,7 @@
 
 export * from "./enums";
 export * from "./procedures";
+export * from "./jd-quality";
 export * from "./ai-settings";
 export * from "./bias-lexicon";
 export * from "./scoring-weights";

@@ -375,9 +375,37 @@ export type RequisitionLocationType = z.infer<typeof requisitionLocationTypeSche
 export const jdSectionsSchema = z.object({
   summary: z.string(),
   responsibilities: z.array(z.string()),
+  /** "Required skills / qualifications" in the wizard v2 editor cards. */
   requirements: z.array(z.string()),
+  // RO-02 (wizard v2): additive optional section arrays. The real AI JD
+  // generator (jdGenerationResponseSchema) still returns only summary /
+  // responsibilities / requirements, so these default to [] on generate and
+  // on every pre-RO-02 stored jd_versions.ai_metadata.sections blob (parsed
+  // with jdSectionsSchema.safeParse — the defaults keep old rows valid). The
+  // requirement owner fills them by hand in the per-section editor cards.
+  niceToHave: z.array(z.string()).default([]),
+  toolsTech: z.array(z.string()).default([]),
+  education: z.array(z.string()).default([]),
+  softSkills: z.array(z.string()).default([]),
 });
 export type JdSections = z.infer<typeof jdSectionsSchema>;
+
+/**
+ * The wizard v2 JD editor's section keys, in display order, with labels. The
+ * first three map to the real AI-generated fields; the rest are manual-only
+ * (the AI path does not produce them — honest, no theatre). List-shaped
+ * sections are arrays; `summary` is the one free-text block.
+ */
+export const JD_SECTION_META = [
+  { key: "summary", label: "Role summary", kind: "text", aiBacked: true },
+  { key: "responsibilities", label: "Responsibilities", kind: "list", aiBacked: true },
+  { key: "requirements", label: "Required skills & qualifications", kind: "list", aiBacked: true },
+  { key: "niceToHave", label: "Nice to have", kind: "list", aiBacked: false },
+  { key: "toolsTech", label: "Tools & technology", kind: "list", aiBacked: false },
+  { key: "education", label: "Education", kind: "list", aiBacked: false },
+  { key: "softSkills", label: "Soft skills", kind: "list", aiBacked: false },
+] as const;
+export type JdSectionKey = (typeof JD_SECTION_META)[number]["key"];
 
 /**
  * A JD skill row (name / weight / must-have). Maps to jd_skills
@@ -391,6 +419,14 @@ export const requisitionSkillInputSchema = z.object({
   skillName: z.string().min(1).max(120),
   weight: z.number().min(0).max(10).default(1),
   isRequired: z.boolean().default(false),
+  // RO-02 (migration 0080): additive per-skill metadata. All optional — old
+  // callers (REQ-02) omit them and the columns stay NULL. `category` groups
+  // skills under chips in the weighting editor; `minYears` is captured for
+  // interviewers + future scoring (the current AI evaluator reads OVERALL
+  // years via knockouts, not per-skill minimums); `notes` is advisory context.
+  category: z.string().max(80).nullish(),
+  minYears: z.number().int().min(0).max(50).nullish(),
+  notes: z.string().max(500).nullish(),
 });
 export type RequisitionSkillInput = z.infer<typeof requisitionSkillInputSchema>;
 
@@ -508,6 +544,10 @@ export const requisitionDetailSkillSchema = z.object({
   skillName: z.string(),
   weight: z.number(),
   isRequired: z.boolean(),
+  // RO-02 additive (migration 0080). Null on pre-RO-02 rows.
+  category: z.string().nullable(),
+  minYears: z.number().int().nullable(),
+  notes: z.string().nullable(),
 });
 
 export const requisitionDetailKnockoutSchema = z.object({
@@ -583,6 +623,43 @@ export const getRequisitionDetailOutputSchema = z.object({
 });
 export type GetRequisitionDetailInput = z.infer<typeof getRequisitionDetailInputSchema>;
 export type GetRequisitionDetailOutput = z.infer<typeof getRequisitionDetailOutputSchema>;
+
+// ─────────────── listRequisitionsForSkillWeighting (RO-02) ───────────────
+//
+// The standalone /skill-weighting picker. Lists the tenant's requisitions the
+// caller may weight (hiring_manager / admin), each with a skill-coverage
+// summary (skill count, must-have count, whether weights differ from the flat
+// default) so the picker can show at a glance which reqs still need attention.
+// Editable-only: draft + pending_approval (a posted/filled req's JD is locked).
+
+export const skillWeightingReqSchema = z.object({
+  id: z.string().uuid(),
+  title: z.string().nullable(),
+  status: z.string(),
+  department: z.string().nullable(),
+  jdVersionId: z.string().uuid(),
+  skillCount: z.number().int(),
+  mustHaveCount: z.number().int(),
+  /** Sum of skill weights (rounded to 1dp) — the "weighting done" signal. */
+  totalWeight: z.number(),
+  /** True while the caller may still edit the weights (status === 'draft'). */
+  editable: z.boolean(),
+  createdAt: z.string(),
+});
+export type SkillWeightingReq = z.infer<typeof skillWeightingReqSchema>;
+
+export const listRequisitionsForSkillWeightingInputSchema = z.object({
+  limit: z.number().int().min(1).max(100).default(50),
+});
+export const listRequisitionsForSkillWeightingOutputSchema = z.object({
+  rows: z.array(skillWeightingReqSchema),
+});
+export type ListRequisitionsForSkillWeightingInput = z.infer<
+  typeof listRequisitionsForSkillWeightingInputSchema
+>;
+export type ListRequisitionsForSkillWeightingOutput = z.infer<
+  typeof listRequisitionsForSkillWeightingOutputSchema
+>;
 
 // ═══════════════ REQ-03: HR-head approval decisions + posting ═══════════════
 //

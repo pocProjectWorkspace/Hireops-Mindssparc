@@ -30,6 +30,7 @@ import {
   IconOnboarding,
   IconOffboarding,
   IconRequisitions,
+  IconSkillWeighting,
   IconReqApprovals,
   IconInterviews,
   IconPanel,
@@ -63,6 +64,7 @@ export type PortalNavKey =
   | "onboarding"
   | "offboarding"
   | "requisitions"
+  | "skill-weighting"
   | "requisition-approvals"
   | "approval-tracker"
   | "metrics"
@@ -151,6 +153,16 @@ const MAIN_NAV: NavItem[] = [
     label: "Approval tracker",
     href: "/approval-tracker",
     icon: <IconReqApprovals />,
+    roles: ["hiring_manager", "admin"],
+  },
+  {
+    // RO-02: standalone skill-weighting surface — hiring_manager (the
+    // requirement owner) + admin, matching the listRequisitionsForSkillWeighting
+    // API gate.
+    key: "skill-weighting",
+    label: "Skill weighting",
+    href: "/skill-weighting",
+    icon: <IconSkillWeighting />,
     roles: ["hiring_manager", "admin"],
   },
   {

@@ -128,6 +128,8 @@ import {
   submitRequisitionForApprovalOutputSchema,
   getRequisitionDetailInputSchema,
   getRequisitionDetailOutputSchema,
+  listRequisitionsForSkillWeightingInputSchema,
+  listRequisitionsForSkillWeightingOutputSchema,
   decideRequisitionApprovalInputSchema,
   decideRequisitionApprovalOutputSchema,
   postRequisitionInputSchema,
@@ -3468,6 +3470,12 @@ export const appRouter = router({
                 skillName: s.skillName.trim(),
                 weight: String(s.weight),
                 isRequired: s.isRequired,
+                // RO-02 (migration 0080): additive per-skill metadata. Coerce
+                // empty/blank to NULL so old callers (no fields) and cleared
+                // fields both persist as NULL.
+                category: s.category && s.category.trim().length > 0 ? s.category.trim() : null,
+                minYearsExperience: s.minYears ?? null,
+                notes: s.notes && s.notes.trim().length > 0 ? s.notes.trim() : null,
               })),
             );
           }
@@ -3776,6 +3784,9 @@ export const appRouter = router({
           skillName: jdSkills.skillName,
           weight: jdSkills.weight,
           isRequired: jdSkills.isRequired,
+          category: jdSkills.category,
+          minYearsExperience: jdSkills.minYearsExperience,
+          notes: jdSkills.notes,
         })
         .from(jdSkills)
         .where(and(eq(jdSkills.tenantId, tenantId), eq(jdSkills.jdVersionId, row.jdVersionId)))
@@ -3885,6 +3896,9 @@ export const appRouter = router({
           skillName: s.skillName,
           weight: Number(s.weight),
           isRequired: s.isRequired,
+          category: s.category ?? null,
+          minYears: s.minYearsExperience ?? null,
+          notes: s.notes ?? null,
         })),
         knockouts: knockouts.map((k) => ({
           id: k.id,
@@ -3905,6 +3919,92 @@ export const appRouter = router({
           : null,
         latestDecision,
         isDraft: row.status === "draft",
+      };
+    }),
+
+  /**
+   * listRequisitionsForSkillWeighting — the standalone /skill-weighting
+   * picker (RO-02). Lists the tenant's requisitions with a per-req skill
+   * coverage summary (count, must-have count, total weight) so the requirement
+   * owner can jump straight to the reqs whose weighting still needs work.
+   * hiring_manager + admin (the personas that own skill weighting). Weights
+   * are only editable while a req is a draft; the row carries `editable` so the
+   * picker can label locked reqs honestly rather than dangling a dead editor.
+   */
+  listRequisitionsForSkillWeighting: protectedProcedure
+    .input(listRequisitionsForSkillWeightingInputSchema)
+    .output(listRequisitionsForSkillWeightingOutputSchema)
+    .query(async ({ ctx, input }) => {
+      requireAnyRole(
+        ctx,
+        REQUISITION_WRITE_ROLES,
+        "Skill weighting requires the hiring_manager or admin role",
+      );
+      const db = requireDb(ctx);
+      if (!ctx.tenantId) {
+        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
+      }
+      const tenantId = ctx.tenantId;
+
+      const rows = await db
+        .select({
+          id: requisitions.id,
+          status: requisitions.status,
+          createdAt: requisitions.createdAt,
+          jdVersionId: requisitions.jdVersionId,
+          title: positions.title,
+          department: businessUnits.name,
+          skillCount: dsql<number>`count(${jdSkills.id})::int`,
+          mustHaveCount: dsql<number>`count(${jdSkills.id}) filter (where ${jdSkills.isRequired})::int`,
+          totalWeight: dsql<string>`coalesce(sum(${jdSkills.weight}), 0)::text`,
+        })
+        .from(requisitions)
+        .innerJoin(
+          positions,
+          and(
+            eq(requisitions.tenantId, positions.tenantId),
+            eq(requisitions.positionId, positions.id),
+          ),
+        )
+        .leftJoin(
+          businessUnits,
+          and(
+            eq(positions.tenantId, businessUnits.tenantId),
+            eq(positions.businessUnitId, businessUnits.id),
+          ),
+        )
+        .leftJoin(
+          jdSkills,
+          and(
+            eq(requisitions.tenantId, jdSkills.tenantId),
+            eq(requisitions.jdVersionId, jdSkills.jdVersionId),
+          ),
+        )
+        .where(eq(requisitions.tenantId, tenantId))
+        .groupBy(
+          requisitions.id,
+          requisitions.status,
+          requisitions.createdAt,
+          requisitions.jdVersionId,
+          positions.title,
+          businessUnits.name,
+        )
+        .orderBy(desc(requisitions.createdAt))
+        .limit(input.limit);
+
+      return {
+        rows: rows.map((r) => ({
+          id: r.id,
+          title: r.title ?? null,
+          status: r.status,
+          department: r.department ?? null,
+          jdVersionId: r.jdVersionId,
+          skillCount: Number(r.skillCount),
+          mustHaveCount: Number(r.mustHaveCount),
+          totalWeight: Math.round(Number(r.totalWeight) * 10) / 10,
+          editable: r.status === "draft",
+          createdAt: r.createdAt.toISOString(),
+        })),
       };
     }),
 

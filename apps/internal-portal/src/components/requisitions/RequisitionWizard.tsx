@@ -5,33 +5,50 @@ import { useRouter, useSearchParams } from "next/navigation";
 import {
   summarizeScan,
   scanBlocksSubmit,
-  BIAS_CATEGORY_META,
   type JdSections,
   type JdBiasScan,
-  type JdBiasMatch,
-  type JdAiObservation,
   type RequisitionLocationType,
-  type RequisitionSkillInput,
   type RequisitionKnockoutInput,
 } from "@hireops/api-types";
 import { trpc, handleTRPCError } from "@/lib/trpc-client";
 import { Button, Card } from "@/components/ui";
+import { InterviewPlanSection } from "@/components/interviews/InterviewPlanSection";
+import { JdEditor } from "./JdEditor";
+import { SkillWeightsEditor, newSkillRow, type SkillWeightRow } from "./SkillWeightsEditor";
+import { ROLE_TEMPLATES, type RoleTemplate } from "./requisition-templates";
+import type { JdSectionKey } from "@hireops/api-types";
 
 /**
- * REQ-02 — the requisition creation wizard.
+ * RO-02 — the requisition creation wizard v2. FIVE honest steps, restructured
+ * from the REQ-02 four-step wizard (RO-01/RO-03 do not touch this file):
  *
- * Four honest steps: Basics → JD (Generate with AI + editable sections +
- * regenerate) → Skills & knockouts → Review & submit. The draft persists
- * server-side between steps via the REQ-02 mutations; the URL carries the
- * draft requisition id (?rid=) so a reload resumes where the hiring manager
- * left off. No psychometrics, no skill-weight "AI impact" theatre — just the
- * fields the platform actually consumes.
+ *   1. Role basics        — fields + a curated "Quick start" role-template row.
+ *   2. Job description     — per-section editor cards (JdEditor) + a quality
+ *                            strip (completeness / readability / real bias scan)
+ *                            + AI generate/regenerate (the real generateJdDraft).
+ *   3. Skill weighting     — SkillWeightsEditor (weights + scoring impact copy
+ *                            that truthfully describes the real engine) + the
+ *                            real knockouts UI (hard gates).
+ *   4. Interview rounds     — the existing InterviewPlanSection plan editor,
+ *                            embedded (rounds / mode / scorecard / competency
+ *                            focus / default panel) — not forked.
+ *   5. Review & submit      — a red/green submission checklist (each item links
+ *                            back to its step) + full summary + submit.
  *
- * On submit the requisition transitions draft → pending_approval and lands in
- * the HR-head queue; the wizard routes to the requisition detail page.
+ * Draft persistence is server-side via the REQ-02 mutations; the URL carries
+ * ?rid= and ?step= so a reload (or the seeded mid-wizard demo draft) resumes
+ * exactly where the requirement owner left off. The wizard hydrates from
+ * getRequisitionDetail when it opens on an existing draft.
  */
 
-type Step = 1 | 2 | 3 | 4;
+type Step = 1 | 2 | 3 | 4 | 5;
+const STEP_LABELS = [
+  "Role basics",
+  "Job description",
+  "Skill weighting",
+  "Interview rounds",
+  "Review",
+];
 
 const LOCATION_TYPES: RequisitionLocationType[] = ["onsite", "hybrid", "remote", "multi"];
 const KNOCKOUT_TYPES: RequisitionKnockoutInput["type"][] = [
@@ -50,6 +67,8 @@ interface BasicsState {
   employmentType: string;
   numberOfOpenings: number;
   targetStartDate: string;
+  compBandMin: string; // INR annual, as string for the input
+  compBandMax: string;
 }
 
 const EMPTY_BASICS: BasicsState = {
@@ -61,19 +80,26 @@ const EMPTY_BASICS: BasicsState = {
   employmentType: "",
   numberOfOpenings: 1,
   targetStartDate: "",
+  compBandMin: "",
+  compBandMax: "",
 };
 
-const EMPTY_SECTIONS: JdSections = { summary: "", responsibilities: [], requirements: [] };
+const EMPTY_SECTIONS: JdSections = {
+  summary: "",
+  responsibilities: [],
+  requirements: [],
+  niceToHave: [],
+  toolsTech: [],
+  education: [],
+  softSkills: [],
+};
 
-interface SkillRow extends RequisitionSkillInput {
-  key: string;
-}
 interface KnockoutRow {
   key: string;
   questionText: string;
   type: RequisitionKnockoutInput["type"];
   fieldPath: string;
-  value: string; // min/max as string, or comma-separated allowed for enum
+  value: string;
 }
 
 function uid(): string {
@@ -82,8 +108,6 @@ function uid(): string {
 
 const inputCls =
   "w-full rounded-button border border-neutral-300 bg-white px-3 h-9 text-sm text-neutral-900 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500";
-const textareaCls =
-  "w-full rounded-lg border border-neutral-300 bg-white px-3 py-2 text-sm text-neutral-900 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500";
 const labelCls = "block text-xs font-medium text-neutral-700 mb-1";
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
@@ -98,39 +122,91 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
 export function RequisitionWizard({ initialRid }: { initialRid: string | null }) {
   const router = useRouter();
   const searchParams = useSearchParams();
+  const initialStep = ((): Step => {
+    const s = Number(searchParams.get("step"));
+    if (initialRid && s >= 1 && s <= 5) return s as Step;
+    return initialRid ? 2 : 1;
+  })();
+
   const [rid, setRid] = useState<string | null>(initialRid);
-  const [step, setStep] = useState<Step>(initialRid ? 2 : 1);
+  const [step, setStep] = useState<Step>(initialStep);
   const [error, setError] = useState<string | null>(null);
+  const [hydrated, setHydrated] = useState(!initialRid);
 
   const [basics, setBasics] = useState<BasicsState>(EMPTY_BASICS);
   const [sections, setSections] = useState<JdSections>(EMPTY_SECTIONS);
-  const [jdGenerated, setJdGenerated] = useState(false);
   const [extraContext, setExtraContext] = useState("");
-  const [skills, setSkills] = useState<SkillRow[]>([]);
+  const [skills, setSkills] = useState<SkillWeightRow[]>([]);
   const [knockouts, setKnockouts] = useState<KnockoutRow[]>([]);
+  const [generatingTarget, setGeneratingTarget] = useState<JdSectionKey | "all" | null>(null);
 
   const createDraft = trpc.createRequisitionDraft.useMutation();
   const generateJd = trpc.generateJdDraft.useMutation();
   const updateDraft = trpc.updateRequisitionDraft.useMutation();
   const submit = trpc.submitRequisitionForApproval.useMutation();
 
-  // CONF-02: the tenant's effective bias lexicon, scanned client-side over the
-  // live JD (debounced) — the SAME scanner the submit gate runs server-side.
+  // Hydrate an existing draft (resume / seeded mid-wizard demo draft).
+  const detailQuery = trpc.getRequisitionDetail.useQuery(
+    { requisitionId: rid ?? "" },
+    { enabled: !!initialRid && !hydrated },
+  );
+  useEffect(() => {
+    if (hydrated || !detailQuery.data) return;
+    const d = detailQuery.data;
+    setBasics({
+      title: d.title ?? "",
+      department: d.department ?? "",
+      locationType: (d.locationType as RequisitionLocationType) ?? "onsite",
+      primaryLocation: d.primaryLocation ?? "",
+      seniority: d.seniority ?? "",
+      employmentType: "",
+      numberOfOpenings: d.numberOfOpenings,
+      targetStartDate: d.targetStartDate ?? "",
+      compBandMin: d.compBandMin ?? "",
+      compBandMax: d.compBandMax ?? "",
+    });
+    if (d.jdSections) {
+      setSections({ ...EMPTY_SECTIONS, ...d.jdSections });
+    }
+    setSkills(
+      d.skills.map((s) =>
+        newSkillRow({
+          skillName: s.skillName,
+          category: s.category ?? "General",
+          weight: s.weight,
+          isRequired: s.isRequired,
+          minYears: s.minYears ?? null,
+          notes: s.notes ?? "",
+        }),
+      ),
+    );
+    setKnockouts(
+      d.knockouts.map((k) => ({
+        key: uid(),
+        questionText: k.questionText,
+        type: k.type as KnockoutRow["type"],
+        fieldPath: knockoutFieldPath(k.thresholdValue),
+        value: knockoutValueString(k.type as KnockoutRow["type"], k.thresholdValue),
+      })),
+    );
+    setHydrated(true);
+  }, [detailQuery.data, hydrated]);
+
+  // CONF-02: live client-side bias scan over the composed JD (same scanner as
+  // the submit gate). Feeds JdEditor's quality strip + the review checklist.
   const lexiconQuery = trpc.getBiasLexicon.useQuery({});
-  const reviewJd = trpc.reviewJdWithAi.useMutation();
-  const [aiObservations, setAiObservations] = useState<JdAiObservation[] | null>(null);
-  const [aiReviewError, setAiReviewError] = useState<string | null>(null);
-
-  const busy =
-    createDraft.isPending ||
-    generateJd.isPending ||
-    updateDraft.isPending ||
-    submit.isPending ||
-    reviewJd.isPending;
-
   const composedJd = useMemo(
     () =>
-      [basics.title, sections.summary, ...sections.responsibilities, ...sections.requirements]
+      [
+        basics.title,
+        sections.summary,
+        ...sections.responsibilities,
+        ...sections.requirements,
+        ...sections.niceToHave,
+        ...sections.toolsTech,
+        ...sections.education,
+        ...sections.softSkills,
+      ]
         .filter((s) => s && s.trim().length > 0)
         .join("\n"),
     [basics.title, sections],
@@ -145,10 +221,57 @@ export function RequisitionWizard({ initialRid }: { initialRid: string | null })
     [debouncedJd, lexiconQuery.data],
   );
 
-  function setRidInUrl(newRid: string) {
+  // Interview plan round count for the review checklist.
+  const planQuery = trpc.getInterviewPlan.useQuery(
+    { requisitionId: rid ?? "" },
+    { enabled: !!rid },
+  );
+  const roundCount = planQuery.data?.rounds.length ?? 0;
+
+  const busy =
+    createDraft.isPending ||
+    generateJd.isPending ||
+    updateDraft.isPending ||
+    submit.isPending ||
+    generatingTarget !== null;
+
+  function goToStep(next: Step) {
+    setStep(next);
+    if (rid) {
+      const params = new URLSearchParams(searchParams.toString());
+      params.set("rid", rid);
+      params.set("step", String(next));
+      router.replace(`/requisitions/new?${params.toString()}`);
+    }
+  }
+  function setRidInUrl(newRid: string, nextStep: Step) {
     const params = new URLSearchParams(searchParams.toString());
     params.set("rid", newRid);
+    params.set("step", String(nextStep));
     router.replace(`/requisitions/new?${params.toString()}`);
+  }
+
+  function applyTemplate(t: RoleTemplate) {
+    setBasics((b) => ({
+      ...b,
+      title: t.title,
+      seniority: t.seniority,
+      locationType: t.locationType,
+      compBandMin: String(t.budgetMinInr),
+      compBandMax: String(t.budgetMaxInr),
+    }));
+    setExtraContext(t.extraContext);
+    setSkills(
+      t.skills.map((s) =>
+        newSkillRow({
+          skillName: s.skillName,
+          category: s.category,
+          weight: Math.round(s.weight),
+          isRequired: s.isRequired ?? true,
+          minYears: s.minYears ?? null,
+        }),
+      ),
+    );
   }
 
   async function onCreateBasics() {
@@ -163,9 +286,12 @@ export function RequisitionWizard({ initialRid }: { initialRid: string | null })
         employmentType: basics.employmentType || undefined,
         numberOfOpenings: basics.numberOfOpenings,
         targetStartDate: basics.targetStartDate || undefined,
+        compBandMin: basics.compBandMin ? Number(basics.compBandMin) : undefined,
+        compBandMax: basics.compBandMax ? Number(basics.compBandMax) : undefined,
+        compCurrency: basics.compBandMin || basics.compBandMax ? "INR" : undefined,
       });
       setRid(res.requisitionId);
-      setRidInUrl(res.requisitionId);
+      setRidInUrl(res.requisitionId, 2);
       setStep(2);
     } catch (err) {
       setError(errorMessage(err));
@@ -173,65 +299,67 @@ export function RequisitionWizard({ initialRid }: { initialRid: string | null })
     }
   }
 
-  async function onGenerateJd() {
+  async function onGenerateJd(target: JdSectionKey | "all") {
     if (!rid) return;
     setError(null);
+    setGeneratingTarget(target);
     try {
+      // Persist current sections first so a per-section regenerate doesn't lose
+      // manual edits, then call the REAL generate path.
+      await updateDraft.mutateAsync({ requisitionId: rid, sections });
       const res = await generateJd.mutateAsync({
         requisitionId: rid,
         extraContext: extraContext || undefined,
       });
-      setSections(res.sections);
-      setJdGenerated(true);
+      // The AI produces only the core three sections. "all" replaces all three;
+      // a single key applies only that section (keeping the rest untouched).
+      if (target === "all") {
+        setSections((prev) => ({
+          ...prev,
+          summary: res.sections.summary,
+          responsibilities: res.sections.responsibilities,
+          requirements: res.sections.requirements,
+        }));
+      } else if (
+        target === "summary" ||
+        target === "responsibilities" ||
+        target === "requirements"
+      ) {
+        setSections((prev) => ({ ...prev, [target]: res.sections[target] }));
+      }
     } catch (err) {
       setError(errorMessage(err));
       handleTRPCError(err, { onMessage: () => undefined });
+    } finally {
+      setGeneratingTarget(null);
     }
   }
 
-  async function onReviewJd() {
+  async function persistDraft() {
     if (!rid) return;
-    setAiReviewError(null);
-    setError(null);
-    try {
-      // Persist the current sections first so the AI reviews exactly what the
-      // author sees (generateJdDraft persisted its own output; local edits
-      // since then would otherwise be invisible to the server read).
-      await updateDraft.mutateAsync({ requisitionId: rid, sections });
-      const res = await reviewJd.mutateAsync({ requisitionId: rid });
-      setAiObservations(res.observations);
-    } catch (err) {
-      setAiReviewError(errorMessage(err));
-      handleTRPCError(err, { onMessage: () => undefined });
-    }
-  }
-
-  async function onSaveJdAndNext() {
-    if (!rid) return;
-    setError(null);
-    try {
-      await updateDraft.mutateAsync({ requisitionId: rid, sections });
-      setStep(3);
-    } catch (err) {
-      setError(errorMessage(err));
-      handleTRPCError(err, { onMessage: () => undefined });
-    }
-  }
-
-  async function onSaveSkillsAndNext() {
-    if (!rid) return;
-    setError(null);
-    try {
-      await updateDraft.mutateAsync({
-        requisitionId: rid,
-        skills: skills.map((s) => ({
-          skillName: s.skillName,
+    await updateDraft.mutateAsync({
+      requisitionId: rid,
+      sections,
+      skills: skills
+        .filter((s) => s.skillName.trim().length > 0)
+        .map((s) => ({
+          skillName: s.skillName.trim(),
           weight: s.weight,
           isRequired: s.isRequired,
+          category: s.category.trim() || null,
+          minYears: s.minYears,
+          notes: s.notes.trim() || null,
         })),
-        knockouts: knockouts.map(toKnockoutInput),
-      });
-      setStep(4);
+      knockouts: knockouts.map(toKnockoutInput),
+    });
+  }
+
+  async function onSaveAndNext(next: Step) {
+    if (!rid) return;
+    setError(null);
+    try {
+      await persistDraft();
+      goToStep(next);
     } catch (err) {
       setError(errorMessage(err));
       handleTRPCError(err, { onMessage: () => undefined });
@@ -242,6 +370,7 @@ export function RequisitionWizard({ initialRid }: { initialRid: string | null })
     if (!rid) return;
     setError(null);
     try {
+      await persistDraft();
       await submit.mutateAsync({ requisitionId: rid });
       router.push(`/requisitions/${rid}`);
     } catch (err) {
@@ -250,18 +379,70 @@ export function RequisitionWizard({ initialRid }: { initialRid: string | null })
     }
   }
 
+  // ─────────── review checklist (client guard; server enforces its own trio) ───────────
+  const jdFilled = sections.summary.trim().length > 0 && sections.requirements.length > 0;
+  const skillsFilled = skills.filter((s) => s.skillName.trim().length > 0).length > 0;
+  const budgetFilled = basics.compBandMin.trim().length > 0 && basics.compBandMax.trim().length > 0;
+  const biasBlocked = scan ? scanBlocksSubmit(scan) : false;
+  const checklist: ChecklistItem[] = [
+    { label: "Role title set", ok: basics.title.trim().length >= 2, step: 1 },
+    { label: "Budget band set", ok: budgetFilled, step: 1 },
+    {
+      label: "Job description written",
+      ok: jdFilled && !biasBlocked,
+      step: 2,
+      reason: biasBlocked
+        ? "The JD contains blocked language — revise it in the JD step."
+        : undefined,
+    },
+    { label: "At least one skill weighted", ok: skillsFilled, step: 3 },
+    { label: "Interview rounds configured", ok: roundCount > 0, step: 4 },
+  ];
+  const allGreen = checklist.every((c) => c.ok);
+
   return (
     <div className="mx-auto w-full max-w-3xl px-8 py-6">
-      <Stepper step={step} />
+      <Stepper step={step} onJump={(n) => (rid || n === 1 ? goToStep(n) : undefined)} rid={rid} />
+      <AutosaveIndicator
+        savedAt={updateDraft.data ? Date.now() : null}
+        pending={updateDraft.isPending}
+        hasRid={!!rid}
+      />
       {error ? (
         <div className="mb-4 rounded-lg border border-status-error-200 bg-status-error-50 px-4 py-3 text-sm text-status-error-700">
           {error}
         </div>
       ) : null}
 
+      {/* ─────────── Step 1: Role basics ─────────── */}
       {step === 1 ? (
         <Card padded={false} className="p-6">
-          <h2 className="mb-4 text-base font-semibold text-neutral-900">Role basics</h2>
+          <h2 className="mb-1 text-base font-semibold text-neutral-900">Role basics</h2>
+          <p className="mb-4 text-sm text-neutral-600">
+            Start from a curated template or fill the fields directly. Everything stays editable.
+          </p>
+
+          <div className="mb-5">
+            <p className="mb-2 text-xs font-medium text-neutral-700">
+              Quick start — role templates{" "}
+              <span className="font-normal text-neutral-400">
+                (curated presets, fully editable)
+              </span>
+            </p>
+            <div className="flex flex-wrap gap-2">
+              {ROLE_TEMPLATES.map((t) => (
+                <button
+                  key={t.id}
+                  type="button"
+                  onClick={() => applyTemplate(t)}
+                  className="rounded-full border border-neutral-300 bg-white px-3 py-1 text-xs text-neutral-700 transition-colors hover:border-brand-400 hover:bg-brand-50 hover:text-brand-700"
+                >
+                  {t.label}
+                </button>
+              ))}
+            </div>
+          </div>
+
           <div className="grid grid-cols-2 gap-4">
             <div className="col-span-2">
               <Field label="Job title">
@@ -331,6 +512,26 @@ export function RequisitionWizard({ initialRid }: { initialRid: string | null })
                 }
               />
             </Field>
+            <Field label="Budget band — min (INR / year)">
+              <input
+                type="number"
+                min={0}
+                className={inputCls}
+                value={basics.compBandMin}
+                onChange={(e) => setBasics({ ...basics, compBandMin: e.target.value })}
+                placeholder="2800000"
+              />
+            </Field>
+            <Field label="Budget band — max (INR / year)">
+              <input
+                type="number"
+                min={0}
+                className={inputCls}
+                value={basics.compBandMax}
+                onChange={(e) => setBasics({ ...basics, compBandMax: e.target.value })}
+                placeholder="4200000"
+              />
+            </Field>
             <Field label="Target start date">
               <input
                 type="date"
@@ -341,180 +542,62 @@ export function RequisitionWizard({ initialRid }: { initialRid: string | null })
             </Field>
           </div>
           <div className="mt-6 flex justify-end">
-            <Button
-              onClick={onCreateBasics}
-              disabled={busy || basics.title.trim().length < 2 || !basics.department.trim()}
-            >
-              {createDraft.isPending ? "Creating…" : "Create draft & continue"}
-            </Button>
+            {rid ? (
+              <Button onClick={() => goToStep(2)} disabled={busy}>
+                Continue
+              </Button>
+            ) : (
+              <Button
+                onClick={onCreateBasics}
+                disabled={busy || basics.title.trim().length < 2 || !basics.department.trim()}
+              >
+                {createDraft.isPending ? "Creating…" : "Create draft & continue"}
+              </Button>
+            )}
           </div>
         </Card>
       ) : null}
 
+      {/* ─────────── Step 2: Job description ─────────── */}
       {step === 2 ? (
         <Card padded={false} className="p-6">
           <h2 className="mb-1 text-base font-semibold text-neutral-900">Job description</h2>
           <p className="mb-4 text-sm text-neutral-600">
-            Generate a first draft with AI, then edit any section. Regenerate as often as you like
-            while the requisition is a draft.
+            Generate a first draft with AI, then edit any section. The quality strip updates live.
           </p>
-          <Field label="Extra context for the AI (optional)">
-            <textarea
-              className={textareaCls}
-              rows={2}
-              value={extraContext}
-              onChange={(e) => setExtraContext(e.target.value)}
-              placeholder="Team is building the payments platform; needs event-streaming depth."
-            />
-          </Field>
-          <div className="mt-3 flex flex-wrap gap-2">
-            <Button variant="secondary" onClick={onGenerateJd} disabled={busy}>
-              {generateJd.isPending
-                ? "Generating…"
-                : jdGenerated
-                  ? "Regenerate with AI"
-                  : "Generate with AI"}
-            </Button>
-            <Button
-              variant="ghost"
-              onClick={onReviewJd}
-              disabled={busy || sections.summary.trim().length === 0}
-              title="Optional AI inclusive-language review — advisory, never blocks"
-            >
-              {reviewJd.isPending ? "Reviewing…" : "Review with AI"}
-            </Button>
-          </div>
-
-          <div className="mt-6 space-y-4">
-            <Field label="Summary">
-              <textarea
-                className={textareaCls}
-                rows={3}
-                value={sections.summary}
-                onChange={(e) => setSections({ ...sections, summary: e.target.value })}
-              />
-            </Field>
-            <ListEditor
-              label="Responsibilities"
-              items={sections.responsibilities}
-              onChange={(responsibilities) => setSections({ ...sections, responsibilities })}
-            />
-            <ListEditor
-              label="Requirements"
-              items={sections.requirements}
-              onChange={(requirements) => setSections({ ...sections, requirements })}
-            />
-          </div>
-
-          <BiasFlagsPanel scan={scan} />
-
-          {aiReviewError ? (
-            <div className="mt-4 rounded-lg border border-status-error-200 bg-status-error-50 px-4 py-3 text-sm text-status-error-700">
-              {aiReviewError}
-            </div>
-          ) : null}
-          {aiObservations ? <AiReviewCards observations={aiObservations} /> : null}
-
+          <JdEditor
+            sections={sections}
+            onChange={setSections}
+            scan={scan}
+            onGenerate={onGenerateJd}
+            generatingTarget={generatingTarget}
+            busy={busy}
+            extraContext={extraContext}
+            onExtraContextChange={setExtraContext}
+          />
           <div className="mt-6 flex justify-between">
-            <Button variant="ghost" onClick={() => setStep(1)} disabled={busy}>
+            <Button variant="ghost" onClick={() => goToStep(1)} disabled={busy}>
               Back
             </Button>
-            <Button
-              onClick={onSaveJdAndNext}
-              disabled={busy || sections.summary.trim().length === 0}
-            >
+            <Button onClick={() => onSaveAndNext(3)} disabled={busy || !jdFilled}>
               {updateDraft.isPending ? "Saving…" : "Save & continue"}
             </Button>
           </div>
         </Card>
       ) : null}
 
+      {/* ─────────── Step 3: Skill weighting ─────────── */}
       {step === 3 ? (
         <Card padded={false} className="p-6">
-          <h2 className="mb-1 text-base font-semibold text-neutral-900">Skills & knockouts</h2>
+          <h2 className="mb-1 text-base font-semibold text-neutral-900">Skill weighting</h2>
           <p className="mb-4 text-sm text-neutral-600">
-            Skills feed the AI candidate scoring. Knockouts are hard gates evaluated against the
-            parsed CV at apply time.
+            Weight the skills the AI evaluator emphasises, then add any hard knockout gates.
           </p>
+          <SkillWeightsEditor skills={skills} onChange={setSkills} />
 
-          <div className="mb-6">
+          <div className="mt-8">
             <div className="mb-2 flex items-center justify-between">
-              <h3 className="text-sm font-medium text-neutral-800">Skills</h3>
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() =>
-                  setSkills([...skills, { key: uid(), skillName: "", weight: 1, isRequired: true }])
-                }
-              >
-                + Add skill
-              </Button>
-            </div>
-            {skills.length === 0 ? (
-              <p className="text-xs text-neutral-500">
-                No skills yet — add at least one to submit.
-              </p>
-            ) : (
-              <div className="space-y-2">
-                {skills.map((s) => (
-                  <div key={s.key} className="flex items-center gap-2">
-                    <input
-                      className={inputCls}
-                      value={s.skillName}
-                      placeholder="Kafka"
-                      onChange={(e) =>
-                        setSkills(
-                          skills.map((x) =>
-                            x.key === s.key ? { ...x, skillName: e.target.value } : x,
-                          ),
-                        )
-                      }
-                    />
-                    <input
-                      type="number"
-                      step="0.1"
-                      min={0}
-                      max={10}
-                      className={`${inputCls} w-24`}
-                      value={s.weight}
-                      title="Weight"
-                      onChange={(e) =>
-                        setSkills(
-                          skills.map((x) =>
-                            x.key === s.key ? { ...x, weight: Number(e.target.value) || 0 } : x,
-                          ),
-                        )
-                      }
-                    />
-                    <label className="flex items-center gap-1 whitespace-nowrap text-xs text-neutral-600">
-                      <input
-                        type="checkbox"
-                        checked={s.isRequired}
-                        onChange={(e) =>
-                          setSkills(
-                            skills.map((x) =>
-                              x.key === s.key ? { ...x, isRequired: e.target.checked } : x,
-                            ),
-                          )
-                        }
-                      />
-                      Must-have
-                    </label>
-                    <button
-                      className="text-xs text-status-error-600 hover:underline"
-                      onClick={() => setSkills(skills.filter((x) => x.key !== s.key))}
-                    >
-                      Remove
-                    </button>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-
-          <div>
-            <div className="mb-2 flex items-center justify-between">
-              <h3 className="text-sm font-medium text-neutral-800">Knockouts</h3>
+              <h3 className="text-sm font-semibold text-neutral-900">Knockouts</h3>
               <Button
                 variant="ghost"
                 size="sm"
@@ -534,9 +617,13 @@ export function RequisitionWizard({ initialRid }: { initialRid: string | null })
                 + Add knockout
               </Button>
             </div>
+            <p className="mb-3 text-xs text-neutral-500">
+              Hard gates evaluated deterministically against the parsed CV at apply time — a
+              candidate who fails is filtered out. No AI involved.
+            </p>
             {knockouts.length === 0 ? (
               <p className="text-xs text-neutral-500">
-                Optional — hard gates like &ldquo;≥ 5 years experience&rdquo;.
+                Optional — e.g. &ldquo;≥ 5 years experience&rdquo;.
               </p>
             ) : (
               <div className="space-y-3">
@@ -623,50 +710,175 @@ export function RequisitionWizard({ initialRid }: { initialRid: string | null })
           </div>
 
           <div className="mt-6 flex justify-between">
-            <Button variant="ghost" onClick={() => setStep(2)} disabled={busy}>
+            <Button variant="ghost" onClick={() => onSaveAndNext(2)} disabled={busy}>
               Back
             </Button>
-            <Button onClick={onSaveSkillsAndNext} disabled={busy}>
+            <Button onClick={() => onSaveAndNext(4)} disabled={busy}>
               {updateDraft.isPending ? "Saving…" : "Save & continue"}
             </Button>
           </div>
         </Card>
       ) : null}
 
+      {/* ─────────── Step 4: Interview rounds & panel ─────────── */}
       {step === 4 ? (
         <Card padded={false} className="p-6">
-          <h2 className="mb-4 text-base font-semibold text-neutral-900">Review & submit</h2>
-          <dl className="space-y-2 text-sm">
-            <Row label="Title" value={basics.title} />
-            <Row label="Department" value={basics.department} />
-            <Row
-              label="Location"
-              value={`${basics.primaryLocation || "—"} (${basics.locationType})`}
-            />
-            <Row label="Openings" value={String(basics.numberOfOpenings)} />
-            <Row label="JD summary" value={sections.summary || "—"} />
-            <Row label="Skills" value={skills.map((s) => s.skillName).join(", ") || "—"} />
-            <Row label="Knockouts" value={String(knockouts.length)} />
-          </dl>
-
-          <GateStatus scan={scan} />
-
-          <p className="mt-4 text-xs text-neutral-500">
-            Submitting sends this requisition to the HR head for approval. You can&rsquo;t edit it
-            after submission.
+          <h2 className="mb-1 text-base font-semibold text-neutral-900">
+            Interview rounds & panel
+          </h2>
+          <p className="mb-4 text-sm text-neutral-600">
+            Define the interview loop for this role — rounds, mode, scorecard, competency focus, and
+            a default panel. Panelists are confirmed at scheduling; this is the blueprint.
           </p>
+          {rid ? (
+            <InterviewPlanSection requisitionId={rid} canManage={true} />
+          ) : (
+            <p className="text-sm text-neutral-500">Create the draft first.</p>
+          )}
           <div className="mt-6 flex justify-between">
-            <Button variant="ghost" onClick={() => setStep(3)} disabled={busy}>
+            <Button
+              variant="ghost"
+              onClick={() => {
+                planQuery.refetch();
+                goToStep(3);
+              }}
+              disabled={busy}
+            >
               Back
             </Button>
-            <Button onClick={onSubmit} disabled={busy}>
-              {submit.isPending ? "Submitting…" : "Submit for approval"}
+            <Button
+              onClick={() => {
+                planQuery.refetch();
+                goToStep(5);
+              }}
+              disabled={busy}
+            >
+              Continue to review
             </Button>
           </div>
         </Card>
       ) : null}
+
+      {/* ─────────── Step 5: Review & submit ─────────── */}
+      {step === 5 ? (
+        <Card padded={false} className="p-6">
+          <h2 className="mb-1 text-base font-semibold text-neutral-900">Review & submit</h2>
+          <p className="mb-4 text-sm text-neutral-600">
+            Submitting sends this requisition to the HR head for approval. You can&rsquo;t edit it
+            after submission.
+          </p>
+
+          <div className="mb-5 rounded-lg border border-neutral-200 p-4">
+            <p className="mb-3 text-sm font-semibold text-neutral-900">Submission checklist</p>
+            <ul className="space-y-2">
+              {checklist.map((c) => (
+                <li key={c.label} className="flex items-start gap-2 text-sm">
+                  <span
+                    aria-hidden
+                    className={`mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-full text-[10px] font-bold text-white ${
+                      c.ok ? "bg-status-success-600" : "bg-status-error-500"
+                    }`}
+                  >
+                    {c.ok ? "✓" : "!"}
+                  </span>
+                  <span className="flex-1">
+                    <span className={c.ok ? "text-neutral-700" : "text-neutral-900"}>
+                      {c.label}
+                    </span>
+                    {!c.ok ? (
+                      <button
+                        className="ml-2 text-xs text-brand-600 hover:underline"
+                        onClick={() => goToStep(c.step as Step)}
+                      >
+                        Fix in step {c.step}
+                      </button>
+                    ) : null}
+                    {!c.ok && c.reason ? (
+                      <span className="mt-0.5 block text-xs text-status-error-600">{c.reason}</span>
+                    ) : null}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          </div>
+
+          <dl className="space-y-2 text-sm">
+            <Row label="Title" value={basics.title || "—"} />
+            <Row label="Department" value={basics.department || "—"} />
+            <Row
+              label="Location"
+              value={`${basics.primaryLocation || "—"} (${basics.locationType})`}
+            />
+            <Row
+              label="Budget band"
+              value={
+                budgetFilled
+                  ? `₹${Number(basics.compBandMin).toLocaleString("en-IN")}–₹${Number(basics.compBandMax).toLocaleString("en-IN")} / yr`
+                  : "—"
+              }
+            />
+            <Row label="Openings" value={String(basics.numberOfOpenings)} />
+            <Row label="JD sections" value={`${filledSectionCount(sections)} of 7 filled`} />
+            <Row
+              label="Skills"
+              value={
+                skills.filter((s) => s.skillName.trim()).length > 0
+                  ? skills
+                      .filter((s) => s.skillName.trim())
+                      .map((s) => `${s.skillName} (${s.weight}${s.isRequired ? "★" : ""})`)
+                      .join(", ")
+                  : "—"
+              }
+            />
+            <Row label="Knockouts" value={String(knockouts.length)} />
+            <Row label="Interview rounds" value={String(roundCount)} />
+          </dl>
+
+          <GateStatus scan={scan} />
+
+          <div className="mt-6 flex justify-between">
+            <Button variant="ghost" onClick={() => goToStep(4)} disabled={busy}>
+              Back
+            </Button>
+            <div className="flex items-center gap-2">
+              <Button variant="secondary" onClick={() => persistDraft()} disabled={busy}>
+                Save as draft
+              </Button>
+              <Button onClick={onSubmit} disabled={busy || !allGreen}>
+                {submit.isPending ? "Submitting…" : "Submit for approval"}
+              </Button>
+            </div>
+          </div>
+          {!allGreen ? (
+            <p className="mt-2 text-right text-xs text-neutral-500">
+              Complete the checklist above to enable submission.
+            </p>
+          ) : null}
+        </Card>
+      ) : null}
     </div>
   );
+}
+
+interface ChecklistItem {
+  label: string;
+  ok: boolean;
+  step: number;
+  reason?: string;
+}
+
+function filledSectionCount(sections: JdSections): number {
+  const lists: string[][] = [
+    sections.responsibilities,
+    sections.requirements,
+    sections.niceToHave,
+    sections.toolsTech,
+    sections.education,
+    sections.softSkills,
+  ];
+  let n = sections.summary.trim().length > 0 ? 1 : 0;
+  for (const l of lists) if (l.some((x) => x.trim().length > 0)) n += 1;
+  return n;
 }
 
 function toKnockoutInput(k: KnockoutRow): RequisitionKnockoutInput {
@@ -689,6 +901,22 @@ function toKnockoutInput(k: KnockoutRow): RequisitionKnockoutInput {
   return base;
 }
 
+/** Best-effort read of the persisted threshold_value jsonb back into the row. */
+function knockoutFieldPath(threshold: unknown): string {
+  if (threshold && typeof threshold === "object" && "field_path" in threshold) {
+    return String((threshold as { field_path: unknown }).field_path ?? "total_years_experience");
+  }
+  return "total_years_experience";
+}
+function knockoutValueString(type: KnockoutRow["type"], threshold: unknown): string {
+  if (!threshold || typeof threshold !== "object") return "";
+  const t = threshold as Record<string, unknown>;
+  if (type === "numeric_min" && t.min != null) return String(t.min);
+  if (type === "numeric_max" && t.max != null) return String(t.max);
+  if (type === "enum" && Array.isArray(t.allowed)) return (t.allowed as unknown[]).join(", ");
+  return "";
+}
+
 function Row({ label, value }: { label: string; value: string }) {
   return (
     <div className="flex gap-3">
@@ -698,80 +926,67 @@ function Row({ label, value }: { label: string; value: string }) {
   );
 }
 
-function ListEditor({
-  label,
-  items,
-  onChange,
+function Stepper({
+  step,
+  onJump,
+  rid,
 }: {
-  label: string;
-  items: string[];
-  onChange: (items: string[]) => void;
+  step: Step;
+  onJump: (n: Step) => void;
+  rid: string | null;
 }) {
   return (
-    <div>
-      <div className="mb-1 flex items-center justify-between">
-        <label className={labelCls}>{label}</label>
-        <button
-          className="text-xs text-brand-600 hover:underline"
-          onClick={() => onChange([...items, ""])}
-        >
-          + Add
-        </button>
-      </div>
-      {items.length === 0 ? (
-        <p className="text-xs text-neutral-400">None yet.</p>
-      ) : (
-        <div className="space-y-2">
-          {items.map((item, i) => (
-            <div key={i} className="flex items-center gap-2">
-              <input
-                className={inputCls}
-                value={item}
-                onChange={(e) => onChange(items.map((x, j) => (j === i ? e.target.value : x)))}
-              />
-              <button
-                className="text-xs text-status-error-600 hover:underline"
-                onClick={() => onChange(items.filter((_, j) => j !== i))}
-              >
-                Remove
-              </button>
-            </div>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
-
-function Stepper({ step }: { step: Step }) {
-  const labels = ["Basics", "JD", "Skills & knockouts", "Review"];
-  return (
-    <ol className="mb-6 flex items-center gap-2 text-xs">
-      {labels.map((l, i) => {
+    <ol className="mb-4 flex flex-wrap items-center gap-2 text-xs">
+      {STEP_LABELS.map((l, i) => {
         const n = (i + 1) as Step;
         const active = n === step;
         const done = n < step;
+        const clickable = rid || n === 1;
         return (
           <li key={l} className="flex items-center gap-2">
-            <span
-              className={`flex h-6 w-6 items-center justify-center rounded-full text-[11px] font-semibold ${
-                active
-                  ? "bg-brand-600 text-white"
-                  : done
-                    ? "bg-brand-100 text-brand-700"
-                    : "bg-neutral-100 text-neutral-500"
-              }`}
+            <button
+              type="button"
+              disabled={!clickable}
+              onClick={() => onJump(n)}
+              className="flex items-center gap-2 disabled:cursor-default"
             >
-              {n}
-            </span>
-            <span className={active ? "font-medium text-neutral-900" : "text-neutral-500"}>
-              {l}
-            </span>
-            {i < labels.length - 1 ? <span className="text-neutral-300">→</span> : null}
+              <span
+                className={`flex h-6 w-6 items-center justify-center rounded-full text-[11px] font-semibold ${
+                  active
+                    ? "bg-brand-600 text-white"
+                    : done
+                      ? "bg-brand-100 text-brand-700"
+                      : "bg-neutral-100 text-neutral-500"
+                }`}
+              >
+                {n}
+              </span>
+              <span className={active ? "font-medium text-neutral-900" : "text-neutral-500"}>
+                {l}
+              </span>
+            </button>
+            {i < STEP_LABELS.length - 1 ? <span className="text-neutral-300">→</span> : null}
           </li>
         );
       })}
     </ol>
+  );
+}
+
+function AutosaveIndicator({
+  savedAt,
+  pending,
+  hasRid,
+}: {
+  savedAt: number | null;
+  pending: boolean;
+  hasRid: boolean;
+}) {
+  if (!hasRid) return null;
+  return (
+    <p className="mb-4 text-[11px] text-neutral-400">
+      {pending ? "Saving draft…" : savedAt ? "Draft saved to server" : "Draft persists as you go"}
+    </p>
   );
 }
 
@@ -782,102 +997,15 @@ function errorMessage(err: unknown): string {
   return "Something went wrong. Please try again.";
 }
 
-const SEVERITY_CHIP: Record<JdBiasMatch["severity"], string> = {
-  block: "border-status-error-200 bg-status-error-50 text-status-error-700",
-  warn: "border-status-warning-200 bg-status-warning-50 text-status-warning-700",
-};
-
-/** Distinct matches by term+category, first-seen order (mirrors the server). */
-function distinctMatches(matches: JdBiasMatch[]): JdBiasMatch[] {
-  const seen = new Set<string>();
-  const out: JdBiasMatch[] = [];
-  for (const m of matches) {
-    const key = `${m.term.toLowerCase()}|${m.category}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    out.push(m);
-  }
-  return out;
-}
-
-/** Live inclusive-language flags in the JD step. Chips + suggestions. */
-function BiasFlagsPanel({ scan }: { scan: JdBiasScan | null }) {
-  if (!scan || scan.enforcement === "off" || scan.matches.length === 0) return null;
-  const flags = distinctMatches(scan.matches);
-  return (
-    <div className="mt-5 rounded-lg border border-neutral-200 bg-neutral-50 p-4">
-      <p className="mb-2 text-xs font-medium text-neutral-700">
-        Inclusive-language check — {flags.length} {flags.length === 1 ? "flag" : "flags"}
-        {scan.enforcement === "block" && scan.blockingCount > 0
-          ? ` (${scan.blockingCount} must be revised before submit)`
-          : ""}
-      </p>
-      <div className="space-y-1.5">
-        {flags.map((m) => (
-          <div key={`${m.term}-${m.category}`} className="flex flex-wrap items-baseline gap-2">
-            <span
-              className={`inline-flex items-center rounded-full border px-2 py-0.5 text-[11px] ${SEVERITY_CHIP[m.severity]}`}
-            >
-              {m.matchedText}
-            </span>
-            <span className="text-[11px] text-neutral-500">
-              {BIAS_CATEGORY_META[m.category].label}
-            </span>
-            {m.suggestion ? (
-              <span className="text-xs text-neutral-600">— {m.suggestion}</span>
-            ) : null}
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-/** Advisory AI-assisted observations. Clearly labelled, never blocking. */
-function AiReviewCards({ observations }: { observations: JdAiObservation[] }) {
-  return (
-    <div className="mt-4">
-      <p className="mb-2 text-xs font-medium text-brand-700">
-        AI-assisted review — advisory only, does not block submission
-      </p>
-      {observations.length === 0 ? (
-        <p className="text-sm text-neutral-500">
-          The AI reviewer flagged nothing beyond the lexicon check.
-        </p>
-      ) : (
-        <div className="space-y-2">
-          {observations.map((o, i) => (
-            <div key={i} className="rounded-lg border border-brand-200 bg-brand-50/40 p-3">
-              <p className="text-xs italic text-neutral-500">&ldquo;{o.excerpt}&rdquo;</p>
-              <p className="mt-1 text-sm text-neutral-800">{o.issue}</p>
-              <p className="mt-1 text-sm text-brand-700">Suggestion: {o.suggestion}</p>
-            </div>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
-
-/** Review-step gate status: clean / warnings / blocked. */
+/** Review-step gate status: clean / warnings / blocked (real lexicon scan). */
 function GateStatus({ scan }: { scan: JdBiasScan | null }) {
   if (!scan || scan.enforcement === "off") return null;
   const blocked = scanBlocksSubmit(scan);
   if (blocked) {
-    const blocking = distinctMatches(scan.matches.filter((m) => m.severity === "block"));
     return (
       <div className="mt-4 rounded-lg border border-status-error-200 bg-status-error-50 px-4 py-3 text-sm text-status-error-700">
-        <p className="font-medium">
-          Bias gate: blocked — {blocking.length} {blocking.length === 1 ? "term" : "terms"} must be
-          revised before you can submit.
-        </p>
-        <ul className="mt-1 list-inside list-disc">
-          {blocking.map((m) => (
-            <li key={m.term}>
-              &ldquo;{m.matchedText}&rdquo;{m.suggestion ? ` — ${m.suggestion}` : ""}
-            </li>
-          ))}
-        </ul>
+        Bias gate: blocked — the JD contains coded language that must be revised before you can
+        submit (see the Job description step).
       </div>
     );
   }

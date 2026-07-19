@@ -129,14 +129,42 @@ export function buildJdGenerationPrompt(input: BuildJdGenerationPromptInput): Bu
 }
 
 /**
+ * The composable JD shape: the AI-backed core (summary / responsibilities /
+ * requirements) plus RO-02's optional manual sections. The AI generator only
+ * ever produces the core three; the wizard v2 editor lets the requirement
+ * owner add the rest by hand, and they render here when present.
+ */
+export interface ComposableJdSections extends JdGenerationResponse {
+  niceToHave?: string[];
+  toolsTech?: string[];
+  education?: string[];
+  softSkills?: string[];
+}
+
+/**
  * Render the structured sections into the canonical `jd_text` blob stored on
  * `jd_versions.jd_text` (what AI scoring + the apply page read). Deterministic
- * so a re-render of unchanged sections produces identical text.
+ * so a re-render of unchanged sections produces identical text. RO-02's
+ * optional sections are appended only when they carry non-blank items, so a
+ * pre-RO-02 (three-section) JD renders byte-identically to before.
  */
-export function composeJdText(sections: JdGenerationResponse, positionTitle: string): string {
+export function composeJdText(sections: ComposableJdSections, positionTitle: string): string {
   const lines: string[] = [`# ${positionTitle}`, "", sections.summary, "", "## Responsibilities"];
   for (const r of sections.responsibilities) lines.push(`- ${r}`);
   lines.push("", "## Requirements");
   for (const r of sections.requirements) lines.push(`- ${r}`);
+
+  const extra: [string, string[] | undefined][] = [
+    ["Nice to have", sections.niceToHave],
+    ["Tools & technology", sections.toolsTech],
+    ["Education", sections.education],
+    ["Soft skills", sections.softSkills],
+  ];
+  for (const [heading, items] of extra) {
+    const clean = (items ?? []).map((s) => s.trim()).filter((s) => s.length > 0);
+    if (clean.length === 0) continue;
+    lines.push("", `## ${heading}`);
+    for (const item of clean) lines.push(`- ${item}`);
+  }
   return lines.join("\n");
 }

@@ -540,6 +540,13 @@
       "when": 1784500000009,
       "tag": "0079_ro_01_audit_triggers",
       "breakpoints": true
+    },
+    {
+      "idx": 80,
+      "version": "7",
+      "when": 1784500000010,
+      "tag": "0080_ro_02_jd_skills_min_years_notes",
+      "breakpoints": true
     }
   ]
 }
