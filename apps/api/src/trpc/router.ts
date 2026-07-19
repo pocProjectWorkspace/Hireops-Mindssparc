@@ -110,6 +110,10 @@ import {
   getCandidateByIdOutputSchema,
   listCandidatesInputSchema,
   listCandidatesOutputSchema,
+  listCandidatesByRequisitionInputSchema,
+  listCandidatesByRequisitionOutputSchema,
+  listShortlistInputSchema,
+  listShortlistOutputSchema,
   getRequisitionByIdInputSchema,
   getRequisitionByIdOutputSchema,
   listRequisitionsInputSchema,
@@ -606,6 +610,14 @@ import {
   countNicheSkills,
   type ReqDifficulty,
 } from "../lib/req-health";
+import {
+  computeRecruiterUrgency,
+  computeMustHavePct,
+  computeRiskFlags,
+  matchTier,
+  type UrgencySlaState,
+  type MatchTier,
+} from "../lib/recruiter-urgency";
 import { enqueueNotification, signLink, hashToken, verifyLink } from "@hireops/notifications";
 import { assertRuleAttachable, IncompatibleApprovalRuleError } from "@hireops/agent-actions";
 import {
@@ -15906,7 +15918,426 @@ export const appRouter = router({
       const db = requireDb(ctx);
       return buildRequisitionInsights(db, ctx, input.requisitionId ?? null);
     }),
+
+  // ═══════════ RECR-02 — recruiter candidates + AI shortlist ═══════════
+
+  /**
+   * listCandidatesByRequisition (/candidates) — the recruiter's "All candidates"
+   * surface, grouped into one accordion per requisition. Read-only over the live
+   * pipeline (applications × candidates × persons × requisitions × positions,
+   * plus jd_skills for the must-have %). Tenant-scoped by RLS. Every derived
+   * value is DETERMINISTIC:
+   *   - AI Score is the REAL applications.ai_score (null → the UI says "unscored"
+   *     honestly, reusing the AIScoreBadge honesty pattern).
+   *   - Missing Info is a count + labels of absent REQUIRED profile fields,
+   *     computed inline here (RECR-03 owns a dedicated missing-info lib; when it
+   *     merges, swap this block for that lib — the candidateMissingInfoSchema
+   *     shape is the seam).
+   *   - must-have % is the share of the req's required skills the candidate lists.
+   *   - phase is a coarse pipeline rollup over the group's application stages.
+   * Same identity-masking as triage (HRHEAD-03 screeningPrivacy) applies per row.
+   */
+  listCandidatesByRequisition: protectedProcedure
+    .input(listCandidatesByRequisitionInputSchema)
+    .output(listCandidatesByRequisitionOutputSchema)
+    .query(async ({ ctx, input }) => {
+      requireAnyRole(ctx, RECRUITER_SURFACE_ROLES, "Candidates is a recruiter surface.");
+      const db = requireDb(ctx);
+      const search = input.search?.trim().toLowerCase() ?? "";
+
+      const conds = [
+        ...(input.stage ? [eq(applications.currentStage, input.stage)] : []),
+        ...(input.source ? [eq(applications.source, input.source)] : []),
+      ];
+
+      const rows = await db
+        .select({
+          candidateId: candidates.id,
+          applicationId: applications.id,
+          requisitionId: applications.requisitionId,
+          roleTitle: positions.title,
+          jdVersionId: requisitions.jdVersionId,
+          fullName: persons.fullName,
+          email: persons.emailPrimary,
+          phone: persons.phonePrimary,
+          locationCountry: persons.locationCountry,
+          locationCity: persons.locationCity,
+          linkedinUrl: persons.linkedinUrl,
+          resumeUrl: candidates.currentResumeUrl,
+          parsedSkills: candidates.parsedSkills,
+          yearsOfExperience: candidates.yearsOfExperience,
+          expectedSalaryInrPaise: applications.expectedSalaryInrPaise,
+          source: applications.source,
+          stage: applications.currentStage,
+          stageEnteredAt: applications.stageEnteredAt,
+          aiScore: applications.aiScore,
+          aiScoreExplanation: applications.aiScoreExplanation,
+        })
+        .from(applications)
+        .innerJoin(
+          candidates,
+          and(
+            eq(applications.candidateId, candidates.id),
+            eq(applications.tenantId, candidates.tenantId),
+          ),
+        )
+        .innerJoin(
+          persons,
+          and(eq(candidates.personId, persons.id), eq(candidates.tenantId, persons.tenantId)),
+        )
+        .innerJoin(
+          requisitions,
+          and(
+            eq(applications.requisitionId, requisitions.id),
+            eq(applications.tenantId, requisitions.tenantId),
+          ),
+        )
+        .innerJoin(
+          positions,
+          and(
+            eq(requisitions.positionId, positions.id),
+            eq(requisitions.tenantId, positions.tenantId),
+          ),
+        )
+        .where(conds.length ? and(...conds) : undefined)
+        .orderBy(desc(applications.aiScore), desc(applications.createdAt));
+
+      // Must-have skills per jd_version (one query, then a lookup map).
+      const mustHaveByJd = await loadMustHaveSkillsByJdVersion(
+        db,
+        rows.map((r) => r.jdVersionId),
+      );
+
+      const privacy = ctx.tenantId
+        ? await resolveTenantScreeningPrivacyDb(ctx.tenantId)
+        : resolveScreeningPrivacy({});
+
+      const groups = new Map<
+        string,
+        { requisitionId: string; roleTitle: string; stages: ApplicationStage[]; rows: unknown[] }
+      >();
+
+      for (const r of rows) {
+        if (search) {
+          const hay = `${r.fullName ?? ""} ${recruiterRefCode(r.candidateId)}`.toLowerCase();
+          if (!hay.includes(search)) continue;
+        }
+        const parsed = narrowParsedSkills(r.parsedSkills);
+        const mask = resolveCandidateMasking({ roles: ctx.roles, stage: r.stage, privacy });
+        const noticePeriodDays = parsed.notice_period_days ?? null;
+        const mustHavePct = computeMustHavePct(
+          mustHaveByJd.get(r.jdVersionId) ?? [],
+          parsed.skills,
+        );
+        const missingInfo = computeCandidateMissingInfo({
+          phone: r.phone,
+          location: r.locationCountry ?? r.locationCity,
+          linkedinUrl: r.linkedinUrl,
+          resumeUrl: r.resumeUrl,
+          expectedSalaryInrPaise: r.expectedSalaryInrPaise,
+          noticePeriodDays,
+        });
+
+        let g = groups.get(r.requisitionId);
+        if (!g) {
+          g = {
+            requisitionId: r.requisitionId,
+            roleTitle: r.roleTitle ?? "Untitled requisition",
+            stages: [],
+            rows: [],
+          };
+          groups.set(r.requisitionId, g);
+        }
+        g.stages.push(r.stage);
+        g.rows.push({
+          candidateId: r.candidateId,
+          applicationId: r.applicationId,
+          refCode: recruiterRefCode(r.candidateId),
+          fullName: mask.maskName ? candidateMaskLabel(r.candidateId) : r.fullName,
+          email: mask.maskContact ? null : r.email,
+          source: r.source,
+          stage: r.stage,
+          stageEnteredAt: r.stageEnteredAt.toISOString(),
+          aiScore: r.aiScore === null ? null : Number(r.aiScore),
+          aiScoreExplanation: r.aiScoreExplanation,
+          yearsOfExperience: r.yearsOfExperience === null ? null : Number(r.yearsOfExperience),
+          noticePeriodDays,
+          mustHavePct,
+          missingInfo,
+        });
+      }
+
+      const shapedGroups = [...groups.values()]
+        .map((g) => ({
+          requisitionId: g.requisitionId,
+          roleTitle: g.roleTitle,
+          phase: rollupRequisitionPhase(g.stages),
+          candidateCount: g.rows.length,
+          rows: g.rows,
+        }))
+        .filter((g) => g.candidateCount > 0)
+        .sort((a, b) => b.candidateCount - a.candidateCount);
+
+      return {
+        groups: shapedGroups as never,
+        totalCandidates: shapedGroups.reduce((sum, g) => sum + g.candidateCount, 0),
+      };
+    }),
+
+  /**
+   * listShortlist (/shortlist) — the AI Shortlist surface. A THRESHOLD control
+   * over the REAL ai_score, three DETERMINISTIC match tiers (excellent 90+,
+   * good 75–89, partial 60–74), and per-row Urgency (the deterministic
+   * recruiter-urgency composite — NOT the prototype's fabricated "Heat Score")
+   * + Risk (deterministic flags). Tier count cards summarise the full scored
+   * pool; the table lists scored, non-terminal applications at/above the
+   * threshold. Tenant-scoped by RLS.
+   */
+  listShortlist: protectedProcedure
+    .input(listShortlistInputSchema)
+    .output(listShortlistOutputSchema)
+    .query(async ({ ctx, input }) => {
+      requireAnyRole(ctx, RECRUITER_SURFACE_ROLES, "Shortlist is a recruiter surface.");
+      const db = requireDb(ctx);
+
+      const rows = await db
+        .select({
+          candidateId: candidates.id,
+          applicationId: applications.id,
+          jdVersionId: requisitions.jdVersionId,
+          roleTitle: positions.title,
+          compBandMax: positions.compBandMax,
+          compCurrency: positions.compCurrency,
+          fullName: persons.fullName,
+          parsedSkills: candidates.parsedSkills,
+          expectedSalaryInrPaise: applications.expectedSalaryInrPaise,
+          source: applications.source,
+          stage: applications.currentStage,
+          stageEnteredAt: applications.stageEnteredAt,
+          aiScore: applications.aiScore,
+          aiScoreExplanation: applications.aiScoreExplanation,
+        })
+        .from(applications)
+        .innerJoin(
+          candidates,
+          and(
+            eq(applications.candidateId, candidates.id),
+            eq(applications.tenantId, candidates.tenantId),
+          ),
+        )
+        .innerJoin(
+          persons,
+          and(eq(candidates.personId, persons.id), eq(candidates.tenantId, persons.tenantId)),
+        )
+        .innerJoin(
+          requisitions,
+          and(
+            eq(applications.requisitionId, requisitions.id),
+            eq(applications.tenantId, requisitions.tenantId),
+          ),
+        )
+        .innerJoin(
+          positions,
+          and(
+            eq(requisitions.positionId, positions.id),
+            eq(requisitions.tenantId, positions.tenantId),
+          ),
+        )
+        .where(
+          and(
+            dsql`${applications.aiScore} IS NOT NULL`,
+            dsql`${applications.currentStage} NOT IN ('offer_declined', 'withdrawn', 'recruiter_rejected')`,
+          ),
+        )
+        .orderBy(desc(applications.aiScore));
+
+      const mustHaveByJd = await loadMustHaveSkillsByJdVersion(
+        db,
+        rows.map((r) => r.jdVersionId),
+      );
+
+      const privacy = ctx.tenantId
+        ? await resolveTenantScreeningPrivacyDb(ctx.tenantId)
+        : resolveScreeningPrivacy({});
+
+      const tierCounts = { excellent: 0, good: 0, partial: 0 };
+      const shaped: unknown[] = [];
+
+      for (const r of rows) {
+        const score = Number(r.aiScore);
+        const tier = matchTier(score);
+        if (tier === "excellent") tierCounts.excellent += 1;
+        else if (tier === "good") tierCounts.good += 1;
+        else if (tier === "partial") tierCounts.partial += 1;
+        // Below the partial floor never belongs on the shortlist.
+        if (tier === null || tier === "below") continue;
+        if (score < input.threshold) continue;
+
+        const parsed = narrowParsedSkills(r.parsedSkills);
+        const noticePeriodDays = parsed.notice_period_days ?? null;
+        const mustHavePct = computeMustHavePct(
+          mustHaveByJd.get(r.jdVersionId) ?? [],
+          parsed.skills,
+        );
+        const hoursInStage = (Date.now() - r.stageEnteredAt.getTime()) / (60 * 60 * 1000);
+        const urgency = computeRecruiterUrgency({
+          slaState: slaStateFor(r.stage, hoursInStage),
+          daysInStage: Math.floor(hoursInStage / 24),
+          noticePeriodDays,
+        });
+        const riskFlags = computeRiskFlags({
+          mustHavePct,
+          expectedSalaryInrPaise: r.expectedSalaryInrPaise,
+          compBandMaxInrPaise: compBandMaxToPaise(r.compBandMax, r.compCurrency),
+        });
+        const mask = resolveCandidateMasking({ roles: ctx.roles, stage: r.stage, privacy });
+
+        shaped.push({
+          candidateId: r.candidateId,
+          applicationId: r.applicationId,
+          fullName: mask.maskName ? candidateMaskLabel(r.candidateId) : r.fullName,
+          source: r.source,
+          roleTitle: r.roleTitle ?? "Untitled requisition",
+          aiScore: score,
+          aiScoreExplanation: r.aiScoreExplanation,
+          tier: tier as MatchTier,
+          mustHavePct,
+          noticePeriodDays,
+          stage: r.stage,
+          urgencyIndex: urgency.index,
+          urgencyRank: urgency.rank,
+          riskFlags,
+        });
+      }
+
+      return {
+        threshold: input.threshold,
+        tierCounts,
+        rows: shaped as never,
+      };
+    }),
 });
+
+// ═══════════ RECR-02 — recruiter surface helpers ═══════════
+//
+// Small, pure-ish (DB-reading where noted) helpers for the candidates +
+// shortlist procedures. The DETERMINISTIC verdict logic (urgency, tiers,
+// must-have %, risk) lives in lib/recruiter-urgency.ts; these adapt live rows
+// to that engine and compute the presentation-only bits (ref codes, phase
+// rollup, missing-info) — the latter READ-ONLY until RECR-03's missing-info
+// lib merges (candidateMissingInfoSchema is the seam).
+
+/** Recruiter-facing roles that may see the candidates + shortlist surfaces.
+ * admin is the super-role (requireAnyRole includes it explicitly). */
+const RECRUITER_SURFACE_ROLES = new Set(["admin", "recruiter"]);
+
+/** Short, stable, human-readable candidate code from the uuid — a DISPLAY id
+ * (first 6 hex of the real id), not fabricated data. */
+function recruiterRefCode(candidateId: string): string {
+  return `C-${candidateId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+}
+
+interface NarrowedParsedSkills {
+  skills: string[];
+  notice_period_days: number | null;
+}
+
+/** parsed_skills is opaque jsonb; narrow the two fields the recruiter surfaces
+ * read. notice_period_days is real seeded data (demo parser output). */
+function narrowParsedSkills(value: unknown): NarrowedParsedSkills {
+  if (!value || typeof value !== "object") return { skills: [], notice_period_days: null };
+  const v = value as { skills?: unknown; notice_period_days?: unknown };
+  const skills = Array.isArray(v.skills)
+    ? v.skills.filter((s): s is string => typeof s === "string")
+    : [];
+  const notice =
+    typeof v.notice_period_days === "number" && Number.isFinite(v.notice_period_days)
+      ? v.notice_period_days
+      : null;
+  return { skills, notice_period_days: notice };
+}
+
+/** Load each jd_version's MUST-HAVE (required) skill names, keyed by version. */
+async function loadMustHaveSkillsByJdVersion(
+  db: TenantBoundDb,
+  jdVersionIds: string[],
+): Promise<Map<string, string[]>> {
+  const out = new Map<string, string[]>();
+  const ids = [...new Set(jdVersionIds)];
+  if (ids.length === 0) return out;
+  const rows = await db
+    .select({ jdVersionId: jdSkills.jdVersionId, skillName: jdSkills.skillName })
+    .from(jdSkills)
+    .where(and(inArray(jdSkills.jdVersionId, ids), eq(jdSkills.isRequired, true)));
+  for (const r of rows) {
+    const list = out.get(r.jdVersionId) ?? [];
+    list.push(r.skillName);
+    out.set(r.jdVersionId, list);
+  }
+  return out;
+}
+
+/**
+ * DETERMINISTIC missing-info summary — count + labels of REQUIRED profile
+ * fields that are absent. Labels are drawn ONLY from fields we actually store;
+ * there is deliberately no "work authorization" line because there is no column
+ * for it (no fabrication). RECR-03 owns the shared lib; when it merges, replace
+ * this body and keep the candidateMissingInfoSchema shape.
+ */
+function computeCandidateMissingInfo(input: {
+  phone: string | null;
+  location: string | null;
+  linkedinUrl: string | null;
+  resumeUrl: string | null;
+  expectedSalaryInrPaise: bigint | null;
+  noticePeriodDays: number | null;
+}): { count: number; fields: string[] } {
+  const fields: string[] = [];
+  if (!input.phone) fields.push("Phone");
+  if (!input.location) fields.push("Location");
+  if (!input.resumeUrl) fields.push("Résumé");
+  if (!input.linkedinUrl) fields.push("Portfolio");
+  if (input.expectedSalaryInrPaise == null) fields.push("Salary expectation");
+  if (input.noticePeriodDays == null) fields.push("Notice period");
+  return { count: fields.length, fields };
+}
+
+/** Coarse pipeline phase for a requisition, rolled up from its applications'
+ * stages (most-advanced wins). Deterministic; not a stored field. */
+function rollupRequisitionPhase(
+  stages: ApplicationStage[],
+): "sourcing" | "screening" | "interviewing" | "offer" | "closed" {
+  const has = (s: ApplicationStage) => stages.includes(s);
+  if (has("offer_drafted") || has("offer_accepted")) return "offer";
+  if (has("tech_interview") || has("hr_round")) return "interviewing";
+  if (has("ai_screening") || has("recruiter_review") || has("shortlisted")) return "screening";
+  if (has("application_received")) return "sourcing";
+  return "closed";
+}
+
+/** Resolve the SLA state for the urgency engine from live hours-in-stage vs the
+ * stage's SLA threshold. "at_risk" is the last quarter before breach. */
+function slaStateFor(stage: ApplicationStage, hoursInStage: number): UrgencySlaState {
+  const threshold = (SLA_THRESHOLDS_HOURS as Record<string, number | null>)[stage];
+  if (threshold == null) return "none";
+  if (hoursInStage > threshold) return "breached";
+  if (hoursInStage > threshold * 0.75) return "at_risk";
+  return "ok";
+}
+
+/** Convert a position comp-band ceiling (MAJOR units, its own currency) to INR
+ * paise for the risk salary-gap check. Returns null when no band is set or the
+ * band is in a non-INR currency (we do not cross-convert — INR here always). */
+function compBandMaxToPaise(
+  compBandMax: string | null,
+  compCurrency: string | null,
+): bigint | null {
+  if (compBandMax == null) return null;
+  if (compCurrency != null && compCurrency.toUpperCase() !== "INR") return null;
+  const rupees = Number(compBandMax);
+  if (!Number.isFinite(rupees)) return null;
+  return BigInt(Math.round(rupees * 100));
+}
 
 // ═══════════ DASH-01 — persona-dashboard builders ═══════════
 //

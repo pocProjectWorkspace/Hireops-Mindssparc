@@ -194,6 +194,127 @@ export const listCandidatesOutputSchema = z.object({
 export type ListCandidatesInput = z.infer<typeof listCandidatesInputSchema>;
 export type ListCandidatesOutput = z.infer<typeof listCandidatesOutputSchema>;
 
+// ─────────────── RECR-02: candidates grouped by requisition ───────────────
+
+/**
+ * The recruiter's "All candidates" surface — one accordion group per
+ * requisition. Read-only over existing pipeline data (applications ×
+ * candidates × persons × requisitions × jd_skills). No new tables.
+ */
+export const listCandidatesByRequisitionInputSchema = z.object({
+  search: z.string().max(120).optional(),
+  stage: applicationStageSchema.optional(),
+  source: applicationSourceSchema.optional(),
+});
+
+/** Coarse pipeline phase for a requisition, rolled up DETERMINISTICALLY from
+ * the stages of its in-flight applications (not a stored field). */
+export const requisitionPhaseSchema = z.enum([
+  "sourcing",
+  "screening",
+  "interviewing",
+  "offer",
+  "closed",
+]);
+export type RequisitionPhase = z.infer<typeof requisitionPhaseSchema>;
+
+/**
+ * Missing-info summary for one candidate — a DETERMINISTIC count + labels of
+ * required profile fields that are absent. RECR-02 computes this inline (see
+ * the router); RECR-03 owns a dedicated missing-info lib. When RECR-03 merges,
+ * this shape is the seam: swap the inline computation for the lib, keep the
+ * field. Labels are drawn only from fields we actually store — no fabricated
+ * "work authorization" when there is no column for it.
+ */
+export const candidateMissingInfoSchema = z.object({
+  count: z.number().int().min(0),
+  fields: z.array(z.string()),
+});
+
+export const candidateByRequisitionRowSchema = z.object({
+  candidateId: z.string().uuid(),
+  applicationId: z.string().uuid(),
+  /** Short display code derived from the candidate id (e.g. "C-4F2A1B"). */
+  refCode: z.string(),
+  fullName: z.string().nullable(),
+  email: z.string().nullable(),
+  source: applicationSourceSchema.nullable(),
+  stage: applicationStageSchema,
+  stageEnteredAt: z.string(),
+  aiScore: z.number().nullable(),
+  aiScoreExplanation: z.unknown().nullable(),
+  yearsOfExperience: z.number().nullable(),
+  noticePeriodDays: z.number().nullable(),
+  mustHavePct: z.number().nullable(),
+  missingInfo: candidateMissingInfoSchema,
+});
+
+export const candidatesByRequisitionGroupSchema = z.object({
+  requisitionId: z.string().uuid(),
+  roleTitle: z.string(),
+  phase: requisitionPhaseSchema,
+  candidateCount: z.number().int().min(0),
+  rows: z.array(candidateByRequisitionRowSchema),
+});
+
+export const listCandidatesByRequisitionOutputSchema = z.object({
+  groups: z.array(candidatesByRequisitionGroupSchema),
+  totalCandidates: z.number().int().min(0),
+});
+
+export type ListCandidatesByRequisitionInput = z.infer<
+  typeof listCandidatesByRequisitionInputSchema
+>;
+export type ListCandidatesByRequisitionOutput = z.infer<
+  typeof listCandidatesByRequisitionOutputSchema
+>;
+
+// ─────────────── RECR-02: AI shortlist ───────────────
+
+export const matchTierSchema = z.enum(["excellent", "good", "partial", "below"]);
+export type MatchTierValue = z.infer<typeof matchTierSchema>;
+
+export const urgencyRankSchema = z.enum(["high", "medium", "low"]);
+export const riskFlagSchema = z.enum(["skill_mismatch", "salary_gap"]);
+
+export const listShortlistInputSchema = z.object({
+  /** Minimum real ai_score to include in the table (0–100). Tier count cards
+   * always summarise the full scored pool, independent of this. */
+  threshold: z.number().min(0).max(100).default(75),
+});
+
+export const shortlistRowSchema = z.object({
+  candidateId: z.string().uuid(),
+  applicationId: z.string().uuid(),
+  fullName: z.string().nullable(),
+  source: applicationSourceSchema.nullable(),
+  roleTitle: z.string(),
+  aiScore: z.number(),
+  aiScoreExplanation: z.unknown().nullable(),
+  tier: matchTierSchema,
+  mustHavePct: z.number().nullable(),
+  noticePeriodDays: z.number().nullable(),
+  stage: applicationStageSchema,
+  /** DETERMINISTIC urgency index (0–100) + rank. NOT a probability. */
+  urgencyIndex: z.number().int().min(0).max(100),
+  urgencyRank: urgencyRankSchema,
+  riskFlags: z.array(riskFlagSchema),
+});
+
+export const listShortlistOutputSchema = z.object({
+  threshold: z.number(),
+  tierCounts: z.object({
+    excellent: z.number().int().min(0),
+    good: z.number().int().min(0),
+    partial: z.number().int().min(0),
+  }),
+  rows: z.array(shortlistRowSchema),
+});
+
+export type ListShortlistInput = z.infer<typeof listShortlistInputSchema>;
+export type ListShortlistOutput = z.infer<typeof listShortlistOutputSchema>;
+export type ShortlistRow = z.infer<typeof shortlistRowSchema>;
+
 // ─────────────── getRequisitionById ───────────────
 
 export const getRequisitionByIdInputSchema = z.object({

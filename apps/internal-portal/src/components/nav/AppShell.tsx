@@ -60,6 +60,8 @@ import {
 export type PortalNavKey =
   | "home"
   | "triage"
+  | "candidates"
+  | "shortlist"
   | "approvals"
   | "onboarding"
   | "offboarding"
@@ -113,6 +115,23 @@ const MAIN_NAV: NavItem[] = [
   // DASH-01: the persona landing dashboard is Home — first item, all roles.
   { key: "home", label: "Home", href: "/dashboard", icon: <IconHome /> },
   { key: "triage", label: "Triage", href: "/triage", icon: <IconTriage /> },
+  {
+    // RECR-02: the recruiter's grouped-by-role candidates surface + the AI
+    // shortlist. recruiter + admin, matching the RECRUITER_SURFACE_ROLES API
+    // gate on listCandidatesByRequisition / listShortlist.
+    key: "candidates",
+    label: "Candidates",
+    href: "/candidates",
+    icon: <IconUsers />,
+    roles: ["recruiter", "admin"],
+  },
+  {
+    key: "shortlist",
+    label: "AI Shortlist",
+    href: "/shortlist",
+    icon: <IconFeasibility />,
+    roles: ["recruiter", "admin"],
+  },
   { key: "approvals", label: "Approvals", href: "/approvals", icon: <IconApprovals /> },
   { key: "onboarding", label: "Onboarding", href: "/onboarding", icon: <IconOnboarding /> },
   {
