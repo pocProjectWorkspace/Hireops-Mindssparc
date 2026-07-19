@@ -49,6 +49,13 @@ export const candidates = pgTable(
     currentResumeUrl: text("current_resume_url"),
     parsedSkills: jsonb("parsed_skills"),
     yearsOfExperience: numeric("years_of_experience", { precision: 4, scale: 1 }),
+    // CAND-02 — candidate self-service Profile page (/candidate/profile).
+    // Free-text professional narrative the candidate maintains themselves; no
+    // existing home. Everything else the profile edits reuses its canonical
+    // column (persons.phone/location, parsed_skills.skills/notice_period_days,
+    // applications.expected_salary_inr_paise). Both NULLABLE (additive).
+    experienceSummary: text("experience_summary"),
+    educationSummary: text("education_summary"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },

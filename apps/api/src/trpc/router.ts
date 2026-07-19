@@ -33,6 +33,7 @@ import {
   lte,
   ne,
   notInArray,
+  or,
   sql as dsql,
   type SQL,
 } from "drizzle-orm";
@@ -64,6 +65,7 @@ import {
   interviewFeedback,
   interviewPrep,
   workdaySyncOutbox,
+  notificationOutbox,
   aiScoreOutbox,
   automationAgents,
   agentTriggers,
@@ -385,6 +387,14 @@ import {
   candidateAcceptOfferInputSchema,
   candidateAcceptOfferOutputSchema,
   candidateGetMyOnboardingOutputSchema,
+  candidateGetProfileOutputSchema,
+  candidateUpdateProfileInputSchema,
+  candidateUpdateProfileOutputSchema,
+  candidateListMyNotificationsOutputSchema,
+  candidateMarkNotificationsReadInputSchema,
+  candidateMarkNotificationsReadOutputSchema,
+  type CandidateProfile,
+  type CandidateNotificationRow,
   getMyDashboardOutputSchema,
   getHrHeadDashboardExtrasOutputSchema,
   partnerGetDashboardStatsOutputSchema,
@@ -654,6 +664,7 @@ import {
   countNicheSkills,
   type ReqDifficulty,
 } from "../lib/req-health";
+import { displayForCandidateNotification } from "../lib/candidate-notifications";
 import {
   computeRecruiterUrgency,
   computeMustHavePct,
@@ -778,6 +789,89 @@ function requireDb(ctx: HonoTRPCContext) {
     });
   }
   return ctx.db;
+}
+
+// ─────────── CAND-02 — candidate self-service profile read ───────────
+
+interface CandidateProfileSqlRow {
+  full_name: string | null;
+  email_primary: string | null;
+  phone_primary: string | null;
+  location_city: string | null;
+  location_country: string | null;
+  experience_summary: string | null;
+  education_summary: string | null;
+  skills: unknown;
+  notice_period_days: string | null;
+  expected_salary_inr_paise: string | number | null;
+}
+
+/**
+ * The candidate's own editable profile, read from the CANONICAL sources the
+ * profile page edits (persons contact/location, candidates summaries +
+ * parsed_skills.skills/notice_period_days, and the most-recent application's
+ * captured salary expectation). Person-scoped by the caller. Nothing internal
+ * (no AI score / scorecard) is selected. Shared by candidateGetProfile and the
+ * echo on candidateUpdateProfile so both see identical shape.
+ */
+async function readCandidateProfile(
+  db: ReturnType<typeof requireDb>,
+  tenantId: string,
+  personId: string,
+): Promise<CandidateProfile> {
+  const result = await db.execute(dsql`
+    SELECT
+      p.full_name,
+      p.email_primary,
+      p.phone_primary,
+      p.location_city,
+      p.location_country,
+      c.experience_summary,
+      c.education_summary,
+      c.parsed_skills->'skills' AS skills,
+      c.parsed_skills->>'notice_period_days' AS notice_period_days,
+      (
+        SELECT a.expected_salary_inr_paise
+        FROM public.applications a
+        WHERE a.tenant_id = c.tenant_id
+          AND a.candidate_id = c.id
+          AND a.expected_salary_inr_paise IS NOT NULL
+        ORDER BY a.created_at DESC
+        LIMIT 1
+      ) AS expected_salary_inr_paise
+    FROM public.persons p
+    LEFT JOIN public.candidates c
+      ON c.person_id = p.id AND c.tenant_id = p.tenant_id
+    WHERE p.tenant_id = ${tenantId}
+      AND p.id = ${personId}
+    LIMIT 1
+  `);
+  const rows =
+    (result as unknown as { rows?: CandidateProfileSqlRow[] }).rows ??
+    (result as unknown as CandidateProfileSqlRow[]);
+  const row = rows[0];
+
+  const rawSkills = row?.skills;
+  const skills = Array.isArray(rawSkills)
+    ? rawSkills.filter((s): s is string => typeof s === "string")
+    : [];
+  const noticeRaw = row?.notice_period_days;
+  const notice = noticeRaw != null && noticeRaw !== "" ? Number(noticeRaw) : null;
+  const salaryRaw = row?.expected_salary_inr_paise;
+  const salary = salaryRaw != null ? Number(salaryRaw) : null;
+
+  return {
+    fullName: row?.full_name ?? null,
+    email: row?.email_primary ?? null,
+    phone: row?.phone_primary ?? null,
+    locationCity: row?.location_city ?? null,
+    locationCountry: row?.location_country ?? null,
+    experienceSummary: row?.experience_summary ?? null,
+    educationSummary: row?.education_summary ?? null,
+    skills,
+    noticePeriodDays: notice != null && Number.isFinite(notice) ? notice : null,
+    expectedSalaryInrPaise: salary != null && Number.isFinite(salary) ? salary : null,
+  };
 }
 
 // REQ-01 (Wave A) role gates. admin is the super-role everywhere in this
@@ -15536,6 +15630,299 @@ export const appRouter = router({
             sizeBytes: input.sizeBytes,
           });
           return { documentId: result.documentId, status: result.status as "uploaded" };
+        },
+      );
+    }),
+
+  // ─────────── CAND-02 — candidate self-service profile ───────────
+
+  /**
+   * candidateGetProfile — the caller's own editable profile, read from the
+   * canonical sources (persons contact/location + candidates summaries +
+   * parsed_skills + most-recent application salary). Person-scoped. Discloses
+   * NOTHING internal (no AI score, no scorecard).
+   */
+  candidateGetProfile: candidateProcedure
+    .output(candidateGetProfileOutputSchema)
+    .query(async ({ ctx }) => {
+      const db = ctx.db;
+      if (!db) {
+        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "candidate ctx.db missing" });
+      }
+      const profile = await readCandidateProfile(
+        db,
+        ctx.candidate.tenantId,
+        ctx.candidate.personId,
+      );
+      return { profile };
+    }),
+
+  /**
+   * candidateUpdateProfile — the candidate edits their OWN profile. Every field
+   * is optional (send only what changed; `null` clears). Persists to the exact
+   * canonical sources the recruiter's Missing-Info tracker reads — honest loop
+   * closure:
+   *   - phone / location   → persons.phone_primary(+normalised) / location_*
+   *   - experience/education→ candidates.experience_summary / education_summary
+   *   - skills / notice     → candidates.parsed_skills (shallow-merged jsonb)
+   *   - salary expectation  → the caller's LIVE (non-terminal) applications'
+   *                           expected_salary_inr_paise
+   * Person-scoped throughout (RLS scopes tenant; the person_id predicate scopes
+   * identity). Echoes the freshly-persisted profile so the client re-syncs.
+   */
+  candidateUpdateProfile: candidateProcedure
+    .input(candidateUpdateProfileInputSchema)
+    .output(candidateUpdateProfileOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      return withAudit(
+        "candidate_update_profile",
+        ctx,
+        { fields: Object.keys(input) },
+        async () => {
+          const db = ctx.db;
+          if (!db) {
+            throw new TRPCError({
+              code: "INTERNAL_SERVER_ERROR",
+              message: "candidate ctx.db missing",
+            });
+          }
+          const tenantId = ctx.candidate.tenantId;
+          const personId = ctx.candidate.personId;
+
+          // 1) persons — contact + location (self-editable identity fields).
+          const personSet: Record<string, unknown> = {};
+          if (input.phone !== undefined) {
+            const phone = input.phone && input.phone.length > 0 ? input.phone : null;
+            personSet.phonePrimary = phone;
+            personSet.phoneNormalised = phone ? normalisePhone(phone) : null;
+          }
+          if (input.locationCity !== undefined) {
+            personSet.locationCity =
+              input.locationCity && input.locationCity.length > 0 ? input.locationCity : null;
+          }
+          if (input.locationCountry !== undefined) {
+            personSet.locationCountry = input.locationCountry
+              ? input.locationCountry.toUpperCase()
+              : null;
+          }
+          if (Object.keys(personSet).length > 0) {
+            personSet.updatedAt = new Date();
+            await db
+              .update(persons)
+              .set(personSet)
+              .where(and(eq(persons.tenantId, tenantId), eq(persons.id, personId)));
+          }
+
+          // Resolve the caller's candidate row (recruitment lifecycle record).
+          // A candidate_account person that never entered the pipeline may lack
+          // one; the candidate-side writes below are skipped honestly in that
+          // case (persons-side edits above still persist).
+          const [cand] = await db
+            .select({ id: candidates.id })
+            .from(candidates)
+            .where(and(eq(candidates.tenantId, tenantId), eq(candidates.personId, personId)))
+            .limit(1);
+
+          if (cand) {
+            // 2) candidates — free-text summaries.
+            const candSet: Record<string, unknown> = {};
+            if (input.experienceSummary !== undefined) {
+              candSet.experienceSummary =
+                input.experienceSummary && input.experienceSummary.length > 0
+                  ? input.experienceSummary
+                  : null;
+            }
+            if (input.educationSummary !== undefined) {
+              candSet.educationSummary =
+                input.educationSummary && input.educationSummary.length > 0
+                  ? input.educationSummary
+                  : null;
+            }
+            if (Object.keys(candSet).length > 0) {
+              candSet.updatedAt = new Date();
+              await db
+                .update(candidates)
+                .set(candSet)
+                .where(and(eq(candidates.tenantId, tenantId), eq(candidates.id, cand.id)));
+            }
+
+            // 3) candidates.parsed_skills — shallow-merge skills + notice period
+            // so we preserve every other parsed key (personal, work_history,
+            // education, parse_metadata). COALESCE guards a null blob.
+            const patch: Record<string, unknown> = {};
+            if (input.skills !== undefined) patch.skills = input.skills;
+            if (input.noticePeriodDays !== undefined) {
+              patch.notice_period_days = input.noticePeriodDays;
+            }
+            if (Object.keys(patch).length > 0) {
+              await db.execute(dsql`
+              UPDATE public.candidates
+              SET parsed_skills = COALESCE(parsed_skills, '{}'::jsonb) || ${JSON.stringify(patch)}::jsonb,
+                  updated_at = now()
+              WHERE tenant_id = ${tenantId} AND id = ${cand.id}
+            `);
+            }
+
+            // 4) applications — the salary expectation the recruiter chases lives
+            // per-application. Apply to every LIVE (non-terminal) application this
+            // candidate has, so the Missing-Info tracker clears across each open
+            // pipeline. Terminal applications (accepted/declined/withdrawn/
+            // rejected) are left untouched — their record is locked.
+            if (input.expectedSalaryInrPaise !== undefined) {
+              await db.execute(dsql`
+              UPDATE public.applications
+              SET expected_salary_inr_paise = ${input.expectedSalaryInrPaise}::bigint,
+                  updated_at = now()
+              WHERE tenant_id = ${tenantId}
+                AND candidate_id = ${cand.id}
+                AND current_stage NOT IN (
+                  'offer_accepted', 'offer_declined', 'withdrawn', 'recruiter_rejected'
+                )
+            `);
+            }
+          }
+
+          const profile = await readCandidateProfile(db, tenantId, personId);
+          return { ok: true as const, profile };
+        },
+      );
+    }),
+
+  // ─────────── CAND-02 — candidate notifications feed ───────────
+
+  /**
+   * candidateListMyNotifications — the caller's OWN notifications, a person-
+   * scoped read of REAL notification_outbox rows (recipient_type = 'candidate',
+   * matched by recipient_candidate_id or the candidate's email for pre-account
+   * rows like activation). NOTHING is fabricated: an empty outbox → an empty
+   * feed. Each row's title/category is a deterministic map from its template
+   * key; the body is the row's real email subject (or a mapped fallback).
+   */
+  candidateListMyNotifications: candidateProcedure
+    .output(candidateListMyNotificationsOutputSchema)
+    .query(async ({ ctx }) => {
+      const db = ctx.db;
+      if (!db) {
+        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "candidate ctx.db missing" });
+      }
+      const tenantId = ctx.candidate.tenantId;
+      const email = ctx.candidate.email;
+
+      const [cand] = await db
+        .select({ id: candidates.id })
+        .from(candidates)
+        .where(
+          and(eq(candidates.tenantId, tenantId), eq(candidates.personId, ctx.candidate.personId)),
+        )
+        .limit(1);
+
+      const recipientFilter = cand
+        ? or(
+            eq(notificationOutbox.recipientCandidateId, cand.id),
+            eq(notificationOutbox.recipientEmail, email),
+          )
+        : eq(notificationOutbox.recipientEmail, email);
+
+      const rows = await db
+        .select({
+          id: notificationOutbox.id,
+          templateKey: notificationOutbox.templateKey,
+          subject: notificationOutbox.subject,
+          createdAt: notificationOutbox.createdAt,
+          readAt: notificationOutbox.candidateReadAt,
+        })
+        .from(notificationOutbox)
+        .where(
+          and(
+            eq(notificationOutbox.tenantId, tenantId),
+            eq(notificationOutbox.recipientType, "candidate"),
+            ne(notificationOutbox.status, "cancelled"),
+            recipientFilter,
+          ),
+        )
+        .orderBy(desc(notificationOutbox.createdAt))
+        .limit(100);
+
+      let unreadCount = 0;
+      const items: CandidateNotificationRow[] = rows.map((r) => {
+        const display = displayForCandidateNotification(r.templateKey);
+        const read = r.readAt != null;
+        if (!read) unreadCount += 1;
+        const body = r.subject && r.subject.trim().length > 0 ? r.subject : display.fallbackBody;
+        return {
+          id: r.id,
+          category: display.category,
+          title: display.title,
+          body,
+          read,
+          createdAt: r.createdAt.toISOString(),
+        };
+      });
+
+      return { items, unreadCount };
+    }),
+
+  /**
+   * candidateMarkNotificationsRead — mark the caller's unread candidate
+   * notifications read (all, or a specific set by id). Person-scoped; persists
+   * to notification_outbox.candidate_read_at. Idempotent (only NULL rows are
+   * touched). Returns how many rows were newly marked.
+   */
+  candidateMarkNotificationsRead: candidateProcedure
+    .input(candidateMarkNotificationsReadInputSchema)
+    .output(candidateMarkNotificationsReadOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      return withAudit(
+        "candidate_mark_notifications_read",
+        ctx,
+        { count: input.ids?.length ?? "all" },
+        async () => {
+          const db = ctx.db;
+          if (!db) {
+            throw new TRPCError({
+              code: "INTERNAL_SERVER_ERROR",
+              message: "candidate ctx.db missing",
+            });
+          }
+          const tenantId = ctx.candidate.tenantId;
+          const email = ctx.candidate.email;
+
+          const [cand] = await db
+            .select({ id: candidates.id })
+            .from(candidates)
+            .where(
+              and(
+                eq(candidates.tenantId, tenantId),
+                eq(candidates.personId, ctx.candidate.personId),
+              ),
+            )
+            .limit(1);
+
+          const recipientFilter = cand
+            ? or(
+                eq(notificationOutbox.recipientCandidateId, cand.id),
+                eq(notificationOutbox.recipientEmail, email),
+              )
+            : eq(notificationOutbox.recipientEmail, email);
+
+          const conditions = [
+            eq(notificationOutbox.tenantId, tenantId),
+            eq(notificationOutbox.recipientType, "candidate"),
+            ne(notificationOutbox.status, "cancelled"),
+            isNull(notificationOutbox.candidateReadAt),
+            recipientFilter,
+          ];
+          if (input.ids && input.ids.length > 0) {
+            conditions.push(inArray(notificationOutbox.id, input.ids));
+          }
+
+          const updated = await db
+            .update(notificationOutbox)
+            .set({ candidateReadAt: new Date() })
+            .where(and(...conditions))
+            .returning({ id: notificationOutbox.id });
+
+          return { ok: true as const, markedCount: updated.length };
         },
       );
     }),

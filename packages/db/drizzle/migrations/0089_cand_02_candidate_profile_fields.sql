@@ -1,0 +1,35 @@
+-- =====================================================================
+-- 0089_cand_02_candidate_profile_fields.sql — CAND-02 (hand-written)
+--
+-- Additive-only columns on candidates for the candidate self-service Profile
+-- page (/candidate/profile). The candidate edits their own professional
+-- narrative; these two fields have no existing home:
+--   experience_summary  text  NULL — the candidate's free-text summary of
+--     their experience (the prototype's "Experience Summary" textarea).
+--   education_summary    text  NULL — a one-line education summary
+--     (the prototype's single "Education" field, e.g. "B.Tech CS, IIT (2020)").
+--
+-- Everything else the Profile page edits already has a home and is REUSED, not
+-- duplicated here:
+--   - phone / location  → persons.phone_primary / location_city / location_country
+--   - skills            → candidates.parsed_skills->'skills' (jsonb array)
+--   - notice period     → candidates.parsed_skills->>'notice_period_days'
+--   - salary expectation→ applications.expected_salary_inr_paise (per live app)
+-- Writing to those exact sources is the honest loop-closure: the recruiter's
+-- Missing-Info tracker (apps/api/src/lib/missing-info.ts) reads the same
+-- columns, so a candidate filling their profile clears the recruiter's chase.
+--
+-- Both columns are NULLABLE with no default, so every existing candidates row
+-- and every pre-CAND-02 insert path is valid unchanged (additive contract).
+-- candidates already carries its tenant_isolation policy + audit trigger from
+-- its create migration; ADD COLUMN does not disturb either — no companion
+-- FORCE-RLS / audit migration needed.
+--
+-- NOTE (parallel-ticket coordination): CAND-02 reserves migrations 0089–0091.
+-- The filename + journal idx may need renumbering at reconciliation if a
+-- sibling ticket also lands migrations this pass. This migration only ALTERs
+-- candidates (no new table, no DDL clash).
+-- =====================================================================
+
+ALTER TABLE "candidates" ADD COLUMN IF NOT EXISTS "experience_summary" text;
+ALTER TABLE "candidates" ADD COLUMN IF NOT EXISTS "education_summary" text;

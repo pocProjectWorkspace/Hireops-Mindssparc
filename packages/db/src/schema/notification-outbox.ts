@@ -81,6 +81,12 @@ export const notificationOutbox = pgTable(
     claimedBy: text("claimed_by"),
     sentAt: timestamp("sent_at", { withTimezone: true }),
     providerMessageId: text("provider_message_id"),
+    // CAND-02 — persisted read-state for the candidate Notifications feed
+    // (/candidate/notifications). NULL = unread; set only by
+    // candidateMarkNotificationsRead, person-scoped via recipient_candidate_id
+    // (one candidate recipient per row → correct grain). The delivery worker
+    // never reads this column. Additive + NULLABLE.
+    candidateReadAt: timestamp("candidate_read_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [
@@ -97,6 +103,12 @@ export const notificationOutbox = pgTable(
       table.recipientEmail,
       table.sentAt,
     ),
+    // CAND-02 — the candidate Notifications feed: person-scoped by
+    // recipient_candidate_id, newest-first by created_at. Partial to skip the
+    // internal-directed rows that carry no candidate recipient.
+    index("idx_notification_outbox_candidate_feed")
+      .on(table.tenantId, table.recipientCandidateId, table.createdAt)
+      .where(sql`recipient_candidate_id IS NOT NULL`),
     // Orphan recovery sweep — partial to skip rows that aren't stuck.
     index("idx_notification_outbox_orphan_sweep")
       .on(table.claimedAt)

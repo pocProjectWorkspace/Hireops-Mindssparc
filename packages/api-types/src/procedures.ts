@@ -4240,6 +4240,134 @@ export type CandidateAttachApplicationDocumentOutput = z.infer<
   typeof candidateAttachApplicationDocumentOutputSchema
 >;
 
+// ═══════════════════ CAND-02 — candidate self-service profile ═══════════════════
+
+// ─────────────── candidateGetProfile ───────────────
+
+/**
+ * The candidate's own editable profile (person + candidate scoped). Read of
+ * the exact columns the Profile page edits — nothing internal (no AI score, no
+ * scorecard). `email` and `fullName` are read-only on the page (identity, not
+ * self-editable here). Salary is INR paise; `expectedSalaryInrPaise` reflects
+ * the most-recent application's captured expectation (null when none set).
+ */
+export const candidateProfileSchema = z.object({
+  fullName: z.string().nullable(),
+  email: z.string().nullable(),
+  phone: z.string().nullable(),
+  locationCity: z.string().nullable(),
+  // ISO-3166-1 alpha-2 (matches persons.location_country), or null.
+  locationCountry: z.string().nullable(),
+  experienceSummary: z.string().nullable(),
+  educationSummary: z.string().nullable(),
+  skills: z.array(z.string()),
+  noticePeriodDays: z.number().int().nonnegative().nullable(),
+  expectedSalaryInrPaise: z.number().int().nonnegative().nullable(),
+});
+export type CandidateProfile = z.infer<typeof candidateProfileSchema>;
+
+export const candidateGetProfileOutputSchema = z.object({
+  profile: candidateProfileSchema,
+});
+export type CandidateGetProfileOutput = z.infer<typeof candidateGetProfileOutputSchema>;
+
+// ─────────────── candidateUpdateProfile ───────────────
+
+/**
+ * The candidate's own profile edit. Every field OPTIONAL — the client sends
+ * only what changed. Persistence targets the canonical sources (honest loop
+ * closure with the recruiter Missing-Info tracker):
+ *   phone/location → persons; skills/noticePeriodDays → candidates.parsed_skills;
+ *   experience/education → candidates.*_summary;
+ *   expectedSalaryInrPaise → the caller's LIVE (non-terminal) applications.
+ * `null` explicitly clears a field; omitted leaves it unchanged.
+ */
+export const candidateUpdateProfileInputSchema = z
+  .object({
+    phone: z.string().trim().max(40).nullable().optional(),
+    locationCity: z.string().trim().max(120).nullable().optional(),
+    locationCountry: z
+      .string()
+      .trim()
+      .length(2)
+      .regex(/^[A-Za-z]{2}$/, "location must be a 2-letter country code")
+      .nullable()
+      .optional(),
+    experienceSummary: z.string().trim().max(4000).nullable().optional(),
+    educationSummary: z.string().trim().max(1000).nullable().optional(),
+    skills: z.array(z.string().trim().min(1).max(80)).max(60).optional(),
+    noticePeriodDays: z.number().int().min(0).max(365).nullable().optional(),
+    expectedSalaryInrPaise: z.number().int().min(0).max(1_000_000_000_00).nullable().optional(),
+  })
+  .strict();
+export type CandidateUpdateProfileInput = z.infer<typeof candidateUpdateProfileInputSchema>;
+
+/** Echoes the freshly-persisted profile so the client re-syncs without a refetch. */
+export const candidateUpdateProfileOutputSchema = z.object({
+  ok: z.literal(true),
+  profile: candidateProfileSchema,
+});
+export type CandidateUpdateProfileOutput = z.infer<typeof candidateUpdateProfileOutputSchema>;
+
+// ─────────────── candidateListMyNotifications ───────────────
+
+/**
+ * One candidate-directed notification, projected from a REAL notification_outbox
+ * row (recipient_type = 'candidate', scoped to the caller). `category` drives
+ * the icon/tint deterministically (interview / application / offer / document /
+ * account / general); `title` is a human label mapped from the template key;
+ * `body` is the row's real subject line (or a mapped fallback). Nothing is
+ * fabricated — an empty feed renders an empty state.
+ */
+export const candidateNotificationCategorySchema = z.enum([
+  "interview",
+  "application",
+  "offer",
+  "document",
+  "account",
+  "general",
+]);
+export type CandidateNotificationCategory = z.infer<typeof candidateNotificationCategorySchema>;
+
+export const candidateNotificationRowSchema = z.object({
+  id: z.string().uuid(),
+  category: candidateNotificationCategorySchema,
+  title: z.string(),
+  body: z.string().nullable(),
+  read: z.boolean(),
+  createdAt: z.string(),
+});
+export type CandidateNotificationRow = z.infer<typeof candidateNotificationRowSchema>;
+
+export const candidateListMyNotificationsOutputSchema = z.object({
+  items: z.array(candidateNotificationRowSchema),
+  unreadCount: z.number().int().nonnegative(),
+});
+export type CandidateListMyNotificationsOutput = z.infer<
+  typeof candidateListMyNotificationsOutputSchema
+>;
+
+// ─────────────── candidateMarkNotificationsRead ───────────────
+
+/** Mark all (or a specific set of) the caller's unread notifications read. */
+export const candidateMarkNotificationsReadInputSchema = z
+  .object({
+    // Omitted / empty → mark ALL of the caller's unread rows read.
+    ids: z.array(z.string().uuid()).max(500).optional(),
+  })
+  .strict();
+export type CandidateMarkNotificationsReadInput = z.infer<
+  typeof candidateMarkNotificationsReadInputSchema
+>;
+
+export const candidateMarkNotificationsReadOutputSchema = z.object({
+  ok: z.literal(true),
+  markedCount: z.number().int().nonnegative(),
+});
+export type CandidateMarkNotificationsReadOutput = z.infer<
+  typeof candidateMarkNotificationsReadOutputSchema
+>;
+
 // ─────────── case audit trail (/case-audit) ───────────
 
 /**
