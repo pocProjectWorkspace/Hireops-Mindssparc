@@ -136,7 +136,6 @@ export function PanelInterviewBrief({
     },
   });
 
-  const iv = brief.interview;
   const notesMissing = !notes.trim();
   const canSubmit = Boolean(recommendation) && !notesMissing;
   const hasDraftText = Boolean(strengths.trim() || concerns.trim() || notes.trim());

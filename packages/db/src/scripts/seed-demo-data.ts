@@ -2380,6 +2380,71 @@ async function main() {
          'kabir.shah.panel@example.test', 'IN', 'Hyderabad'),
         (${PANEL_PERSON_C}, ${tid}, 'Nikhil Verma', 'nikhil.verma.panel@example.test',
          'nikhil.verma.panel@example.test', 'IN', 'Pune')`;
+      await poolSql`
+      INSERT INTO public.candidates
+        (id, tenant_id, person_id, source, consent_version, parsed_skills, years_of_experience)
+      VALUES
+        (${PANEL_CAND_A}, ${tid}, ${PANEL_PERSON_A}, 'career_site', 'v1',
+         ${JSON.stringify(["TypeScript", "React", "Node.js", "PostgreSQL"])}::jsonb, 6.0),
+        (${PANEL_CAND_B}, ${tid}, ${PANEL_PERSON_B}, 'referral', 'v1',
+         ${JSON.stringify(["Java", "Spring", "Kafka", "AWS"])}::jsonb, 8.0),
+        (${PANEL_CAND_C}, ${tid}, ${PANEL_PERSON_C}, 'job_board', 'v1',
+         ${JSON.stringify(["Python", "Django", "Redis", "GCP"])}::jsonb, 5.0)`;
+      await poolSql`
+      INSERT INTO public.applications
+        (id, tenant_id, candidate_id, requisition_id, source, current_stage, stage_entered_at,
+         assigned_recruiter_membership_id, created_at, knockout_passed)
+      VALUES
+        (${PANEL_APP_A}, ${tid}, ${PANEL_CAND_A}, ${DEMO_REQ}, 'career_site', 'tech_interview',
+         now() - interval '3 days', ${recruiterId}, now() - interval '10 days', true),
+        (${PANEL_APP_B}, ${tid}, ${PANEL_CAND_B}, ${DEMO_REQ}, 'referral', 'tech_interview',
+         now() - interval '3 hours', ${recruiterId}, now() - interval '9 days', true),
+        (${PANEL_APP_C}, ${tid}, ${PANEL_CAND_C}, ${DEMO_REQ}, 'job_board', 'tech_interview',
+         now() - interval '30 hours', ${recruiterId}, now() - interval '8 days', true)`;
+
+      // (A) In-window NOW — scheduled, its [start,end] window contains now.
+      await poolSql`
+      INSERT INTO public.interviews
+        (id, tenant_id, application_id, requisition_id, round_number, round_name,
+         status, scorecard_template, scheduled_start, scheduled_end, duration_minutes,
+         mode, meeting_url, candidate_confirmed_at, created_by_membership_id)
+      VALUES (${PANEL_IV_A}, ${tid}, ${PANEL_APP_A}, ${DEMO_REQ}, 1, 'Technical deep-dive',
+              'scheduled', 'technical', now() - interval '15 minutes',
+              now() + interval '45 minutes', 60, 'video',
+              'https://meet.example.test/hireops-panel-a', now() - interval '1 day', ${recruiterId})`;
+      await poolSql`
+      INSERT INTO public.interview_panelists (tenant_id, interview_id, membership_id, is_lead)
+      VALUES (${tid}, ${PANEL_IV_A}, ${panelId}, true)`;
+
+      // (B) Completed a few hours ago — pending scorecard (today).
+      await poolSql`
+      INSERT INTO public.interviews
+        (id, tenant_id, application_id, requisition_id, round_number, round_name,
+         status, scorecard_template, scheduled_start, scheduled_end, duration_minutes,
+         mode, meeting_url, candidate_confirmed_at, created_by_membership_id)
+      VALUES (${PANEL_IV_B}, ${tid}, ${PANEL_APP_B}, ${DEMO_REQ}, 1, 'Technical deep-dive',
+              'completed', 'technical', now() - interval '3 hours',
+              now() - interval '2 hours', 60, 'video',
+              'https://meet.example.test/hireops-panel-b', now() - interval '2 days', ${recruiterId})`;
+      await poolSql`
+      INSERT INTO public.interview_panelists (tenant_id, interview_id, membership_id, is_lead)
+      VALUES (${tid}, ${PANEL_IV_B}, ${panelId}, true)`;
+
+      // (C) Completed >24h ago — pending scorecard + OVERDUE (drives the nudge).
+      await poolSql`
+      INSERT INTO public.interviews
+        (id, tenant_id, application_id, requisition_id, round_number, round_name,
+         status, scorecard_template, scheduled_start, scheduled_end, duration_minutes,
+         mode, meeting_url, candidate_confirmed_at, created_by_membership_id)
+      VALUES (${PANEL_IV_C}, ${tid}, ${PANEL_APP_C}, ${DEMO_REQ}, 1, 'Technical deep-dive',
+              'completed', 'technical', now() - interval '30 hours',
+              now() - interval '29 hours', 60, 'video',
+              'https://meet.example.test/hireops-panel-c', now() - interval '3 days', ${recruiterId})`;
+      await poolSql`
+      INSERT INTO public.interview_panelists (tenant_id, interview_id, membership_id, is_lead)
+      VALUES (${tid}, ${PANEL_IV_C}, ${panelId}, true)`;
+    }
+
     // ── 4c. PANEL-02 — panel1 session demo (board + brief + AI prep) ─────
     //
     // A self-contained candidate on DEMO_REQ (so real JD skills exist for the
@@ -2426,25 +2491,6 @@ async function main() {
       INSERT INTO public.candidates
         (id, tenant_id, person_id, source, consent_version, parsed_skills, years_of_experience)
       VALUES
-        (${PANEL_CAND_A}, ${tid}, ${PANEL_PERSON_A}, 'career_site', 'v1',
-         ${JSON.stringify(["TypeScript", "React", "Node.js", "PostgreSQL"])}::jsonb, 6.0),
-        (${PANEL_CAND_B}, ${tid}, ${PANEL_PERSON_B}, 'referral', 'v1',
-         ${JSON.stringify(["Java", "Spring", "Kafka", "AWS"])}::jsonb, 8.0),
-        (${PANEL_CAND_C}, ${tid}, ${PANEL_PERSON_C}, 'job_board', 'v1',
-         ${JSON.stringify(["Python", "Django", "Redis", "GCP"])}::jsonb, 5.0)`;
-      await poolSql`
-      INSERT INTO public.applications
-        (id, tenant_id, candidate_id, requisition_id, source, current_stage, stage_entered_at,
-         assigned_recruiter_membership_id, created_at, knockout_passed)
-      VALUES
-        (${PANEL_APP_A}, ${tid}, ${PANEL_CAND_A}, ${DEMO_REQ}, 'career_site', 'tech_interview',
-         now() - interval '3 days', ${recruiterId}, now() - interval '10 days', true),
-        (${PANEL_APP_B}, ${tid}, ${PANEL_CAND_B}, ${DEMO_REQ}, 'referral', 'tech_interview',
-         now() - interval '3 hours', ${recruiterId}, now() - interval '9 days', true),
-        (${PANEL_APP_C}, ${tid}, ${PANEL_CAND_C}, ${DEMO_REQ}, 'job_board', 'tech_interview',
-         now() - interval '30 hours', ${recruiterId}, now() - interval '8 days', true)`;
-
-      // (A) In-window NOW — scheduled, its [start,end] window contains now.
         (${P2_CAND}, ${tid}, ${P2_PERSON}, 'career_site', 'v1',
          ${JSON.stringify(["Python", "AWS", "PostgreSQL", "Docker", "System design"])}::jsonb, 6.0)`;
       await poolSql`
@@ -2458,15 +2504,6 @@ async function main() {
         (id, tenant_id, application_id, requisition_id, round_number, round_name,
          status, scorecard_template, scheduled_start, scheduled_end, duration_minutes,
          mode, meeting_url, candidate_confirmed_at, created_by_membership_id)
-      VALUES (${PANEL_IV_A}, ${tid}, ${PANEL_APP_A}, ${DEMO_REQ}, 1, 'Technical deep-dive',
-              'scheduled', 'technical', now() - interval '15 minutes',
-              now() + interval '45 minutes', 60, 'video',
-              'https://meet.example.test/hireops-panel-a', now() - interval '1 day', ${recruiterId})`;
-      await poolSql`
-      INSERT INTO public.interview_panelists (tenant_id, interview_id, membership_id, is_lead)
-      VALUES (${tid}, ${PANEL_IV_A}, ${panelId}, true)`;
-
-      // (B) Completed a few hours ago — pending scorecard (today).
       VALUES (${P2_IV_R1}, ${tid}, ${P2_APP}, ${DEMO_REQ}, 1, 'Technical screen',
               'completed', 'technical', now() - interval '4 days',
               now() - interval '4 days' + interval '60 minutes', 60,
@@ -2506,15 +2543,6 @@ async function main() {
         (id, tenant_id, application_id, requisition_id, round_number, round_name,
          status, scorecard_template, scheduled_start, scheduled_end, duration_minutes,
          mode, meeting_url, candidate_confirmed_at, created_by_membership_id)
-      VALUES (${PANEL_IV_B}, ${tid}, ${PANEL_APP_B}, ${DEMO_REQ}, 1, 'Technical deep-dive',
-              'completed', 'technical', now() - interval '3 hours',
-              now() - interval '2 hours', 60, 'video',
-              'https://meet.example.test/hireops-panel-b', now() - interval '2 days', ${recruiterId})`;
-      await poolSql`
-      INSERT INTO public.interview_panelists (tenant_id, interview_id, membership_id, is_lead)
-      VALUES (${tid}, ${PANEL_IV_B}, ${panelId}, true)`;
-
-      // (C) Completed >24h ago — pending scorecard + OVERDUE (drives the nudge).
       VALUES (${P2_IV_UPCOMING}, ${tid}, ${P2_APP}, ${DEMO_REQ}, 3, 'Hiring manager',
               'scheduled', 'manager', now() + interval '2 days',
               now() + interval '2 days' + interval '45 minutes', 45,
@@ -2529,13 +2557,6 @@ async function main() {
         (id, tenant_id, application_id, requisition_id, round_number, round_name,
          status, scorecard_template, scheduled_start, scheduled_end, duration_minutes,
          mode, meeting_url, candidate_confirmed_at, created_by_membership_id)
-      VALUES (${PANEL_IV_C}, ${tid}, ${PANEL_APP_C}, ${DEMO_REQ}, 1, 'Technical deep-dive',
-              'completed', 'technical', now() - interval '30 hours',
-              now() - interval '29 hours', 60, 'video',
-              'https://meet.example.test/hireops-panel-c', now() - interval '3 days', ${recruiterId})`;
-      await poolSql`
-      INSERT INTO public.interview_panelists (tenant_id, interview_id, membership_id, is_lead)
-      VALUES (${tid}, ${PANEL_IV_C}, ${panelId}, true)`;
       VALUES (${P2_IV_DONE}, ${tid}, ${P2_APP}, ${DEMO_REQ}, 4, 'Bar raiser',
               'completed', 'general', now() - interval '1 day',
               now() - interval '1 day' + interval '45 minutes', 45,

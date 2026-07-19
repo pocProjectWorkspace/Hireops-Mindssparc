@@ -143,6 +143,7 @@ export const AI_FEATURE_META: Record<
     usageFeatures: ["feedback_summary"],
     description:
       "Tidies a panellist's OWN draft scorecard text (strengths / concerns / notes) into clearer prose, on demand from the scorecard form. It only ever rewrites the interviewer's own words back into the editable fields — it never scores, never submits, and never invents claims about the candidate. Disabling hides the 'Summarise my notes' button and refuses the call.",
+  },
   interview_prep: {
     label: "Interview prep (panel brief)",
     usageFeatures: ["interview_prep"],
