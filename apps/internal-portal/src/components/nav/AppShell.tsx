@@ -37,6 +37,8 @@ import {
   IconFeasibility,
   IconHrCases,
   IconHrRounds,
+  IconCompOffers,
+  IconHrAnalytics,
   IconWorkflows,
   IconAudit,
   IconCosts,
@@ -67,6 +69,8 @@ export type PortalNavKey =
   | "feasibility"
   | "hr-cases"
   | "hr-rounds"
+  | "comp-offers"
+  | "hr-analytics"
   | "workflows"
   | "audit"
   | "costs"
@@ -197,6 +201,24 @@ const MAIN_NAV: NavItem[] = [
     href: "/panel",
     icon: <IconPanel />,
     roles: ["panel_member", "admin"],
+  },
+  {
+    // HROPS-02: the comp & offer desk — the hr_ops comp operator's surface.
+    // hr_ops + admin, matching the listCompDesk API gate.
+    key: "comp-offers",
+    label: "Comp & offers",
+    href: "/comp-offers",
+    icon: <IconCompOffers />,
+    roles: ["hr_ops", "admin"],
+  },
+  {
+    // HROPS-02: HR analytics — five real charts over the pipeline / offers.
+    // hr_ops + admin, matching the getHrAnalytics API gate.
+    key: "hr-analytics",
+    label: "HR analytics",
+    href: "/hr-analytics",
+    icon: <IconHrAnalytics />,
+    roles: ["hr_ops", "admin"],
   },
 ];
 

@@ -85,6 +85,7 @@ import {
   marketBenchmarks,
   requisitionFeasibility,
   hrRoundAssessments,
+  compRecommendations,
   approvalRequests,
   approvalDecisions,
   recordPiiAccess,
@@ -416,6 +417,29 @@ import {
   type ListHrCasesOutput,
   type GetHrCaseDetailOutput,
   type ListHrRoundsOutput,
+  // HROPS-02 comp & offer desk + offer approval + HR analytics
+  listCompDeskInputSchema,
+  listCompDeskOutputSchema,
+  getCompAnalysisInputSchema,
+  getCompAnalysisOutputSchema,
+  generateCompRationaleInputSchema,
+  generateCompRationaleOutputSchema,
+  compRationaleAiSchema,
+  draftCompOfferInputSchema,
+  draftCompOfferOutputSchema,
+  requestOfferApprovalInputSchema,
+  requestOfferApprovalOutputSchema,
+  decideOfferApprovalInputSchema,
+  decideOfferApprovalOutputSchema,
+  listOfferApprovalsInputSchema,
+  listOfferApprovalsOutputSchema,
+  getHrAnalyticsOutputSchema,
+  type CompVerdict,
+  type CompDeskRow,
+  type CompRationale,
+  type CompRationaleAi,
+  type OfferApprovalStatus,
+  type BenefitKey,
 } from "@hireops/api-types";
 import { createClient } from "@supabase/supabase-js";
 import {
@@ -453,6 +477,19 @@ import {
   REQ_FEASIBILITY_SCHEMA_NAME,
   REQ_FEASIBILITY_FEATURE,
 } from "../lib/req-feasibility";
+import {
+  evaluateComp,
+  canEvaluateComp,
+  bandMidpointPaise,
+  type CompRuleResult,
+} from "../lib/comp-rules";
+import {
+  buildCompRationalePrompt,
+  compRationaleJsonSchema,
+  COMP_RATIONALE_PROMPT_VERSION,
+  COMP_RATIONALE_SCHEMA_NAME,
+  COMP_RATIONALE_FEATURE,
+} from "../lib/comp-recommendation";
 import { enqueueNotification, signLink, hashToken, verifyLink } from "@hireops/notifications";
 import { assertRuleAttachable, IncompatibleApprovalRuleError } from "@hireops/agent-actions";
 import {
@@ -657,6 +694,15 @@ const FEASIBILITY_ROLES = new Set(["admin", "hr_head"]);
 // case list, case detail, the HR-round scheduler view, and the assessment save.
 // RLS still scopes every row to the tenant on top of this persona gate.
 const HR_OPS_CASE_ROLES = new Set(["admin", "hr_ops"]);
+
+// HROPS-02 — Comp & offer desk + HR analytics. The desk + analytics are the
+// hr_ops persona surface (the comp/offer operator); admin is the super-role.
+// recruiter drafts offers elsewhere (triage drawer) but the dedicated comp desk
+// is hr_ops. OUT-OF-BAND offer approval decisions route to hr_head (mirrors the
+// requisition approval decider) — hr_ops REQUESTS approval + sees status only.
+// RLS still scopes rows to the tenant on top of every gate.
+const COMP_DESK_ROLES = new Set(["admin", "hr_ops"]);
+const OFFER_APPROVAL_DECIDE_ROLES = new Set(["admin", "hr_head"]);
 
 // The set of internal roles an admin may assign (mirror of api-types'
 // INTERNAL_TENANT_ROLES). A submitted role outside this set is rejected by the
@@ -1290,6 +1336,320 @@ interface CandidateOnbDocSqlRow {
   file_name: string | null;
   rejection_reason: string | null;
   uploaded_at: Date | string | null;
+}
+
+// ─────────────── HROPS-02 comp & offer desk helpers ───────────────
+//
+// The desk covers applications in the three late stages where a comp decision
+// is live. Each row carries the DETERMINISTIC verdict (rule engine) + the latest
+// offer + the out-of-band approval posture. Assembly is set-based (three
+// batched reads, joined in JS) so the table is one round-trip regardless of size.
+
+const COMP_DESK_STAGES: ApplicationStage[] = ["hr_round", "offer_drafted", "offer_accepted"];
+
+/** A sensible default benefit suggestion for the composer — honest, not derived
+ * from anything sensitive; the recruiter edits freely. */
+const DEFAULT_SUGGESTED_BENEFITS: BenefitKey[] = ["health_insurance", "provident_fund"];
+
+/** MAJOR rupees (positions comp band; numeric string) → INR paise. */
+function majorRupeesToPaise(major: string | number | null): number | null {
+  if (major == null) return null;
+  const n = typeof major === "string" ? Number(major) : major;
+  if (!Number.isFinite(n)) return null;
+  return Math.round(n * 100);
+}
+
+/** The out-of-band approval posture for one offer. base ≤ band max → not
+ * required. Over band → posture follows the latest approval_request status. */
+function computeOfferApprovalStatus(
+  offerBasePaise: number | null,
+  bandMaxPaise: number | null,
+  latestApprovalStatus: string | null,
+): OfferApprovalStatus {
+  if (offerBasePaise == null || bandMaxPaise == null) return "not_required";
+  if (offerBasePaise <= bandMaxPaise) return "not_required";
+  if (latestApprovalStatus === "approved") return "approved";
+  if (latestApprovalStatus === "pending") return "pending";
+  if (latestApprovalStatus === "rejected") return "rejected";
+  return "required";
+}
+
+interface CompDeskAssembled {
+  row: CompDeskRow;
+  positionTitle: string;
+  ruleResult: CompRuleResult | null;
+}
+
+/**
+ * Assemble the Comp & offer desk rows (all, or one application). Pure reads —
+ * no AI, no writes. RLS scopes every read to the tenant on top of the explicit
+ * tenant predicate.
+ */
+async function loadCompDeskAssembled(
+  db: TenantBoundDb,
+  tenantId: string,
+  applicationId?: string,
+): Promise<CompDeskAssembled[]> {
+  const conds = [
+    eq(applications.tenantId, tenantId),
+    inArray(applications.currentStage, COMP_DESK_STAGES),
+  ];
+  if (applicationId) conds.push(eq(applications.id, applicationId));
+
+  const facets = await db
+    .select({
+      applicationId: applications.id,
+      currentStage: applications.currentStage,
+      expectedSalary: applications.expectedSalaryInrPaise,
+      candidateName: persons.fullName,
+      roleTitle: positions.title,
+      bandMin: positions.compBandMin,
+      bandMax: positions.compBandMax,
+      compCurrency: positions.compCurrency,
+    })
+    .from(applications)
+    .innerJoin(candidates, eq(candidates.id, applications.candidateId))
+    .innerJoin(persons, eq(persons.id, candidates.personId))
+    .innerJoin(requisitions, eq(requisitions.id, applications.requisitionId))
+    .innerJoin(positions, eq(positions.id, requisitions.positionId))
+    .where(and(...conds))
+    .orderBy(desc(applications.stageEnteredAt));
+
+  if (facets.length === 0) return [];
+  const appIds = facets.map((f) => f.applicationId);
+
+  // Latest offer per application (most recent by createdAt).
+  const offerRows = await db
+    .select({
+      id: offers.id,
+      applicationId: offers.applicationId,
+      status: offers.status,
+      baseSalaryInrPaise: offers.baseSalaryInrPaise,
+      createdAt: offers.createdAt,
+    })
+    .from(offers)
+    .where(and(eq(offers.tenantId, tenantId), inArray(offers.applicationId, appIds)))
+    .orderBy(desc(offers.createdAt));
+  const latestOfferByApp = new Map<string, (typeof offerRows)[number]>();
+  for (const o of offerRows) {
+    if (!latestOfferByApp.has(o.applicationId)) latestOfferByApp.set(o.applicationId, o);
+  }
+
+  // Latest offer approval_request per offer.
+  const offerIds = [...latestOfferByApp.values()].map((o) => o.id);
+  const approvalByOffer = new Map<string, { id: string; status: string; requestedAt: Date }>();
+  if (offerIds.length > 0) {
+    const apprRows = await db
+      .select({
+        id: approvalRequests.id,
+        subjectId: approvalRequests.subjectId,
+        status: approvalRequests.status,
+        requestedAt: approvalRequests.requestedAt,
+      })
+      .from(approvalRequests)
+      .where(
+        and(
+          eq(approvalRequests.tenantId, tenantId),
+          eq(approvalRequests.subjectType, "offer"),
+          inArray(approvalRequests.subjectId, offerIds),
+        ),
+      )
+      .orderBy(desc(approvalRequests.requestedAt));
+    for (const a of apprRows) {
+      if (!approvalByOffer.has(a.subjectId)) {
+        approvalByOffer.set(a.subjectId, {
+          id: a.id,
+          status: a.status,
+          requestedAt: a.requestedAt,
+        });
+      }
+    }
+  }
+
+  // Which applications already have a cached AI rationale.
+  const recRows = await db
+    .select({ applicationId: compRecommendations.applicationId })
+    .from(compRecommendations)
+    .where(
+      and(
+        eq(compRecommendations.tenantId, tenantId),
+        inArray(compRecommendations.applicationId, appIds),
+      ),
+    );
+  const hasRationale = new Set(recRows.map((r) => r.applicationId));
+
+  return facets.map((f) => {
+    const expectedPaise = f.expectedSalary != null ? Number(f.expectedSalary) : null;
+    const bandMinPaise = majorRupeesToPaise(f.bandMin);
+    const bandMaxPaise = majorRupeesToPaise(f.bandMax);
+    const bandMidPaise =
+      bandMinPaise != null && bandMaxPaise != null
+        ? bandMidpointPaise(bandMinPaise, bandMaxPaise)
+        : null;
+
+    const evalInput = { expectedPaise, bandMinPaise, bandMaxPaise };
+    let ruleResult: CompRuleResult | null = null;
+    if (canEvaluateComp(evalInput) && bandMidPaise != null) {
+      ruleResult = evaluateComp({
+        expectedPaise: evalInput.expectedPaise,
+        bandMinPaise: evalInput.bandMinPaise,
+        bandMidPaise,
+        bandMaxPaise: evalInput.bandMaxPaise,
+      });
+    }
+
+    const offer = latestOfferByApp.get(f.applicationId) ?? null;
+    const offerBasePaise = offer ? Number(offer.baseSalaryInrPaise) : null;
+    const appr = offer ? (approvalByOffer.get(offer.id) ?? null) : null;
+    const approvalStatus = computeOfferApprovalStatus(
+      offerBasePaise,
+      bandMaxPaise,
+      appr?.status ?? null,
+    );
+
+    const row: CompDeskRow = {
+      applicationId: f.applicationId,
+      candidateName: f.candidateName ?? "Candidate",
+      roleTitle: f.roleTitle,
+      currentStage: f.currentStage,
+      expectedSalaryInrPaise: expectedPaise,
+      bandMinPaise,
+      bandMidPaise,
+      bandMaxPaise,
+      compCurrency: f.compCurrency ?? null,
+      verdict: ruleResult ? (ruleResult.verdict as CompVerdict) : null,
+      suggestedPaise: ruleResult ? ruleResult.suggestedPaise : null,
+      reasons: ruleResult ? ruleResult.reasons : [],
+      offerId: offer?.id ?? null,
+      offerStatus: offer
+        ? (offer.status as
+            | "drafted"
+            | "extended"
+            | "accepted"
+            | "declined"
+            | "expired"
+            | "cancelled")
+        : null,
+      offerBaseInrPaise: offerBasePaise,
+      approvalStatus,
+      approvalRequestId: appr?.id ?? null,
+      hasRationale: hasRationale.has(f.applicationId),
+    };
+    return { row, positionTitle: f.roleTitle, ruleResult };
+  });
+}
+
+/**
+ * Resolve-or-create the tenant's single-step "HR Head approval" matrix for
+ * OFFERS, then a fresh immutable chain from it (mirror of the requisition chain
+ * resolver — offers route out-of-band approval to the HR head). Returns chain id.
+ */
+async function resolveOfferApprovalChain(
+  db: NonNullable<HonoTRPCContext["db"]>,
+  tenantId: string,
+  createdByMembershipId: string | null,
+): Promise<string> {
+  const RULES = {
+    version: 1,
+    steps: [{ approver_kind: "role", approver_ref: "hr_head", required: true }],
+  };
+  const RESOLVED_STEPS = [
+    {
+      step_index: 0,
+      approver_kind: "role",
+      approver_ref: "hr_head",
+      required: true,
+      order_index: 0,
+    },
+  ];
+
+  const [existing] = await db
+    .select({ id: approvalMatrices.id, rules: approvalMatrices.rules })
+    .from(approvalMatrices)
+    .where(and(eq(approvalMatrices.tenantId, tenantId), eq(approvalMatrices.subjectType, "offer")))
+    .orderBy(desc(approvalMatrices.effectiveFrom))
+    .limit(1);
+
+  let matrixId = existing?.id;
+  let matrixRules: unknown = existing?.rules;
+  if (!matrixId) {
+    const [created] = await db
+      .insert(approvalMatrices)
+      .values({
+        tenantId,
+        subjectType: "offer",
+        name: "Out-of-band offer approval — HR Head",
+        rules: RULES,
+        effectiveFrom: new Date(),
+        createdByMembershipId,
+      })
+      .returning({ id: approvalMatrices.id, rules: approvalMatrices.rules });
+    matrixId = created?.id;
+    matrixRules = created?.rules;
+  }
+  if (!matrixId) {
+    throw new TRPCError({
+      code: "INTERNAL_SERVER_ERROR",
+      message: "offer approval_matrix resolution returned no row",
+    });
+  }
+
+  const [chain] = await db
+    .insert(approvalChains)
+    .values({
+      tenantId,
+      matrixId,
+      matrixVersionSnapshot: matrixRules ?? RULES,
+      resolvedSteps: RESOLVED_STEPS,
+    })
+    .returning({ id: approvalChains.id });
+  if (!chain) {
+    throw new TRPCError({
+      code: "INTERNAL_SERVER_ERROR",
+      message: "offer approval_chain insert returned no row",
+    });
+  }
+  return chain.id;
+}
+
+/**
+ * The out-of-band gate, shared by extendOffer + the desk. Returns null when the
+ * offer may be extended, or a human message when it is blocked pending approval.
+ * An offer whose base exceeds the role's band max may only be extended once an
+ * approval_request (subject_type offer) for it has reached `approved`.
+ */
+async function offerExtendBlockReason(
+  db: NonNullable<HonoTRPCContext["db"]>,
+  tenantId: string,
+  offerId: string,
+  offerBasePaise: bigint | number,
+  applicationId: string,
+): Promise<string | null> {
+  const [pos] = await db
+    .select({ bandMax: positions.compBandMax })
+    .from(applications)
+    .innerJoin(requisitions, eq(requisitions.id, applications.requisitionId))
+    .innerJoin(positions, eq(positions.id, requisitions.positionId))
+    .where(eq(applications.id, applicationId))
+    .limit(1);
+  const bandMaxPaise = pos ? majorRupeesToPaise(pos.bandMax) : null;
+  if (bandMaxPaise == null) return null; // no band → nothing to gate against
+  if (Number(offerBasePaise) <= bandMaxPaise) return null; // within band
+  // Over band — require an approved approval_request for this offer.
+  const [appr] = await db
+    .select({ status: approvalRequests.status })
+    .from(approvalRequests)
+    .where(
+      and(
+        eq(approvalRequests.tenantId, tenantId),
+        eq(approvalRequests.subjectType, "offer"),
+        eq(approvalRequests.subjectId, offerId),
+      ),
+    )
+    .orderBy(desc(approvalRequests.requestedAt))
+    .limit(1);
+  if (appr?.status === "approved") return null;
+  return "This offer's base salary exceeds the role's comp band. It needs HR-head approval before it can be extended.";
 }
 
 export const appRouter = router({
@@ -3492,6 +3852,21 @@ export const appRouter = router({
           });
         }
 
+        // HROPS-02 — out-of-band governance gate. An offer whose base salary
+        // exceeds the role's comp band max cannot be extended until an HR-head
+        // approval_request (subject_type offer) for it is `approved`. This is a
+        // deterministic server-side gate, not UI-only.
+        const blockReason = await offerExtendBlockReason(
+          db,
+          offer.tenantId,
+          offer.id,
+          offer.baseSalaryInrPaise,
+          offer.applicationId,
+        );
+        if (blockReason) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: blockReason });
+        }
+
         const meta = await fetchOfferEmailContext(db, offer.applicationId);
         if (!meta) {
           throw new TRPCError({
@@ -3677,6 +4052,11 @@ export const appRouter = router({
           cancelledAt: r.cancelledAt?.toISOString() ?? null,
           declinedReason: r.declinedReason,
           termsHtml: r.termsHtml,
+          contractType: r.contractType ?? null,
+          probationMonths: r.probationMonths ?? null,
+          benefits: Array.isArray(r.benefits)
+            ? (r.benefits as unknown[]).filter((b): b is string => typeof b === "string")
+            : [],
           createdAt: r.createdAt.toISOString(),
         })),
       };
@@ -11857,6 +12237,805 @@ export const appRouter = router({
       }
       return buildHrRoundsList(db, ctx, ctx.tenantId);
     }),
+  // ═══════════════════ HROPS-02 — Comp & offer desk ═══════════════════
+
+  /**
+   * listCompDesk — the desk table. One row per application in hr_round /
+   * offer_drafted / offer_accepted, each carrying its DETERMINISTIC comp verdict
+   * (rule engine), latest offer, and out-of-band approval posture. hr_ops +
+   * admin. No AI, no writes.
+   */
+  listCompDesk: protectedProcedure
+    .input(listCompDeskInputSchema)
+    .output(listCompDeskOutputSchema)
+    .query(async ({ ctx }) => {
+      requireAnyRole(ctx, COMP_DESK_ROLES, "The comp desk requires the hr_ops or admin role");
+      const db = requireDb(ctx);
+      if (!ctx.tenantId) {
+        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
+      }
+      const assembled = await loadCompDeskAssembled(db, ctx.tenantId);
+      const rows = assembled.map((a) => a.row);
+      const stats = {
+        total: rows.length,
+        proceed: rows.filter((r) => r.verdict === "proceed").length,
+        negotiate: rows.filter((r) => r.verdict === "negotiate").length,
+        needApproval: rows.filter((r) => r.verdict === "need_approval").length,
+      };
+      return { rows, stats };
+    }),
+
+  /**
+   * getCompAnalysis — the per-application analysis for the Rec drawer /
+   * case-detail tab: the desk row + curated benchmark context (labelled) +
+   * interview signal + benefit suggestion + the cached AI rationale. hr_ops +
+   * admin. No AI call (read only — generate is a separate mutation).
+   */
+  getCompAnalysis: protectedProcedure
+    .input(getCompAnalysisInputSchema)
+    .output(getCompAnalysisOutputSchema)
+    .query(async ({ ctx, input }) => {
+      requireAnyRole(ctx, COMP_DESK_ROLES, "The comp desk requires the hr_ops or admin role");
+      const db = requireDb(ctx);
+      if (!ctx.tenantId) {
+        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
+      }
+      const tenantId = ctx.tenantId;
+      const [assembled] = await loadCompDeskAssembled(db, tenantId, input.applicationId);
+      if (!assembled) return { analysis: null };
+      const { row } = assembled;
+
+      // Curated benchmarks + fuzzy match on the role title (labelled honestly).
+      const benchmarks = await loadTenantBenchmarks(db, tenantId);
+      const matchedTitle = matchBenchmarkTitle(
+        row.roleTitle,
+        benchmarks.map((b) => b.roleTitle),
+      );
+
+      // Interview recommendation vocabulary summary.
+      const sigRes = await db.execute(dsql`
+        SELECT f.recommendation AS recommendation, COUNT(*)::int AS count
+        FROM public.interview_feedback f
+        JOIN public.interviews i ON i.id = f.interview_id
+        WHERE f.tenant_id = ${tenantId}::uuid
+          AND i.application_id = ${input.applicationId}::uuid
+          AND f.recommendation IS NOT NULL
+        GROUP BY f.recommendation
+      `);
+      const interviewSignal = (
+        (sigRes as unknown as { rows?: { recommendation: string; count: number }[] }).rows ??
+        (sigRes as unknown as { recommendation: string; count: number }[])
+      ).map((r) => ({ recommendation: r.recommendation, count: r.count }));
+
+      // Cached AI rationale, if any.
+      const [rec] = await db
+        .select()
+        .from(compRecommendations)
+        .where(
+          and(
+            eq(compRecommendations.tenantId, tenantId),
+            eq(compRecommendations.applicationId, input.applicationId),
+          ),
+        )
+        .limit(1);
+      const rationale: CompRationale | null = rec
+        ? {
+            rationale: rec.rationale,
+            verdictSnapshot: rec.verdict as CompVerdict,
+            suggestedPaiseSnapshot: Number(rec.suggestedInrPaise),
+            model: rec.model,
+            promptVersion: rec.promptVersion,
+            generatedAt: rec.createdAt.toISOString(),
+          }
+        : null;
+
+      return {
+        analysis: {
+          row,
+          currentSalaryInrPaise: row.offerBaseInrPaise,
+          benchmarks: benchmarks.map((b) => ({
+            id: b.id,
+            roleTitle: b.roleTitle,
+            medianSalaryMinor: Number(b.medianSalaryMinor),
+            currency: b.currency,
+            ttfDays: b.ttfDays,
+            availability: b.availability,
+            competitorDemand: b.competitorDemand,
+            recommendedRounds: b.recommendedRounds,
+            trendingSkills: b.trendingSkills,
+            sourceNote: b.sourceNote,
+            updatedAt: b.updatedAt.toISOString(),
+          })),
+          matchedBenchmarkRoleTitle: matchedTitle,
+          interviewSignal,
+          benefitsSuggested: DEFAULT_SUGGESTED_BENEFITS,
+          rationale,
+        },
+      };
+    }),
+
+  /**
+   * generateCompRationale — the ONE real AI call per click. The deterministic
+   * verdict is computed first + is authoritative; the model writes only a short
+   * prose rationale grounded in the provided numbers (expected, band, suggested,
+   * curated benchmark, interview signal). Feature comp_recommendation, cost-
+   * logged, kill-switchable. Upserts (regenerate replaces). hr_ops + admin,
+   * audited.
+   */
+  generateCompRationale: protectedProcedure
+    .input(generateCompRationaleInputSchema)
+    .output(generateCompRationaleOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      return withAudit("generate_comp_rationale", ctx, input, async () => {
+        requireAnyRole(ctx, COMP_DESK_ROLES, "The comp desk requires the hr_ops or admin role");
+        const db = requireDb(ctx);
+        if (!ctx.tenantId) {
+          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
+        }
+        const tenantId = ctx.tenantId;
+        const membershipId = await resolveActorMembership(db, ctx);
+        if (!membershipId) {
+          throw new TRPCError({
+            code: "FORBIDDEN",
+            message: "Your membership was not found for this tenant",
+          });
+        }
+
+        // Kill-switch — disabled → clean error, no model call, no log.
+        const aiSettings = await resolveTenantAiSettingsDb(tenantId);
+        const compSettings = aiSettings.comp_recommendation;
+        if (!compSettings.enabled) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message:
+              "The compensation rationale is disabled for this tenant. An admin can re-enable it in Admin → AI settings.",
+          });
+        }
+
+        const [assembled] = await loadCompDeskAssembled(db, tenantId, input.applicationId);
+        if (!assembled) {
+          throw new TRPCError({ code: "NOT_FOUND", message: "Application not found on the desk" });
+        }
+        const { row } = assembled;
+        if (
+          row.verdict == null ||
+          row.suggestedPaise == null ||
+          row.expectedSalaryInrPaise == null ||
+          row.bandMinPaise == null ||
+          row.bandMidPaise == null ||
+          row.bandMaxPaise == null
+        ) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message:
+              "Add an expected salary and a comp band before generating a rationale — there is no verdict to explain yet.",
+          });
+        }
+
+        // Curated benchmark match + interview signal for the prompt.
+        const benchmarks = await loadTenantBenchmarks(db, tenantId);
+        const matchedTitle = matchBenchmarkTitle(
+          row.roleTitle,
+          benchmarks.map((b) => b.roleTitle),
+        );
+        const matched = matchedTitle
+          ? (benchmarks.find((b) => b.roleTitle === matchedTitle) ?? null)
+          : null;
+
+        const sigRes = await db.execute(dsql`
+          SELECT f.recommendation AS recommendation, COUNT(*)::int AS count
+          FROM public.interview_feedback f
+          JOIN public.interviews i ON i.id = f.interview_id
+          WHERE f.tenant_id = ${tenantId}::uuid
+            AND i.application_id = ${input.applicationId}::uuid
+            AND f.recommendation IS NOT NULL
+          GROUP BY f.recommendation
+        `);
+        const interviewSignal = (
+          (sigRes as unknown as { rows?: { recommendation: string; count: number }[] }).rows ??
+          (sigRes as unknown as { recommendation: string; count: number }[])
+        ).map((r) => `${r.count}× ${r.recommendation}`);
+
+        const currency = row.compCurrency ?? "INR";
+        const { system, user } = buildCompRationalePrompt({
+          candidateName: row.candidateName,
+          roleTitle: row.roleTitle,
+          verdict: row.verdict,
+          expectedMajor: row.expectedSalaryInrPaise / 100,
+          bandMinMajor: row.bandMinPaise / 100,
+          bandMidMajor: row.bandMidPaise / 100,
+          bandMaxMajor: row.bandMaxPaise / 100,
+          suggestedMajor: row.suggestedPaise / 100,
+          currency,
+          benchmark: matched
+            ? {
+                roleTitle: matched.roleTitle,
+                medianSalaryMajor: minorToMajor(matched.medianSalaryMinor),
+                currency: matched.currency,
+                availability: matched.availability,
+                competitorDemand: matched.competitorDemand,
+                sourceNote: matched.sourceNote,
+              }
+            : null,
+          interviewSignal,
+        });
+
+        const client = await getAIClient(tenantId);
+        const raw = await client.completeStructured<CompRationaleAi>({
+          prompt: user,
+          system,
+          model: compSettings.model,
+          temperature: compSettings.temperature,
+          maxTokens: compSettings.maxTokens,
+          schema: compRationaleJsonSchema,
+          schemaName: COMP_RATIONALE_SCHEMA_NAME,
+          feature: COMP_RATIONALE_FEATURE,
+          requestId: ctx.requestId,
+          actorMembershipId: membershipId,
+        });
+        const parsed = compRationaleAiSchema.parse(raw);
+
+        await db
+          .insert(compRecommendations)
+          .values({
+            tenantId,
+            applicationId: input.applicationId,
+            rationale: parsed.rationale,
+            verdict: row.verdict,
+            suggestedInrPaise: BigInt(row.suggestedPaise),
+            model: client.provider,
+            promptVersion: COMP_RATIONALE_PROMPT_VERSION,
+            generatedByMembershipId: membershipId,
+          })
+          .onConflictDoUpdate({
+            target: [compRecommendations.tenantId, compRecommendations.applicationId],
+            set: {
+              rationale: parsed.rationale,
+              verdict: row.verdict,
+              suggestedInrPaise: BigInt(row.suggestedPaise),
+              model: client.provider,
+              promptVersion: COMP_RATIONALE_PROMPT_VERSION,
+              generatedByMembershipId: membershipId,
+              createdAt: new Date(),
+            },
+          });
+
+        return {
+          rationale: {
+            rationale: parsed.rationale,
+            verdictSnapshot: row.verdict,
+            suggestedPaiseSnapshot: row.suggestedPaise,
+            model: client.provider,
+            promptVersion: COMP_RATIONALE_PROMPT_VERSION,
+            generatedAt: new Date().toISOString(),
+          },
+        };
+      });
+    }),
+
+  /**
+   * draftCompOffer — draft an offer from the comp desk composer, carrying the
+   * HROPS-02 terms (contract type, probation, benefits) on top of the existing
+   * offer lifecycle. Reuses the same offers table + draftable-stage gate as the
+   * triage-drawer draftOffer. Returns needsApproval = base > band max so the
+   * desk can route the extend through approval. hr_ops + admin, audited.
+   */
+  draftCompOffer: protectedProcedure
+    .input(draftCompOfferInputSchema)
+    .output(draftCompOfferOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      return withAudit("draft_comp_offer", ctx, input, async () => {
+        requireAnyRole(ctx, COMP_DESK_ROLES, "The comp desk requires the hr_ops or admin role");
+        const db = requireDb(ctx);
+        if (!ctx.tenantId) {
+          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
+        }
+
+        const [app] = await db
+          .select({
+            tenantId: applications.tenantId,
+            currentStage: applications.currentStage,
+            requisitionId: applications.requisitionId,
+          })
+          .from(applications)
+          .where(eq(applications.id, input.applicationId))
+          .limit(1);
+        if (!app) throw new TRPCError({ code: "NOT_FOUND", message: "Application not found" });
+        if (!OFFER_DRAFTABLE_STAGES.has(app.currentStage)) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: `Cannot draft offer from stage ${app.currentStage}`,
+          });
+        }
+
+        const membershipId = await resolveActorMembership(db, ctx);
+        if (!membershipId) {
+          throw new TRPCError({
+            code: "FORBIDDEN",
+            message: "Drafting membership not found for this tenant",
+          });
+        }
+
+        // Band max → the needsApproval flag (out-of-band offer).
+        const [pos] = await db
+          .select({ bandMax: positions.compBandMax })
+          .from(requisitions)
+          .innerJoin(positions, eq(positions.id, requisitions.positionId))
+          .where(eq(requisitions.id, app.requisitionId))
+          .limit(1);
+        const bandMaxPaise = pos ? majorRupeesToPaise(pos.bandMax) : null;
+        const needsApproval = bandMaxPaise != null && input.baseSalaryInrPaise > bandMaxPaise;
+
+        const expiryAt = new Date(Date.now() + input.expiryDays * 24 * 60 * 60 * 1000);
+        const [created] = await db
+          .insert(offers)
+          .values({
+            tenantId: app.tenantId,
+            applicationId: input.applicationId,
+            draftedByMembershipId: membershipId,
+            baseSalaryInrPaise: BigInt(input.baseSalaryInrPaise),
+            variableTargetInrPaise:
+              input.variableTargetInrPaise !== undefined
+                ? BigInt(input.variableTargetInrPaise)
+                : null,
+            joiningBonusInrPaise:
+              input.joiningBonusInrPaise !== undefined ? BigInt(input.joiningBonusInrPaise) : null,
+            joiningDate: input.joiningDate,
+            location: input.location,
+            contractType: input.contractType,
+            probationMonths: input.probationMonths,
+            benefits: input.benefits,
+            termsHtml: input.termsHtml ?? null,
+            expiryAt,
+          })
+          .returning({ id: offers.id });
+        if (!created) {
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: "offer insert returned no row",
+          });
+        }
+        return { offerId: created.id, needsApproval };
+      });
+    }),
+
+  /**
+   * requestOfferApproval — raise an HR-head approval for an out-of-band offer
+   * (base > band max). Idempotent via the approval_requests one-pending-per-
+   * subject partial unique. hr_ops + admin, audited. Refuses if the offer is
+   * within band (nothing to approve).
+   */
+  requestOfferApproval: protectedProcedure
+    .input(requestOfferApprovalInputSchema)
+    .output(requestOfferApprovalOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      return withAudit("request_offer_approval", ctx, input, async () => {
+        requireAnyRole(ctx, COMP_DESK_ROLES, "The comp desk requires the hr_ops or admin role");
+        const db = requireDb(ctx);
+        if (!ctx.tenantId) {
+          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
+        }
+        const tenantId = ctx.tenantId;
+        const membershipId = await resolveActorMembership(db, ctx);
+
+        const [offer] = await db
+          .select({
+            id: offers.id,
+            status: offers.status,
+            baseSalaryInrPaise: offers.baseSalaryInrPaise,
+            applicationId: offers.applicationId,
+          })
+          .from(offers)
+          .where(and(eq(offers.tenantId, tenantId), eq(offers.id, input.offerId)))
+          .limit(1);
+        if (!offer) throw new TRPCError({ code: "NOT_FOUND", message: "Offer not found" });
+        if (!["drafted", "extended"].includes(offer.status)) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: `Cannot request approval for an offer in status ${offer.status}`,
+          });
+        }
+
+        const [pos] = await db
+          .select({ bandMax: positions.compBandMax })
+          .from(applications)
+          .innerJoin(requisitions, eq(requisitions.id, applications.requisitionId))
+          .innerJoin(positions, eq(positions.id, requisitions.positionId))
+          .where(eq(applications.id, offer.applicationId))
+          .limit(1);
+        const bandMaxPaise = pos ? majorRupeesToPaise(pos.bandMax) : null;
+        if (bandMaxPaise == null || Number(offer.baseSalaryInrPaise) <= bandMaxPaise) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: "This offer is within the comp band — no approval is needed.",
+          });
+        }
+
+        // Already-decided or pending? Surface it idempotently.
+        const [existing] = await db
+          .select({ id: approvalRequests.id, status: approvalRequests.status })
+          .from(approvalRequests)
+          .where(
+            and(
+              eq(approvalRequests.tenantId, tenantId),
+              eq(approvalRequests.subjectType, "offer"),
+              eq(approvalRequests.subjectId, offer.id),
+            ),
+          )
+          .orderBy(desc(approvalRequests.requestedAt))
+          .limit(1);
+        if (existing && (existing.status === "pending" || existing.status === "approved")) {
+          return {
+            approvalRequestId: existing.id,
+            status: existing.status === "approved" ? "approved" : "pending",
+            alreadyRequested: true,
+          };
+        }
+
+        const chainId = await resolveOfferApprovalChain(db, tenantId, membershipId);
+        const inserted = await db
+          .insert(approvalRequests)
+          .values({
+            tenantId,
+            chainId,
+            subjectType: "offer",
+            subjectId: offer.id,
+            status: "pending",
+            currentStepIndex: 0,
+            requestedByMembershipId: membershipId,
+            context: {
+              offer_id: offer.id,
+              application_id: offer.applicationId,
+              base_inr_paise: Number(offer.baseSalaryInrPaise),
+              band_max_inr_paise: bandMaxPaise,
+            },
+          })
+          .onConflictDoNothing()
+          .returning({ id: approvalRequests.id });
+
+        if (inserted.length === 0) {
+          const [pending] = await db
+            .select({ id: approvalRequests.id })
+            .from(approvalRequests)
+            .where(
+              and(
+                eq(approvalRequests.tenantId, tenantId),
+                eq(approvalRequests.subjectType, "offer"),
+                eq(approvalRequests.subjectId, offer.id),
+                eq(approvalRequests.status, "pending"),
+              ),
+            )
+            .limit(1);
+          if (!pending) {
+            throw new TRPCError({
+              code: "INTERNAL_SERVER_ERROR",
+              message: "offer approval conflict but no pending row found",
+            });
+          }
+          return { approvalRequestId: pending.id, status: "pending", alreadyRequested: true };
+        }
+        const row = inserted[0];
+        if (!row) {
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: "offer approval insert returned no row",
+          });
+        }
+        return { approvalRequestId: row.id, status: "pending", alreadyRequested: false };
+      });
+    }),
+
+  /**
+   * decideOfferApproval — the HR head / admin approves or rejects an out-of-band
+   * offer approval. Writes an append-only approval_decision + moves the request
+   * off pending. Approve unblocks extendOffer; reject leaves the offer un-
+   * extendable (the recruiter must re-draft within band). hr_head + admin,
+   * audited.
+   */
+  decideOfferApproval: protectedProcedure
+    .input(decideOfferApprovalInputSchema)
+    .output(decideOfferApprovalOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      return withAudit("decide_offer_approval", ctx, input, async () => {
+        requireAnyRole(
+          ctx,
+          OFFER_APPROVAL_DECIDE_ROLES,
+          "Deciding an offer approval requires the hr_head or admin role",
+        );
+        const db = requireDb(ctx);
+        if (!ctx.tenantId) {
+          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
+        }
+        const tenantId = ctx.tenantId;
+        const membershipId = await resolveActorMembership(db, ctx);
+        if (!membershipId) {
+          throw new TRPCError({
+            code: "FORBIDDEN",
+            message: "Deciding membership not found for this tenant",
+          });
+        }
+
+        const [request] = await db
+          .select({
+            id: approvalRequests.id,
+            status: approvalRequests.status,
+            subjectId: approvalRequests.subjectId,
+            currentStepIndex: approvalRequests.currentStepIndex,
+          })
+          .from(approvalRequests)
+          .where(
+            and(
+              eq(approvalRequests.tenantId, tenantId),
+              eq(approvalRequests.id, input.approvalRequestId),
+              eq(approvalRequests.subjectType, "offer"),
+            ),
+          )
+          .limit(1);
+        if (!request) {
+          throw new TRPCError({ code: "NOT_FOUND", message: "Offer approval request not found" });
+        }
+        if (request.status !== "pending") {
+          throw new TRPCError({
+            code: "CONFLICT",
+            message: `This approval is already ${request.status} — nothing to decide.`,
+          });
+        }
+
+        const decidedAt = new Date();
+        const outcome = input.decision === "approve" ? "approved" : "rejected";
+        const requestStatus = input.decision === "approve" ? "approved" : "rejected";
+        const reason = input.reason?.trim() ?? "";
+
+        const [decision] = await db
+          .insert(approvalDecisions)
+          .values({
+            tenantId,
+            requestId: request.id,
+            stepIndex: request.currentStepIndex,
+            outcome,
+            approverMembershipId: membershipId,
+            decidedAt,
+            comment: reason.length > 0 ? reason : null,
+            metadata: { decision: input.decision },
+          })
+          .returning({ id: approvalDecisions.id });
+        if (!decision) {
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: "offer approval_decision insert returned no row",
+          });
+        }
+
+        await db
+          .update(approvalRequests)
+          .set({ status: requestStatus, decidedAt, updatedAt: decidedAt })
+          .where(and(eq(approvalRequests.tenantId, tenantId), eq(approvalRequests.id, request.id)));
+
+        return {
+          approvalRequestId: request.id,
+          offerId: request.subjectId,
+          decision: input.decision,
+          status: requestStatus,
+        };
+      });
+    }),
+
+  /**
+   * listOfferApprovals — the HR-head / admin out-of-band offer approval queue.
+   * Pending offer approval_requests + candidate/role/base/band context. hr_head
+   * + admin. No writes.
+   */
+  listOfferApprovals: protectedProcedure
+    .input(listOfferApprovalsInputSchema)
+    .output(listOfferApprovalsOutputSchema)
+    .query(async ({ ctx }) => {
+      requireAnyRole(
+        ctx,
+        OFFER_APPROVAL_DECIDE_ROLES,
+        "The offer approval queue requires the hr_head or admin role",
+      );
+      const db = requireDb(ctx);
+      if (!ctx.tenantId) {
+        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
+      }
+      const tenantId = ctx.tenantId;
+      const rowsRes = await db.execute(dsql`
+        SELECT
+          ar.id AS approval_request_id,
+          ar.subject_id AS offer_id,
+          o.application_id AS application_id,
+          COALESCE(pe.full_name, 'Candidate') AS candidate_name,
+          p.title AS role_title,
+          o.base_salary_inr_paise::text AS base_inr_paise,
+          p.comp_band_max AS band_max,
+          ar.requested_at AS requested_at
+        FROM public.approval_requests ar
+        JOIN public.offers o ON o.id = ar.subject_id AND o.tenant_id = ar.tenant_id
+        JOIN public.applications a ON a.id = o.application_id
+        JOIN public.candidates c ON c.id = a.candidate_id
+        JOIN public.persons pe ON pe.id = c.person_id
+        JOIN public.requisitions r ON r.id = a.requisition_id
+        JOIN public.positions p ON p.id = r.position_id
+        WHERE ar.tenant_id = ${tenantId}::uuid
+          AND ar.subject_type = 'offer'
+          AND ar.status = 'pending'
+        ORDER BY ar.requested_at ASC
+      `);
+      interface QRow {
+        approval_request_id: string;
+        offer_id: string;
+        application_id: string;
+        candidate_name: string;
+        role_title: string;
+        base_inr_paise: string;
+        band_max: string | null;
+        requested_at: Date | string;
+      }
+      const rows = (
+        (rowsRes as unknown as { rows?: QRow[] }).rows ?? (rowsRes as unknown as QRow[])
+      ).map((r) => {
+        const base = Number(r.base_inr_paise);
+        const bandMaxPaise = majorRupeesToPaise(r.band_max);
+        const overBandPct =
+          bandMaxPaise && bandMaxPaise > 0 ? ((base - bandMaxPaise) / bandMaxPaise) * 100 : null;
+        return {
+          approvalRequestId: r.approval_request_id,
+          offerId: r.offer_id,
+          applicationId: r.application_id,
+          candidateName: r.candidate_name,
+          roleTitle: r.role_title,
+          baseInrPaise: base,
+          bandMaxPaise,
+          overBandPct: overBandPct != null ? Math.round(overBandPct * 10) / 10 : null,
+          requestedAt:
+            typeof r.requested_at === "string" ? r.requested_at : r.requested_at.toISOString(),
+        };
+      });
+      return { rows };
+    }),
+
+  // ═══════════════════ HROPS-02 — HR analytics ═══════════════════
+
+  /**
+   * getHrAnalytics — five real charts over real queries for /hr-analytics:
+   * time-to-hire by department, candidate drop-off by stage, offer acceptance,
+   * hiring demand by department, average offer vs band midpoint by role. KPI
+   * header derived from the live desk. hr_ops + admin. No AI, no writes.
+   */
+  getHrAnalytics: protectedProcedure.output(getHrAnalyticsOutputSchema).query(async ({ ctx }) => {
+    requireAnyRole(ctx, COMP_DESK_ROLES, "HR analytics requires the hr_ops or admin role");
+    const db = requireDb(ctx);
+    if (!ctx.tenantId) {
+      throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
+    }
+    const tenantId = ctx.tenantId;
+    const asRows = <T>(res: unknown): T[] => (res as { rows?: T[] }).rows ?? (res as T[]);
+
+    // 1. Time-to-hire by department (created → offer_accepted, days).
+    const tthRes = await db.execute(dsql`
+        SELECT bu.name AS department,
+          ROUND(AVG(EXTRACT(EPOCH FROM (t.transitioned_at - a.created_at)) / 86400.0)::numeric, 1)::float8 AS avg_days
+        FROM public.application_state_transitions t
+        JOIN public.applications a ON a.id = t.application_id AND a.tenant_id = t.tenant_id
+        JOIN public.requisitions r ON r.id = a.requisition_id
+        JOIN public.positions p ON p.id = r.position_id
+        JOIN public.business_units bu ON bu.id = p.business_unit_id
+        WHERE t.tenant_id = ${tenantId}::uuid AND t.to_stage = 'offer_accepted'
+        GROUP BY bu.name
+        ORDER BY bu.name
+      `);
+
+    // 2. Candidate drop-off by stage (current count per stage; zero-filled).
+    const dropRes = await db.execute(dsql`
+        SELECT current_stage AS stage, COUNT(*)::int AS count
+        FROM public.applications
+        WHERE tenant_id = ${tenantId}::uuid
+        GROUP BY current_stage
+      `);
+
+    // 3. Offer acceptance (accepted / declined / pending).
+    const accRes = await db.execute(dsql`
+        SELECT
+          COUNT(*) FILTER (WHERE status = 'accepted')::int AS accepted,
+          COUNT(*) FILTER (WHERE status = 'declined')::int AS declined,
+          COUNT(*) FILTER (WHERE status IN ('drafted', 'extended'))::int AS pending
+        FROM public.offers
+        WHERE tenant_id = ${tenantId}::uuid
+      `);
+
+    // 4. Hiring demand by department (open vs filled requisitions).
+    const demandRes = await db.execute(dsql`
+        SELECT bu.name AS department,
+          COUNT(*) FILTER (WHERE r.status IN ('posted', 'approved', 'on_hold'))::int AS open,
+          COUNT(*) FILTER (WHERE r.status = 'filled')::int AS filled
+        FROM public.requisitions r
+        JOIN public.positions p ON p.id = r.position_id
+        JOIN public.business_units bu ON bu.id = p.business_unit_id
+        WHERE r.tenant_id = ${tenantId}::uuid
+        GROUP BY bu.name
+        ORDER BY bu.name
+      `);
+
+    // 5. Average offer vs band midpoint by role (paise). Band in MAJOR rupees
+    //    → *100 to paise; only roles with a band set.
+    const ovbRes = await db.execute(dsql`
+        SELECT p.title AS role,
+          ROUND(AVG(o.base_salary_inr_paise))::float8 AS avg_offer_paise,
+          ROUND(AVG((p.comp_band_min + p.comp_band_max) / 2.0) * 100)::float8 AS band_mid_paise
+        FROM public.offers o
+        JOIN public.applications a ON a.id = o.application_id
+        JOIN public.requisitions r ON r.id = a.requisition_id
+        JOIN public.positions p ON p.id = r.position_id
+        WHERE o.tenant_id = ${tenantId}::uuid
+          AND p.comp_band_min IS NOT NULL AND p.comp_band_max IS NOT NULL
+        GROUP BY p.title
+        ORDER BY p.title
+      `);
+
+    interface DeptDaysRow {
+      department: string;
+      avg_days: number | null;
+    }
+    interface StageRow {
+      stage: ApplicationStage;
+      count: number;
+    }
+    interface AccRow {
+      accepted: number;
+      declined: number;
+      pending: number;
+    }
+    interface DemandRow {
+      department: string;
+      open: number;
+      filled: number;
+    }
+    interface OvbRow {
+      role: string;
+      avg_offer_paise: number | null;
+      band_mid_paise: number | null;
+    }
+
+    const dropByStage = new Map(asRows<StageRow>(dropRes).map((r) => [r.stage, r.count]));
+    const acc = asRows<AccRow>(accRes)[0] ?? { accepted: 0, declined: 0, pending: 0 };
+
+    // KPI header from the live desk.
+    const assembled = await loadCompDeskAssembled(db, tenantId);
+    const deskRows = assembled.map((a) => a.row);
+    const acceptanceDenom = acc.accepted + acc.declined;
+    const acceptanceRatePct =
+      acceptanceDenom > 0 ? Math.round((acc.accepted / acceptanceDenom) * 1000) / 10 : null;
+
+    return {
+      timeToHireByDept: asRows<DeptDaysRow>(tthRes).map((r) => ({
+        department: r.department,
+        avgDays: r.avg_days,
+      })),
+      dropOffByStage: applicationStageEnum.enumValues.map((stage) => ({
+        stage,
+        count: dropByStage.get(stage) ?? 0,
+      })),
+      offerAcceptance: { accepted: acc.accepted, declined: acc.declined, pending: acc.pending },
+      demandByDept: asRows<DemandRow>(demandRes).map((r) => ({
+        department: r.department,
+        open: r.open,
+        filled: r.filled,
+      })),
+      offerVsBandByRole: asRows<OvbRow>(ovbRes).map((r) => ({
+        role: r.role,
+        avgOfferPaise: r.avg_offer_paise,
+        bandMidPaise: r.band_mid_paise,
+      })),
+      kpis: {
+        onDesk: deskRows.length,
+        offersOut: deskRows.filter((r) => r.offerStatus === "extended").length,
+        needApproval: deskRows.filter(
+          (r) => r.approvalStatus === "required" || r.approvalStatus === "pending",
+        ).length,
+        acceptanceRatePct,
+      },
+    };
+  }),
 });
 
 // ═══════════ DASH-01 — persona-dashboard builders ═══════════

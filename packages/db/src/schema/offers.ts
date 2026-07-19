@@ -4,6 +4,8 @@ import {
   uuid,
   text,
   bigint,
+  integer,
+  jsonb,
   date,
   timestamp,
   customType,
@@ -73,6 +75,17 @@ export const offers = pgTable(
     location: text("location").notNull(),
     expiryAt: timestamp("expiry_at", { withTimezone: true }).notNull(),
     termsHtml: text("terms_html"),
+
+    // HROPS-02 — offer terms surfaced in the composer + candidate accept page.
+    // Free-text `contract_type` (same additive-without-enum convention as
+    // `status`), integer probation months, and a jsonb string[] of benefit KEYS
+    // from the api-types BENEFIT_KEYS catalog (default '[]'). All nullable /
+    // defaulted so existing offer rows are unaffected.
+    contractType: text("contract_type"),
+    probationMonths: integer("probation_months"),
+    benefits: jsonb("benefits")
+      .notNull()
+      .default(sql`'[]'::jsonb`),
 
     status: text("status").notNull().default("drafted"),
     extendedAt: timestamp("extended_at", { withTimezone: true }),

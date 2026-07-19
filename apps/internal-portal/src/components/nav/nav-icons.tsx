@@ -261,6 +261,27 @@ export function IconHrRounds() {
   );
 }
 
+export function IconCompOffers() {
+  return (
+    <Svg>
+      <circle cx="12" cy="12" r="8" />
+      <path d="M12 8v8" />
+      <path d="M14.5 9.5a2.5 2.5 0 0 0-2.5-1.5c-1.4 0-2.5.9-2.5 2s1.1 1.6 2.5 2 2.5.9 2.5 2-1.1 2-2.5 2a2.5 2.5 0 0 1-2.5-1.5" />
+    </Svg>
+  );
+}
+
+export function IconHrAnalytics() {
+  return (
+    <Svg>
+      <path d="M3 3v18h18" />
+      <rect x="7" y="12" width="3" height="6" />
+      <rect x="12" y="8" width="3" height="10" />
+      <rect x="17" y="5" width="3" height="13" />
+    </Svg>
+  );
+}
+
 export function IconSignOut() {
   return (
     <Svg>

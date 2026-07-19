@@ -76,6 +76,9 @@ offersRoutes.get("/preview/:token", async (c) => {
       location: string;
       expiry_at: Date | string;
       terms_html: string | null;
+      contract_type: string | null;
+      probation_months: number | null;
+      benefits: unknown;
       candidate_full_name: string;
       candidate_email: string;
       position_title: string;
@@ -93,6 +96,9 @@ offersRoutes.get("/preview/:token", async (c) => {
       o.location,
       o.expiry_at,
       o.terms_html,
+      o.contract_type,
+      o.probation_months,
+      o.benefits,
       p.full_name AS candidate_full_name,
       p.email_primary AS candidate_email,
       pos.title AS position_title,
@@ -126,6 +132,12 @@ offersRoutes.get("/preview/:token", async (c) => {
     location: row.location,
     expiryAt: toDate(row.expiry_at).toISOString(),
     termsHtml: row.terms_html,
+    // HROPS-02 offer terms (null/[] for pre-HROPS-02 offers).
+    contractType: row.contract_type,
+    probationMonths: row.probation_months,
+    benefits: Array.isArray(row.benefits)
+      ? (row.benefits as unknown[]).filter((b): b is string => typeof b === "string")
+      : [],
   });
 });
 

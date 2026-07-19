@@ -83,13 +83,14 @@ function featureDefault(): AiFeatureSettings {
 }
 
 /** The real consumers this surface governs (jd_bias_review added in CONF-02,
- * req_feasibility in HRHEAD-02). */
+ * req_feasibility in HRHEAD-02, comp_recommendation in HROPS-02). */
 export const AI_FEATURE_KEYS = [
   "ai_scoring",
   "jd_generation",
   "agent_drafts",
   "jd_bias_review",
   "req_feasibility",
+  "comp_recommendation",
 ] as const;
 export type AiFeatureKey = (typeof AI_FEATURE_KEYS)[number];
 
@@ -128,6 +129,12 @@ export const AI_FEATURE_META: Record<
     description:
       "Assesses a requisition's fillability against the tenant's curated market benchmarks — skills fit, experience-vs-comp fit, difficulty, and a salary-adjustment recommendation. Runs only on an explicit 'Generate/Refresh' click on the Feasibility page. Disabling makes that button refuse with a clear message instead of calling the model.",
   },
+  comp_recommendation: {
+    label: "Compensation rationale",
+    usageFeatures: ["comp_recommendation"],
+    description:
+      "Writes a short prose rationale around the deterministic comp verdict on the Comp & offer desk — grounded ONLY in the candidate's expected salary, the role's comp band, and the curated benchmarks (never invented market claims). The verdict itself is always rule-computed and unaffected. Runs only on an explicit 'Generate rationale' click. Disabling makes that button refuse with a clear message instead of calling the model.",
+  },
 };
 
 export const aiSettingsSchema = z.object({
@@ -137,6 +144,7 @@ export const aiSettingsSchema = z.object({
   agent_drafts: aiFeatureSettingsSchema.default(featureDefault),
   jd_bias_review: aiFeatureSettingsSchema.default(featureDefault),
   req_feasibility: aiFeatureSettingsSchema.default(featureDefault),
+  comp_recommendation: aiFeatureSettingsSchema.default(featureDefault),
   /**
    * Global deterministic PII redaction. When on, candidate-derived prompt
    * text going into scoring + agent-draft calls has emails / phone numbers /

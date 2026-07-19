@@ -88,3 +88,5 @@ export * from "./market-benchmarks";
 export * from "./requisition-feasibility";
 // HR Ops cases workspace + HR round (HROPS-01)
 export * from "./hr-round-assessments";
+// Comp & offer desk — cached AI comp rationale (HROPS-02)
+export * from "./comp-recommendations";

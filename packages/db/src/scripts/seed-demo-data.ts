@@ -2757,6 +2757,39 @@ async function main() {
       `;
     }
 
+    // ── 4z. HROPS-02 comp desk fixtures ─────────────────────────────
+    //
+    // The Comp & offer desk needs (a) a comp band on the demo position and
+    // (b) expected salaries on the late-stage applications, so the
+    // deterministic rule engine can produce all three verdicts live.
+    // Band: ₹28–38 LPA (MAJOR rupees on positions) → mid ₹33 LPA.
+    // Idempotent: plain UPDATEs, re-run-safe.
+    await poolSql`
+      UPDATE public.positions
+      SET comp_band_min = 2800000, comp_band_max = 3800000, comp_currency = 'INR'
+      WHERE id = ${DEMO_POSITION} AND tenant_id = ${tid}
+    `;
+    // E (Priya, offer_drafted): ₹36 LPA — upper half of band → NEGOTIATE.
+    await poolSql`
+      UPDATE public.applications
+      SET expected_salary_inr_paise = ${"360000000"}::bigint
+      WHERE id = ${APP_E} AND tenant_id = ${tid}
+    `;
+    // Onboarding hires (offer_accepted, on-desk rows): plausible spread that
+    // exercises PROCEED (≤ mid 33L), NEGOTIATE (33–38L) and NEED_APPROVAL
+    // (> 38L) across the six cases.
+    const ONB_EXPECTED_LPA = [30, 40, 29, 34, 31, 33];
+    for (const spec of ONB_CASE_SPECS) {
+      const appId = onbAt(ONB_APP_IDS, spec.idx);
+      const lpa = ONB_EXPECTED_LPA[spec.idx % ONB_EXPECTED_LPA.length] ?? 30;
+      const paise = String(lpa * 100_000 * 100);
+      await poolSql`
+        UPDATE public.applications
+        SET expected_salary_inr_paise = ${paise}::bigint
+        WHERE id = ${appId} AND tenant_id = ${tid}
+      `;
+    }
+
     // ── 5. summary ──────────────────────────────────────────────────
     const acceptUrl = `${PORTAL_BASE}/offer/${token}`;
     console.log("");

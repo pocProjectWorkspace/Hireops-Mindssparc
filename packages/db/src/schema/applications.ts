@@ -4,6 +4,7 @@ import {
   uuid,
   text,
   numeric,
+  bigint,
   boolean,
   jsonb,
   timestamp,
@@ -54,6 +55,13 @@ export const applications = pgTable(
     knockoutPassed: boolean("knockout_passed"),
     knockoutEvaluatedAt: timestamp("knockout_evaluated_at", { withTimezone: true }),
     knockoutFailures: jsonb("knockout_failures"),
+    // HROPS-02 — the candidate's expected salary, captured per-application (a
+    // single candidate can carry different expectations across reqs). INR paise
+    // (minor units) — matches offers.base_salary_inr_paise. Nullable: many
+    // early-stage applications have no expectation captured yet, and the comp
+    // desk renders an honest "no expected salary" state rather than inventing a
+    // verdict. bigint for headroom, same as offers.
+    expectedSalaryInrPaise: bigint("expected_salary_inr_paise", { mode: "bigint" }),
     // FKs deferred to DB-PARTNER — the columns + indexes are pre-wired so
     // queries land cleanly when partners ship; the constraints are added
     // by the partner-schema migration.

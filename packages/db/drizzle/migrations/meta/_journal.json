@@ -456,6 +456,27 @@
       "when": 1784421600557,
       "tag": "0067_hrops_01_audit_triggers",
       "breakpoints": true
+    },
+    {
+      "idx": 68,
+      "version": "7",
+      "when": 1784421840869,
+      "tag": "0068_hrops_02_comp_offer_desk",
+      "breakpoints": true
+    },
+    {
+      "idx": 69,
+      "version": "7",
+      "when": 1784421840870,
+      "tag": "0069_hrops_02_force_rls",
+      "breakpoints": true
+    },
+    {
+      "idx": 70,
+      "version": "7",
+      "when": 1784421840871,
+      "tag": "0070_hrops_02_audit_triggers",
+      "breakpoints": true
     }
   ]
 }

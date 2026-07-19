@@ -15,3 +15,4 @@ export * from "./bias-lexicon";
 export * from "./scoring-weights";
 export * from "./governance";
 export * from "./market-intelligence";
+export * from "./comp";

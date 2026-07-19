@@ -793,6 +793,10 @@ export const offerRowSchema = z.object({
   cancelledAt: z.string().nullable(),
   declinedReason: z.string().nullable(),
   termsHtml: z.string().nullable(),
+  // HROPS-02 additive offer terms (nullable/[] for pre-HROPS-02 rows).
+  contractType: z.string().nullable(),
+  probationMonths: z.number().int().nullable(),
+  benefits: z.array(z.string()),
   createdAt: z.string(),
 });
 export type OfferRow = z.infer<typeof offerRowSchema>;

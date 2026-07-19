@@ -35,6 +35,10 @@ interface OfferPreview {
   location: string;
   expiryAt: string;
   termsHtml: string | null;
+  // HROPS-02 offer terms — optional so pre-HROPS-02 API responses parse fine.
+  contractType?: string | null;
+  probationMonths?: number | null;
+  benefits?: string[];
 }
 
 type LoadState =
@@ -186,9 +190,36 @@ export function OfferAcceptClient({ token }: { token: string }) {
               value={formatPaiseAsInr(offer.joiningBonusInrPaise)}
             />
           ) : null}
+          {offer.contractType ? (
+            <SummaryRow label="Contract type" value={humanizeTerm(offer.contractType)} />
+          ) : null}
+          {offer.probationMonths != null ? (
+            <SummaryRow
+              label="Probation"
+              value={`${offer.probationMonths} month${offer.probationMonths === 1 ? "" : "s"}`}
+            />
+          ) : null}
           <SummaryRow label="Offer expires" value={offer.expiryAt.slice(0, 10)} />
         </dl>
       </Card>
+
+      {offer.benefits && offer.benefits.length > 0 ? (
+        <Card>
+          <h2 className="mb-2 text-xs font-semibold uppercase tracking-wide text-neutral-500">
+            Benefits
+          </h2>
+          <ul className="flex flex-wrap gap-1.5">
+            {offer.benefits.map((b) => (
+              <li
+                key={b}
+                className="inline-flex items-center rounded-full bg-neutral-100 px-2.5 py-1 text-xs text-neutral-700"
+              >
+                {humanizeTerm(b)}
+              </li>
+            ))}
+          </ul>
+        </Card>
+      ) : null}
 
       {offer.termsHtml ? (
         <Card>
@@ -314,6 +345,12 @@ function StatusScreen({ children }: { children: ReactNode }) {
       <Card className="my-auto">{children}</Card>
     </CandidateShell>
   );
+}
+
+/** "full_time" → "Full time", "health_insurance" → "Health insurance". */
+function humanizeTerm(value: string): string {
+  const spaced = value.replace(/_/g, " ");
+  return spaced.charAt(0).toUpperCase() + spaced.slice(1);
 }
 
 function SummaryRow({ label, value }: { label: string; value: string }) {
