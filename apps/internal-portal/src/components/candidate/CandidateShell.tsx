@@ -1,25 +1,38 @@
 import type { ReactNode } from "react";
 import { cn } from "@/components/ui";
+import { CandidatePortalChrome } from "./CandidatePortalChrome";
+import type { CandidateNavKey } from "./candidate-nav";
 
 /**
- * CandidateShell — the minimal centred-page chrome for the public
- * candidate-facing surfaces (apply, submitted, offer, privacy). DESIGN-04.
+ * CandidateShell — chrome for the candidate-facing surfaces. Two modes:
  *
- * These pages have NO sidebar — candidates never see internal nav — so
- * instead of the recruiter AppShell they get a slim top bar (an employer /
- * product mark), a warm neutral ground, and a single centred content column
- * with generous mobile padding. An optional footer line hosts the privacy
- * link where a surface wants one.
+ *   • variant="public" (DEFAULT, DESIGN-04) — the minimal centred-page chrome
+ *     for the PUBLIC / pre-auth surfaces (apply, submitted, offer, privacy,
+ *     login, activate, interview-confirm): a slim top brand bar, a warm neutral
+ *     ground, one centred content column, optional footer. Purely presentational
+ *     (no hooks) so it renders inside server components. UNCHANGED — every
+ *     existing caller passing {brand,width,footer,children} keeps this exactly.
  *
- * Purely presentational (no client hooks, no server-only deps) so it renders
- * inside both server components (apply / submitted / privacy) and the
- * offer-accept client component.
+ *   • variant="portal" (CAND-01) — the AUTHENTICATED routed portal frame: a
+ *     DESIGN-05 slate-ink sidebar (candidate nav, neutral tenant brand,
+ *     sign-out) around a scrollable content column. Delegates to
+ *     CandidatePortalChrome, which resolves the candidate identity + gating.
+ *     The routed candidate pages (Dashboard, Applications, Interviews, Settings
+ *     — and CAND-02's Profile, Documents, Notifications) wrap their body in
+ *     <CandidateShell variant="portal" active="…">.
+ *
+ * Candidates are an EXTERNAL party: neither mode shows internal nav, and the
+ * portal mode surfaces NO scores/feedback (page-level refusals enforce that).
  */
 export interface CandidateShellProps {
-  /** Brand shown in the top bar — the employer's name on apply/offer, else
-   * the HireOps product wordmark. */
+  /** "public" (default) = top-bar centred page; "portal" = authed sidebar. */
+  variant?: "public" | "portal";
+  /** Portal mode: which nav item is current (optional — else path-derived). */
+  active?: CandidateNavKey;
+  /** Public mode: brand shown in the top bar — the employer's name on
+   * apply/offer, else the HireOps product wordmark. */
   brand?: string;
-  /** Content max-width. `xl` (default) for forms/offers; `2xl` for prose. */
+  /** Public mode: content max-width. `xl` (default) for forms/offers; `2xl`. */
   width?: "xl" | "2xl";
   footer?: ReactNode;
   children: ReactNode;
@@ -43,11 +56,17 @@ function BrandMark({ brand }: { brand: string }) {
 }
 
 export function CandidateShell({
+  variant = "public",
+  active,
   brand = "HireOps",
   width = "xl",
   footer,
   children,
 }: CandidateShellProps) {
+  if (variant === "portal") {
+    return <CandidatePortalChrome active={active}>{children}</CandidatePortalChrome>;
+  }
+
   const maxW = width === "2xl" ? "max-w-2xl" : "max-w-xl";
   return (
     <div className="flex min-h-screen flex-col bg-neutral-50 text-neutral-900">

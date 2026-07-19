@@ -2097,6 +2097,9 @@ interface CandidateOfferSqlRow {
   terms_html: string | null;
   position_title: string;
   company_name: string;
+  contract_type: string | null;
+  probation_months: number | null;
+  benefits: unknown;
 }
 interface CandidateOnbCaseSqlRow {
   id: string;
@@ -12847,6 +12850,9 @@ export const appRouter = router({
           o.location,
           o.expiry_at,
           o.terms_html,
+          o.contract_type,
+          o.probation_months,
+          o.benefits,
           pos.title AS position_title,
           t.display_name AS company_name
         FROM public.offers o
@@ -12883,6 +12889,16 @@ export const appRouter = router({
           location: row.location,
           expiryAt: new Date(row.expiry_at as string | Date).toISOString(),
           termsHtml: row.terms_html,
+          // C10 — real terms (contract type / probation / benefits). `benefits`
+          // is jsonb string[]; keep only string entries defensively.
+          contractType: row.contract_type ?? null,
+          probationMonths:
+            row.probation_months !== null && row.probation_months !== undefined
+              ? Number(row.probation_months)
+              : null,
+          benefits: Array.isArray(row.benefits)
+            ? (row.benefits as unknown[]).filter((b): b is string => typeof b === "string")
+            : [],
         },
       };
     }),

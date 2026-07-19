@@ -1,728 +1,405 @@
 "use client";
 
-import { useState, type ChangeEvent } from "react";
-import { useRouter } from "next/navigation";
-import { Button } from "@hireops/ui";
-import { Badge, Card, EmptyState } from "@/components/ui";
+import { Badge, Card, EmptyState, StatTile } from "@/components/ui";
 import { CandidateShell } from "@/components/candidate/CandidateShell";
+import { CandidateOfferCard } from "@/components/candidate/CandidateOfferCard";
 import { trpc } from "@/lib/trpc-client";
-import { getSupabaseBrowserClient } from "@/lib/supabase-client";
-import { TRPCClientError } from "@trpc/client";
-import type {
-  CandidateInterviewRow,
-  CandidateDocumentSlot,
-  CandidateApplicationDocumentSlot,
-} from "@hireops/api-types";
+import type { CandidateInterviewRow, CandidateApplicationRow } from "@hireops/api-types";
+import {
+  STAGE_LABELS,
+  TERMINAL_NEGATIVE,
+  MODE_LABEL,
+  stageLabel,
+  formatDate,
+  formatWhen,
+} from "@/components/candidate/candidate-format";
 
 /**
- * Candidate dashboard — applications (stage stepper), interviews (confirm),
- * the in-portal offer (view + accept), and the onboarding document checklist
- * (upload + status). Reads are person-scoped by the API; a non-candidate
- * identity gets a calm notice.
+ * Candidate dashboard landing (CAND-01) — "Your Hiring Journey" stepper, the
+ * next upcoming interview, a DETERMINISTIC tasks checklist (from real state:
+ * missing documents, unconfirmed interview, an open offer), stat tiles, a
+ * recent-updates strip, and the in-portal offer. Everything here is
+ * score-free: candidates are an external party and never see the AI score,
+ * feedback, or scorecards.
  */
-
-/**
- * REST API origin for the multipart document upload (CAND-02) — the tRPC
- * surface runs in-process on the portal, but multipart bodies go straight to
- * apps/api. Same resolution as the recruiter onboarding view.
- */
-const API_BASE =
-  process.env.NEXT_PUBLIC_API_BASE ??
-  process.env.NEXT_PUBLIC_API_BASE_URL?.replace(/\/trpc$/, "") ??
-  "http://localhost:3001";
-
-const DOC_ACCEPT = ".pdf,.docx,image/jpeg,image/png,application/pdf";
-
-/** Attach the candidate's Supabase session as a bearer token for a REST call. */
-async function candidateAuthHeaders(): Promise<Record<string, string>> {
-  const supabase = getSupabaseBrowserClient();
-  const {
-    data: { session },
-  } = await supabase.auth.getSession();
-  return session ? { Authorization: `Bearer ${session.access_token}` } : {};
-}
-
-/** Integer paise → a readable ₹ amount (whole rupees; INR-only Wave 1). */
-function formatInr(paise: number): string {
-  const rupees = Math.round(paise / 100);
-  return `₹${rupees.toLocaleString("en-IN")}`;
-}
-
-const STAGE_LABELS: Record<string, string> = {
-  application_received: "Applied",
-  ai_screening: "Screening",
-  recruiter_review: "Under review",
-  shortlisted: "Shortlisted",
-  tech_interview: "Tech interview",
-  hr_round: "HR round",
-  offer_drafted: "Offer prepared",
-  offer_accepted: "Offer accepted",
-  offer_declined: "Offer declined",
-  withdrawn: "Withdrawn",
-  recruiter_rejected: "Not progressing",
-};
-
-const TERMINAL_NEGATIVE = new Set(["offer_declined", "withdrawn", "recruiter_rejected"]);
-
-const MODE_LABEL: Record<string, string> = { video: "Video", onsite: "On-site", phone: "Phone" };
-
 export function CandidateDashboardClient() {
-  const router = useRouter();
-  const me = trpc.candidateGetMe.useQuery(undefined, { retry: false });
-
-  if (me.isLoading) {
-    return (
-      <CandidateShell>
-        <Card className="my-auto">
-          <EmptyState title="Loading your dashboard…" />
-        </Card>
-      </CandidateShell>
-    );
-  }
-
-  if (me.isError) {
-    const forbidden = me.error instanceof TRPCClientError && me.error.data?.code === "FORBIDDEN";
-    return (
-      <CandidateShell>
-        <Card className="my-auto">
-          <EmptyState
-            title={forbidden ? "This isn't a candidate account" : "We couldn't load your dashboard"}
-            hint={
-              forbidden
-                ? "You're signed in, but not as a candidate. If you applied for a role, activate your candidate account from the sign-in page."
-                : "Please try again in a moment."
-            }
-            action={
-              <Button variant="secondary" onClick={() => void signOut(router)}>
-                Sign out
-              </Button>
-            }
-          />
-        </Card>
-      </CandidateShell>
-    );
-  }
-
-  const person = me.data;
-  if (!person) {
-    return (
-      <CandidateShell>
-        <Card className="my-auto">
-          <EmptyState title="Loading your dashboard…" />
-        </Card>
-      </CandidateShell>
-    );
-  }
-
   return (
-    <CandidateShell
-      brand={person.tenantDisplayName}
-      width="2xl"
-      footer={
-        <button
-          type="button"
-          className="text-xs font-medium text-neutral-500 underline"
-          onClick={() => void signOut(router)}
-        >
-          Sign out
-        </button>
-      }
-    >
-      <header className="flex flex-col gap-1">
-        <h1 className="text-2xl font-semibold tracking-tight text-neutral-900">
-          Hi {person.fullName.split(" ")[0]}
-        </h1>
-        <p className="text-sm text-neutral-600">
-          Your applications and interviews with {person.tenantDisplayName}.
-        </p>
-      </header>
-
-      <MyOfferSection />
-      <ApplicationsSection />
-      <InterviewsSection />
-      <PreOfferDocumentsSection />
-      <MyDocumentsSection />
+    <CandidateShell variant="portal" active="dashboard">
+      <DashboardBody />
     </CandidateShell>
   );
 }
 
-/**
- * Pre-offer documents (HROPS-03) — documents HR has requested BEFORE an offer
- * (identity / eligibility verification), distinct from the onboarding
- * checklist below. Same upload flow as onboarding docs (shared blob endpoint,
- * then attach); status + rejection reasons render per document.
- */
-function PreOfferDocumentsSection() {
-  const docs = trpc.candidateListMyApplicationDocuments.useQuery();
+function DashboardBody() {
+  const me = trpc.candidateGetMe.useQuery(undefined, { retry: false });
+  const appsQ = trpc.candidateListMyApplications.useQuery();
+  const interviewsQ = trpc.candidateListMyInterviews.useQuery();
+  const onboardingQ = trpc.candidateGetMyOnboarding.useQuery();
+  const appDocsQ = trpc.candidateListMyApplicationDocuments.useQuery();
+  const offerQ = trpc.candidateGetMyOffer.useQuery();
 
-  if (docs.isLoading || !docs.data || docs.data.groups.length === 0) {
-    return null;
-  }
+  const firstName = me.data?.fullName.split(" ")[0] ?? "there";
+  const apps = appsQ.data?.items ?? [];
+  const interviews = interviewsQ.data?.items ?? [];
 
-  return (
-    <section className="flex flex-col gap-3">
-      <h2 className="text-sm font-semibold uppercase tracking-wide text-neutral-500">
-        Verification documents
-      </h2>
-      {docs.data.groups.map((group) => (
-        <Card key={group.applicationId} className="flex flex-col divide-y divide-neutral-100 p-0">
-          {group.roleTitle ? (
-            <p className="px-5 pb-1 pt-3.5 text-xs font-medium text-neutral-500">
-              For your {group.roleTitle} application
-            </p>
-          ) : null}
-          {group.documents.map((slot) => (
-            <PreOfferDocumentSlot key={slot.documentId} slot={slot} />
-          ))}
-        </Card>
-      ))}
-    </section>
-  );
-}
+  // The primary application drives the journey stepper (most recent).
+  const primary = apps[0] ?? null;
 
-function preOfferStatusBadge(status: string) {
-  if (status === "verified") return <Badge tone="success">Verified</Badge>;
-  if (status === "rejected") return <Badge tone="warning">Needs re-upload</Badge>;
-  if (status === "uploaded") return <Badge tone="accent">Pending review</Badge>;
-  return <Badge tone="neutral">Requested</Badge>;
-}
+  // Next upcoming interview (soonest scheduled + future).
+  const upcoming = interviews
+    .filter((iv) => iv.isUpcoming)
+    .sort((a, b) => (a.scheduledStart ?? "").localeCompare(b.scheduledStart ?? ""))[0];
 
-function PreOfferDocumentSlot({ slot }: { slot: CandidateApplicationDocumentSlot }) {
-  const utils = trpc.useUtils();
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const attach = trpc.candidateAttachApplicationDocument.useMutation({
-    onSuccess: () => void utils.candidateListMyApplicationDocuments.invalidate(),
-    onError: (e) => setError(e.message),
+  const activeApplications = apps.filter((a) => !TERMINAL_NEGATIVE.has(a.currentStage)).length;
+  const interviewsDone = interviews.filter((iv) => iv.status === "completed").length;
+
+  const tasks = buildTasks({
+    interviews,
+    onboardingDocsMissing: (onboardingQ.data?.documents ?? []).some(
+      (s) => s.document === null || s.document.verificationStatus === "rejected",
+    ),
+    preOfferDocsMissing: (appDocsQ.data?.groups ?? []).some((g) =>
+      g.documents.some((d) => d.status === "requested" || d.status === "rejected"),
+    ),
+    offerOpen: offerQ.data?.offer != null && offerQ.data.offer.status === "extended",
   });
-  const working = busy || attach.isPending;
-  const rejected = slot.status === "rejected";
 
-  async function onPickFile(e: ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0] ?? null;
-    e.target.value = "";
-    if (!file) return;
-    setError(null);
-    setBusy(true);
-    try {
-      const fd = new FormData();
-      fd.append("file", file);
-      const res = await fetch(`${API_BASE}/api/candidate-documents/upload`, {
-        method: "POST",
-        headers: await candidateAuthHeaders(),
-        body: fd,
-      });
-      if (!res.ok) {
-        const body = (await res.json().catch(() => ({}))) as { error?: string };
-        throw new Error(body.error ?? `Upload failed (${res.status})`);
-      }
-      const json = (await res.json()) as {
-        storageKey: string;
-        sizeBytes: number;
-        contentType: string;
-      };
-      await attach.mutateAsync({
-        documentId: slot.documentId,
-        storageKey: json.storageKey,
-        fileName: file.name,
-        mimeType: json.contentType,
-        sizeBytes: json.sizeBytes,
-      });
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Upload failed");
-    } finally {
-      setBusy(false);
-    }
-  }
+  const updates = buildUpdates({ primary, upcoming, offerOpen: offerQ.data?.offer?.status });
 
   return (
-    <div className="flex flex-col gap-2 px-5 py-3.5">
-      <div className="flex flex-wrap items-start justify-between gap-2">
-        <div className="min-w-0">
-          <p className="truncate text-sm font-medium text-neutral-900">
-            {slot.documentTypeName ?? "Document"}
-          </p>
-          {slot.status === "requested" ? (
-            <p className="mt-0.5 text-xs text-neutral-400">Not uploaded yet</p>
-          ) : (
-            <p className="mt-0.5 truncate text-xs text-neutral-500">
-              {slot.fileName ?? "Uploaded"}
-              {slot.uploadedAt ? (
-                <span className="text-neutral-400"> · uploaded {slot.uploadedAt.slice(0, 10)}</span>
-              ) : null}
-            </p>
-          )}
-        </div>
-        {preOfferStatusBadge(slot.status)}
-      </div>
-
-      {rejected && slot.rejectionReason ? (
-        <p className="text-xs text-status-error-700">Reason: {slot.rejectionReason}</p>
-      ) : null}
-
-      {error ? (
-        <p role="alert" className="text-xs text-status-error-700">
-          {error}
+    <div className="mx-auto flex w-full max-w-6xl flex-col gap-6 px-4 py-6 sm:px-6 lg:px-8">
+      <header className="flex flex-col gap-1">
+        <h1 className="text-2xl font-semibold tracking-tight text-neutral-900">
+          Welcome, {firstName}
+        </h1>
+        <p className="text-sm text-neutral-600">
+          {me.data
+            ? `Your applications and interviews with ${me.data.tenantDisplayName}.`
+            : "Your hiring journey at a glance."}
         </p>
-      ) : null}
+      </header>
 
-      {slot.status === "verified" ? null : (
-        <label className="inline-flex w-fit cursor-pointer items-center gap-2 rounded-md border border-neutral-200 px-3 py-1.5 text-sm font-medium text-neutral-700 transition-colors hover:bg-neutral-50">
-          <input
-            type="file"
-            accept={DOC_ACCEPT}
-            className="hidden"
-            onChange={onPickFile}
-            disabled={working}
-          />
-          {working ? "Uploading…" : slot.status === "requested" ? "Upload file" : "Replace file"}
-        </label>
-      )}
-    </div>
-  );
-}
+      <CandidateOfferCard />
 
-function MyOfferSection() {
-  const utils = trpc.useUtils();
-  const offerQuery = trpc.candidateGetMyOffer.useQuery();
-  const [confirming, setConfirming] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const accept = trpc.candidateAcceptOffer.useMutation({
-    onSuccess: () => {
-      setConfirming(false);
-      void utils.candidateGetMyOffer.invalidate();
-      void utils.candidateGetMyOnboarding.invalidate();
-      void utils.candidateListMyApplications.invalidate();
-    },
-    onError: (e) =>
-      setError(
-        e instanceof TRPCClientError && e.data?.code === "CONFLICT"
-          ? "This offer has already been resolved."
-          : "Couldn't accept just now. Please try again.",
-      ),
-  });
-
-  // Nothing to show until there's an offer.
-  if (offerQuery.isLoading || !offerQuery.data || offerQuery.data.offer === null) {
-    return null;
-  }
-  const offer = offerQuery.data.offer;
-  const accepted = offer.status === "accepted";
-
-  return (
-    <section className="flex flex-col gap-3">
-      <h2 className="text-sm font-semibold uppercase tracking-wide text-neutral-500">Your offer</h2>
-      <Card className="flex flex-col gap-4 p-5">
-        <div className="flex flex-wrap items-start justify-between gap-2">
-          <div>
-            <p className="text-base font-semibold text-neutral-900">{offer.positionTitle}</p>
-            <p className="text-sm text-neutral-500">{offer.companyName}</p>
-          </div>
-          {accepted ? (
-            <Badge tone="success">Accepted</Badge>
-          ) : (
-            <Badge tone="accent">Offer extended</Badge>
-          )}
-        </div>
-
-        <dl className="flex flex-col gap-1 text-sm">
-          <Row label="Base salary" value={`${formatInr(offer.baseSalaryInrPaise)} / year`} />
-          {offer.variableTargetInrPaise !== null ? (
-            <Row
-              label="Variable target"
-              value={`${formatInr(offer.variableTargetInrPaise)} / year`}
-            />
-          ) : null}
-          {offer.joiningBonusInrPaise !== null ? (
-            <Row label="Joining bonus" value={formatInr(offer.joiningBonusInrPaise)} />
-          ) : null}
-          <Row label="Joining date" value={offer.joiningDate} />
-          <Row label="Location" value={offer.location} />
-          {!accepted ? (
-            <Row label="Respond by" value={offer.expiryAt.slice(0, 10)} />
-          ) : (
-            <Row label="Start date" value={offer.joiningDate} />
-          )}
-        </dl>
-
-        {offer.termsHtml ? (
-          <p className="whitespace-pre-wrap rounded-md bg-neutral-50 p-3 text-sm text-neutral-600">
-            {offer.termsHtml}
-          </p>
-        ) : null}
-
-        {error ? (
-          <p role="alert" className="text-sm text-status-error-700">
-            {error}
-          </p>
-        ) : null}
-
-        {accepted ? (
-          <p className="text-sm text-status-success-700">
-            You accepted this offer. We&rsquo;ll be in touch about onboarding — any documents to
-            share appear below.
-          </p>
-        ) : confirming ? (
-          <div className="flex flex-col gap-2">
-            <p className="text-sm text-neutral-700">
-              Accept this offer to join {offer.companyName} on {offer.joiningDate}?
-            </p>
-            <div className="flex gap-2">
-              <Button
-                variant="primary"
-                size="sm"
-                disabled={accept.isPending}
-                loading={accept.isPending}
-                onClick={() => {
-                  setError(null);
-                  accept.mutate({ offerId: offer.offerId });
-                }}
-              >
-                Confirm acceptance
-              </Button>
-              <Button
-                variant="secondary"
-                size="sm"
-                disabled={accept.isPending}
-                onClick={() => setConfirming(false)}
-              >
-                Not yet
-              </Button>
-            </div>
-          </div>
-        ) : (
-          <div>
-            <Button variant="primary" size="sm" onClick={() => setConfirming(true)}>
-              Accept offer
-            </Button>
-          </div>
-        )}
-      </Card>
-    </section>
-  );
-}
-
-function MyDocumentsSection() {
-  const onboarding = trpc.candidateGetMyOnboarding.useQuery();
-
-  // Quiet empty state before an onboarding case exists (pre-offer-accept).
-  if (onboarding.isLoading || !onboarding.data || onboarding.data.case === null) {
-    return null;
-  }
-  const caseId = onboarding.data.case.id;
-  const { documents } = onboarding.data;
-
-  return (
-    <section className="flex flex-col gap-3">
-      <h2 className="text-sm font-semibold uppercase tracking-wide text-neutral-500">
-        Your documents
-      </h2>
-      {documents.length === 0 ? (
-        <Card className="p-0">
-          <EmptyState
-            title="Nothing to upload yet"
-            hint="When there's a document to collect, it'll show up here with an upload button."
-          />
-        </Card>
-      ) : (
-        <Card className="flex flex-col divide-y divide-neutral-100 p-0">
-          {documents.map((slot) => (
-            <DocumentSlot key={slot.documentTypeId} caseId={caseId} slot={slot} />
-          ))}
-        </Card>
-      )}
-    </section>
-  );
-}
-
-function docStatusBadge(status: string) {
-  if (status === "verified") return <Badge tone="success">Verified</Badge>;
-  if (status === "rejected") return <Badge tone="warning">Needs re-upload</Badge>;
-  return <Badge tone="accent">Pending review</Badge>;
-}
-
-function DocumentSlot({ caseId, slot }: { caseId: string; slot: CandidateDocumentSlot }) {
-  const utils = trpc.useUtils();
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const attach = trpc.candidateAttachDocument.useMutation({
-    onSuccess: () => void utils.candidateGetMyOnboarding.invalidate(),
-    onError: (e) => setError(e.message),
-  });
-  const doc = slot.document;
-  const rejected = doc?.verificationStatus === "rejected";
-  const working = busy || attach.isPending;
-
-  async function onPickFile(e: ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0] ?? null;
-    e.target.value = "";
-    if (!file) return;
-    setError(null);
-    setBusy(true);
-    try {
-      const fd = new FormData();
-      fd.append("file", file);
-      const res = await fetch(`${API_BASE}/api/candidate-documents/upload`, {
-        method: "POST",
-        headers: await candidateAuthHeaders(),
-        body: fd,
-      });
-      if (!res.ok) {
-        const body = (await res.json().catch(() => ({}))) as { error?: string };
-        throw new Error(body.error ?? `Upload failed (${res.status})`);
-      }
-      const json = (await res.json()) as {
-        storageKey: string;
-        sizeBytes: number;
-        contentType: string;
-      };
-      await attach.mutateAsync({
-        caseId,
-        documentTypeId: slot.documentTypeId,
-        storageKey: json.storageKey,
-        fileName: file.name,
-        mimeType: json.contentType,
-        sizeBytes: json.sizeBytes,
-      });
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Upload failed");
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  return (
-    <div className="flex flex-col gap-2 px-5 py-3.5">
-      <div className="flex flex-wrap items-start justify-between gap-2">
-        <div className="min-w-0">
-          <p className="truncate text-sm font-medium text-neutral-900">
-            {slot.documentTypeName ?? "Document"}
-          </p>
-          {doc ? (
-            <p className="mt-0.5 truncate text-xs text-neutral-500">
-              {doc.fileName ?? "Uploaded"}
-              {doc.uploadedAt ? (
-                <span className="text-neutral-400"> · uploaded {doc.uploadedAt.slice(0, 10)}</span>
-              ) : null}
-            </p>
-          ) : (
-            <p className="mt-0.5 text-xs text-neutral-400">Not uploaded yet</p>
-          )}
-        </div>
-        {doc ? docStatusBadge(doc.verificationStatus) : null}
-      </div>
-
-      {rejected && doc?.rejectionReason ? (
-        <p className="text-xs text-status-error-700">Reason: {doc.rejectionReason}</p>
-      ) : null}
-
-      {error ? (
-        <p role="alert" className="text-xs text-status-error-700">
-          {error}
-        </p>
-      ) : null}
-
-      {doc && doc.verificationStatus === "verified" ? null : (
-        <label className="inline-flex w-fit cursor-pointer items-center gap-2 rounded-md border border-neutral-200 px-3 py-1.5 text-sm font-medium text-neutral-700 transition-colors hover:bg-neutral-50">
-          <input
-            type="file"
-            accept={DOC_ACCEPT}
-            className="hidden"
-            onChange={onPickFile}
-            disabled={working}
-          />
-          {working ? "Uploading…" : doc ? "Replace file" : "Upload file"}
-        </label>
-      )}
-    </div>
-  );
-}
-
-function ApplicationsSection() {
-  const apps = trpc.candidateListMyApplications.useQuery();
-
-  return (
-    <section className="flex flex-col gap-3">
-      <h2 className="text-sm font-semibold uppercase tracking-wide text-neutral-500">
-        Applications
-      </h2>
-      {apps.isLoading ? (
-        <Card className="p-5">
+      {/* Your Hiring Journey */}
+      <Card className="flex flex-col gap-5 p-5">
+        <h2 className="text-sm font-semibold text-neutral-900">Your hiring journey</h2>
+        {appsQ.isLoading ? (
           <p className="text-sm text-neutral-500">Loading…</p>
-        </Card>
-      ) : !apps.data || apps.data.items.length === 0 ? (
-        <Card className="p-0">
+        ) : primary ? (
+          <JourneyStepper steps={primary.stageSteps} current={primary.currentStage} />
+        ) : (
           <EmptyState
             title="No applications yet"
-            hint="When you apply for a role, its progress shows up here."
+            hint="When you apply for a role, your progress shows up here."
           />
-        </Card>
-      ) : (
-        apps.data.items.map((a) => (
-          <Card key={a.applicationId} className="flex flex-col gap-4 p-5">
-            <div className="flex flex-wrap items-start justify-between gap-2">
-              <div>
-                <p className="text-base font-semibold text-neutral-900">{a.positionTitle}</p>
-                {a.location ? <p className="text-sm text-neutral-500">{a.location}</p> : null}
-              </div>
-              <StageBadge stage={a.currentStage} />
-            </div>
-            <StageStepper steps={a.stageSteps} current={a.currentStage} />
+        )}
+      </Card>
+
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
+        {/* Left: upcoming interview + tasks */}
+        <div className="flex flex-col gap-6 lg:col-span-2">
+          <Card className="flex flex-col gap-3 p-5">
+            <h2 className="text-sm font-semibold text-neutral-900">Upcoming interview</h2>
+            {upcoming ? (
+              <UpcomingInterview interview={upcoming} />
+            ) : (
+              <p className="text-sm text-neutral-500">
+                No interview scheduled right now. When a round is scheduled, it&rsquo;ll appear
+                here.
+              </p>
+            )}
           </Card>
-        ))
-      )}
-    </section>
+
+          <Card className="flex flex-col gap-3 p-5">
+            <h2 className="text-sm font-semibold text-neutral-900">Tasks checklist</h2>
+            {tasks.length === 0 ? (
+              <p className="text-sm text-neutral-500">
+                You&rsquo;re all caught up — nothing to do.
+              </p>
+            ) : (
+              <ul className="flex flex-col gap-2.5">
+                {tasks.map((t) => (
+                  <TaskRow key={t.key} task={t} />
+                ))}
+              </ul>
+            )}
+          </Card>
+        </div>
+
+        {/* Right: stat tiles + recent updates */}
+        <div className="flex flex-col gap-6">
+          <div className="grid grid-cols-2 gap-3">
+            <StatTile label="Active applications" value={activeApplications} tone="accent" />
+            <StatTile label="Interviews done" value={interviewsDone} />
+          </div>
+          <Card className="flex flex-col gap-3 p-5">
+            <h2 className="text-sm font-semibold text-neutral-900">Recent updates</h2>
+            {updates.length === 0 ? (
+              <p className="text-sm text-neutral-500">No recent updates.</p>
+            ) : (
+              <ul className="flex flex-col gap-3">
+                {updates.map((u, i) => (
+                  <li key={i} className="flex flex-col gap-0.5">
+                    <p className="text-sm text-neutral-800">{u.text}</p>
+                    {u.meta ? <p className="text-xs text-neutral-400">{u.meta}</p> : null}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </Card>
+        </div>
+      </div>
+    </div>
   );
 }
 
-function StageBadge({ stage }: { stage: string }) {
-  const label = STAGE_LABELS[stage] ?? stage;
-  if (stage === "offer_accepted") return <Badge tone="success">{label}</Badge>;
-  if (TERMINAL_NEGATIVE.has(stage)) return <Badge tone="neutral">{label}</Badge>;
-  return <Badge tone="accent">{label}</Badge>;
-}
-
 /**
- * Horizontal stepper over the candidate-visible stage vocabulary. The current
- * stage (if it's one of the steps) marks how far along the row is; a terminal
- * negative stage renders the steps muted with a status note instead.
+ * Horizontal journey over the candidate-visible stage vocabulary. Deterministic
+ * from stageSteps + currentStage — NO scores, no invented per-stage dates. A
+ * terminal-negative current stage renders the row muted with a status note.
  */
-function StageStepper({ steps, current }: { steps: string[]; current: string }) {
-  const currentIdx = steps.indexOf(current);
+function JourneyStepper({ steps, current }: { steps: string[]; current: string }) {
   const isNegativeTerminal = TERMINAL_NEGATIVE.has(current);
+  const currentIdx = steps.indexOf(current);
 
   return (
-    <div className="flex flex-col gap-2">
-      <ol className="flex items-center gap-1.5" aria-label="Application progress">
+    <div className="flex flex-col gap-3">
+      <ol className="flex items-start gap-0">
         {steps.map((s, i) => {
           const reached = !isNegativeTerminal && currentIdx >= 0 && i <= currentIdx;
           const isCurrent = !isNegativeTerminal && i === currentIdx;
+          const lineReached = !isNegativeTerminal && currentIdx >= 0 && i < currentIdx;
           return (
-            <li key={s} className="flex flex-1 items-center gap-1.5" title={STAGE_LABELS[s] ?? s}>
+            <li key={s} className="flex flex-1 flex-col items-center gap-2">
+              <div className="flex w-full items-center">
+                {/* left connector */}
+                <span
+                  className={[
+                    "h-0.5 flex-1 rounded-full",
+                    i === 0
+                      ? "opacity-0"
+                      : reached && i <= currentIdx
+                        ? "bg-brand-500"
+                        : "bg-neutral-200",
+                  ].join(" ")}
+                />
+                <span
+                  className={[
+                    "flex h-6 w-6 shrink-0 items-center justify-center rounded-full border-2 text-[11px] transition-colors",
+                    reached
+                      ? "border-brand-500 bg-brand-500 text-white"
+                      : isCurrent
+                        ? "border-brand-500 bg-white text-brand-600"
+                        : "border-neutral-300 bg-white text-neutral-400",
+                  ].join(" ")}
+                  aria-current={isCurrent ? "step" : undefined}
+                >
+                  {reached && !isCurrent ? "✓" : ""}
+                </span>
+                {/* right connector */}
+                <span
+                  className={[
+                    "h-0.5 flex-1 rounded-full",
+                    i === steps.length - 1
+                      ? "opacity-0"
+                      : lineReached
+                        ? "bg-brand-500"
+                        : "bg-neutral-200",
+                  ].join(" ")}
+                />
+              </div>
               <span
                 className={[
-                  "h-2 flex-1 rounded-full transition-colors",
-                  reached ? "bg-brand-500" : "bg-neutral-200",
-                  isCurrent ? "ring-2 ring-brand-200" : "",
+                  "text-center text-[11px] leading-tight",
+                  isCurrent
+                    ? "font-semibold text-brand-700"
+                    : reached
+                      ? "text-neutral-700"
+                      : "text-neutral-400",
                 ].join(" ")}
-              />
+              >
+                {stageLabel(s)}
+              </span>
             </li>
           );
         })}
       </ol>
       <p className="text-xs text-neutral-500">
         {isNegativeTerminal
-          ? `Status: ${STAGE_LABELS[current] ?? current}`
+          ? `Status: ${stageLabel(current)}`
           : currentIdx >= 0
-            ? `Now: ${STAGE_LABELS[current] ?? current}`
-            : `Status: ${STAGE_LABELS[current] ?? current}`}
+            ? `Now: ${stageLabel(current)}`
+            : `Status: ${stageLabel(current)}`}
       </p>
     </div>
   );
 }
 
-function InterviewsSection() {
-  const interviews = trpc.candidateListMyInterviews.useQuery();
-
+function UpcomingInterview({ interview }: { interview: CandidateInterviewRow }) {
+  const confirmed = interview.confirmedAt !== null;
   return (
-    <section className="flex flex-col gap-3">
-      <h2 className="text-sm font-semibold uppercase tracking-wide text-neutral-500">Interviews</h2>
-      {interviews.isLoading ? (
-        <Card className="p-5">
-          <p className="text-sm text-neutral-500">Loading…</p>
-        </Card>
-      ) : !interviews.data || interviews.data.items.length === 0 ? (
-        <Card className="p-0">
-          <EmptyState
-            title="No interviews scheduled"
-            hint="When a round is scheduled, you'll see it here and can confirm your attendance."
-          />
-        </Card>
-      ) : (
-        interviews.data.items.map((iv) => <InterviewRow key={iv.interviewId} interview={iv} />)
-      )}
-    </section>
-  );
-}
-
-function InterviewRow({ interview }: { interview: CandidateInterviewRow }) {
-  const utils = trpc.useUtils();
-  const [localConfirmedAt, setLocalConfirmedAt] = useState<string | null>(interview.confirmedAt);
-  const [error, setError] = useState<string | null>(null);
-  const confirm = trpc.candidateConfirmInterview.useMutation({
-    onSuccess: (res) => {
-      setLocalConfirmedAt(res.confirmedAt);
-      void utils.candidateListMyInterviews.invalidate();
-    },
-    onError: () => setError("Couldn't confirm just now. Please try again."),
-  });
-
-  const confirmed = localConfirmedAt !== null;
-  const canConfirm = interview.status === "scheduled" && !confirmed;
-
-  return (
-    <Card className="flex flex-col gap-3 p-5">
+    <div className="flex flex-col gap-3">
       <div className="flex flex-wrap items-start justify-between gap-2">
         <div>
-          <p className="text-base font-semibold text-neutral-900">{interview.roundName}</p>
-          <p className="text-sm text-neutral-500">{interview.positionTitle}</p>
+          <p className="text-base font-semibold text-neutral-900">{interview.positionTitle}</p>
+          <p className="text-sm text-neutral-500">{interview.roundName}</p>
         </div>
         {confirmed ? (
           <Badge tone="success">Confirmed</Badge>
-        ) : interview.status !== "scheduled" ? (
-          <Badge tone="neutral">{interview.status}</Badge>
         ) : (
           <Badge tone="warning">Awaiting confirmation</Badge>
         )}
       </div>
       <dl className="flex flex-col gap-1 text-sm">
-        <Row label="When" value={formatWhen(interview.scheduledStart)} />
-        <Row
+        <InfoRow label="When" value={formatWhen(interview.scheduledStart)} />
+        <InfoRow
           label="Format"
           value={`${MODE_LABEL[interview.mode] ?? interview.mode} · ${interview.durationMinutes} min`}
         />
-        {interview.meetingUrl ? <Row label="Meeting link" value={interview.meetingUrl} /> : null}
+        {interview.meetingUrl ? (
+          <InfoRow label="Meeting link" value={interview.meetingUrl} />
+        ) : null}
       </dl>
-      {error ? (
-        <p role="alert" className="text-sm text-status-error-700">
-          {error}
-        </p>
-      ) : null}
-      {canConfirm ? (
-        <Button
-          variant="primary"
-          size="sm"
-          disabled={confirm.isPending}
-          loading={confirm.isPending}
-          onClick={() => {
-            setError(null);
-            confirm.mutate({ interviewId: interview.interviewId });
-          }}
-        >
-          Confirm attendance
-        </Button>
-      ) : null}
-    </Card>
-  );
-}
-
-function Row({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="flex items-baseline justify-between gap-4">
-      <dt className="text-neutral-500">{label}</dt>
-      <dd className="text-right font-medium text-neutral-900 break-all">{value}</dd>
+      <a
+        href="/candidate/interviews"
+        className="text-sm font-medium text-brand-700 underline-offset-2 hover:underline"
+      >
+        Go to interviews →
+      </a>
     </div>
   );
 }
 
-function formatWhen(iso: string | null): string {
-  if (!iso) return "To be confirmed";
-  return `${iso.slice(0, 10)} at ${iso.slice(11, 16)} UTC`;
+function InfoRow({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="flex items-baseline justify-between gap-4">
+      <dt className="text-neutral-500">{label}</dt>
+      <dd className="break-all text-right font-medium text-neutral-900">{value}</dd>
+    </div>
+  );
 }
 
-async function signOut(router: ReturnType<typeof useRouter>): Promise<void> {
-  const supabase = getSupabaseBrowserClient();
-  await supabase.auth.signOut();
-  router.replace("/candidate/login");
-  router.refresh();
+interface Task {
+  key: string;
+  label: string;
+  href: string;
+  done: boolean;
+}
+
+function buildTasks(input: {
+  interviews: CandidateInterviewRow[];
+  onboardingDocsMissing: boolean;
+  preOfferDocsMissing: boolean;
+  offerOpen: boolean;
+}): Task[] {
+  const tasks: Task[] = [];
+
+  const unconfirmed = input.interviews.find((iv) => iv.isUpcoming && iv.confirmedAt === null);
+  const confirmedUpcoming = input.interviews.find((iv) => iv.isUpcoming && iv.confirmedAt !== null);
+  if (unconfirmed) {
+    tasks.push({
+      key: "confirm-interview",
+      label: `Confirm your ${unconfirmed.roundName} interview`,
+      href: "/candidate/interviews",
+      done: false,
+    });
+  } else if (confirmedUpcoming) {
+    tasks.push({
+      key: "confirm-interview-done",
+      label: "Interview attendance confirmed",
+      href: "/candidate/interviews",
+      done: true,
+    });
+  }
+
+  if (input.offerOpen) {
+    tasks.push({
+      key: "respond-offer",
+      label: "Review and respond to your offer",
+      href: "/candidate",
+      done: false,
+    });
+  }
+
+  if (input.preOfferDocsMissing) {
+    tasks.push({
+      key: "verification-docs",
+      label: "Upload requested verification documents",
+      href: "/candidate/documents",
+      done: false,
+    });
+  }
+  if (input.onboardingDocsMissing) {
+    tasks.push({
+      key: "onboarding-docs",
+      label: "Upload your onboarding documents",
+      href: "/candidate/documents",
+      done: false,
+    });
+  }
+
+  return tasks;
+}
+
+function TaskRow({ task }: { task: Task }) {
+  return (
+    <li>
+      <a
+        href={task.href}
+        className="flex items-center gap-3 rounded-md px-1 py-1 transition-colors hover:bg-neutral-50"
+      >
+        <span
+          aria-hidden
+          className={[
+            "flex h-5 w-5 shrink-0 items-center justify-center rounded-full border text-[11px]",
+            task.done
+              ? "border-status-success-500 bg-status-success-500 text-white"
+              : "border-neutral-300 text-transparent",
+          ].join(" ")}
+        >
+          ✓
+        </span>
+        <span
+          className={[
+            "text-sm",
+            task.done ? "text-neutral-400 line-through" : "text-neutral-800",
+          ].join(" ")}
+        >
+          {task.label}
+        </span>
+      </a>
+    </li>
+  );
+}
+
+interface Update {
+  text: string;
+  meta?: string;
+}
+
+function buildUpdates(input: {
+  primary: CandidateApplicationRow | null;
+  upcoming: CandidateInterviewRow | undefined;
+  offerOpen: string | undefined;
+}): Update[] {
+  const updates: Update[] = [];
+  if (input.offerOpen === "extended") {
+    updates.push({ text: "An offer has been extended to you.", meta: "See Your offer above" });
+  } else if (input.offerOpen === "accepted") {
+    updates.push({ text: "You accepted your offer.", meta: "Onboarding to follow" });
+  }
+  if (input.upcoming) {
+    updates.push({
+      text: `${input.upcoming.roundName} scheduled`,
+      meta: formatWhen(input.upcoming.scheduledStart),
+    });
+  }
+  if (input.primary && !TERMINAL_NEGATIVE.has(input.primary.currentStage)) {
+    updates.push({
+      text: `${input.primary.positionTitle}: now at ${STAGE_LABELS[input.primary.currentStage] ?? input.primary.currentStage}`,
+      meta: `Applied ${formatDate(input.primary.appliedAt)}`,
+    });
+  }
+  return updates.slice(0, 4);
 }

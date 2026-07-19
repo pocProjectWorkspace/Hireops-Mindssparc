@@ -3594,6 +3594,13 @@ export const candidateOfferSchema = z.object({
   location: z.string(),
   expiryAt: z.string(),
   termsHtml: z.string().nullable(),
+  // C10 — real offer-terms enrichment (fields already on the offers row from
+  // the recruiter era). Optional/nullable: older offers may not carry them, and
+  // the candidate view only renders a term when it is present. `benefits` is a
+  // list of curated benefit KEYS (see comp.ts BENEFIT_META for labels).
+  contractType: z.string().nullable(),
+  probationMonths: z.number().int().nullable(),
+  benefits: z.array(z.string()),
 });
 export type CandidateOffer = z.infer<typeof candidateOfferSchema>;
 
