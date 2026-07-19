@@ -87,6 +87,7 @@ import {
   requisitionFeasibility,
   hrRoundAssessments,
   compRecommendations,
+  reqRevisionSuggestions,
   applicationDocuments,
   hrCaseNotes,
   hrPolicyDocuments,
@@ -488,6 +489,28 @@ import {
   type CandidateApplicationDocumentGroup,
   type CandidateApplicationDocumentSlot,
   type CaseAuditEvent,
+  // RO-01 requirement-owner: AI revision suggestions + dashboard/list/tracker
+  getReqRevisionSuggestionsInputSchema,
+  getReqRevisionSuggestionsOutputSchema,
+  generateReqRevisionSuggestionsInputSchema,
+  generateReqRevisionSuggestionsOutputSchema,
+  reqRevisionAiSchema,
+  listMyRequisitionsV2InputSchema,
+  listMyRequisitionsV2OutputSchema,
+  getRequirementOwnerDashboardOutputSchema,
+  getApprovalTrackerOutputSchema,
+  REQUISITION_APPROVAL_SLA_DAYS,
+  type ReqRevisionAi,
+  type ReqRevisionItem,
+  type RequirementOwnerReqRow,
+  type ReqHealthWire,
+  type RoDashboardStat,
+  type RoHealthRow,
+  type RoApprovalSlaItem,
+  type RoActionItem,
+  type RoActionKind,
+  type RoMarketInsight,
+  type ApprovalTrackerHistoryRow,
 } from "@hireops/api-types";
 import { createClient } from "@supabase/supabase-js";
 import {
@@ -551,6 +574,19 @@ import {
   INTERVIEW_PREP_SCHEMA_NAME,
   INTERVIEW_PREP_FEATURE,
 } from "../lib/interview-prep";
+import {
+  buildReqRevisionPrompt,
+  reqRevisionJsonSchema,
+  REQ_REVISION_PROMPT_VERSION,
+  REQ_REVISION_SCHEMA_NAME,
+  REQ_REVISION_FEATURE,
+} from "../lib/req-revision";
+import {
+  computeReqHealth,
+  computeReqDifficulty,
+  countNicheSkills,
+  type ReqDifficulty,
+} from "../lib/req-health";
 import { enqueueNotification, signLink, hashToken, verifyLink } from "@hireops/notifications";
 import { assertRuleAttachable, IncompatibleApprovalRuleError } from "@hireops/agent-actions";
 import {
@@ -1061,6 +1097,541 @@ async function loadReqFeasibilityFacet(
     compBandMax: row.compBandMax ?? null,
     compCurrency: row.compCurrency ?? null,
     jdVersionId: row.jdVersionId,
+  };
+}
+
+// ═══════════════════ RO-01 — requirement-owner data assembly ═══════════════════
+//
+// Shared loader for the requirement-owner dashboard, My Requisitions v2, and the
+// Approval Tracker. Assembles one facet per requisition (JD completeness, skill
+// aggregates, interview-plan presence, pipeline counts, and the latest approval
+// state + decision), then the deterministic rule engine (lib/req-health.ts)
+// derives health + difficulty. A handful of grouped queries + JS stitching keeps
+// it to O(tables), not O(reqs). Curated benchmarks (loaded once) drive difficulty
+// (budget-vs-median + niche skills) and the market-insights TTF reference.
+
+const TERMINAL_APP_STAGES = new Set(["offer_declined", "withdrawn", "recruiter_rejected"]);
+const INTERVIEW_APP_STAGES = new Set(["tech_interview", "hr_round"]);
+const OFFER_APP_STAGES = new Set(["offer_drafted", "offer_accepted"]);
+
+interface RoReqFacet {
+  id: string;
+  status: string;
+  title: string | null;
+  department: string | null;
+  seniority: string | null;
+  locationType: string;
+  primaryLocation: string | null;
+  compBandMin: string | null;
+  compBandMax: string | null;
+  compCurrency: string | null;
+  openings: number;
+  createdAt: Date;
+  jdVersionId: string;
+  jdHasText: boolean;
+  jdHasSummary: boolean;
+  jdSectionCount: number;
+  skillCount: number;
+  weightedSkillCount: number;
+  mustHaveCount: number;
+  skillNames: string[];
+  interviewRounds: number;
+  candidatesInFlight: number;
+  interviewingCount: number;
+  offerStageCount: number;
+  approvalRequestId: string | null;
+  approvalStatus: string | null;
+  approvalRequestedAt: Date | null;
+  approvalDecidedAt: Date | null;
+  latestDecisionOutcome: string | null;
+  latestDecisionReason: string | null;
+  latestDecisionAt: Date | null;
+  /** Days from first application to offer_accepted, for accepted apps only. */
+  timeToHireDays: number[];
+}
+
+function countJdSections(metadata: unknown): number {
+  if (!metadata || typeof metadata !== "object") return 0;
+  const sections = (metadata as Record<string, unknown>).sections;
+  if (Array.isArray(sections)) return sections.filter(Boolean).length;
+  if (sections && typeof sections === "object") {
+    return Object.values(sections as Record<string, unknown>).filter(
+      (v) => v != null && String(v).trim().length > 0,
+    ).length;
+  }
+  return 0;
+}
+
+async function loadRequirementOwnerFacets(
+  db: TenantBoundDb,
+  tenantId: string,
+  limit: number,
+): Promise<RoReqFacet[]> {
+  const reqRows = await db
+    .select({
+      id: requisitions.id,
+      status: requisitions.status,
+      openings: requisitions.numberOfOpenings,
+      createdAt: requisitions.createdAt,
+      jdVersionId: jdVersions.id,
+      jdText: jdVersions.jdText,
+      jdSummary: jdVersions.summary,
+      jdMetadata: jdVersions.aiMetadata,
+      title: positions.title,
+      department: businessUnits.name,
+      seniority: positions.level,
+      locationType: positions.locationType,
+      primaryLocation: positions.primaryLocation,
+      compBandMin: positions.compBandMin,
+      compBandMax: positions.compBandMax,
+      compCurrency: positions.compCurrency,
+    })
+    .from(requisitions)
+    .innerJoin(
+      positions,
+      and(eq(requisitions.tenantId, positions.tenantId), eq(requisitions.positionId, positions.id)),
+    )
+    .leftJoin(
+      businessUnits,
+      and(
+        eq(positions.tenantId, businessUnits.tenantId),
+        eq(positions.businessUnitId, businessUnits.id),
+      ),
+    )
+    .innerJoin(
+      jdVersions,
+      and(
+        eq(requisitions.tenantId, jdVersions.tenantId),
+        eq(requisitions.jdVersionId, jdVersions.id),
+      ),
+    )
+    .where(eq(requisitions.tenantId, tenantId))
+    .orderBy(desc(requisitions.createdAt))
+    .limit(limit);
+
+  const facets: RoReqFacet[] = reqRows.map((r) => ({
+    id: r.id,
+    status: r.status,
+    title: r.title ?? null,
+    department: r.department ?? null,
+    seniority: r.seniority ?? null,
+    locationType: r.locationType,
+    primaryLocation: r.primaryLocation ?? null,
+    compBandMin: r.compBandMin ?? null,
+    compBandMax: r.compBandMax ?? null,
+    compCurrency: r.compCurrency ?? null,
+    openings: r.openings,
+    createdAt: r.createdAt,
+    jdVersionId: r.jdVersionId,
+    jdHasText: !!r.jdText && r.jdText.trim().length > 0,
+    jdHasSummary: !!r.jdSummary && r.jdSummary.trim().length > 0,
+    jdSectionCount: countJdSections(r.jdMetadata),
+    skillCount: 0,
+    weightedSkillCount: 0,
+    mustHaveCount: 0,
+    skillNames: [],
+    interviewRounds: 0,
+    candidatesInFlight: 0,
+    interviewingCount: 0,
+    offerStageCount: 0,
+    approvalRequestId: null,
+    approvalStatus: null,
+    approvalRequestedAt: null,
+    approvalDecidedAt: null,
+    latestDecisionOutcome: null,
+    latestDecisionReason: null,
+    latestDecisionAt: null,
+    timeToHireDays: [],
+  }));
+
+  if (facets.length === 0) return facets;
+  const byId = new Map(facets.map((f) => [f.id, f]));
+  const byJd = new Map(facets.map((f) => [f.jdVersionId, f]));
+  const reqIds = facets.map((f) => f.id);
+  const jdIds = facets.map((f) => f.jdVersionId);
+
+  // Skills aggregate (per jd version).
+  const skillRows = await db
+    .select({
+      jdVersionId: jdSkills.jdVersionId,
+      skillName: jdSkills.skillName,
+      weight: jdSkills.weight,
+      isRequired: jdSkills.isRequired,
+    })
+    .from(jdSkills)
+    .where(and(eq(jdSkills.tenantId, tenantId), inArray(jdSkills.jdVersionId, jdIds)));
+  for (const s of skillRows) {
+    const f = byJd.get(s.jdVersionId);
+    if (!f) continue;
+    f.skillCount += 1;
+    if (Number(s.weight) > 0) f.weightedSkillCount += 1;
+    if (s.isRequired) f.mustHaveCount += 1;
+    f.skillNames.push(s.skillName);
+  }
+
+  // Interview-plan rounds (per requisition).
+  const planRows = await db
+    .select({ requisitionId: interviewPlans.requisitionId })
+    .from(interviewPlans)
+    .where(
+      and(eq(interviewPlans.tenantId, tenantId), inArray(interviewPlans.requisitionId, reqIds)),
+    );
+  for (const p of planRows) {
+    const f = byId.get(p.requisitionId);
+    if (f) f.interviewRounds += 1;
+  }
+
+  // Pipeline (per requisition) + time-to-hire samples.
+  const appRows = await db
+    .select({
+      requisitionId: applications.requisitionId,
+      currentStage: applications.currentStage,
+      createdAt: applications.createdAt,
+      stageEnteredAt: applications.stageEnteredAt,
+    })
+    .from(applications)
+    .where(and(eq(applications.tenantId, tenantId), inArray(applications.requisitionId, reqIds)));
+  for (const a of appRows) {
+    const f = byId.get(a.requisitionId);
+    if (!f) continue;
+    const stage = a.currentStage as string;
+    if (!TERMINAL_APP_STAGES.has(stage)) f.candidatesInFlight += 1;
+    if (INTERVIEW_APP_STAGES.has(stage)) f.interviewingCount += 1;
+    if (OFFER_APP_STAGES.has(stage)) f.offerStageCount += 1;
+    if (stage === "offer_accepted") {
+      const days = (a.stageEnteredAt.getTime() - a.createdAt.getTime()) / (1000 * 60 * 60 * 24);
+      if (Number.isFinite(days) && days >= 0) f.timeToHireDays.push(days);
+    }
+  }
+
+  // Latest approval request per requisition (subject_id).
+  const apprRows = await db
+    .select({
+      id: approvalRequests.id,
+      subjectId: approvalRequests.subjectId,
+      status: approvalRequests.status,
+      requestedAt: approvalRequests.requestedAt,
+      decidedAt: approvalRequests.decidedAt,
+      createdAt: approvalRequests.createdAt,
+    })
+    .from(approvalRequests)
+    .where(
+      and(
+        eq(approvalRequests.tenantId, tenantId),
+        eq(approvalRequests.subjectType, "requisition"),
+        inArray(approvalRequests.subjectId, reqIds),
+      ),
+    )
+    .orderBy(desc(approvalRequests.createdAt));
+  for (const ar of apprRows) {
+    const f = byId.get(ar.subjectId);
+    if (!f || f.approvalRequestId) continue; // first = latest (desc order)
+    f.approvalRequestId = ar.id;
+    f.approvalStatus = ar.status;
+    f.approvalRequestedAt = ar.requestedAt;
+    f.approvalDecidedAt = ar.decidedAt;
+  }
+
+  // Latest HR-head decision per requisition (across all its requests).
+  const decRows = await db
+    .select({
+      subjectId: approvalRequests.subjectId,
+      outcome: approvalDecisions.outcome,
+      comment: approvalDecisions.comment,
+      decidedAt: approvalDecisions.decidedAt,
+    })
+    .from(approvalDecisions)
+    .innerJoin(
+      approvalRequests,
+      and(
+        eq(approvalDecisions.tenantId, approvalRequests.tenantId),
+        eq(approvalDecisions.requestId, approvalRequests.id),
+      ),
+    )
+    .where(
+      and(
+        eq(approvalDecisions.tenantId, tenantId),
+        eq(approvalRequests.subjectType, "requisition"),
+        inArray(approvalRequests.subjectId, reqIds),
+      ),
+    )
+    .orderBy(desc(approvalDecisions.decidedAt));
+  for (const d of decRows) {
+    const f = byId.get(d.subjectId);
+    if (!f || f.latestDecisionOutcome) continue; // first = latest
+    f.latestDecisionOutcome = d.outcome;
+    f.latestDecisionReason = d.comment ?? null;
+    f.latestDecisionAt = d.decidedAt;
+  }
+
+  return facets;
+}
+
+/** Budget midpoint in MAJOR rupees, or null when no band. */
+function facetBudgetMidMajor(f: RoReqFacet): number | null {
+  if (f.compBandMin == null || f.compBandMax == null) return null;
+  const min = Number(f.compBandMin);
+  const max = Number(f.compBandMax);
+  if (!Number.isFinite(min) || !Number.isFinite(max)) return null;
+  return (min + max) / 2;
+}
+
+function facetDifficulty(f: RoReqFacet, benchmark: TenantBenchmark | null): ReqDifficulty {
+  const midMajor = facetBudgetMidMajor(f);
+  const budgetVsBenchmarkPct =
+    midMajor != null && benchmark
+      ? Math.round((midMajor / minorToMajor(benchmark.medianSalaryMinor)) * 100)
+      : null;
+  return computeReqDifficulty({
+    mustHaveCount: f.mustHaveCount,
+    nicheSkillCount: countNicheSkills(f.skillNames, benchmark?.trendingSkills ?? []),
+    budgetVsBenchmarkPct,
+  });
+}
+
+function facetHealth(f: RoReqFacet): ReqHealthWire {
+  const { score, components } = computeReqHealth({
+    jd: { hasText: f.jdHasText, hasSummary: f.jdHasSummary, sectionCount: f.jdSectionCount },
+    skills: {
+      count: f.skillCount,
+      weightedCount: f.weightedSkillCount,
+      mustHaveCount: f.mustHaveCount,
+    },
+    interviewPlan: { configured: f.interviewRounds > 0, roundCount: f.interviewRounds },
+    budget: { hasBand: f.compBandMin != null && f.compBandMax != null },
+    // A never-submitted draft has no approval row; status still reflects lifecycle.
+    approvalStatus: f.status,
+    pipeline: { candidatesInFlight: f.candidatesInFlight },
+  });
+  return { score, components };
+}
+
+/** A rejected requisition = cancelled with a reject decision on record. */
+function facetIsRejected(f: RoReqFacet): boolean {
+  return f.status === "cancelled" && f.latestDecisionOutcome === "rejected";
+}
+
+function facetCanSubmit(f: RoReqFacet): boolean {
+  return (
+    f.status === "draft" &&
+    f.jdHasText &&
+    f.skillCount > 0 &&
+    f.mustHaveCount > 0 &&
+    f.compBandMin != null &&
+    f.compBandMax != null
+  );
+}
+
+function matchFacetBenchmark(f: RoReqFacet, benchmarks: TenantBenchmark[]): TenantBenchmark | null {
+  if (!f.title) return null;
+  const title = matchBenchmarkTitle(
+    f.title,
+    benchmarks.map((b) => b.roleTitle),
+  );
+  return title ? (benchmarks.find((b) => b.roleTitle === title) ?? null) : null;
+}
+
+function facetToOwnerRow(f: RoReqFacet, benchmarks: TenantBenchmark[]): RequirementOwnerReqRow {
+  const benchmark = matchFacetBenchmark(f, benchmarks);
+  return {
+    id: f.id,
+    title: f.title,
+    department: f.department,
+    status: f.status,
+    health: facetHealth(f),
+    difficulty: facetDifficulty(f, benchmark),
+    budgetBand: formatBudgetBand(f.compBandMin, f.compBandMax, f.compCurrency),
+    openings: f.openings,
+    createdAt: f.createdAt.toISOString(),
+    canSubmit: facetCanSubmit(f),
+  };
+}
+
+/** Deterministic action-required rules for a single requisition facet. */
+function facetActions(f: RoReqFacet): RoActionItem[] {
+  const out: RoActionItem[] = [];
+  const href = `/requisitions/${f.id}`;
+  const roleName = f.title ?? "Untitled requisition";
+  const isTerminal = f.status === "filled" || f.status === "closed";
+  const push = (
+    kind: RoActionKind,
+    title: string,
+    detail: string,
+    severity: RoActionItem["severity"],
+    to = href,
+  ) =>
+    out.push({
+      key: `${f.id}:${kind}`,
+      kind,
+      requisitionId: f.id,
+      title,
+      detail,
+      href: to,
+      severity,
+    });
+
+  // Rejected → surface the reason + revision path first.
+  if (facetIsRejected(f)) {
+    push(
+      "rejected_with_reason",
+      `${roleName} was rejected`,
+      f.latestDecisionReason
+        ? `HR head: "${f.latestDecisionReason}". Open to review AI revision suggestions.`
+        : "Open to review AI revision suggestions and resubmit.",
+      "urgent",
+    );
+    return out; // a rejected req's other gaps are moot until revised
+  }
+
+  // Stalled approval.
+  if (f.status === "pending_approval" && f.approvalRequestedAt) {
+    const hours = Math.floor((Date.now() - f.approvalRequestedAt.getTime()) / (1000 * 60 * 60));
+    if (hours >= REQUISITION_APPROVAL_SLA_DAYS * 24) {
+      push(
+        "stalled_approval",
+        `${roleName} approval is overdue`,
+        `Pending ${Math.floor(hours / 24)}d — past the ${REQUISITION_APPROVAL_SLA_DAYS}-day SLA. Nudge the HR head.`,
+        "urgent",
+        "/approval-tracker",
+      );
+    }
+    return out; // in-flight approval: don't nag about draft gaps
+  }
+
+  if (isTerminal) return out;
+
+  // Draft-completeness gaps (only meaningful before submission).
+  if (f.status === "draft") {
+    if (!f.jdHasText)
+      push(
+        "jd_not_generated",
+        `${roleName} has no job description`,
+        "Generate the JD before submitting.",
+        "attention",
+      );
+    if (f.compBandMin == null || f.compBandMax == null)
+      push(
+        "budget_missing",
+        `${roleName} has no budget band`,
+        "Set a comp band on the role.",
+        "attention",
+      );
+    if (f.skillCount > 0 && f.weightedSkillCount < f.skillCount)
+      push(
+        "skills_not_weighted",
+        `${roleName} skills aren't fully weighted`,
+        "Weight every skill so screening ranks candidates correctly.",
+        "info",
+      );
+    if (f.interviewRounds === 0)
+      push(
+        "panel_not_configured",
+        `${roleName} has no interview plan`,
+        "Configure the interview rounds and panel.",
+        "info",
+      );
+    if (facetCanSubmit(f))
+      push(
+        "ready_to_submit",
+        `${roleName} is ready to submit`,
+        "The draft is complete — submit it for approval.",
+        "info",
+      );
+  } else if (f.interviewRounds === 0) {
+    // Live req without a panel is still worth flagging.
+    push(
+      "panel_not_configured",
+      `${roleName} has no interview plan`,
+      "Configure the interview rounds and panel.",
+      "info",
+    );
+  }
+  return out;
+}
+
+// Role gates for the requirement-owner surfaces.
+const RO_DASHBOARD_ROLES = new Set(["admin", "hiring_manager"]);
+const RO_REVISION_ROLES = new Set(["admin", "hiring_manager"]);
+
+interface ReqRevisionMeta {
+  hiringManagerId: string | null;
+  isRejected: boolean;
+  rejectionReason: string | null;
+}
+
+/**
+ * Load the minimal metadata the revision-suggestions procedures need: the req's
+ * owner (for the owner-or-admin gate), whether it is in a rejected state
+ * (cancelled + a reject decision on record), and the HR-head rejection reason.
+ */
+async function loadReqRevisionMeta(
+  db: TenantBoundDb,
+  tenantId: string,
+  requisitionId: string,
+): Promise<ReqRevisionMeta | null> {
+  const [req] = await db
+    .select({ status: requisitions.status, hiringManagerId: requisitions.hiringManagerId })
+    .from(requisitions)
+    .where(and(eq(requisitions.tenantId, tenantId), eq(requisitions.id, requisitionId)))
+    .limit(1);
+  if (!req) return null;
+
+  const [decision] = await db
+    .select({ outcome: approvalDecisions.outcome, comment: approvalDecisions.comment })
+    .from(approvalDecisions)
+    .innerJoin(
+      approvalRequests,
+      and(
+        eq(approvalDecisions.tenantId, approvalRequests.tenantId),
+        eq(approvalDecisions.requestId, approvalRequests.id),
+      ),
+    )
+    .where(
+      and(
+        eq(approvalDecisions.tenantId, tenantId),
+        eq(approvalRequests.subjectType, "requisition"),
+        eq(approvalRequests.subjectId, requisitionId),
+        eq(approvalDecisions.outcome, "rejected"),
+      ),
+    )
+    .orderBy(desc(approvalDecisions.decidedAt))
+    .limit(1);
+
+  const isRejected = req.status === "cancelled" && !!decision;
+  return {
+    hiringManagerId: req.hiringManagerId ?? null,
+    isRejected,
+    rejectionReason: decision?.comment ?? null,
+  };
+}
+
+/** Owner-or-admin gate: admin passes; otherwise the caller's membership must be
+ * the requisition's hiring manager. */
+async function ensureReqOwnerOrAdmin(
+  db: TenantBoundDb,
+  ctx: HonoTRPCContext,
+  hiringManagerId: string | null,
+): Promise<void> {
+  if (ctx.roles.includes("admin")) return;
+  const membershipId = await resolveActorMembership(db, ctx);
+  if (!membershipId || membershipId !== hiringManagerId) {
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: "Only the requisition's owner or an admin can access its revision suggestions.",
+    });
+  }
+}
+
+/** Map a req_revision_suggestions DB row → the wire shape. */
+function reqRevisionRowToApi(row: typeof reqRevisionSuggestions.$inferSelect) {
+  const parsed = reqRevisionAiSchema.safeParse({ suggestions: row.suggestions });
+  return {
+    requisitionId: row.requisitionId,
+    suggestions: parsed.success ? parsed.data.suggestions : [],
+    rejectionReason: row.rejectionReason ?? null,
+    model: row.model ?? null,
+    promptVersion: row.promptVersion ?? null,
+    generatedAt: row.createdAt.toISOString(),
   };
 }
 
@@ -12534,6 +13105,451 @@ export const appRouter = router({
           generatedAt: new Date().toISOString(),
         });
         return { card, usedBenchmark: matched != null };
+      });
+    }),
+
+  // ═══════════════════ RO-01 — Requirement-owner (hiring_manager) ═══════════════════
+  //
+  // The requirement-owner persona surfaces: a rebuilt dashboard, My Requisitions
+  // v2 (health + difficulty per row), an Approval Tracker, and AI revision
+  // suggestions for rejected reqs. Health + difficulty are DETERMINISTIC
+  // (lib/req-health.ts); the revision suggestions are the REAL-AI leg
+  // (req_revision feature, feasibility pattern). NO demographic anything, NO
+  // psychometrics, NO offer-acceptance probability.
+
+  /**
+   * listMyRequisitionsV2 — My Requisitions v2. One enriched row per requisition
+   * the caller can read (RLS-scoped): status, deterministic health composite +
+   * difficulty, budget band, and a draft-complete "canSubmit" flag. Same read
+   * gate as the REQ-01 list (hiring_manager / recruiter / admin).
+   */
+  listMyRequisitionsV2: protectedProcedure
+    .input(listMyRequisitionsV2InputSchema)
+    .output(listMyRequisitionsV2OutputSchema)
+    .query(async ({ ctx, input }) => {
+      requireAnyRole(
+        ctx,
+        REQUISITION_READ_ROLES,
+        "Requisition access requires the hiring_manager, recruiter, or admin role",
+      );
+      const db = requireDb(ctx);
+      if (!ctx.tenantId) {
+        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
+      }
+      const facets = await loadRequirementOwnerFacets(db, ctx.tenantId, input.limit);
+      const benchmarks = await loadTenantBenchmarks(db, ctx.tenantId);
+      return { rows: facets.map((f) => facetToOwnerRow(f, benchmarks)) };
+    }),
+
+  /**
+   * getRequirementOwnerDashboard — the rebuilt hiring_manager landing read: a
+   * hero stat strip, per-req health rows, pending-approval SLA items, the
+   * deterministic action-required list, and honest market insights (curated
+   * difficulty + our own historical time-to-hire). hiring_manager + admin.
+   */
+  getRequirementOwnerDashboard: protectedProcedure
+    .output(getRequirementOwnerDashboardOutputSchema)
+    .query(async ({ ctx }) => {
+      requireAnyRole(
+        ctx,
+        RO_DASHBOARD_ROLES,
+        "The requirement-owner dashboard requires the hiring_manager or admin role",
+      );
+      const db = requireDb(ctx);
+      if (!ctx.tenantId) {
+        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
+      }
+      const facets = await loadRequirementOwnerFacets(db, ctx.tenantId, 200);
+      const benchmarks = await loadTenantBenchmarks(db, ctx.tenantId);
+
+      // Hero stat strip — honest requisition-centric counts.
+      let draft = 0;
+      let pending = 0;
+      let live = 0;
+      let interviewing = 0;
+      let offerStage = 0;
+      let rejected = 0;
+      for (const f of facets) {
+        if (f.status === "draft") draft += 1;
+        else if (f.status === "pending_approval") pending += 1;
+        else if (f.status === "approved" || f.status === "posted") live += 1;
+        if (f.interviewingCount > 0) interviewing += 1;
+        if (f.offerStageCount > 0) offerStage += 1;
+        if (facetIsRejected(f)) rejected += 1;
+      }
+      const stats: RoDashboardStat[] = [
+        { key: "total", label: "Total", value: facets.length, href: "/requisitions" },
+        { key: "draft", label: "Open / draft", value: draft, href: "/requisitions?status=draft" },
+        {
+          key: "pending",
+          label: "Pending approval",
+          value: pending,
+          href: "/approval-tracker",
+        },
+        {
+          key: "live",
+          label: "Approved / live",
+          value: live,
+          href: "/requisitions?status=approved",
+        },
+        { key: "interviewing", label: "Interviewing", value: interviewing, href: "/requisitions" },
+        { key: "offer", label: "Offer stage", value: offerStage, href: "/requisitions" },
+        { key: "rejected", label: "Rejected", value: rejected, href: "/approval-tracker" },
+      ];
+
+      // Health rows — worst-first so gaps surface.
+      const healthRows: RoHealthRow[] = facets
+        .map((f) => {
+          const benchmark = matchFacetBenchmark(f, benchmarks);
+          return {
+            requisitionId: f.id,
+            title: f.title,
+            status: f.status,
+            score: facetHealth(f).score,
+            difficulty: facetDifficulty(f, benchmark),
+          };
+        })
+        .sort((a, b) => a.score - b.score)
+        .slice(0, 8);
+
+      // Pending-approval SLA items (real waiting time vs the approval SLA).
+      const slaHours = REQUISITION_APPROVAL_SLA_DAYS * 24;
+      const approvalSla: RoApprovalSlaItem[] = facets
+        .filter(
+          (f) => f.status === "pending_approval" && f.approvalRequestId && f.approvalRequestedAt,
+        )
+        .map((f) => {
+          const hoursWaiting = Math.max(
+            0,
+            Math.floor((Date.now() - (f.approvalRequestedAt as Date).getTime()) / (1000 * 60 * 60)),
+          );
+          return {
+            requisitionId: f.id,
+            approvalRequestId: f.approvalRequestId as string,
+            title: f.title,
+            submittedAt: (f.approvalRequestedAt as Date).toISOString(),
+            hoursWaiting,
+            slaHours,
+            breach: hoursWaiting > slaHours,
+          };
+        })
+        .sort((a, b) => b.hoursWaiting - a.hoursWaiting);
+
+      // Deterministic action-required list.
+      const actions: RoActionItem[] = facets.flatMap((f) => facetActions(f));
+      const severityRank = { urgent: 0, attention: 1, info: 2 } as const;
+      actions.sort((a, b) => severityRank[a.severity] - severityRank[b.severity]);
+
+      // Market insights: per distinct role title — difficulty + OUR historical
+      // time-to-hire (labelled) + curated-benchmark TTF reference.
+      const byRole = new Map<string, { facets: RoReqFacet[]; ttf: number[] }>();
+      for (const f of facets) {
+        if (!f.title) continue;
+        const entry = byRole.get(f.title) ?? { facets: [], ttf: [] };
+        entry.facets.push(f);
+        entry.ttf.push(...f.timeToHireDays);
+        byRole.set(f.title, entry);
+      }
+      const marketInsights: RoMarketInsight[] = [...byRole.entries()]
+        .flatMap(([roleTitle, entry]) => {
+          const first = entry.facets[0];
+          if (!first) return [];
+          const benchmark = matchFacetBenchmark(first, benchmarks);
+          const sampleSize = entry.ttf.length;
+          const avg =
+            sampleSize > 0
+              ? Math.round((entry.ttf.reduce((s, d) => s + d, 0) / sampleSize) * 10) / 10
+              : null;
+          return [
+            {
+              roleTitle,
+              difficulty: facetDifficulty(first, benchmark),
+              historicalAvgTimeToHireDays: avg,
+              sampleSize,
+              benchmarkTtfDays: benchmark ? benchmark.ttfDays : null,
+            },
+          ];
+        })
+        .slice(0, 10);
+
+      return { stats, healthRows, approvalSla, actions, marketInsights };
+    }),
+
+  /**
+   * getApprovalTracker — the requirement-owner Approval Tracker: pending /
+   * approved / rejected stats, a pending-approval SLA list, and a full approval
+   * history with elapsed SLA + the HR-head decision reason. hiring_manager +
+   * admin. All rows are real (RLS-scoped to the tenant).
+   */
+  getApprovalTracker: protectedProcedure
+    .output(getApprovalTrackerOutputSchema)
+    .query(async ({ ctx }) => {
+      requireAnyRole(
+        ctx,
+        RO_DASHBOARD_ROLES,
+        "The approval tracker requires the hiring_manager or admin role",
+      );
+      const db = requireDb(ctx);
+      if (!ctx.tenantId) {
+        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
+      }
+      const facets = await loadRequirementOwnerFacets(db, ctx.tenantId, 200);
+      const slaHours = REQUISITION_APPROVAL_SLA_DAYS * 24;
+
+      // History: one row per requisition that has ever been submitted.
+      const history: ApprovalTrackerHistoryRow[] = [];
+      let pendingCount = 0;
+      let approvedCount = 0;
+      let rejectedCount = 0;
+      const pending: RoApprovalSlaItem[] = [];
+
+      for (const f of facets) {
+        if (!f.approvalRequestId || !f.approvalRequestedAt) continue;
+        const submittedMs = f.approvalRequestedAt.getTime();
+        const decidedMs = f.approvalDecidedAt ? f.approvalDecidedAt.getTime() : null;
+        const endMs = decidedMs ?? Date.now();
+        const elapsedHours = Math.max(0, Math.floor((endMs - submittedMs) / (1000 * 60 * 60)));
+
+        // Outcome: prefer the recorded decision; else the request status.
+        let outcome = f.approvalStatus ?? "pending";
+        if (f.latestDecisionOutcome === "rejected") outcome = "rejected";
+        else if (f.latestDecisionOutcome === "approved") outcome = "approved";
+        else if (f.latestDecisionOutcome === "sent_back") outcome = "sent_back";
+
+        if (f.approvalStatus === "pending") {
+          pendingCount += 1;
+          const hoursWaiting = elapsedHours;
+          pending.push({
+            requisitionId: f.id,
+            approvalRequestId: f.approvalRequestId,
+            title: f.title,
+            submittedAt: f.approvalRequestedAt.toISOString(),
+            hoursWaiting,
+            slaHours,
+            breach: hoursWaiting > slaHours,
+          });
+        }
+        if (outcome === "approved") approvedCount += 1;
+        if (outcome === "rejected") rejectedCount += 1;
+
+        history.push({
+          requisitionId: f.id,
+          approvalRequestId: f.approvalRequestId,
+          title: f.title,
+          department: f.department,
+          outcome,
+          submittedAt: f.approvalRequestedAt.toISOString(),
+          decidedAt: f.approvalDecidedAt ? f.approvalDecidedAt.toISOString() : null,
+          slaElapsedHours: elapsedHours,
+          breach: decidedMs != null ? elapsedHours > slaHours : elapsedHours > slaHours,
+          decisionReason: f.latestDecisionReason,
+        });
+      }
+
+      history.sort((a, b) => b.submittedAt.localeCompare(a.submittedAt));
+      pending.sort((a, b) => b.hoursWaiting - a.hoursWaiting);
+
+      return {
+        stats: { pending: pendingCount, approved: approvedCount, rejected: rejectedCount },
+        pending,
+        history,
+      };
+    }),
+
+  /**
+   * getReqRevisionSuggestions — the cached AI revision suggestions for a
+   * requisition (read after generate). Returns null suggestions until generated;
+   * carries `eligible` (rejected state) + `featureEnabled` (kill-switch) so the
+   * UI renders honest states. Owner of the req + admin.
+   */
+  getReqRevisionSuggestions: protectedProcedure
+    .input(getReqRevisionSuggestionsInputSchema)
+    .output(getReqRevisionSuggestionsOutputSchema)
+    .query(async ({ ctx, input }) => {
+      requireAnyRole(
+        ctx,
+        RO_REVISION_ROLES,
+        "Revision suggestions require the hiring_manager or admin role",
+      );
+      const db = requireDb(ctx);
+      if (!ctx.tenantId) {
+        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
+      }
+      const tenantId = ctx.tenantId;
+      const meta = await loadReqRevisionMeta(db, tenantId, input.requisitionId);
+      if (!meta) throw new TRPCError({ code: "NOT_FOUND", message: "Requisition not found" });
+      await ensureReqOwnerOrAdmin(db, ctx, meta.hiringManagerId);
+
+      const aiSettings = await resolveTenantAiSettingsDb(tenantId);
+      const featureEnabled = aiSettings.req_revision.enabled;
+
+      const [row] = await db
+        .select()
+        .from(reqRevisionSuggestions)
+        .where(
+          and(
+            eq(reqRevisionSuggestions.tenantId, tenantId),
+            eq(reqRevisionSuggestions.requisitionId, input.requisitionId),
+          ),
+        )
+        .limit(1);
+
+      const suggestions = row ? reqRevisionRowToApi(row) : null;
+      return { suggestions, eligible: meta.isRejected, featureEnabled };
+    }),
+
+  /**
+   * generateReqRevisionSuggestions — the ONE real AI call per click. For a
+   * REJECTED requisition, builds a prompt from the rejection reason + the req's
+   * own fields + the matching curated benchmark, calls Claude via
+   * completeStructured (feature req_revision, cost-logged), and upserts the
+   * suggestions (regenerate replaces). Owner of the req + admin, audited,
+   * rejected-only, kill-switch-honoured.
+   */
+  generateReqRevisionSuggestions: protectedProcedure
+    .input(generateReqRevisionSuggestionsInputSchema)
+    .output(generateReqRevisionSuggestionsOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      return withAudit("generate_req_revision_suggestions", ctx, input, async () => {
+        requireAnyRole(
+          ctx,
+          RO_REVISION_ROLES,
+          "Revision suggestions require the hiring_manager or admin role",
+        );
+        const db = requireDb(ctx);
+        if (!ctx.tenantId) {
+          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
+        }
+        const tenantId = ctx.tenantId;
+        const membershipId = await resolveActorMembership(db, ctx);
+        if (!membershipId) {
+          throw new TRPCError({
+            code: "FORBIDDEN",
+            message: "Your membership was not found for this tenant",
+          });
+        }
+
+        const meta = await loadReqRevisionMeta(db, tenantId, input.requisitionId);
+        if (!meta) throw new TRPCError({ code: "NOT_FOUND", message: "Requisition not found" });
+        await ensureReqOwnerOrAdmin(db, ctx, meta.hiringManagerId);
+
+        // Rejected-only guard.
+        if (!meta.isRejected) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: "Revision suggestions are only available for rejected requisitions.",
+          });
+        }
+
+        // CONF-01 kill-switch — disabled → clean error, no model call, no log.
+        const aiSettings = await resolveTenantAiSettingsDb(tenantId);
+        if (!aiSettings.req_revision.enabled) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message:
+              "Revision suggestions are disabled for this tenant. An admin can re-enable them in Admin → AI settings.",
+          });
+        }
+        const revSettings = aiSettings.req_revision;
+
+        const facet = await loadReqFeasibilityFacet(db, tenantId, input.requisitionId);
+        if (!facet) throw new TRPCError({ code: "NOT_FOUND", message: "Requisition not found" });
+
+        const skillRows = await db
+          .select({
+            skillName: jdSkills.skillName,
+            weight: jdSkills.weight,
+            isRequired: jdSkills.isRequired,
+          })
+          .from(jdSkills)
+          .where(and(eq(jdSkills.tenantId, tenantId), eq(jdSkills.jdVersionId, facet.jdVersionId)));
+
+        const benchmarks = await loadTenantBenchmarks(db, tenantId);
+        const matchedTitle = matchBenchmarkTitle(
+          facet.title,
+          benchmarks.map((b) => b.roleTitle),
+        );
+        const matched = matchedTitle
+          ? (benchmarks.find((b) => b.roleTitle === matchedTitle) ?? null)
+          : null;
+
+        const { system, user } = buildReqRevisionPrompt({
+          positionTitle: facet.title,
+          seniority: facet.seniority,
+          locationType: facet.locationType,
+          primaryLocation: facet.primaryLocation,
+          compBandMinMajor: facet.compBandMin != null ? Number(facet.compBandMin) : null,
+          compBandMaxMajor: facet.compBandMax != null ? Number(facet.compBandMax) : null,
+          compCurrency: facet.compCurrency,
+          skills: skillRows.map((s) => ({
+            skillName: s.skillName,
+            weight: Number(s.weight),
+            isRequired: s.isRequired,
+          })),
+          rejectionReason: meta.rejectionReason,
+          benchmark: matched
+            ? {
+                roleTitle: matched.roleTitle,
+                medianSalaryMajor: minorToMajor(matched.medianSalaryMinor),
+                currency: matched.currency,
+                ttfDays: matched.ttfDays,
+                availability: matched.availability,
+                competitorDemand: matched.competitorDemand,
+                trendingSkills: matched.trendingSkills,
+              }
+            : null,
+        });
+
+        const client = await getAIClient(tenantId);
+        const raw = await client.completeStructured<ReqRevisionAi>({
+          prompt: user,
+          system,
+          model: revSettings.model,
+          temperature: revSettings.temperature,
+          maxTokens: revSettings.maxTokens,
+          schema: reqRevisionJsonSchema,
+          schemaName: REQ_REVISION_SCHEMA_NAME,
+          feature: REQ_REVISION_FEATURE,
+          requestId: ctx.requestId,
+          actorMembershipId: membershipId,
+        });
+        const parsed = reqRevisionAiSchema.parse(raw);
+        const suggestionItems: ReqRevisionItem[] = parsed.suggestions;
+
+        await db
+          .insert(reqRevisionSuggestions)
+          .values({
+            tenantId,
+            requisitionId: facet.id,
+            suggestions: suggestionItems,
+            rejectionReason: meta.rejectionReason,
+            model: client.provider,
+            promptVersion: REQ_REVISION_PROMPT_VERSION,
+            generatedByMembershipId: membershipId,
+          })
+          .onConflictDoUpdate({
+            target: [reqRevisionSuggestions.tenantId, reqRevisionSuggestions.requisitionId],
+            set: {
+              suggestions: suggestionItems,
+              rejectionReason: meta.rejectionReason,
+              model: client.provider,
+              promptVersion: REQ_REVISION_PROMPT_VERSION,
+              generatedByMembershipId: membershipId,
+              createdAt: new Date(),
+            },
+          });
+
+        return {
+          suggestions: {
+            requisitionId: facet.id,
+            suggestions: suggestionItems,
+            rejectionReason: meta.rejectionReason,
+            model: client.provider,
+            promptVersion: REQ_REVISION_PROMPT_VERSION,
+            generatedAt: new Date().toISOString(),
+          },
+          usedBenchmark: matched != null,
+        };
       });
     }),
 

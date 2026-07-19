@@ -64,6 +64,7 @@ export type PortalNavKey =
   | "offboarding"
   | "requisitions"
   | "requisition-approvals"
+  | "approval-tracker"
   | "metrics"
   | "governance"
   | "exec-audit"
@@ -141,6 +142,16 @@ const MAIN_NAV: NavItem[] = [
     href: "/requisitions",
     icon: <IconRequisitions />,
     roles: ["hiring_manager", "recruiter", "admin"],
+  },
+  {
+    // RO-01: the requirement-owner's approval tracker — where their submitted
+    // requisitions stand in the approval spine. hiring_manager + admin (the
+    // hr_head equivalent is /requisition-approvals, the decision queue).
+    key: "approval-tracker",
+    label: "Approval tracker",
+    href: "/approval-tracker",
+    icon: <IconReqApprovals />,
+    roles: ["hiring_manager", "admin"],
   },
   {
     key: "requisition-approvals",

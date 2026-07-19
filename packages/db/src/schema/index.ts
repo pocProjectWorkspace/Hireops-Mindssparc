@@ -96,3 +96,5 @@ export * from "./comp-recommendations";
 export * from "./application-documents";
 export * from "./hr-case-notes";
 export * from "./hr-policy-documents";
+// Requirement-owner AI revision suggestions — cached per rejected req (RO-01)
+export * from "./req-revision-suggestions";

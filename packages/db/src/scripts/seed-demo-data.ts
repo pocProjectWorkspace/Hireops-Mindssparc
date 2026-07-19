@@ -185,6 +185,26 @@ const PANEL_CAND_C = "00000000-0000-4000-8000-0000000be1c2";
 const PANEL_APP_C = "00000000-0000-4000-8000-0000000be1c3";
 const PANEL_IV_C = "00000000-0000-4000-8000-0000000be1c4";
 
+// ─────────────── RO-01 — requirement-owner demo spread ───────────────
+//
+// Two reqs completing hiringmanager1's demo spread for the RO-01 surfaces
+// (dashboard health/action list, My Requisitions v2, approval tracker, AI
+// revision suggestions): (1) a REJECTED-with-reason req (status cancelled +
+// approval_request rejected + reject decision carrying the HR-head reason —
+// the revision-suggestions demo target), and (2) a DRAFT-INCOMPLETE req
+// (placeholder JD, no skills, no comp band → low health score + action-required
+// rows). The pending-approval and live-with-candidates cases already exist in
+// the base seed. Ids in the free 0e001 namespace; idempotent (ON CONFLICT DO
+// NOTHING for the static chain; delete-then-insert for decisions/transitions).
+const RO01_REJ_POSITION = "00000000-0000-4000-8000-0000000e0011";
+const RO01_REJ_JD = "00000000-0000-4000-8000-0000000e0012";
+const RO01_REJ_REQ = "00000000-0000-4000-8000-0000000e0013";
+const RO01_REJ_APPROVAL = "00000000-0000-4000-8000-0000000e0014";
+const RO01_REJ_DECISION = "00000000-0000-4000-8000-0000000e0015";
+const RO01_DRAFT_POSITION = "00000000-0000-4000-8000-0000000e0021";
+const RO01_DRAFT_JD = "00000000-0000-4000-8000-0000000e0022";
+const RO01_DRAFT_REQ = "00000000-0000-4000-8000-0000000e0023";
+
 // ─────────────── SEED-02 Problems 5/6 — extra requisitions + approval spine ────
 //
 // Five more requisitions so the apply portal + HR-head queue + approval history
@@ -2730,6 +2750,89 @@ async function main() {
 
     // ── 4d. SEED-02 Problems 5/6 — extra requisitions + approval spine ──
     await seedExtraRequisitions();
+
+    // ── 4d-RO-01. Requirement-owner demo spread ─────────────────────
+    //
+    // (1) A REJECTED-with-reason requisition — the AI revision-suggestions demo
+    // target on /approval-tracker + the req detail. Uses the same demo approval
+    // chain as the extra reqs; delete-then-insert for its request + decision.
+    await poolSql`
+      INSERT INTO public.positions
+        (id, tenant_id, business_unit_id, title, location_type, primary_location,
+         comp_band_min, comp_band_max, comp_currency, is_active)
+      VALUES (${RO01_REJ_POSITION}, ${tid}, ${DEMO_BU}, 'Machine Learning Engineer', 'hybrid',
+              'Bengaluru', 1800000.00, 2600000.00, 'INR', true)
+      ON CONFLICT (id) DO NOTHING
+    `;
+    await poolSql`
+      INSERT INTO public.jd_versions (id, tenant_id, position_id, version_number, jd_text, summary, status)
+      VALUES (${RO01_REJ_JD}, ${tid}, ${RO01_REJ_POSITION}, 1,
+              E'# Machine Learning Engineer — GCC Bengaluru\n\nBuild and productionise ML models for the platform suite: feature pipelines, model serving, and evaluation harnesses.\n\n## Must-have\n- 4+ years ML engineering (Python, PyTorch or TensorFlow).\n- Productionised models behind real traffic.\n- MLOps fundamentals (registries, monitoring, rollback).',
+              'ML engineer for the platform suite — pipelines, serving, evaluation.', 'approved')
+      ON CONFLICT (id) DO NOTHING
+    `;
+    await poolSql`
+      INSERT INTO public.jd_skills (tenant_id, jd_version_id, skill_name, weight, is_required)
+      SELECT ${tid}, ${RO01_REJ_JD}, s.name, s.weight::numeric, s.req
+      FROM (VALUES ('Python', '3.00', true), ('PyTorch', '2.50', true), ('MLOps', '2.00', false),
+                   ('Feature Engineering', '1.50', false)) AS s(name, weight, req)
+      ON CONFLICT DO NOTHING
+    `;
+    await poolSql`
+      INSERT INTO public.requisitions
+        (id, tenant_id, position_id, jd_version_id, primary_recruiter_id, hiring_manager_id,
+         status, number_of_openings, public_slug, created_by)
+      VALUES (${RO01_REJ_REQ}, ${tid}, ${RO01_REJ_POSITION}, ${RO01_REJ_JD}, ${recruiterId},
+              ${hiringManagerId}, 'cancelled', 1, 'gcc-blr-ml-engineer-ro01', ${hiringManagerId})
+      ON CONFLICT (id) DO NOTHING
+    `;
+    await poolSql`DELETE FROM public.approval_decisions WHERE request_id = ${RO01_REJ_APPROVAL}`;
+    await poolSql`DELETE FROM public.approval_requests WHERE id = ${RO01_REJ_APPROVAL}`;
+    await poolSql`
+      INSERT INTO public.approval_requests
+        (id, tenant_id, chain_id, subject_type, subject_id, status,
+         current_step_index, requested_by_membership_id, requested_at, decided_at, context)
+      VALUES (${RO01_REJ_APPROVAL}, ${tid}, ${APPROVAL_CHAIN}, 'requisition', ${RO01_REJ_REQ},
+              'rejected', 0, ${hiringManagerId}, now() - interval '4 days', now() - interval '3 days',
+              ${JSON.stringify({ requisition_title: "Machine Learning Engineer" })}::jsonb)
+    `;
+    await poolSql`
+      INSERT INTO public.approval_decisions
+        (id, tenant_id, request_id, step_index, outcome, approver_membership_id, decided_at, comment, metadata)
+      VALUES (${RO01_REJ_DECISION}, ${tid}, ${RO01_REJ_APPROVAL}, 0, 'rejected', ${hrHeadId},
+              now() - interval '3 days',
+              'Rejecting — the band is well below market for ML talent in Bengaluru, and four must-have skills at this budget is not fillable. Revise the budget or trim the must-haves and resubmit.',
+              ${JSON.stringify({ decision: "reject" })}::jsonb)
+    `;
+    await poolSql`DELETE FROM public.requisition_state_transitions WHERE requisition_id = ${RO01_REJ_REQ}`;
+    await poolSql`
+      INSERT INTO public.requisition_state_transitions
+        (tenant_id, requisition_id, from_status, to_status, transitioned_at, transitioned_by)
+      VALUES (${tid}, ${RO01_REJ_REQ}, 'draft', 'pending_approval', now() - interval '4 days', ${hiringManagerId}),
+             (${tid}, ${RO01_REJ_REQ}, 'pending_approval', 'cancelled', now() - interval '3 days', ${hrHeadId})
+    `;
+
+    // (2) A DRAFT-INCOMPLETE requisition — placeholder JD, no skills, no comp
+    // band → low health + "action required" rows on the RO-01 dashboard.
+    await poolSql`
+      INSERT INTO public.positions
+        (id, tenant_id, business_unit_id, title, location_type, primary_location, is_active)
+      VALUES (${RO01_DRAFT_POSITION}, ${tid}, ${DEMO_BU}, 'DevOps Engineer', 'onsite', 'Bengaluru', true)
+      ON CONFLICT (id) DO NOTHING
+    `;
+    await poolSql`
+      INSERT INTO public.jd_versions (id, tenant_id, position_id, version_number, jd_text, status)
+      VALUES (${RO01_DRAFT_JD}, ${tid}, ${RO01_DRAFT_POSITION}, 1, '', 'draft')
+      ON CONFLICT (id) DO NOTHING
+    `;
+    await poolSql`
+      INSERT INTO public.requisitions
+        (id, tenant_id, position_id, jd_version_id, primary_recruiter_id, hiring_manager_id,
+         status, number_of_openings, public_slug, created_by)
+      VALUES (${RO01_DRAFT_REQ}, ${tid}, ${RO01_DRAFT_POSITION}, ${RO01_DRAFT_JD}, ${recruiterId},
+              ${hiringManagerId}, 'draft', 1, 'gcc-blr-devops-engineer-ro01', ${hiringManagerId})
+      ON CONFLICT (id) DO NOTHING
+    `;
 
     // ── 4b. ONBOARD-04 onboarding demo cases ────────────────────────
     //

@@ -519,6 +519,27 @@
       "when": 1784500000006,
       "tag": "0076_panel_02_audit_triggers",
       "breakpoints": true
+    },
+    {
+      "idx": 77,
+      "version": "7",
+      "when": 1784500000007,
+      "tag": "0077_ro_01_req_revision_suggestions",
+      "breakpoints": true
+    },
+    {
+      "idx": 78,
+      "version": "7",
+      "when": 1784500000008,
+      "tag": "0078_ro_01_force_rls",
+      "breakpoints": true
+    },
+    {
+      "idx": 79,
+      "version": "7",
+      "when": 1784500000009,
+      "tag": "0079_ro_01_audit_triggers",
+      "breakpoints": true
     }
   ]
 }

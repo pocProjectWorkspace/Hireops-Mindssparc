@@ -7,6 +7,7 @@ import { trpc, handleTRPCError } from "@/lib/trpc-client";
 import { Badge, Button, Card } from "@/components/ui";
 import type { BadgeTone } from "@/components/ui";
 import { InterviewPlanSection } from "@/components/interviews/InterviewPlanSection";
+import { RevisionSuggestionsCard } from "@/components/requirements/RevisionSuggestionsCard";
 
 /**
  * REQ-02 — requisition detail view. Renders the requisition summary, JD,
@@ -178,6 +179,13 @@ export function RequisitionDetailView({
           <span className="font-semibold">Rejected by HR Head:</span>{" "}
           {rejectedBanner.reason ?? "No reason provided."}
         </div>
+      ) : null}
+
+      {/* RO-01: AI revision suggestions for a rejected requisition. Renders
+          itself only when the req is in a rejected state (the card queries its
+          own eligibility). We're already on the edit surface, so no Apply link. */}
+      {canWrite ? (
+        <RevisionSuggestionsCard requisitionId={requisitionId} showApply={false} />
       ) : null}
 
       {/* Summary */}

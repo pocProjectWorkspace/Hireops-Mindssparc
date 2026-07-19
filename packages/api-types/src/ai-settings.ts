@@ -84,7 +84,8 @@ function featureDefault(): AiFeatureSettings {
 
 /** The real consumers this surface governs (jd_bias_review added in CONF-02,
  * req_feasibility in HRHEAD-02, comp_recommendation in HROPS-02,
- * feedback_summary in PANEL-01, interview_prep in PANEL-02). */
+ * feedback_summary in PANEL-01, interview_prep in PANEL-02, req_revision in
+ * RO-01). */
 export const AI_FEATURE_KEYS = [
   "ai_scoring",
   "jd_generation",
@@ -94,6 +95,7 @@ export const AI_FEATURE_KEYS = [
   "comp_recommendation",
   "feedback_summary",
   "interview_prep",
+  "req_revision",
 ] as const;
 export type AiFeatureKey = (typeof AI_FEATURE_KEYS)[number];
 
@@ -150,6 +152,12 @@ export const AI_FEATURE_META: Record<
     description:
       "Suggests areas to probe and probing questions on a panellist's candidate brief — grounded ONLY in the JD + skills, the parsed resume, prior-round recommendations + qualitative notes (never scores), and the round objective. Never infers demographic attributes or sentiment. Runs only on an explicit 'Generate prep' click on the brief. Disabling makes that button refuse with a clear message instead of calling the model.",
   },
+  req_revision: {
+    label: "Requisition revision suggestions",
+    usageFeatures: ["req_revision"],
+    description:
+      "For a REJECTED requisition, drafts 3–5 concrete revision suggestions grounded ONLY in the rejection reason, the requisition's own fields (budget, skills, level, location), and the tenant's curated market benchmarks — never invented market claims or any demographic reference. Nothing auto-applies: the requirement owner reviews the suggestions and resubmits through the normal edit path. Runs only on an explicit 'Generate suggestions' click. Disabling makes that button refuse with a clear message instead of calling the model.",
+  },
 };
 
 export const aiSettingsSchema = z.object({
@@ -162,6 +170,7 @@ export const aiSettingsSchema = z.object({
   comp_recommendation: aiFeatureSettingsSchema.default(featureDefault),
   feedback_summary: aiFeatureSettingsSchema.default(featureDefault),
   interview_prep: aiFeatureSettingsSchema.default(featureDefault),
+  req_revision: aiFeatureSettingsSchema.default(featureDefault),
   /**
    * Global deterministic PII redaction. When on, candidate-derived prompt
    * text going into scoring + agent-draft calls has emails / phone numbers /

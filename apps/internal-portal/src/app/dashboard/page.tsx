@@ -4,6 +4,7 @@ import { AppShell } from "@/components/nav/AppShell";
 import { PersonaDashboard } from "@/components/dashboard/PersonaDashboard";
 import { HrHeadDashboard } from "@/components/dashboard/HrHeadDashboard";
 import { PanelDashboard } from "@/components/panel/PanelDashboard";
+import { RequirementOwnerDashboard } from "@/components/requirements/RequirementOwnerDashboard";
 
 export const dynamic = "force-dynamic"; // Auth-gated, per-session data.
 
@@ -31,6 +32,13 @@ export default async function DashboardPage() {
     session.roles.includes("panel_member") &&
     !session.roles.includes("admin") &&
     !session.roles.includes("hr_head");
+  // hiring_manager (the requirement owner; not admin/hr_head) gets the bespoke
+  // requirement-owner dashboard (RO-01).
+  const isRequirementOwner =
+    session.roles.includes("hiring_manager") &&
+    !session.roles.includes("admin") &&
+    !session.roles.includes("hr_head") &&
+    !session.roles.includes("panel_member");
 
   return (
     <AppShell
@@ -50,6 +58,11 @@ export default async function DashboardPage() {
         <PanelDashboard
           initialBoard={await caller.getPanelDashboard()}
           initialInterviews={(await caller.listMyPanelInterviews({})).rows}
+          displayName={session.email?.split("@")[0] ?? "there"}
+        />
+      ) : isRequirementOwner ? (
+        <RequirementOwnerDashboard
+          initial={await caller.getRequirementOwnerDashboard()}
           displayName={session.email?.split("@")[0] ?? "there"}
         />
       ) : (

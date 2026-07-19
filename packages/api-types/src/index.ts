@@ -17,3 +17,5 @@ export * from "./governance";
 export * from "./market-intelligence";
 export * from "./comp";
 export * from "./panel-prep";
+export * from "./req-revision";
+export * from "./requirement-owner";

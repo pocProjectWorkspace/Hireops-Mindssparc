@@ -1,51 +1,26 @@
 import { requireAuth, sessionUserChip } from "@/lib/auth";
 import { createServerTRPCCaller } from "@/lib/trpc-server";
 import { AppShell } from "@/components/nav/AppShell";
-import { Badge, EmptyState, TableShell, Thead, Th, Tbody, Tr, Td } from "@/components/ui";
-import type { BadgeTone } from "@/components/ui";
 import { RoleNotice } from "@/components/nav/RoleNotice";
+import { RequisitionsListV2 } from "@/components/requirements/RequisitionsListV2";
 
 export const dynamic = "force-dynamic"; // Auth-gated + reads live requisition state.
 
 /**
- * REQ-01 (Wave A) — the requirement-owner requisition list.
+ * RO-01 — My Requisitions v2 (requirement-owner list, rebuilt).
  *
- * A server-rendered skeleton: it lists the tenant's requisitions (title,
- * status, location, openings, created) via the role-gated
- * listRequisitionSummaries read. Rows are intentionally NOT clickable — a
- * requisition detail is REQ-02 territory; the footnote says so honestly
- * rather than dangling a dead link. The "New requisition" action routes to
- * an honest placeholder (/requisitions/new) until the creation wizard lands.
- *
- * Persona-gated to hiring_manager / recruiter / admin: the nav only surfaces
- * this item to those roles, and the API enforces the same set. A direct hit
- * by another role gets a calm in-shell notice instead of the error boundary.
+ * Server-renders the enriched rows (health composite + difficulty per row from
+ * the deterministic rule engine, budget band, status) via listMyRequisitionsV2;
+ * the client RequisitionsListV2 owns search, the status filter, and the
+ * submit-for-approval row action. Persona-gated to hiring_manager / recruiter /
+ * admin (same set as REQ-01), enforced by the API too; a direct hit by another
+ * role gets a calm in-shell notice. `?status=` deep-links the filter (the
+ * dashboard stat strip uses it).
  */
 
 const READ_ROLES = ["hiring_manager", "recruiter", "admin"];
 
-const STATUS_TONE: Record<string, BadgeTone> = {
-  draft: "neutral",
-  pending_approval: "warning",
-  approved: "success",
-  on_hold: "warning",
-  posted: "info",
-  filled: "success",
-  cancelled: "error",
-  closed: "neutral",
-};
-
-function statusLabel(status: string): string {
-  return status.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
-}
-
-function formatDate(iso: string): string {
-  const d = new Date(iso);
-  return d.toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" });
-}
-
-/** Anchor styled as the house primary button (Button renders a <button>, so a
- * link needs its own element — kept minimal + visually identical). */
+/** Anchor styled as the house primary button. */
 function LinkButton({ href, children }: { href: string; children: React.ReactNode }) {
   return (
     <a
@@ -57,7 +32,11 @@ function LinkButton({ href, children }: { href: string; children: React.ReactNod
   );
 }
 
-export default async function RequisitionsPage() {
+export default async function RequisitionsPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ status?: string }>;
+}) {
   const session = await requireAuth();
   const isAdmin = session.roles.includes("admin");
   const allowed = session.roles.some((r) => READ_ROLES.includes(r));
@@ -79,8 +58,9 @@ export default async function RequisitionsPage() {
     );
   }
 
+  const { status } = await searchParams;
   const caller = createServerTRPCCaller(session);
-  const { rows } = await caller.listRequisitionSummaries({ limit: 50 });
+  const initial = await caller.listMyRequisitionsV2({ limit: 100 });
 
   return (
     <AppShell
@@ -91,46 +71,7 @@ export default async function RequisitionsPage() {
       user={sessionUserChip(session)}
       actions={<LinkButton href="/requisitions/new">New requisition</LinkButton>}
     >
-      <div className="mx-auto w-full max-w-5xl px-8 py-6">
-        {rows.length === 0 ? (
-          <EmptyState
-            title="No requisitions yet"
-            hint="When a hiring manager creates a requisition it appears here. Start one with the button below."
-            action={<LinkButton href="/requisitions/new">New requisition</LinkButton>}
-          />
-        ) : (
-          <>
-            <TableShell>
-              <Thead>
-                <Th>Title</Th>
-                <Th>Status</Th>
-                <Th>Location</Th>
-                <Th numeric>Openings</Th>
-                <Th>Created</Th>
-              </Thead>
-              <Tbody>
-                {rows.map((r) => (
-                  <Tr key={r.id}>
-                    <Td className="font-medium text-neutral-900">
-                      <a href={`/requisitions/${r.id}`} className="text-brand-700 hover:underline">
-                        {r.title ?? "Untitled role"}
-                      </a>
-                    </Td>
-                    <Td>
-                      <Badge tone={STATUS_TONE[r.status] ?? "neutral"}>
-                        {statusLabel(r.status)}
-                      </Badge>
-                    </Td>
-                    <Td>{r.location ?? "—"}</Td>
-                    <Td numeric>{r.openings}</Td>
-                    <Td>{formatDate(r.createdAt)}</Td>
-                  </Tr>
-                ))}
-              </Tbody>
-            </TableShell>
-          </>
-        )}
-      </div>
+      <RequisitionsListV2 initial={initial} initialStatus={status ?? "all"} />
     </AppShell>
   );
 }

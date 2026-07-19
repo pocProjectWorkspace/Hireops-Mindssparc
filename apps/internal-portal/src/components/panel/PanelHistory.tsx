@@ -89,14 +89,12 @@ export function PanelHistory({ initialBoard }: { initialBoard: GetPanelDashboard
       ) : (
         <TableShell>
           <Thead>
-            <Tr>
-              <Th>Candidate</Th>
-              <Th>Role</Th>
-              <Th>Round</Th>
-              <Th>Date</Th>
-              <Th>My avg score</Th>
-              <Th>My recommendation</Th>
-            </Tr>
+            <Th>Candidate</Th>
+            <Th>Role</Th>
+            <Th>Round</Th>
+            <Th>Date</Th>
+            <Th>My avg score</Th>
+            <Th>My recommendation</Th>
           </Thead>
           <Tbody>
             {filtered.map((s: PanelSubmittedFeedbackItem) => (
