@@ -8,21 +8,25 @@ import { Card, Badge } from "@/components/ui";
 import { StageChip, RecommendationChip, HrRecChip } from "@/components/patterns";
 import { TabBar, type TabItem } from "./TabBar";
 import { HrRoundAssessmentForm } from "./HrRoundAssessmentForm";
+import { CompAnalysisPanel } from "@/components/comp/CompAnalysisPanel";
+import { OfferComposerPanel } from "@/components/comp/OfferComposerPanel";
+import { ApplicationDocumentsPanel } from "@/components/hr-docs/ApplicationDocumentsPanel";
 
 /**
  * HrCaseDetail (HROPS-01) — the tabbed HR case record.
  *
- * Tabs: Summary | Interview feedback | HR round. The tab bar is generic
- * (TabBar) so the parallel HROPS-02/03 tickets add Compensation / Offer /
- * Documents by appending to the array — no shell rework. Seeds from the server
- * render and stays live via React Query (the assessment save invalidates the
- * detail query).
+ * Tabs: Summary | Interview feedback | HR round | Compensation | Offer |
+ * Documents — the full six-tab case record. Compensation/Offer mount the
+ * HROPS-02 panels (rule-engine verdict + composer); Documents mounts the
+ * HROPS-03 panel (request/verify flow). Seeds from the server render and
+ * stays live via React Query (the assessment save invalidates the detail
+ * query).
  *
  * Interview feedback shows recommendation + qualitative summary text only — NO
  * numeric scores (the anti-anchoring convention the panel brief also follows).
  */
 
-type TabKey = "summary" | "feedback" | "hr-round";
+type TabKey = "summary" | "feedback" | "hr-round" | "compensation" | "offer" | "documents";
 
 export function HrCaseDetail({
   applicationId,
@@ -36,6 +40,9 @@ export function HrCaseDetail({
     { initialData: initial, staleTime: 5_000, refetchOnWindowFocus: true },
   );
   const [tab, setTab] = useState<TabKey>("summary");
+  // Rule-engine suggestion handed from the Compensation tab to the Offer composer.
+  const [suggestedPaise, setSuggestedPaise] = useState<number | null>(null);
+  const utils = trpc.useUtils();
 
   const { candidate, pipeline, interviewFeedback, assessment } = data;
   const gateSatisfied = assessment?.recommendation === "proceed";
@@ -61,6 +68,9 @@ export function HrCaseDetail({
         <span className="h-1.5 w-1.5 rounded-full bg-status-warning-500" aria-hidden />
       ) : undefined,
     },
+    { key: "compensation", label: "Compensation" },
+    { key: "offer", label: "Offer" },
+    { key: "documents", label: "Documents" },
   ];
 
   return (
@@ -103,13 +113,33 @@ export function HrCaseDetail({
         <SummaryTab data={data} />
       ) : tab === "feedback" ? (
         <FeedbackTab feedback={interviewFeedback} />
-      ) : (
+      ) : tab === "hr-round" ? (
         <HrRoundTab
           applicationId={applicationId}
           assessment={assessment}
           advanceRequiresAssessment={data.advanceRequiresAssessment}
           gateSatisfied={gateSatisfied}
         />
+      ) : tab === "compensation" ? (
+        <CompAnalysisPanel
+          applicationId={applicationId}
+          onDraftOffer={(paise) => {
+            setSuggestedPaise(paise);
+            setTab("offer");
+          }}
+        />
+      ) : tab === "offer" ? (
+        <OfferComposerPanel
+          applicationId={applicationId}
+          suggestedPaise={suggestedPaise}
+          onSaved={() => {
+            void utils.getCompAnalysis.invalidate({ applicationId });
+            void utils.getHrCaseDetail.invalidate({ applicationId });
+          }}
+          onCancel={() => setTab("compensation")}
+        />
+      ) : (
+        <DocumentsTab applicationId={applicationId} />
       )}
     </div>
   );
@@ -307,5 +337,29 @@ function HrRoundTab({
         <HrRoundAssessmentForm applicationId={applicationId} initial={assessment} />
       </Card>
     </div>
+  );
+}
+
+/**
+ * Documents tab — mounts the HROPS-03 ApplicationDocumentsPanel for this case.
+ * The aggregate candidates query is the panel's canonical data source (same as
+ * /hr-documents); we pick this application's row out of it. No row yet simply
+ * means nothing has been requested — the panel renders its request flow.
+ */
+function DocumentsTab({ applicationId }: { applicationId: string }) {
+  const query = trpc.listApplicationDocumentCandidates.useQuery({}, { staleTime: 5_000 });
+  const row = query.data?.items.find((r) => r.applicationId === applicationId);
+
+  if (query.isLoading) {
+    return <p className="p-4 text-sm text-neutral-500">Loading documents…</p>;
+  }
+  return (
+    <Card>
+      <ApplicationDocumentsPanel
+        applicationId={applicationId}
+        documents={row?.documents ?? []}
+        onChanged={() => void query.refetch()}
+      />
+    </Card>
   );
 }
