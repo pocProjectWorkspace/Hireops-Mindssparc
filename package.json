@@ -30,6 +30,7 @@
     "db:seed:benchmarks": "pnpm --filter @hireops/db db:seed:benchmarks",
     "db:seed:hr-policies": "pnpm --filter @hireops/db db:seed:hr-policies",
     "db:seed:ro-02": "pnpm --filter @hireops/db db:seed:ro-02",
+    "db:seed:t11-sources": "pnpm --filter @hireops/db db:seed:t11-sources",
     "db:groom:demo-data": "pnpm --filter @hireops/db db:groom:demo-data",
     "api:dev": "pnpm --filter @hireops/api dev",
     "api:start": "pnpm --filter @hireops/api start",

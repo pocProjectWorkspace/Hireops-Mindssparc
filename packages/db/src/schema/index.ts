@@ -18,6 +18,7 @@ export * from "./integration-credentials";
 export * from "./audit-action";
 export * from "./audit-logs";
 export * from "./application-source";
+export * from "./tenant-application-sources";
 export * from "./application-stage";
 export * from "./persons";
 export * from "./candidates";

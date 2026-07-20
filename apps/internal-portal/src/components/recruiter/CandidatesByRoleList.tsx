@@ -158,12 +158,14 @@ function GroupAccordion({
   onToggle,
   onOpenRow,
   selectedCandidateId,
+  sourceLabels,
 }: {
   group: Group;
   open: boolean;
   onToggle: () => void;
   onOpenRow: (ids: { candidateId: string; applicationId: string }) => void;
   selectedCandidateId: string | null;
+  sourceLabels?: Record<string, string>;
 }) {
   return (
     <div className="overflow-hidden rounded-card border border-neutral-200 bg-white shadow-card">
@@ -244,7 +246,9 @@ function GroupAccordion({
                           : null}
                       </div>
                     </td>
-                    <td className="px-4 py-2.5 text-neutral-700">{sourceLabel(row.source)}</td>
+                    <td className="px-4 py-2.5 text-neutral-700">
+                      {sourceLabel(row.source, sourceLabels)}
+                    </td>
                     <td className="px-4 py-2.5">
                       <MissingInfoCell info={row.missingInfo} />
                     </td>
@@ -270,7 +274,15 @@ function GroupAccordion({
   );
 }
 
-export function CandidatesByRoleList({ initial }: { initial: Output }) {
+export function CandidatesByRoleList({
+  initial,
+  sourceLabels,
+  enabledSources,
+}: {
+  initial: Output;
+  sourceLabels?: Record<string, string>;
+  enabledSources?: string[];
+}) {
   const [search, setSearch] = useState("");
   const [stage, setStage] = useState<ApplicationStage | "">("");
   const [source, setSource] = useState<ApplicationSource | "">("");
@@ -294,6 +306,16 @@ export function CandidatesByRoleList({ initial }: { initial: Output }) {
   const isOpen = useMemo(
     () => (id: string, index: number) => openGroups[id] ?? index === 0,
     [openGroups],
+  );
+
+  // Constrain the source filter to the tenant's enabled channels when the
+  // registry (G04) provides them; otherwise fall back to the full enum.
+  const sourceOptions = useMemo(
+    () =>
+      enabledSources && enabledSources.length > 0
+        ? SOURCE_OPTIONS.filter((s) => enabledSources.includes(s))
+        : SOURCE_OPTIONS,
+    [enabledSources],
   );
 
   return (
@@ -333,9 +355,9 @@ export function CandidatesByRoleList({ initial }: { initial: Output }) {
           className="h-10 rounded-button border border-neutral-300 bg-white px-3 text-sm text-neutral-700 focus:border-brand-500 focus:outline-none"
         >
           <option value="">All sources</option>
-          {SOURCE_OPTIONS.map((s) => (
+          {sourceOptions.map((s) => (
             <option key={s} value={s}>
-              {sourceLabel(s)}
+              {sourceLabel(s, sourceLabels)}
             </option>
           ))}
         </select>
@@ -361,6 +383,7 @@ export function CandidatesByRoleList({ initial }: { initial: Output }) {
               }
               onOpenRow={open}
               selectedCandidateId={candidateId}
+              sourceLabels={sourceLabels}
             />
           ))}
         </div>

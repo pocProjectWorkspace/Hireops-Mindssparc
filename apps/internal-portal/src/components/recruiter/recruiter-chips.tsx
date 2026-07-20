@@ -187,8 +187,12 @@ const SOURCE_LABELS: Record<ApplicationSource, string> = {
   whatsapp: "WhatsApp",
 };
 
-export function sourceLabel(source: ApplicationSource | null): string {
-  return source ? (SOURCE_LABELS[source] ?? source) : "—";
+export function sourceLabel(
+  source: ApplicationSource | null,
+  overrides?: Record<string, string>,
+): string {
+  if (!source) return "—";
+  return overrides?.[source] ?? SOURCE_LABELS[source] ?? source;
 }
 
 // ─────────────── missing info ───────────────

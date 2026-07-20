@@ -5,6 +5,7 @@ import { RoleNotice } from "@/components/nav/RoleNotice";
 import { UndoToastProvider } from "@/components/triage/UndoToastProvider";
 import { CandidateDetailDrawer } from "@/components/triage/CandidateDetailDrawer";
 import { CandidatesByRoleList } from "@/components/recruiter/CandidatesByRoleList";
+import type { TenantSourceRow } from "@hireops/api-types";
 
 export const dynamic = "force-dynamic"; // Auth-gated + reads live pipeline state.
 
@@ -46,6 +47,17 @@ export default async function CandidatesPage() {
 
   const caller = createServerTRPCCaller(session);
   const initial = await caller.listCandidatesByRequisition({});
+  const sourcesRes = await caller
+    .listTenantSources({})
+    .catch(() => ({ rows: [] as TenantSourceRow[] }));
+
+  // The registry (G04) drives the recruiter surface's source labels + filter:
+  // only ENABLED channels contribute an override label and a filter option.
+  const enabledSourceRows = sourcesRes.rows.filter((r) => r.enabled);
+  const sourceLabels = Object.fromEntries(
+    enabledSourceRows.map((r) => [r.sourceEnum, r.label] as const),
+  );
+  const enabledSources = enabledSourceRows.map((r) => r.sourceEnum);
 
   return (
     <UndoToastProvider>
@@ -56,7 +68,11 @@ export default async function CandidatesPage() {
         active="candidates"
         user={sessionUserChip(session)}
       >
-        <CandidatesByRoleList initial={initial} />
+        <CandidatesByRoleList
+          initial={initial}
+          sourceLabels={sourceLabels}
+          enabledSources={enabledSources}
+        />
         <CandidateDetailDrawer />
       </AppShell>
     </UndoToastProvider>

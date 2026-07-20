@@ -86,6 +86,7 @@ import {
   finalSettlements,
   documentTypes,
   marketBenchmarks,
+  tenantApplicationSources,
   requisitionFeasibility,
   hrRoundAssessments,
   compRecommendations,
@@ -453,6 +454,14 @@ import {
   type AuditEventRow,
   type PendingApprovalItem,
   type GetApprovalRequestOutput,
+  // T1.1 / G04 sourcing-channel registry
+  listTenantSourcesInputSchema,
+  listTenantSourcesOutputSchema,
+  upsertTenantSourceInputSchema,
+  upsertTenantSourceOutputSchema,
+  setTenantSourceEnabledInputSchema,
+  setTenantSourceEnabledOutputSchema,
+  type TenantSourceRow,
   // HRHEAD-02 market intelligence + feasibility
   listMarketBenchmarksInputSchema,
   listMarketBenchmarksOutputSchema,
@@ -994,6 +1003,33 @@ const ONBOARDING_MANAGE_ROLES = new Set(["admin", "recruiter", "hr_ops", "people
 // gated tighter than the benchmark read. RLS still scopes rows to the tenant.
 const MARKET_INTEL_READ_ROLES = new Set(["admin", "hr_head", "hiring_manager"]);
 const MARKET_BENCHMARK_ADMIN_ROLES = new Set(["admin"]);
+
+// T1.1 / G04 — the sourcing-channel registry. Reads flow to the recruiter
+// surfaces that render source labels (recruiter + admin); writes (declare /
+// enable / label a channel) are admin-only config, like every other admin
+// config surface.
+const TENANT_SOURCE_READ_ROLES = new Set(["admin", "recruiter"]);
+const TENANT_SOURCE_ADMIN_ROLES = new Set(["admin"]);
+
+/** DB row → API row for the sourcing-channel registry. `config` is a jsonb
+ * string→string bag; coerce defensively (an older row could be null). */
+function tenantSourceRowToApi(row: typeof tenantApplicationSources.$inferSelect): TenantSourceRow {
+  const rawConfig = (row.config ?? {}) as Record<string, unknown>;
+  const config: Record<string, string> = {};
+  for (const [k, v] of Object.entries(rawConfig)) {
+    if (typeof v === "string") config[k] = v;
+  }
+  return {
+    id: row.id,
+    sourceEnum: row.sourceEnum,
+    label: row.label,
+    enabled: row.enabled,
+    ingestionMode: row.ingestionMode === "connector_pending" ? "connector_pending" : "manual",
+    config,
+    notes: row.notes ?? null,
+    updatedAt: row.updatedAt.toISOString(),
+  };
+}
 const FEASIBILITY_ROLES = new Set(["admin", "hr_head"]);
 
 // HROPS-01 — the HR-Ops cases workspace + HR round is the post-technical-rounds
@@ -17910,6 +17946,118 @@ export const appRouter = router({
         }
 
         return { requestId: saved.id, status: saved.status as MissingInfoStatus };
+      });
+    }),
+
+  // ═══════════ T1.1 / G04 — sourcing-channel registry ═══════════
+  //
+  // The tenant's editable CONFIG over the fixed `application_source` enum:
+  // which channels are enabled, what the org calls them (labels flow through
+  // to the recruiter source surfaces), and an honest `ingestionMode` flag —
+  // configuring a channel is NOT connecting an auto-pull; connectors are a
+  // deferred work package. See packages/db/src/schema/tenant-application-sources.ts.
+
+  /**
+   * listTenantSources — the full registry for the tenant (enabled + disabled),
+   * ordered by label. recruiter + admin read (the recruiter surfaces render
+   * the labels; the admin surface manages the rows). RLS scopes to the tenant.
+   */
+  listTenantSources: protectedProcedure
+    .input(listTenantSourcesInputSchema)
+    .output(listTenantSourcesOutputSchema)
+    .query(async ({ ctx }) => {
+      requireAnyRole(
+        ctx,
+        TENANT_SOURCE_READ_ROLES,
+        "The sourcing-channel registry requires the recruiter or admin role",
+      );
+      const db = requireDb(ctx);
+      if (!ctx.tenantId) {
+        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
+      }
+      const rows = await db
+        .select()
+        .from(tenantApplicationSources)
+        .where(eq(tenantApplicationSources.tenantId, ctx.tenantId))
+        .orderBy(tenantApplicationSources.label);
+      return { rows: rows.map(tenantSourceRowToApi) };
+    }),
+
+  /**
+   * upsertTenantSource — admin-only, audited declare/edit of one channel,
+   * keyed by (tenant, sourceEnum). Enable/disable, relabel, set the honesty
+   * mode + notes + config blob. Uses the tenant-scoped client (the table's
+   * tenant_isolation policy is FOR ALL); the audit trigger + withAudit record it.
+   */
+  upsertTenantSource: protectedProcedure
+    .input(upsertTenantSourceInputSchema)
+    .output(upsertTenantSourceOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      return withAudit("upsert_tenant_source", ctx, input, async () => {
+        requireAnyRole(ctx, TENANT_SOURCE_ADMIN_ROLES, "Editing sourcing channels is admin-only");
+        const db = requireDb(ctx);
+        if (!ctx.tenantId) {
+          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
+        }
+        const tenantId = ctx.tenantId;
+        const [row] = await db
+          .insert(tenantApplicationSources)
+          .values({
+            tenantId,
+            sourceEnum: input.sourceEnum,
+            label: input.label,
+            enabled: input.enabled,
+            ingestionMode: input.ingestionMode,
+            config: input.config,
+            notes: input.notes,
+            updatedAt: new Date(),
+          })
+          .onConflictDoUpdate({
+            target: [tenantApplicationSources.tenantId, tenantApplicationSources.sourceEnum],
+            set: {
+              label: input.label,
+              enabled: input.enabled,
+              ingestionMode: input.ingestionMode,
+              config: input.config,
+              notes: input.notes,
+              updatedAt: new Date(),
+            },
+          })
+          .returning();
+        if (!row) {
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: "tenant source upsert returned no row",
+          });
+        }
+        return { row: tenantSourceRowToApi(row) };
+      });
+    }),
+
+  /**
+   * setTenantSourceEnabled — admin-only, audited enable/disable toggle for one
+   * registry row (by id). Tenant-scoped by RLS; NOT_FOUND if the row is not the
+   * caller's tenant's.
+   */
+  setTenantSourceEnabled: protectedProcedure
+    .input(setTenantSourceEnabledInputSchema)
+    .output(setTenantSourceEnabledOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      return withAudit("set_tenant_source_enabled", ctx, input, async () => {
+        requireAnyRole(ctx, TENANT_SOURCE_ADMIN_ROLES, "Editing sourcing channels is admin-only");
+        const db = requireDb(ctx);
+        if (!ctx.tenantId) {
+          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
+        }
+        const [row] = await db
+          .update(tenantApplicationSources)
+          .set({ enabled: input.enabled, updatedAt: new Date() })
+          .where(eq(tenantApplicationSources.id, input.id))
+          .returning();
+        if (!row) {
+          throw new TRPCError({ code: "NOT_FOUND", message: "sourcing channel not found" });
+        }
+        return { row: tenantSourceRowToApi(row) };
       });
     }),
 });

@@ -54,6 +54,7 @@ import {
   IconGovernance,
   IconExecAudit,
   IconIntegrations,
+  IconSources,
   IconUsers,
   IconMissingInfo,
   IconMessaging,
@@ -102,6 +103,7 @@ export type PortalNavKey =
   | "ai-settings"
   | "reports"
   | "integrations"
+  | "sources"
   | "users"
   // AD-03 admin persona pass
   | "messaging"
@@ -428,6 +430,9 @@ const ADMIN_NAV: NavItem[] = [
     href: "/admin/integrations",
     icon: <IconIntegrations />,
   },
+  // T1.1 / G04 — the sourcing-channel registry: declare/enable/label the
+  // channels that feed the pipeline (config over the application_source enum).
+  { key: "sources", label: "Sources", href: "/admin/sources", icon: <IconSources /> },
   // AD-03 — admin persona pass. Honest surfaces: an email delivery log
   // (notification_outbox), system-setup (email alerts + escalation), and the
   // Bias Shield refusal statement (real lexicon posture; no demographic scoring).

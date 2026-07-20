@@ -240,6 +240,17 @@ export function IconIntegrations() {
   );
 }
 
+export function IconSources() {
+  // Converging channels → one pipeline (the registry's whole idea).
+  return (
+    <Svg>
+      <path d="M4 5h6M4 12h9M4 19h6" />
+      <path d="M14 5l4 3.5-4 3.5" />
+      <path d="M14 19l4-3.5" />
+    </Svg>
+  );
+}
+
 export function IconAiSettings() {
   return (
     <Svg>
