@@ -31,6 +31,7 @@ export type TemplateKey =
   | "candidate.account_activation"
   | "candidate.agent_message"
   | "recruiter.sla_breach_imminent"
+  | "recruiter.sla_ops_alert"
   | "recruiter.offer_accepted"
   | "recruiter.offer_declined";
 

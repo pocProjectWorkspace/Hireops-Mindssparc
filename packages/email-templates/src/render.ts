@@ -7,6 +7,7 @@ import {
 } from "./templates/application-received";
 import { StageAdvanced, type StageAdvancedProps } from "./templates/stage-advanced";
 import { SlaBreachImminent, type SlaBreachImminentProps } from "./templates/sla-breach-imminent";
+import { SlaOpsAlert, type SlaOpsAlertProps } from "./templates/sla-ops-alert";
 import { OfferExtended, type OfferExtendedProps } from "./templates/offer-extended";
 import {
   InterviewInvitation,
@@ -161,6 +162,22 @@ export async function renderTemplate(
       const noun = props.applicationCount === 1 ? "application" : "applications";
       return {
         subject: `Heads up — ${props.applicationCount} ${noun} near SLA breach`,
+        html: await render(element),
+        text: await render(element, { plainText: true }),
+      };
+    }
+    case "recruiter.sla_ops_alert": {
+      // Operational alert to an admin-configured recipient (Email Alerts
+      // recipient or Escalation Rule recipient). Subject is the worker-
+      // composed headline, prefixed with severity when the escalation
+      // rule carried one.
+      const props = data as unknown as SlaOpsAlertProps;
+      const element = SlaOpsAlert(props);
+      const subject = props.severity
+        ? `[${props.severity.toUpperCase()}] ${props.headline}`
+        : props.headline;
+      return {
+        subject,
         html: await render(element),
         text: await render(element, { plainText: true }),
       };

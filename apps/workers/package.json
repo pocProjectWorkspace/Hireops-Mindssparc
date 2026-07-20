@@ -15,6 +15,7 @@
     "@hireops/agent-actions": "workspace:*",
     "@hireops/ai-client": "workspace:*",
     "@hireops/ai-scoring": "workspace:*",
+    "@hireops/api-types": "workspace:*",
     "@hireops/db": "workspace:*",
     "@hireops/email-templates": "workspace:*",
     "@hireops/notifications": "workspace:*",

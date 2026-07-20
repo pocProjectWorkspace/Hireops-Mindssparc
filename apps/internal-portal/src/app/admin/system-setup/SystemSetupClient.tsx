@@ -29,6 +29,14 @@ import { trpc } from "@/lib/trpc-client";
 const inputCls =
   "w-full rounded-button border border-neutral-300 bg-white px-3 h-9 text-sm text-neutral-900 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500";
 
+/**
+ * Alert types the platform actually delivers today. The SLA scan worker
+ * consumes `sla_breach` (imminent-breach alerts to these recipients); the
+ * remaining types are persisted but have no event source wired yet, so the
+ * UI labels them honestly rather than implying a send.
+ */
+const WIRED_ALERT_TYPES: SystemAlertType[] = ["sla_breach"];
+
 type Tab = "alerts" | "escalation";
 
 export function SystemSetupClient({ initial }: { initial: SystemSetup }) {
@@ -113,8 +121,11 @@ export function SystemSetupClient({ initial }: { initial: SystemSetup }) {
     <div className="mx-auto w-full max-w-3xl px-6 py-8">
       <div className="mb-6 rounded-xl border border-neutral-200 bg-neutral-50 px-5 py-4">
         <p className="text-sm text-neutral-700">
-          Operational configuration for this tenant. Alerts and escalations send over the real email
-          path (Resend behind config). SLA <em>thresholds</em> themselves stay fixed in the platform
+          Operational configuration for this tenant. When enabled, these settings are consumed by
+          the SLA scan worker and sent over the real email path (Resend behind config). The wired
+          delivery today is <strong>SLA-breach</strong> alerts to the recipients below, plus the
+          escalation rules; the other alert types are saved but not yet delivered (their event
+          sources are still being wired). SLA <em>thresholds</em> stay fixed in the platform
           defaults — this screen configures who gets notified, not the hours.
         </p>
       </div>
@@ -156,7 +167,8 @@ export function SystemSetupClient({ initial }: { initial: SystemSetup }) {
                   Send operational email alerts
                 </span>
                 <span className="block text-xs text-neutral-500">
-                  When off, nothing is sent regardless of the recipients or types below.
+                  Master switch. When off, nothing is sent — no alert recipients and no escalation
+                  rules fire, regardless of the settings on either tab.
                 </span>
               </span>
             </div>
@@ -186,7 +198,8 @@ export function SystemSetupClient({ initial }: { initial: SystemSetup }) {
           <Card className="p-5">
             <h3 className="mb-1 text-sm font-semibold text-neutral-900">Alert types</h3>
             <p className="mb-3 text-xs text-neutral-500">
-              Each maps to a real platform event. Choose which ones page the recipients.
+              Choose which ones page the recipients. Only <strong>SLA breach</strong> is wired to a
+              live event source today; the others are saved but not yet delivered.
             </p>
             <div className="space-y-2">
               {SYSTEM_ALERT_TYPES.map((t) => (
@@ -202,8 +215,13 @@ export function SystemSetupClient({ initial }: { initial: SystemSetup }) {
                     className="mt-0.5 h-4 w-4 rounded border-neutral-300 text-brand-600 focus:ring-brand-500"
                   />
                   <span>
-                    <span className="block text-sm font-medium text-neutral-800">
+                    <span className="flex items-center gap-2 text-sm font-medium text-neutral-800">
                       {SYSTEM_ALERT_TYPE_META[t].label}
+                      {WIRED_ALERT_TYPES.includes(t) ? (
+                        <Badge tone="success">Live</Badge>
+                      ) : (
+                        <Badge tone="neutral">Not yet delivered</Badge>
+                      )}
                     </span>
                     <span className="block text-xs text-neutral-500">
                       {SYSTEM_ALERT_TYPE_META[t].description}
@@ -221,8 +239,9 @@ export function SystemSetupClient({ initial }: { initial: SystemSetup }) {
               <div>
                 <h3 className="text-sm font-semibold text-neutral-900">Escalation rules</h3>
                 <p className="text-xs text-neutral-500">
-                  After a record sits N days, notify a recipient at the chosen severity. A simple,
-                  deterministic rule — it does not change any SLA threshold.
+                  When an application has sat in an active stage for at least N days, the SLA worker
+                  notifies this recipient at the chosen severity (once per day). Deterministic — it
+                  changes no SLA threshold, and it requires the master Email Alerts switch above.
                 </p>
               </div>
               <button

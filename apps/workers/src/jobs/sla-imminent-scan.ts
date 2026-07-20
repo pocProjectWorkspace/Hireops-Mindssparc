@@ -1,6 +1,7 @@
 import { sql as poolSql, db as poolDb } from "@hireops/db";
 import { enqueueNotification } from "@hireops/notifications";
-import { SLA_THRESHOLDS_HOURS } from "@hireops/sla-thresholds";
+import { SLA_THRESHOLDS_HOURS, SLA_BREACH_STAGES } from "@hireops/sla-thresholds";
+import { resolveSystemSetup, type SystemSetup } from "@hireops/api-types";
 import type { Logger } from "@hireops/observability";
 
 /**
@@ -11,6 +12,19 @@ import type { Logger } from "@hireops/observability";
  * Dedup: dedup_key encodes (tenant_id, recruiter_id, date) — at most
  * one alert per recruiter per UTC day. The next day's scan emits a
  * fresh one if the same recruiter still has imminent breaches.
+ *
+ * Admin System Setup consumption (G25/D1): beyond the recruiter's own
+ * alert, this scan honours the tenant's `tenants.settings.systemSetup`
+ * config (resolveSystemSetup):
+ *   - When email alerts are ENABLED and the `sla_breach` alert type is on,
+ *     the configured recipients also receive an operational SLA alert
+ *     (distinct template, honest ops copy) per recruiter-with-breaches.
+ *   - Escalation rules drive a separate days-based sweep (slaEscalationSweep)
+ *     that notifies each rule's recipient at its severity when stages have
+ *     sat past the rule's day threshold.
+ * When alerts are disabled or no recipients/rules are set, nothing extra
+ * fires and the recruiter's own imminent alert is the only send — the
+ * pre-config behaviour. The config is no longer inert.
  *
  * Why the worker, not the api: scans are batch + recruiter-centric
  * (cross-tenant in production with multiple tenants); the api is
@@ -82,38 +96,175 @@ export async function slaImminentScan(log: Logger): Promise<void> {
   }
 
   const portalBase = process.env.NEXT_PUBLIC_SITE_URL ?? "http://localhost:3002";
+  const triageUrl = `${portalBase}/triage`;
   const today = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
 
+  // Per-tenant admin System Setup (email-alert recipients, alert-type
+  // toggles, escalation rules). Loaded once for the whole tick and reused
+  // by both the imminent loop and the escalation sweep. resolveSystemSetup
+  // owns the default-merge — we never re-derive defaults here.
+  const setupByTenant = await loadSystemSetupByTenant();
+
+  let cfgRecipientAlerts = 0;
+
   for (const row of rows) {
-    try {
-      await enqueueNotification(poolDb, {
-        tenantId: row.tenant_id,
-        recipientType: "recruiter",
-        recipientEmail: row.recruiter_email,
-        recipientMembershipId: row.recruiter_membership_id,
-        templateKey: "recruiter.sla_breach_imminent",
-        templateData: {
-          recruiterName: row.recruiter_name,
-          applicationCount: row.imminent_count,
-          triageUrl: `${portalBase}/triage`,
-        },
-        priority: 3,
-        dedupKey: `sla_imminent:${row.recruiter_membership_id}:${today}`,
-      });
-    } catch (err) {
-      // Most likely 23505 from the dedup_key unique — already alerted today.
-      const msg = err instanceof Error ? err.message : String(err);
-      if (msg.includes("uniq_notification_outbox_dedup")) {
-        log.debug({ recruiter: row.recruiter_membership_id }, "sla_scan.dedup_skip");
-      } else {
-        log.error({ err: msg, recruiter: row.recruiter_membership_id }, "sla_scan.enqueue_error");
+    // (1) The owning primary recruiter is ALWAYS alerted about their own
+    // imminent breaches. This predates the System Setup config and stays
+    // unconditional — dropping it when an admin adds an ops mailbox would
+    // be a regression. The template greets them by name.
+    await tryEnqueue(log, "recruiter", {
+      tenantId: row.tenant_id,
+      recipientType: "recruiter",
+      recipientEmail: row.recruiter_email,
+      recipientMembershipId: row.recruiter_membership_id,
+      templateKey: "recruiter.sla_breach_imminent",
+      templateData: {
+        recruiterName: row.recruiter_name,
+        applicationCount: row.imminent_count,
+        triageUrl,
+      },
+      priority: 3,
+      dedupKey: `sla_imminent:${row.recruiter_membership_id}:${today}`,
+    });
+
+    // (2) Additionally alert the admin-configured operational recipients,
+    // but ONLY when email alerts are enabled AND the sla_breach alert type
+    // is switched on. These recipients get honest ops copy (a distinct
+    // template) that names the owning recruiter and why they were paged.
+    const setup = setupByTenant.get(row.tenant_id);
+    const emailAlerts = setup?.emailAlerts;
+    if (emailAlerts?.enabled && emailAlerts.alertTypes.includes("sla_breach")) {
+      const noun = row.imminent_count === 1 ? "application" : "applications";
+      for (const recipient of emailAlerts.recipients) {
+        await tryEnqueue(log, "cfg_recipient", {
+          tenantId: row.tenant_id,
+          recipientType: "recruiter",
+          recipientEmail: recipient,
+          templateKey: "recruiter.sla_ops_alert",
+          templateData: {
+            headline: `${row.imminent_count} ${noun} near SLA breach`,
+            bodyLine: `${row.recruiter_name} has ${row.imminent_count} ${noun} approaching the stage SLA threshold in ${row.tenant_slug}.`,
+            actionUrl: triageUrl,
+            actionLabel: "Open triage board",
+            reason:
+              "You're receiving this because you're a configured operational alert recipient (Admin → System Setup → Email Alerts) and SLA-breach alerts are enabled.",
+          },
+          priority: 3,
+          dedupKey: `sla_imminent_cfg:${recipient}:${row.recruiter_membership_id}:${today}`,
+        });
+        cfgRecipientAlerts += 1;
       }
     }
   }
-  log.info({ scanned: rows.length }, "sla_scan.complete");
+  log.info({ scanned: rows.length, cfgRecipientAlerts }, "sla_scan.complete");
+
+  // Escalation rules — a separate, deterministic days-based sweep over
+  // stages that have sat too long. Consumes the same per-tenant config.
+  await slaEscalationSweep(log, setupByTenant, triageUrl, today);
 
   // AGENT-03 — TTL auto-approve scan piggybacked on the same tick.
   await agentApprovalTtlScan(log);
+}
+
+/**
+ * Load every tenant's resolved System Setup config keyed by tenant id.
+ * Cross-tenant (service-role poolSql), matching the scan's own reads.
+ * resolveSystemSetup merges the stored jsonb over defaults, so malformed
+ * or absent blocks degrade to the safe defaults (alerts off, no rules).
+ */
+async function loadSystemSetupByTenant(): Promise<Map<string, SystemSetup>> {
+  const rows = await poolSql<{ tenant_id: string; settings: unknown }[]>`
+    SELECT id::text AS tenant_id, settings FROM public.tenants
+  `;
+  const map = new Map<string, SystemSetup>();
+  for (const r of rows) {
+    const settings = (r.settings ?? {}) as Record<string, unknown>;
+    map.set(r.tenant_id, resolveSystemSetup(settings.systemSetup));
+  }
+  return map;
+}
+
+/**
+ * Escalation sweep — for each tenant whose System Setup has email alerts
+ * ENABLED and one or more escalation rules, find applications whose stage
+ * has been open at least `daysThreshold` days (restricted to breach-
+ * eligible, non-terminal stages) and notify the rule's recipient at the
+ * rule's severity. One alert per (rule recipient, threshold) per tenant
+ * per UTC day (dedup_key).
+ *
+ * Gated by the same master `emailAlerts.enabled` switch as the alert
+ * recipients: it is the single honest on/off for operational email from
+ * this config surface. When off, this sweep sends nothing — the recruiter
+ * imminent alert above is the only thing that still fires.
+ */
+async function slaEscalationSweep(
+  log: Logger,
+  setupByTenant: Map<string, SystemSetup>,
+  triageUrl: string,
+  today: string,
+): Promise<void> {
+  let escalationAlerts = 0;
+  for (const [tenantId, setup] of setupByTenant) {
+    if (!setup.emailAlerts.enabled || setup.escalationRules.length === 0) continue;
+    for (const rule of setup.escalationRules) {
+      let count: number;
+      try {
+        const [r] = await poolSql<{ n: number }[]>`
+          SELECT COUNT(*)::int AS n
+          FROM public.applications a
+          WHERE a.tenant_id = ${tenantId}::uuid
+            AND a.current_stage::text = ANY(${SLA_BREACH_STAGES})
+            AND a.stage_entered_at < now() - make_interval(days => ${rule.daysThreshold})
+        `;
+        count = r?.n ?? 0;
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        log.error({ err: msg, tenant_id: tenantId }, "sla_escalation.query_error");
+        continue;
+      }
+      if (count === 0) continue;
+      const noun = count === 1 ? "application" : "applications";
+      await tryEnqueue(log, "escalation", {
+        tenantId,
+        recipientType: "recruiter",
+        recipientEmail: rule.recipient,
+        templateKey: "recruiter.sla_ops_alert",
+        templateData: {
+          headline: `${count} ${noun} open ≥ ${rule.daysThreshold} days`,
+          bodyLine: `${count} ${noun} have been sitting in an active stage for at least ${rule.daysThreshold} days without progressing.`,
+          severity: rule.severity,
+          actionUrl: triageUrl,
+          actionLabel: "Review stalled applications",
+          reason: `You're receiving this because an Admin → System Setup escalation rule notifies you after ${rule.daysThreshold} days at ${rule.severity} severity.`,
+        },
+        priority: 3,
+        dedupKey: `sla_escalation:${rule.recipient}:${rule.daysThreshold}:${today}`,
+      });
+      escalationAlerts += 1;
+    }
+  }
+  if (escalationAlerts > 0) log.info({ escalationAlerts }, "sla_escalation.complete");
+}
+
+/**
+ * Enqueue one notification, swallowing the dedup 23505 (already sent this
+ * window) and logging any other failure without breaking the scan.
+ */
+async function tryEnqueue(
+  log: Logger,
+  kind: string,
+  args: Parameters<typeof enqueueNotification>[1],
+): Promise<void> {
+  try {
+    await enqueueNotification(poolDb, args);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (msg.includes("uniq_notification_outbox_dedup")) {
+      log.debug({ kind, recipient: args.recipientEmail }, "sla_scan.dedup_skip");
+    } else {
+      log.error({ err: msg, kind, recipient: args.recipientEmail }, "sla_scan.enqueue_error");
+    }
+  }
 }
 
 /**
