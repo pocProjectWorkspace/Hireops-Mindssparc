@@ -56,6 +56,9 @@ import {
   IconIntegrations,
   IconUsers,
   IconMissingInfo,
+  IconMessaging,
+  IconSystemSetup,
+  IconBiasShield,
   IconSignOut,
 } from "./nav-icons";
 
@@ -99,7 +102,11 @@ export type PortalNavKey =
   | "ai-settings"
   | "reports"
   | "integrations"
-  | "users";
+  | "users"
+  // AD-03 admin persona pass
+  | "messaging"
+  | "system-setup"
+  | "bias-shield";
 
 interface NavItem {
   key: PortalNavKey;
@@ -396,6 +403,17 @@ const ADMIN_NAV: NavItem[] = [
     label: "Integrations",
     href: "/admin/integrations",
     icon: <IconIntegrations />,
+  },
+  // AD-03 — admin persona pass. Honest surfaces: an email delivery log
+  // (notification_outbox), system-setup (email alerts + escalation), and the
+  // Bias Shield refusal statement (real lexicon posture; no demographic scoring).
+  { key: "bias-shield", label: "Bias Shield", href: "/admin/bias-shield", icon: <IconBiasShield /> },
+  { key: "messaging", label: "Messaging", href: "/admin/messaging", icon: <IconMessaging /> },
+  {
+    key: "system-setup",
+    label: "System setup",
+    href: "/admin/system-setup",
+    icon: <IconSystemSetup />,
   },
 ];
 

@@ -249,6 +249,18 @@ import {
   getAgentDetailOutputSchema,
   listAuditEventsInputSchema,
   listAuditEventsOutputSchema,
+  // AD-03 admin-ops
+  exportAuditEventsInputSchema,
+  exportAuditEventsOutputSchema,
+  listNotificationLogInputSchema,
+  listNotificationLogOutputSchema,
+  getSystemSetupInputSchema,
+  getSystemSetupOutputSchema,
+  updateSystemSetupInputSchema,
+  updateSystemSetupOutputSchema,
+  resolveSystemSetup,
+  type SystemSetup,
+  type NotificationStatus,
   getAiUsageSummaryInputSchema,
   getAiUsageSummaryOutputSchema,
   getTenantAiSettingsInputSchema,
@@ -7005,6 +7017,10 @@ export const appRouter = router({
     .input(listAuditEventsInputSchema)
     .output(listAuditEventsOutputSchema)
     .query(async ({ ctx, input }) => {
+      // AD-03 / AD18 — server-side admin gate. The /admin/audit page is admin-
+      // gated, but this procedure was page-gated ONLY; enforce the role here so
+      // the audit ledger can never be read by a non-admin caller directly.
+      requireAnyRole(ctx, USERS_ADMIN_ROLES, "The audit log is admin-only");
       const db = requireDb(ctx);
       if (!ctx.tenantId) {
         throw new TRPCError({
@@ -7086,6 +7102,242 @@ export const appRouter = router({
         hasMore && lastRow ? encodeAuditCursor(lastRow.createdAt, lastRow.id) : null;
 
       return { items, nextCursor };
+    }),
+
+  // ─────────────────────── exportAuditEvents (AD10) ───────────────────────
+  //
+  // Deterministic CSV-source read for /admin/audit → Export CSV. Same tenant-
+  // scoped predicate + ordering as listAuditEvents (minus the keyset cursor),
+  // capped at input.limit (≤5000) so an export never scans the whole monthly-
+  // partitioned log. Admin-gated (AD18) exactly like listAuditEvents. Reads
+  // only — no withAudit (this reads the audit ledger itself; matches
+  // listAuditEvents). The client turns these rows into a CSV blob and derives
+  // the severity column via the shared auditEventSeverity() classifier.
+  exportAuditEvents: protectedProcedure
+    .input(exportAuditEventsInputSchema)
+    .output(exportAuditEventsOutputSchema)
+    .query(async ({ ctx, input }) => {
+      requireAnyRole(ctx, USERS_ADMIN_ROLES, "The audit log is admin-only");
+      const db = requireDb(ctx);
+      if (!ctx.tenantId) {
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: "protected procedure missing tenantId",
+        });
+      }
+      const tenantId = ctx.tenantId;
+      const cap = input.limit;
+
+      const conditions = [eq(auditLogs.tenantId, tenantId)];
+      if (input.entityTypes && input.entityTypes.length > 0) {
+        conditions.push(inArray(auditLogs.entityType, input.entityTypes));
+      }
+      if (input.action) conditions.push(eq(auditLogs.action, input.action));
+      if (input.entityId) conditions.push(eq(auditLogs.entityId, input.entityId));
+      if (input.from) conditions.push(gte(auditLogs.createdAt, new Date(input.from)));
+      if (input.to) conditions.push(lte(auditLogs.createdAt, new Date(input.to)));
+
+      const rows = await db
+        .select({
+          id: auditLogs.id,
+          entityType: auditLogs.entityType,
+          entityId: auditLogs.entityId,
+          action: auditLogs.action,
+          actorUserId: auditLogs.actorUserId,
+          actorMembershipId: auditLogs.actorMembershipId,
+          requestId: auditLogs.requestId,
+          source: auditLogs.source,
+          changedColumns: auditLogs.changedColumns,
+          beforeData: auditLogs.beforeData,
+          afterData: auditLogs.afterData,
+          createdAt: auditLogs.createdAt,
+        })
+        .from(auditLogs)
+        .where(and(...conditions))
+        .orderBy(desc(auditLogs.createdAt), desc(auditLogs.id))
+        .limit(cap + 1);
+
+      const truncated = rows.length > cap;
+      const pageRows = truncated ? rows.slice(0, cap) : rows;
+      const items: AuditEventRow[] = pageRows.map((r) => ({
+        id: r.id,
+        entity_type: r.entityType,
+        entity_id: r.entityId,
+        action: r.action,
+        actor_user_id: r.actorUserId,
+        actor_membership_id: r.actorMembershipId,
+        request_id: r.requestId,
+        source: r.source,
+        changed_columns: r.changedColumns ?? null,
+        before_data: r.beforeData ?? null,
+        after_data: r.afterData ?? null,
+        created_at: toIsoString(r.createdAt) ?? new Date(0).toISOString(),
+      }));
+
+      return { items, truncated, generatedAt: new Date().toISOString() };
+    }),
+
+  // ─────────────────────── listNotificationLog (AD12) ───────────────────────
+  //
+  // Read-only, admin-gated, tenant-scoped email delivery log for /admin/messaging
+  // over the REAL notification_outbox. No WhatsApp/SMS (we have none) and no
+  // delivery/read receipts (the outbox only tracks send status). Reads only —
+  // no withAudit (the DB-AUDIT trigger already records outbox writes; reads make
+  // none). statusCounts + total roll up the whole tenant outbox so the header
+  // tiles are accurate regardless of the page window.
+  listNotificationLog: protectedProcedure
+    .input(listNotificationLogInputSchema)
+    .output(listNotificationLogOutputSchema)
+    .query(async ({ ctx, input }) => {
+      requireAnyRole(ctx, USERS_ADMIN_ROLES, "The notification log is admin-only");
+      const db = requireDb(ctx);
+      if (!ctx.tenantId) {
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: "protected procedure missing tenantId",
+        });
+      }
+      const tenantId = ctx.tenantId;
+
+      const rowConditions = [eq(notificationOutbox.tenantId, tenantId)];
+      if (input.status) rowConditions.push(eq(notificationOutbox.status, input.status));
+      if (input.templateKey) {
+        rowConditions.push(eq(notificationOutbox.templateKey, input.templateKey));
+      }
+
+      const rows = await db
+        .select({
+          id: notificationOutbox.id,
+          recipientEmail: notificationOutbox.recipientEmail,
+          recipientType: notificationOutbox.recipientType,
+          templateKey: notificationOutbox.templateKey,
+          subject: notificationOutbox.subject,
+          status: notificationOutbox.status,
+          priority: notificationOutbox.priority,
+          attemptCount: notificationOutbox.attemptCount,
+          scheduledFor: notificationOutbox.scheduledFor,
+          sentAt: notificationOutbox.sentAt,
+          lastError: notificationOutbox.lastError,
+          providerMessageId: notificationOutbox.providerMessageId,
+          createdAt: notificationOutbox.createdAt,
+        })
+        .from(notificationOutbox)
+        .where(and(...rowConditions))
+        .orderBy(desc(notificationOutbox.createdAt), desc(notificationOutbox.id))
+        .limit(input.limit);
+
+      // Whole-tenant status rollup (independent of the row filter above).
+      const countRows = await db
+        .select({ status: notificationOutbox.status, n: dsql<number>`count(*)::int` })
+        .from(notificationOutbox)
+        .where(eq(notificationOutbox.tenantId, tenantId))
+        .groupBy(notificationOutbox.status);
+
+      const statusCounts: Partial<Record<NotificationStatus, number>> = {};
+      let total = 0;
+      for (const c of countRows) {
+        total += c.n;
+        if (
+          c.status === "pending" ||
+          c.status === "processing" ||
+          c.status === "sent" ||
+          c.status === "failed" ||
+          c.status === "cancelled"
+        ) {
+          statusCounts[c.status] = c.n;
+        }
+      }
+
+      return {
+        items: rows.map((r) => ({
+          id: r.id,
+          recipient_email: r.recipientEmail,
+          recipient_type: r.recipientType,
+          template_key: r.templateKey,
+          subject: r.subject,
+          status: r.status,
+          priority: r.priority,
+          attempt_count: r.attemptCount,
+          scheduled_for: toIsoString(r.scheduledFor),
+          sent_at: toIsoString(r.sentAt),
+          last_error: r.lastError,
+          provider_message_id: r.providerMessageId,
+          created_at: toIsoString(r.createdAt) ?? new Date(0).toISOString(),
+        })),
+        statusCounts: statusCounts as Record<NotificationStatus, number>,
+        total,
+      };
+    }),
+
+  // ─────────────────────── getSystemSetup (AD14/AD15) ───────────────────────
+  //
+  // Admin read of the per-tenant system-setup block (email alerts + simple
+  // escalation rules) from tenants.settings.systemSetup, merged over defaults.
+  // Admin-gated on the procedure. Read-only, no withAudit (matches the other
+  // settings reads). The SLA hours themselves stay hardcoded in
+  // @hireops/sla-thresholds — this block only configures WHO gets alerted, not
+  // the thresholds (that stays Phase-3 deferred).
+  getSystemSetup: protectedProcedure
+    .input(getSystemSetupInputSchema)
+    .output(getSystemSetupOutputSchema)
+    .query(async ({ ctx }) => {
+      requireAnyRole(ctx, USERS_ADMIN_ROLES, "System setup is admin-only");
+      const db = requireDb(ctx);
+      if (!ctx.tenantId) {
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: "protected procedure missing tenantId",
+        });
+      }
+      const [row] = await db
+        .select({ settings: tenants.settings })
+        .from(tenants)
+        .where(eq(tenants.id, ctx.tenantId))
+        .limit(1);
+      const settings = (row?.settings ?? {}) as Record<string, unknown>;
+      return resolveSystemSetup(settings.systemSetup);
+    }),
+
+  // ─────────────────────── updateSystemSetup (AD14/AD15) ───────────────────────
+  //
+  // Admin write of the system-setup block. Admin-gated + audited. Merges the
+  // validated block into tenants.settings under `systemSetup` via the same
+  // atomic top-level jsonb `||` merge (service-role; tenants is FORCE RLS
+  // SELECT-only) that updateTenantBiasLexicon / updateScoringWeights use —
+  // preserving aiSettings, biasLexicon, scoringWeights and cosmetic config
+  // verbatim. A SIBLING mutation; system setup saves independently.
+  updateSystemSetup: protectedProcedure
+    .input(updateSystemSetupInputSchema)
+    .output(updateSystemSetupOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      return withAudit("update_system_setup", ctx, input, async () => {
+        requireAnyRole(ctx, USERS_ADMIN_ROLES, "System setup is admin-only");
+        if (!ctx.tenantId) {
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: "protected procedure missing tenantId",
+          });
+        }
+        const tenantId = ctx.tenantId;
+        const nextBlock: SystemSetup = resolveSystemSetup(input);
+
+        const res = await poolDb.execute(dsql`
+          UPDATE public.tenants
+          SET settings = COALESCE(settings, '{}'::jsonb)
+              || jsonb_build_object('systemSetup', ${JSON.stringify(nextBlock)}::jsonb)
+          WHERE id = ${tenantId}::uuid
+          RETURNING id
+        `);
+        const updated = (res as { rows?: unknown[] }).rows ?? (res as unknown[]);
+        if (updated.length !== 1) {
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: "tenant settings update affected an unexpected number of rows",
+          });
+        }
+
+        return { ok: true as const, systemSetup: nextBlock };
+      });
     }),
 
   // ─────────────────────── getAiUsageSummary (ADMIN-03) ───────────────────────

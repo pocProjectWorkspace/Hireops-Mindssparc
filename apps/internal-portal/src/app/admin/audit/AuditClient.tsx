@@ -1,8 +1,14 @@
 "use client";
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import type { ReactNode } from "react";
-import type { ListAuditEventsOutput } from "@hireops/api-types";
+import {
+  type ListAuditEventsOutput,
+  type AuditSeverity,
+  AUDIT_SEVERITIES,
+  AUDIT_SEVERITY_META,
+  auditEventSeverity,
+} from "@hireops/api-types";
 import {
   Badge,
   Button,
@@ -28,23 +34,24 @@ type AuditEventRow = Omit<ListAuditEventsOutput["items"][number], "before_data" 
 };
 
 /**
- * The admin audit-trail list — filter chips + inline diff expand + cursor
- * "Load more". Seeded from the server render (`initial`) for the default,
- * unfiltered view and kept live by a tRPC infinite query.
+ * The admin audit-trail list (AD10) — elevated to prototype density.
  *
- * The "Agent activity" preset narrows entity_type to the seven agent-runtime
- * tables (hardcoded below — the audit log is polymorphic over table names, so
- * the client owns this grouping). Action chips (insert/update/delete) narrow
- * the DML verb. Default: no filters — all activity, newest first.
+ * Server-side filters (agent preset → entity_type set, DML action) drive a
+ * keyset-paginated tRPC infinite query, seeded from the server render. On top
+ * of the accumulated rows the client applies three refinements — a free-text
+ * search, a derived-severity chip filter, and an actor filter — and offers an
+ * Export CSV that regenerates from the SAME server query via
+ * `exportAuditEvents` and applies the identical client refinements before
+ * building the blob.
  *
- * Actor is shown as the truncated actor_user_id (or "system" when null). We
- * deliberately do NOT join users / memberships for display names: their RLS
- * is self-select-only, so the join would silently null for other actors.
+ * Severity is DERIVED, never stored: `auditEventSeverity(action, entity_type)`
+ * is a pure classifier shared with the API-types package. It reflects the DML
+ * verb and whether the touched table is security/state-sensitive — nothing
+ * about people. This is a real audit log, not a "D&I compliance report".
  *
- * DESIGN-03: the "AI you can audit" screen. Events sit in a TableShell with an
- * action Badge toned by DML verb, entity_type as a neutral mono Badge, actor
- * mono. Expanding a row reveals a forensic diff: a two-column Before/After
- * Card pair, changed-columns as Badge chips, metadata as a definition list.
+ * Actor is the truncated actor_user_id (or "system"). We deliberately do NOT
+ * join users/memberships for display names: their RLS is self-select-only, so
+ * the join would silently null for other actors.
  */
 
 // The agent-runtime tables — the "Agent activity" preset. Hardcoded because
@@ -62,12 +69,25 @@ const AGENT_TABLES = [
 
 type ActionFilter = "insert" | "update" | "delete";
 
+const SEVERITY_TONE: Record<AuditSeverity, BadgeTone> = {
+  info: "neutral",
+  warning: "warning",
+  critical: "error",
+};
+
 export function AuditClient({ initial }: { initial: ListAuditEventsOutput }) {
   const [agentPreset, setAgentPreset] = useState(false);
   const [actionFilter, setActionFilter] = useState<ActionFilter | null>(null);
+  const [severityFilter, setSeverityFilter] = useState<AuditSeverity | null>(null);
+  const [actorFilter, setActorFilter] = useState<string>(""); // "" = all, "system", or actor id
+  const [search, setSearch] = useState("");
   const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [exporting, setExporting] = useState(false);
+  const [exportNote, setExportNote] = useState<string | null>(null);
 
-  const filtersActive = agentPreset || actionFilter !== null;
+  const utils = trpc.useUtils();
+
+  const serverFiltersActive = agentPreset || actionFilter !== null;
 
   const input = {
     limit: 50,
@@ -77,23 +97,113 @@ export function AuditClient({ initial }: { initial: ListAuditEventsOutput }) {
 
   const query = trpc.listAuditEvents.useInfiniteQuery(input, {
     getNextPageParam: (last) => last.nextCursor ?? undefined,
-    // Seed page 1 from the server prefetch only for the default view; a
-    // filtered query has a different key and fetches fresh.
-    initialData: filtersActive ? undefined : { pages: [initial], pageParams: [undefined] },
+    initialData: serverFiltersActive
+      ? undefined
+      : { pages: [initial], pageParams: [undefined] },
     refetchOnWindowFocus: false,
     staleTime: 5_000,
   });
 
-  const items = query.data?.pages.flatMap((p) => p.items) ?? [];
+  const rows = useMemo<AuditEventRow[]>(
+    () => query.data?.pages.flatMap((p) => p.items) ?? [],
+    [query.data],
+  );
+
+  // Distinct actors present in the loaded rows — powers the actor <select>.
+  const actorOptions = useMemo(() => {
+    const set = new Set<string>();
+    for (const r of rows) set.add(r.actor_user_id ?? "system");
+    return [...set].sort();
+  }, [rows]);
+
+  // The single client-refinement predicate — used by both the table and the
+  // CSV export so "the current filtered view" means exactly one thing.
+  const refine = useMemo(() => {
+    const needle = search.trim().toLowerCase();
+    return (r: AuditEventRow): boolean => {
+      if (severityFilter && auditEventSeverity(r.action, r.entity_type) !== severityFilter) {
+        return false;
+      }
+      if (actorFilter) {
+        const actor = r.actor_user_id ?? "system";
+        if (actor !== actorFilter) return false;
+      }
+      if (needle) {
+        const hay = [
+          r.entity_type,
+          r.entity_id,
+          r.action,
+          r.actor_user_id ?? "system",
+          r.actor_membership_id ?? "",
+          r.source,
+          r.request_id ?? "",
+          ...(r.changed_columns ?? []),
+        ]
+          .join(" ")
+          .toLowerCase();
+        if (!hay.includes(needle)) return false;
+      }
+      return true;
+    };
+  }, [search, severityFilter, actorFilter]);
+
+  const items = useMemo(() => rows.filter(refine), [rows, refine]);
+
+  const clientRefined = severityFilter !== null || actorFilter !== "" || search.trim() !== "";
+
+  async function onExport() {
+    setExporting(true);
+    setExportNote(null);
+    try {
+      const res = await utils.exportAuditEvents.fetch({
+        limit: 5000,
+        ...(agentPreset ? { entityTypes: [...AGENT_TABLES] } : {}),
+        ...(actionFilter ? { action: actionFilter } : {}),
+      });
+      const filtered = (res.items as AuditEventRow[]).filter(refine);
+      const csv = buildCsv(filtered);
+      downloadCsv(csv, `audit-log-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-")}.csv`);
+      setExportNote(
+        `Exported ${filtered.length.toLocaleString()} event${filtered.length === 1 ? "" : "s"}` +
+          (res.truncated ? " (capped at 5,000 — narrow the filters for a complete export)" : "") +
+          ".",
+      );
+    } catch (err) {
+      setExportNote(err instanceof Error ? `Export failed: ${err.message}` : "Export failed.");
+    } finally {
+      setExporting(false);
+    }
+  }
 
   return (
-    <div className="mx-auto w-full max-w-5xl px-6 py-8">
-      <p className="mb-6 text-sm text-neutral-600">
-        Every tenant-scoped data change — proposed, approved, sent — with the before/after diff.
-        Newest first. This is the audit log itself; reads here are never themselves audited.
-      </p>
+    <div className="mx-auto w-full max-w-6xl px-6 py-8">
+      <div className="mb-6 flex flex-wrap items-start justify-between gap-4">
+        <p className="max-w-2xl text-sm text-neutral-600">
+          Every tenant-scoped data change — proposed, approved, sent — with the before/after diff.
+          Newest first. Severity is derived from the change itself (the action and whether the
+          record is security- or governed-state-sensitive); nothing here infers anything about
+          people. This is the audit log itself; reads here are never themselves audited.
+        </p>
+        <div className="flex shrink-0 flex-col items-end gap-1">
+          <Button variant="secondary" onClick={onExport} disabled={exporting}>
+            {exporting ? "Exporting…" : "Export CSV"}
+          </Button>
+          {exportNote ? (
+            <span
+              className={`text-xs ${
+                exportNote.startsWith("Export failed")
+                  ? "text-status-error-600"
+                  : "text-neutral-500"
+              }`}
+            >
+              {exportNote}
+            </span>
+          ) : null}
+        </div>
+      </div>
 
-      <section className="mb-4 flex flex-wrap items-center gap-2">
+      {/* Server-side filters. */}
+      <section className="mb-3 flex flex-wrap items-center gap-2">
         <FilterChip
           label="Agent activity"
           active={agentPreset}
@@ -115,6 +225,47 @@ export function AuditClient({ initial }: { initial: ListAuditEventsOutput }) {
         ))}
       </section>
 
+      {/* Client refinements: severity chips + actor select + search. */}
+      <section className="mb-4 flex flex-wrap items-center gap-2">
+        <span className="text-xs font-medium uppercase tracking-wide text-neutral-400">
+          Severity
+        </span>
+        <FilterChip
+          label="All"
+          active={severityFilter === null}
+          onClick={() => setSeverityFilter(null)}
+        />
+        {AUDIT_SEVERITIES.map((s) => (
+          <FilterChip
+            key={s}
+            label={AUDIT_SEVERITY_META[s].label}
+            active={severityFilter === s}
+            onClick={() => setSeverityFilter((cur) => (cur === s ? null : s))}
+          />
+        ))}
+        <span aria-hidden className="mx-1 h-4 w-px bg-neutral-200" />
+        <select
+          value={actorFilter}
+          onChange={(e) => setActorFilter(e.target.value)}
+          aria-label="Filter by actor"
+          className="h-8 rounded-full border border-neutral-300 bg-white px-3 text-xs font-medium text-neutral-700 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500"
+        >
+          <option value="">All actors</option>
+          {actorOptions.map((a) => (
+            <option key={a} value={a}>
+              {a === "system" ? "system" : `${a.slice(0, 8)}…`}
+            </option>
+          ))}
+        </select>
+        <input
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          placeholder="Search entity, id, actor, columns…"
+          aria-label="Search audit events"
+          className="h-8 w-64 rounded-full border border-neutral-300 bg-white px-3.5 text-xs text-neutral-800 placeholder:text-neutral-400 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500"
+        />
+      </section>
+
       {query.isLoading ? (
         <Card>
           <p className="text-sm text-neutral-500">Loading…</p>
@@ -122,8 +273,16 @@ export function AuditClient({ initial }: { initial: ListAuditEventsOutput }) {
       ) : items.length === 0 ? (
         <Card padded={false}>
           <EmptyState
-            title="No audit events match"
-            hint="Clear the filters above to see all activity."
+            title={
+              clientRefined || serverFiltersActive
+                ? "No audit events match"
+                : "No audit events yet"
+            }
+            hint={
+              clientRefined || serverFiltersActive
+                ? "Clear the filters above to see all activity."
+                : "Activity will appear here as records change."
+            }
           />
         </Card>
       ) : (
@@ -132,6 +291,7 @@ export function AuditClient({ initial }: { initial: ListAuditEventsOutput }) {
             <Th>When</Th>
             <Th>Entity</Th>
             <Th>Action</Th>
+            <Th>Severity</Th>
             <Th>Entity ID</Th>
             <Th>Actor</Th>
             <Th className="w-8" aria-label="Expand" />
@@ -173,6 +333,7 @@ function AuditRow({
   expanded: boolean;
   onToggle: () => void;
 }) {
+  const severity = auditEventSeverity(row.action, row.entity_type);
   return (
     <>
       <Tr onClick={onToggle} className="cursor-pointer" aria-expanded={expanded}>
@@ -188,6 +349,9 @@ function AuditRow({
         <Td>
           <ActionBadge action={row.action} />
         </Td>
+        <Td>
+          <Badge tone={SEVERITY_TONE[severity]}>{AUDIT_SEVERITY_META[severity].label}</Badge>
+        </Td>
         <Td className="font-mono text-xs text-neutral-500">{row.entity_id.slice(0, 8)}…</Td>
         <Td className="font-mono text-xs text-neutral-500">
           {row.actor_user_id ? `${row.actor_user_id.slice(0, 8)}…` : "system"}
@@ -196,15 +360,23 @@ function AuditRow({
       </Tr>
       {expanded ? (
         <tr className="border-b border-neutral-100">
-          <td colSpan={6} className="bg-neutral-50 px-6 py-5">
+          <td colSpan={7} className="bg-neutral-50 px-6 py-5">
             <div className="space-y-4">
-              {/* Metadata — a calm definition list. */}
               <dl className="grid grid-cols-1 gap-x-8 gap-y-1.5 sm:grid-cols-3">
+                <MetaRow label="Severity">
+                  <span>{AUDIT_SEVERITY_META[severity].description}</span>
+                </MetaRow>
                 <MetaRow label="Source">
                   <span className="font-mono">{row.source}</span>
                 </MetaRow>
                 <MetaRow label="Request ID">
                   <span className="font-mono">{row.request_id ?? "—"}</span>
+                </MetaRow>
+                <MetaRow label="Entity ID">
+                  <span className="font-mono">{row.entity_id}</span>
+                </MetaRow>
+                <MetaRow label="Actor user">
+                  <span className="font-mono">{row.actor_user_id ?? "system"}</span>
                 </MetaRow>
                 <MetaRow label="Actor membership">
                   <span className="font-mono">{row.actor_membership_id ?? "—"}</span>
@@ -309,6 +481,60 @@ function FilterChip({
   );
 }
 
+// ─────────────────────────── CSV helpers ───────────────────────────
+
+const CSV_HEADERS = [
+  "created_at",
+  "severity",
+  "action",
+  "entity_type",
+  "entity_id",
+  "actor_user_id",
+  "actor_membership_id",
+  "source",
+  "request_id",
+  "changed_columns",
+] as const;
+
+/** RFC-4180 field quoting: wrap in quotes, double any embedded quote. */
+function csvField(value: string): string {
+  if (/[",\n\r]/.test(value)) return `"${value.replace(/"/g, '""')}"`;
+  return value;
+}
+
+function buildCsv(rows: AuditEventRow[]): string {
+  const lines = [CSV_HEADERS.join(",")];
+  for (const r of rows) {
+    const cells = [
+      r.created_at,
+      auditEventSeverity(r.action, r.entity_type),
+      r.action,
+      r.entity_type,
+      r.entity_id,
+      r.actor_user_id ?? "",
+      r.actor_membership_id ?? "",
+      r.source,
+      r.request_id ?? "",
+      (r.changed_columns ?? []).join("; "),
+    ];
+    lines.push(cells.map((c) => csvField(String(c))).join(","));
+  }
+  return lines.join("\r\n");
+}
+
+function downloadCsv(csv: string, filename: string): void {
+  if (typeof window === "undefined") return;
+  const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
 /** snake_case → "Sentence case". */
 function humanize(value: string): string {
   const spaced = value.replace(/_/g, " ");
@@ -316,7 +542,6 @@ function humanize(value: string): string {
 }
 
 function absolute(iso: string): string {
-  // Match the house "YYYY-MM-DD HH:MM" rendering used elsewhere.
   return iso.slice(0, 16).replace("T", " ");
 }
 
