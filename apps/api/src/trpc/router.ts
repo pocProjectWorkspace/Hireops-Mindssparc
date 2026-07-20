@@ -256,6 +256,11 @@ import {
   updateTenantAiSettingsInputSchema,
   updateTenantAiSettingsOutputSchema,
   resolveAiSettings,
+  getTenantBrandingInputSchema,
+  getTenantBrandingOutputSchema,
+  updateTenantBrandingInputSchema,
+  updateTenantBrandingOutputSchema,
+  resolveBrandingSettings,
   getBiasLexiconInputSchema,
   getBiasLexiconOutputSchema,
   updateTenantBiasLexiconInputSchema,
@@ -6543,6 +6548,7 @@ export const appRouter = router({
     .input(listWorkdaySyncsInputSchema)
     .output(listWorkdaySyncsOutputSchema)
     .query(async ({ ctx, input }) => {
+      requireAnyRole(ctx, USERS_ADMIN_ROLES, "Integration health is admin-only");
       const db = requireDb(ctx);
       const limit = input.pagination.limit;
       const cursorDate = input.pagination.cursor ? new Date(input.pagination.cursor) : null;
@@ -6753,9 +6759,15 @@ export const appRouter = router({
     .input(listAgentsInputSchema)
     .output(listAgentsOutputSchema)
     .query(async ({ ctx }) => {
+      requireAnyRole(ctx, USERS_ADMIN_ROLES, "Agent workflows are admin-only");
       const db = requireDb(ctx);
-      // Join three sources via raw SQL — clean than 3 separate Drizzle
-      // queries stitched in JS. tenant_isolation RLS scopes everything.
+      // Join four sources via raw SQL — clean than separate Drizzle queries
+      // stitched in JS. tenant_isolation RLS scopes everything.
+      //
+      // AD8: trigger_type + last_run_status + succeeded/failed counts are all
+      // REAL — the trigger is the agent's primary configured trigger row, the
+      // run aggregates come straight off agent_runs.status ('completed' =
+      // success, 'failed' = failure). No synthetic success percentage.
       const result = await db.execute(dsql`
         SELECT
           aa.id::text AS id,
@@ -6768,7 +6780,11 @@ export const appRouter = router({
           aa.retired_at,
           COALESCE(approval_counts.pending_approval_count, 0)::int AS pending_approval_count,
           COALESCE(run_counts.total_runs, 0)::int AS total_runs,
-          run_counts.last_run_at
+          run_counts.last_run_at,
+          run_counts.last_run_status,
+          COALESCE(run_counts.succeeded_runs, 0)::int AS succeeded_runs,
+          COALESCE(run_counts.failed_runs, 0)::int AS failed_runs,
+          trig.trigger_type
         FROM public.automation_agents aa
         LEFT JOIN (
           SELECT agent_id, COUNT(*)::int AS pending_approval_count
@@ -6777,10 +6793,23 @@ export const appRouter = router({
           GROUP BY agent_id
         ) AS approval_counts ON approval_counts.agent_id = aa.id
         LEFT JOIN (
-          SELECT agent_id, COUNT(*)::int AS total_runs, MAX(triggered_at) AS last_run_at
-          FROM public.agent_runs
-          GROUP BY agent_id
+          SELECT
+            r.agent_id,
+            COUNT(*)::int AS total_runs,
+            MAX(r.triggered_at) AS last_run_at,
+            COUNT(*) FILTER (WHERE r.status = 'completed')::int AS succeeded_runs,
+            COUNT(*) FILTER (WHERE r.status = 'failed')::int AS failed_runs,
+            (ARRAY_AGG(r.status ORDER BY r.triggered_at DESC))[1] AS last_run_status
+          FROM public.agent_runs r
+          GROUP BY r.agent_id
         ) AS run_counts ON run_counts.agent_id = aa.id
+        LEFT JOIN LATERAL (
+          SELECT t.trigger_type
+          FROM public.agent_triggers t
+          WHERE t.agent_id = aa.id
+          ORDER BY t.created_at ASC
+          LIMIT 1
+        ) AS trig ON true
         WHERE aa.retired_at IS NULL
         ORDER BY aa.created_at DESC
       `);
@@ -6800,6 +6829,10 @@ export const appRouter = router({
         pending_approval_count: number;
         total_runs: number;
         last_run_at: Date | string | null;
+        last_run_status: string | null;
+        succeeded_runs: number;
+        failed_runs: number;
+        trigger_type: string | null;
       }
       const rows = (result as unknown as { rows?: Row[] }).rows ?? (result as unknown as Row[]);
       const agents: AgentListRow[] = rows.map((r) => ({
@@ -6814,6 +6847,10 @@ export const appRouter = router({
         pending_approval_count: r.pending_approval_count,
         total_runs: r.total_runs,
         last_run_at: toIsoString(r.last_run_at),
+        last_run_status: r.last_run_status,
+        succeeded_runs: r.succeeded_runs,
+        failed_runs: r.failed_runs,
+        trigger_type: r.trigger_type,
       }));
       return { agents };
     }),
@@ -6832,6 +6869,7 @@ export const appRouter = router({
     .input(getAgentDetailInputSchema)
     .output(getAgentDetailOutputSchema)
     .query(async ({ ctx, input }) => {
+      requireAnyRole(ctx, USERS_ADMIN_ROLES, "Agent workflows are admin-only");
       const db = requireDb(ctx);
       if (!ctx.tenantId) {
         throw new TRPCError({
@@ -7272,6 +7310,107 @@ export const appRouter = router({
         }
 
         return { ok: true as const, settings: nextBlock };
+      });
+    }),
+
+  // ─────────────────────── getTenantBranding (AD2) ───────────────────────
+  //
+  // Admin read of the effective tenant branding: the `display_name` COLUMN
+  // (the company name that actually rebrands the product) merged with the
+  // resolved cosmetic block from `settings.branding` (primary colour, logo
+  // URL, dark-mode default). Admin-gated on the procedure itself. Read-only,
+  // no withAudit (matches getTenantAiSettings). Reads through the unscoped
+  // pool with an explicit id predicate (same pattern as the AI-settings
+  // resolver) — `tenants` is FORCE RLS with SELECT-only policies.
+  getTenantBranding: protectedProcedure
+    .input(getTenantBrandingInputSchema)
+    .output(getTenantBrandingOutputSchema)
+    .query(async ({ ctx }) => {
+      requireAnyRole(ctx, USERS_ADMIN_ROLES, "Branding is admin-only");
+      if (!ctx.tenantId) {
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: "protected procedure missing tenantId",
+        });
+      }
+      const [row] = await poolDb
+        .select({ displayName: tenants.displayName, settings: tenants.settings })
+        .from(tenants)
+        .where(eq(tenants.id, ctx.tenantId))
+        .limit(1);
+      if (!row) {
+        throw new TRPCError({ code: "NOT_FOUND", message: "Tenant not found" });
+      }
+      const settings = (row.settings ?? {}) as Record<string, unknown>;
+      const branding = resolveBrandingSettings(settings["branding"]);
+      return {
+        displayName: row.displayName,
+        primaryColor: branding.primaryColor,
+        logoUrl: branding.logoUrl,
+        darkModeDefault: branding.darkModeDefault,
+      };
+    }),
+
+  // ─────────────────────── updateTenantBranding (AD2) ───────────────────────
+  //
+  // Admin write of the tenant's branding. Admin-gated + audited. The company
+  // name lands on the `display_name` COLUMN (this is what actually rebrands
+  // the product — the NovaChem rebrand was a raw UPDATE of exactly this
+  // column; this procedure turns that into a real, demoable feature). The
+  // cosmetic trio (primaryColor / logoUrl / darkModeDefault) merges into
+  // `settings.branding` via the same atomic top-level jsonb `||` merge
+  // updateTenantAiSettings uses, preserving every OTHER settings key
+  // (aiSettings, biasLexicon, …) verbatim. Both writes are ONE UPDATE — no
+  // read-modify-write race, no partial rebrand. The write goes through the
+  // unscoped pool (service_role): `tenants` is FORCE RLS with SELECT-only
+  // policies, so the tenant-scoped client cannot update it (same precedent as
+  // updateTenantAiSettings). The explicit admin gate + the ctx.tenantId
+  // predicate are the authorisation.
+  updateTenantBranding: protectedProcedure
+    .input(updateTenantBrandingInputSchema)
+    .output(updateTenantBrandingOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      return withAudit("update_tenant_branding", ctx, input, async () => {
+        requireAnyRole(ctx, USERS_ADMIN_ROLES, "Branding is admin-only");
+        if (!ctx.tenantId) {
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: "protected procedure missing tenantId",
+          });
+        }
+        const tenantId = ctx.tenantId;
+        const displayName = input.displayName.trim();
+        const brandingBlock = {
+          primaryColor: input.primaryColor,
+          logoUrl: input.logoUrl,
+          darkModeDefault: input.darkModeDefault,
+        };
+
+        const res = await poolDb.execute(dsql`
+          UPDATE public.tenants
+          SET display_name = ${displayName},
+              settings = COALESCE(settings, '{}'::jsonb)
+                || jsonb_build_object('branding', ${JSON.stringify(brandingBlock)}::jsonb)
+          WHERE id = ${tenantId}::uuid
+          RETURNING id
+        `);
+        const updated = (res as { rows?: unknown[] }).rows ?? (res as unknown[]);
+        if (updated.length !== 1) {
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: "tenant branding update affected an unexpected number of rows",
+          });
+        }
+
+        return {
+          ok: true as const,
+          branding: {
+            displayName,
+            primaryColor: brandingBlock.primaryColor,
+            logoUrl: brandingBlock.logoUrl,
+            darkModeDefault: brandingBlock.darkModeDefault,
+          },
+        };
       });
     }),
 
@@ -8359,6 +8498,7 @@ export const appRouter = router({
     .output(toggleFollowUpAgentOutputSchema)
     .mutation(async ({ ctx, input }) => {
       return withAudit("toggle_follow_up_agent", ctx, input, async () => {
+        requireAnyRole(ctx, USERS_ADMIN_ROLES, "Agent workflows are admin-only");
         const db = requireDb(ctx);
         if (!ctx.tenantId) {
           throw new TRPCError({
@@ -8808,6 +8948,7 @@ export const appRouter = router({
     .output(toggleSchedulingAgentOutputSchema)
     .mutation(async ({ ctx, input }) => {
       return withAudit("toggle_scheduling_agent", ctx, input, async () => {
+        requireAnyRole(ctx, USERS_ADMIN_ROLES, "Agent workflows are admin-only");
         const db = requireDb(ctx);
         if (!ctx.tenantId) {
           throw new TRPCError({
@@ -9243,6 +9384,7 @@ export const appRouter = router({
     .output(toggleCandidateQaAgentOutputSchema)
     .mutation(async ({ ctx, input }) => {
       return withAudit("toggle_candidate_qa_agent", ctx, input, async () => {
+        requireAnyRole(ctx, USERS_ADMIN_ROLES, "Agent workflows are admin-only");
         const db = requireDb(ctx);
         if (!ctx.tenantId) {
           throw new TRPCError({

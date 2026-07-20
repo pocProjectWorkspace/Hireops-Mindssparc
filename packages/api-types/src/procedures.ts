@@ -1359,6 +1359,18 @@ export const agentListRowSchema = z.object({
   pending_approval_count: z.number().int(),
   total_runs: z.number().int(),
   last_run_at: z.string().nullable(),
+  /**
+   * AD8 observability, all from REAL data (agent_triggers / agent_runs) —
+   * never fabricated. `trigger_type` is the agent's primary configured
+   * trigger (stage_stale / stage_entered / message_received); `last_run_status`
+   * is the status of the most recent agent_runs row; `succeeded_runs` /
+   * `failed_runs` are honest terminal-outcome counts (completed vs failed).
+   * There is deliberately NO synthetic "success %".
+   */
+  trigger_type: z.string().nullable(),
+  last_run_status: z.string().nullable(),
+  succeeded_runs: z.number().int(),
+  failed_runs: z.number().int(),
 });
 export type AgentListRow = z.infer<typeof agentListRowSchema>;
 export const listAgentsOutputSchema = z.object({

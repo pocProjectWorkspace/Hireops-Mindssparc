@@ -77,8 +77,12 @@ export function IntegrationsClient() {
         </p>
       </div>
 
+      <ConnectorRoadmap />
+
+      <h2 className="mb-1 text-sm font-semibold text-neutral-900">Workday Hire · sync outbox</h2>
       <p className="mb-6 text-sm text-neutral-600">
-        Outbound sync events to external systems. Currently only Workday Hire is wired.
+        Outbound sync events to Workday. Running in simulated mode until tenant credentials land —
+        every dispatch below is a mock the connector will replay for real once wired.
       </p>
 
       <section className="mb-6 grid grid-cols-2 gap-4 sm:grid-cols-4">
@@ -155,6 +159,100 @@ export function IntegrationsClient() {
         </TableShell>
       )}
     </div>
+  );
+}
+
+/**
+ * The connector roadmap (AD9) — an honest, labelled inventory of every
+ * integration seam. Nothing here is faked as live: email (Resend) is genuinely
+ * wired and sending; Workday is built but simulated (awaiting credentials);
+ * the meeting/calendar connectors are declared post-deal work packages, marked
+ * Deferred. This is the same "seam is built, the connector is a work package"
+ * story the Workday sync tells — stated plainly so nobody mistakes a roadmap
+ * item for a shipped one.
+ */
+type ConnectorStatus = "live" | "simulated" | "deferred";
+
+interface Connector {
+  name: string;
+  detail: string;
+  status: ConnectorStatus;
+  note: string;
+}
+
+const CONNECTORS: Connector[] = [
+  {
+    name: "Email",
+    detail: "Resend",
+    status: "live",
+    note: "Real transactional email — candidate confirmations, agent follow-ups, notifications. (Test mode caps delivery to the demo inbox.)",
+  },
+  {
+    name: "Workday — Hire",
+    detail: "HR system of record",
+    status: "simulated",
+    note: "Outbound hire events are built and queued below in simulated mode. Flips to live dispatch the moment tenant Workday credentials are provisioned.",
+  },
+  {
+    name: "Microsoft Teams",
+    detail: "Interview video",
+    status: "deferred",
+    note: "Live interview links + join telemetry. Post-deal connector work package — not built; scheduling today records the meeting details manually.",
+  },
+  {
+    name: "Zoom",
+    detail: "Interview video",
+    status: "deferred",
+    note: "Alternative video provider. Post-deal connector work package — not built.",
+  },
+  {
+    name: "Calendar",
+    detail: "Google / Outlook",
+    status: "deferred",
+    note: "Two-way availability + invite sync for panel scheduling. Post-deal connector work package — not built.",
+  },
+];
+
+const CONNECTOR_STATUS_META: Record<
+  ConnectorStatus,
+  { label: string; tone: BadgeTone; dot: string }
+> = {
+  live: { label: "Live", tone: "success", dot: "bg-status-success-500" },
+  simulated: { label: "Simulated", tone: "warning", dot: "bg-status-warning-500" },
+  deferred: { label: "Deferred", tone: "neutral", dot: "bg-neutral-400" },
+};
+
+function ConnectorRoadmap() {
+  return (
+    <section className="mb-8">
+      <h2 className="mb-1 text-sm font-semibold text-neutral-900">Connectors</h2>
+      <p className="mb-4 text-sm text-neutral-600">
+        Every integration seam and its honest status. Live connectors are sending real traffic;
+        deferred ones are post-deal work packages, not shipped features.
+      </p>
+      <ul className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+        {CONNECTORS.map((c) => {
+          const meta = CONNECTOR_STATUS_META[c.status];
+          return (
+            <li key={c.name}>
+              <Card className="h-full">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="flex items-center gap-2">
+                    <span aria-hidden className={`h-2 w-2 shrink-0 rounded-full ${meta.dot}`} />
+                    <div>
+                      <p className="text-sm font-semibold text-neutral-900">{c.name}</p>
+                      <p className="text-xs text-neutral-500">{c.detail}</p>
+                    </div>
+                  </div>
+                  <Badge tone={meta.tone}>{meta.label}</Badge>
+                </div>
+                <p className="mt-2.5 text-xs leading-relaxed text-neutral-600">{c.note}</p>
+              </Card>
+            </li>
+          );
+        })}
+      </ul>
+    </section>
   );
 }
 

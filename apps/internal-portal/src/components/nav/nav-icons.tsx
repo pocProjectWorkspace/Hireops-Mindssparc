@@ -155,6 +155,19 @@ export function IconWorkflows() {
   );
 }
 
+export function IconBranding() {
+  // A painter's palette — the theme/branding surface (AD2).
+  return (
+    <Svg>
+      <path d="M12 3a9 9 0 1 0 0 18c1 0 1.5-.8 1.5-1.5 0-.4-.2-.7-.4-1-.3-.3-.4-.6-.4-1 0-.8.7-1.5 1.5-1.5H16a5 5 0 0 0 5-5c0-4.4-4-8-9-8z" />
+      <circle cx="7.5" cy="11" r="0.6" fill="currentColor" stroke="none" />
+      <circle cx="10.5" cy="7.5" r="0.6" fill="currentColor" stroke="none" />
+      <circle cx="14.5" cy="7.5" r="0.6" fill="currentColor" stroke="none" />
+      <circle cx="17" cy="11" r="0.6" fill="currentColor" stroke="none" />
+    </Svg>
+  );
+}
+
 export function IconAudit() {
   return (
     <Svg>

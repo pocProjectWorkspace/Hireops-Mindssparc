@@ -45,6 +45,7 @@ import {
   IconCaseAudit,
   IconPolicies,
   IconWorkflows,
+  IconBranding,
   IconAudit,
   IconCosts,
   IconAiSettings,
@@ -92,6 +93,7 @@ export type PortalNavKey =
   | "comp-offers"
   | "hr-analytics"
   | "workflows"
+  | "branding"
   | "audit"
   | "costs"
   | "ai-settings"
@@ -378,6 +380,7 @@ function visibleNav(items: NavItem[], isAdmin: boolean, roles: string[]): NavIte
 
 const ADMIN_NAV: NavItem[] = [
   { key: "workflows", label: "Workflows", href: "/admin/workflows", icon: <IconWorkflows /> },
+  { key: "branding", label: "Theme & branding", href: "/admin/branding", icon: <IconBranding /> },
   { key: "audit", label: "Audit", href: "/admin/audit", icon: <IconAudit /> },
   { key: "costs", label: "Costs", href: "/admin/costs", icon: <IconCosts /> },
   {

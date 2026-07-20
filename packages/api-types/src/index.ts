@@ -23,3 +23,4 @@ export * from "./requirement-owner";
 export * from "./recruiter";
 export * from "./recruiter-brief";
 export * from "./admin-dashboard";
+export * from "./branding";
