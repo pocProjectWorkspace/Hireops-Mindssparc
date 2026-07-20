@@ -4,10 +4,19 @@ import { useState } from "react";
 import type { ReactNode } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import type { AgentListRow, ListAgentsOutput } from "@hireops/api-types";
-import { Avatar, Badge, Card, EmptyState, SkeletonRows, type BadgeTone } from "@/components/ui";
+import {
+  Avatar,
+  Badge,
+  Button,
+  Card,
+  EmptyState,
+  SkeletonRows,
+  type BadgeTone,
+} from "@/components/ui";
 import { PageHeader } from "@/components/patterns";
 import { trpc, handleTRPCError } from "@/lib/trpc-client";
 import { AgentDetailDrawer } from "./AgentDetailDrawer";
+import { AgentFormModal } from "./AgentFormModal";
 
 /**
  * The admin agent-workflows list — the tenant's automation agents, each an
@@ -31,6 +40,7 @@ export function WorkflowsClient({ initial }: { initial: ListAgentsOutput }) {
   const queryClient = useQueryClient();
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [pendingToggleId, setPendingToggleId] = useState<string | null>(null);
+  const [creating, setCreating] = useState(false);
 
   const query = trpc.listAgents.useQuery(undefined, {
     initialData: initial,
@@ -78,9 +88,14 @@ export function WorkflowsClient({ initial }: { initial: ListAgentsOutput }) {
         title="Workflows"
         subtitle="Automation agents for this tenant — what the platform does automatically, always with a human-in-the-loop gate. Pause an agent to stop it firing without deleting its history."
         right={
-          <Badge tone={activeCount > 0 ? "success" : "neutral"}>
-            {activeCount} of {agents.length} active
-          </Badge>
+          <div className="flex items-center gap-3">
+            <Badge tone={activeCount > 0 ? "success" : "neutral"}>
+              {activeCount} of {agents.length} active
+            </Badge>
+            <Button size="sm" onClick={() => setCreating(true)}>
+              Create workflow
+            </Button>
+          </div>
         }
       />
 
@@ -96,7 +111,12 @@ export function WorkflowsClient({ initial }: { initial: ListAgentsOutput }) {
           <Card padded={false}>
             <EmptyState
               title="No agents configured"
-              hint="When HR configures an automation agent, it will appear here."
+              hint="Create a workflow to have the platform draft follow-ups, propose interview slots, or reply to candidate questions — always waiting for a human to approve."
+              action={
+                <Button size="sm" onClick={() => setCreating(true)}>
+                  Create workflow
+                </Button>
+              }
             />
           </Card>
         ) : (
@@ -115,7 +135,21 @@ export function WorkflowsClient({ initial }: { initial: ListAgentsOutput }) {
         )}
       </div>
 
-      {selected ? <AgentDetailDrawer agent={selected} onClose={() => setSelectedId(null)} /> : null}
+      {selected ? (
+        <AgentDetailDrawer
+          agent={selected}
+          onClose={() => setSelectedId(null)}
+          onChanged={invalidate}
+          onRetired={() => {
+            invalidate();
+            setSelectedId(null);
+          }}
+        />
+      ) : null}
+
+      {creating ? (
+        <AgentFormModal mode="create" onClose={() => setCreating(false)} onSaved={invalidate} />
+      ) : null}
     </div>
   );
 }

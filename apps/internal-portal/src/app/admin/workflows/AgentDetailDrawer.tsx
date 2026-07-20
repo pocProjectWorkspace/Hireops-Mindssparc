@@ -1,10 +1,11 @@
 "use client";
 
-import { useEffect } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
 import type { AgentListRow } from "@hireops/api-types";
 import {
   Badge,
+  Button,
   Card,
   EmptyState,
   TableShell,
@@ -15,7 +16,8 @@ import {
   Td,
   type BadgeTone,
 } from "@/components/ui";
-import { trpc } from "@/lib/trpc-client";
+import { trpc, handleTRPCError } from "@/lib/trpc-client";
+import { AgentFormModal, type RecipeKey } from "./AgentFormModal";
 
 /**
  * Right-side drawer showing one agent's full definition via
@@ -37,11 +39,49 @@ import { trpc } from "@/lib/trpc-client";
 export function AgentDetailDrawer({
   agent,
   onClose,
+  onChanged,
+  onRetired,
 }: {
   agent: AgentListRow;
   onClose: () => void;
+  /** Refetch the list after an edit lands a new version. */
+  onChanged?: () => void;
+  /** Refetch + dismiss after the agent is retired. */
+  onRetired?: () => void;
 }) {
   const detail = trpc.getAgentDetail.useQuery({ agentId: agent.id }, { staleTime: 5_000 });
+  const [editing, setEditing] = useState(false);
+  const [confirmRetire, setConfirmRetire] = useState(false);
+
+  const recipe = agentTypeToRecipe(agent.agent_type);
+
+  const retireFollowUp = trpc.retireFollowUpAgent.useMutation();
+  const retireScheduling = trpc.retireSchedulingAgent.useMutation();
+  const retireCandidateQa = trpc.retireCandidateQaAgent.useMutation();
+  const retirePending =
+    retireFollowUp.isPending || retireScheduling.isPending || retireCandidateQa.isPending;
+
+  const editInitial = useMemo(
+    () => (detail.data ? buildEditInitial(detail.data) : undefined),
+    [detail.data],
+  );
+
+  async function onRetire() {
+    try {
+      if (recipe === "scheduling") {
+        await retireScheduling.mutateAsync({ agentId: agent.id });
+      } else if (recipe === "candidate_qa") {
+        await retireCandidateQa.mutateAsync({ agentId: agent.id });
+      } else {
+        await retireFollowUp.mutateAsync({ agentId: agent.id });
+      }
+      onRetired?.();
+    } catch (err) {
+      handleTRPCError(err);
+    } finally {
+      setConfirmRetire(false);
+    }
+  }
 
   // Esc-to-close + body scroll lock while open (matches the triage drawer).
   useEffect(() => {
@@ -222,9 +262,128 @@ export function AgentDetailDrawer({
             </>
           )}
         </div>
+
+        {/* Authoring action bar — edit lands a new version, retire pauses
+            the agent for good (non-destructive, keeps history). Hidden once
+            the agent is already retired. */}
+        {agent.retired_at ? null : (
+          <footer className="border-t border-neutral-200 bg-white px-6 py-4">
+            {confirmRetire ? (
+              <div className="flex items-center justify-between gap-3">
+                <p className="text-xs text-neutral-600">
+                  Retire this agent? It stops firing and its history is kept. This can&rsquo;t be
+                  undone, but you can create a fresh agent with the same name.
+                </p>
+                <div className="flex shrink-0 items-center gap-2">
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    onClick={() => setConfirmRetire(false)}
+                    disabled={retirePending}
+                  >
+                    Cancel
+                  </Button>
+                  <Button variant="danger" size="sm" onClick={onRetire} disabled={retirePending}>
+                    {retirePending ? "Retiring…" : "Retire agent"}
+                  </Button>
+                </div>
+              </div>
+            ) : (
+              <div className="flex items-center justify-between gap-3">
+                <p className="text-xs text-neutral-500">
+                  Editing lands a new version; the previous one is retired and kept.
+                </p>
+                <div className="flex shrink-0 items-center gap-2">
+                  <Button
+                    variant="danger"
+                    size="sm"
+                    onClick={() => setConfirmRetire(true)}
+                    disabled={detail.isLoading}
+                  >
+                    Retire
+                  </Button>
+                  <Button size="sm" onClick={() => setEditing(true)} disabled={detail.isLoading}>
+                    Edit
+                  </Button>
+                </div>
+              </div>
+            )}
+          </footer>
+        )}
       </aside>
+
+      {editing ? (
+        <AgentFormModal
+          mode="edit"
+          recipe={recipe}
+          agentId={agent.id}
+          initial={editInitial}
+          onClose={() => setEditing(false)}
+          onSaved={() => {
+            onChanged?.();
+            // The edited row is a NEW agent id; close the stale drawer.
+            onClose();
+          }}
+        />
+      ) : null}
     </div>
   );
+}
+
+/** Map the DB agent_type to the authoring recipe key. */
+function agentTypeToRecipe(agentType: string): RecipeKey {
+  if (agentType === "scheduling") return "scheduling";
+  if (agentType === "candidate_qa") return "candidate_qa";
+  return "follow_up";
+}
+
+/** Read a string/number field off an `unknown` jsonb config, as a string. */
+function readField(config: unknown, key: string): string | undefined {
+  if (config && typeof config === "object" && key in config) {
+    const v = (config as Record<string, unknown>)[key];
+    if (typeof v === "string") return v;
+    if (typeof v === "number") return String(v);
+  }
+  return undefined;
+}
+
+/**
+ * Prefill the edit form from getAgentDetail's real trigger/action configs.
+ * The trigger carries stage/days_threshold; the draft (or propose) action
+ * carries tone/max_tokens (or the scheduling slot knobs).
+ */
+function buildEditInitial(data: {
+  agent: { name: string; description: string | null };
+  triggers: { trigger_config?: unknown }[];
+  actions: { action_type: string; action_config?: unknown }[];
+}) {
+  const trigger = data.triggers[0];
+  const draft = data.actions.find((a) => a.action_type === "draft_message");
+  const propose = data.actions.find((a) => a.action_type === "propose_calendar_slots");
+
+  const initial: Record<string, string> = { name: data.agent.name };
+  if (data.agent.description) initial.description = data.agent.description;
+
+  const stage = readField(trigger?.trigger_config, "stage");
+  if (stage) initial.stage = stage;
+  const days = readField(trigger?.trigger_config, "days_threshold");
+  if (days) initial.days_threshold = days;
+
+  const tone = readField(draft?.action_config, "tone");
+  if (tone) initial.tone = tone;
+  const maxTokens = readField(draft?.action_config, "max_tokens");
+  if (maxTokens) initial.max_tokens = maxTokens;
+
+  const panelId = readField(propose?.action_config, "panel_id");
+  if (panelId) initial.panel_id = panelId;
+  const slotCount = readField(propose?.action_config, "slot_count");
+  if (slotCount) initial.slot_count = slotCount;
+  const windowDays = readField(propose?.action_config, "window_days");
+  if (windowDays) initial.window_days = windowDays;
+  const duration = readField(propose?.action_config, "duration_minutes");
+  if (duration) initial.duration_minutes = duration;
+
+  return initial as { name?: string } & Record<string, string>;
 }
 
 function Section({ title, children }: { title: string; children: ReactNode }) {

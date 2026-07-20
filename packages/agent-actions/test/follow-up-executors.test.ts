@@ -255,4 +255,40 @@ describe("prompt registry", () => {
     expect(firstName("Anika Sharma")).toBe("Anika");
     expect(firstName("Prince")).toBe("Prince");
   });
+
+  // T0.1 (D2): createCandidateQaAgent seeds template_prompt_id
+  // "candidate_qa_v1"; before this fix it was never registered, so a
+  // created Candidate-Q&A agent threw at draft time.
+  it("resolves candidate_qa_v1 and stamps a version", () => {
+    const template = resolvePromptTemplate("candidate_qa_v1");
+    expect(template.version).toBe("candidateqa-v1");
+  });
+
+  it("candidate_qa_v1 keeps the anti-fabrication + approval grounding", () => {
+    const system = resolvePromptTemplate("candidate_qa_v1").system("friendly");
+    expect(system).toMatch(/Never invent facts/);
+    // It must not guess an unseen question or invent role-specific detail.
+    expect(system).toMatch(/do NOT invent it/);
+    expect(system).toMatch(/recruiter reviews this draft/);
+    // No outcome/score/probability language may be implied.
+    expect(system).toMatch(/probability of success/);
+  });
+
+  it("candidate_qa_v1 user prompt is grounded only in real application facts", () => {
+    const user = resolvePromptTemplate("candidate_qa_v1").user({
+      applicationId: "a1",
+      candidateId: "c1",
+      candidateName: "Anika Sharma",
+      candidateEmail: "anika@example.test",
+      positionTitle: "Senior Process Engineer",
+      companyName: "NovaChem GCC",
+      stage: "tech_interview",
+      daysInStage: 4,
+      jdSummary: null,
+    });
+    expect(user).toMatch(/Anika/);
+    expect(user).toMatch(/Senior Process Engineer/);
+    expect(user).toMatch(/technical interview/);
+    expect(user).toMatch(/Role summary: \(not available\)/);
+  });
 });
