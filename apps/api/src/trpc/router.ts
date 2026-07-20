@@ -528,6 +528,8 @@ import {
   listMyRequisitionsV2OutputSchema,
   getRecruiterDashboardExtrasOutputSchema,
   type GetRecruiterDashboardExtrasOutput,
+  getAdminDashboardExtrasOutputSchema,
+  type GetAdminDashboardExtrasOutput,
   type RecruiterTask,
   type RecruiterFollowUp,
   type RecruiterInsight,
@@ -13304,6 +13306,62 @@ export const appRouter = router({
         throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
       }
       return buildRecruiterDashboardExtras(db, ctx.tenantId);
+    }),
+
+  /**
+   * getAdminDashboardExtras (AD-01) — the bespoke admin landing read. Four
+   * DETERMINISTIC, tenant-scoped governance counts for the admin dashboard
+   * tiles: open requisitions, active users, active workflows (automation
+   * agents), and audit events in the last 7 days. No AI, no writes, no
+   * demographic inference — every number is a plain COUNT over a real table.
+   * admin only (same USERS_ADMIN_ROLES set the users/costs procedures use).
+   */
+  getAdminDashboardExtras: protectedProcedure
+    .output(getAdminDashboardExtrasOutputSchema)
+    .query(async ({ ctx }): Promise<GetAdminDashboardExtrasOutput> => {
+      requireAnyRole(ctx, USERS_ADMIN_ROLES, "The admin dashboard is admin-only");
+      const db = requireDb(ctx);
+      if (!ctx.tenantId) {
+        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
+      }
+      const tenantId = ctx.tenantId;
+      const asRows = <T>(res: unknown): T[] => (res as { rows?: T[] }).rows ?? (res as T[]);
+      const scalar = async (query: SQL): Promise<number> => {
+        const res = await db.execute(query);
+        const row = asRows<{ n: number }>(res)[0];
+        return row?.n ?? 0;
+      };
+
+      // Open requisitions = live-to-fill statuses (excludes draft, filled,
+      // cancelled, closed). Active workflows = enabled, non-retired automation
+      // agents. Audit events = last 7 days. Each is ANDed with tenant_id on
+      // top of the protectedProcedure tenant_isolation RLS.
+      const [openRequisitions, activeUsers, activeWorkflows, auditEvents7d] = await Promise.all([
+        scalar(dsql`
+          SELECT COUNT(*)::int AS n
+          FROM public.requisitions
+          WHERE tenant_id = ${tenantId}::uuid
+            AND status IN ('pending_approval', 'approved', 'on_hold', 'posted')
+        `),
+        scalar(dsql`
+          SELECT COUNT(*)::int AS n
+          FROM public.tenant_user_memberships
+          WHERE tenant_id = ${tenantId}::uuid AND status = 'active'
+        `),
+        scalar(dsql`
+          SELECT COUNT(*)::int AS n
+          FROM public.automation_agents
+          WHERE tenant_id = ${tenantId}::uuid AND enabled = true AND retired_at IS NULL
+        `),
+        scalar(dsql`
+          SELECT COUNT(*)::int AS n
+          FROM public.audit_logs
+          WHERE tenant_id = ${tenantId}::uuid
+            AND created_at >= (now() - interval '7 days')
+        `),
+      ]);
+
+      return { tiles: { openRequisitions, activeUsers, activeWorkflows, auditEvents7d } };
     }),
 
   partnerGetDashboardStats: partnerProcedure

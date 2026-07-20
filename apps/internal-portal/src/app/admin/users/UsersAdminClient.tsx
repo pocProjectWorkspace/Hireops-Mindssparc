@@ -29,6 +29,17 @@ function roleLabel(role: string): string {
     .join(" ");
 }
 
+/** ISO → "07 Jul 2026" — the honest "Joined" column (createdAt). We do NOT
+ * fabricate a last-login value the membership row doesn't carry. */
+function fmtJoined(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "—";
+  return d.toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" });
+}
+
+const inputCls =
+  "h-9 rounded-button border border-neutral-300 bg-white px-3 text-sm text-neutral-900 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500";
+
 export function UsersAdminClient({ initialUsers }: { initialUsers: TenantUserAdminRow[] }) {
   const utils = trpc.useUtils();
   const usersQuery = trpc.listTenantUsersAdmin.useQuery(
@@ -38,15 +49,45 @@ export function UsersAdminClient({ initialUsers }: { initialUsers: TenantUserAdm
   const users = usersQuery.data?.items ?? initialUsers;
 
   const [notice, setNotice] = useState<string | null>(null);
+  const [search, setSearch] = useState("");
+  const [roleFilter, setRoleFilter] = useState<string>("all");
+  const [statusFilter, setStatusFilter] = useState<string>("all");
   const refresh = () => utils.listTenantUsersAdmin.invalidate();
+
+  const activeCount = users.filter((u) => u.status === "active").length;
+
+  const filtered = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    return users.filter((u) => {
+      if (q) {
+        const hay = `${u.displayName ?? ""} ${u.email ?? ""}`.toLowerCase();
+        if (!hay.includes(q)) return false;
+      }
+      if (roleFilter !== "all" && !u.roles.includes(roleFilter)) return false;
+      if (statusFilter !== "all") {
+        const active = u.status === "active";
+        if (statusFilter === "active" && !active) return false;
+        if (statusFilter === "inactive" && active) return false;
+      }
+      return true;
+    });
+  }, [users, search, roleFilter, statusFilter]);
 
   return (
     <div>
-      <div className="mb-6 flex items-center justify-between gap-4">
-        <p className="max-w-prose text-sm text-neutral-600">
-          Internal team members and their roles for this tenant. Role and status changes take effect
-          the next time the member signs in (the access token is stamped at sign-in).
-        </p>
+      <div className="mb-4 flex flex-wrap items-start justify-between gap-4">
+        <div className="min-w-0">
+          <h1 className="text-xl font-semibold tracking-tight text-neutral-900">
+            Users &amp; roles
+          </h1>
+          <p className="mt-1 max-w-prose text-sm text-neutral-500">
+            Manage member accounts and role assignments. Role and status changes take effect the
+            next time the member signs in (the access token is stamped at sign-in).
+          </p>
+        </div>
+        <Badge tone="neutral">
+          {users.length} {users.length === 1 ? "member" : "members"} · {activeCount} active
+        </Badge>
       </div>
 
       {notice ? (
@@ -57,23 +98,63 @@ export function UsersAdminClient({ initialUsers }: { initialUsers: TenantUserAdm
 
       <InvitePanel onInvited={(msg) => setNotice(msg)} onChanged={refresh} />
 
-      <Card className="mt-6 p-0">
+      <div className="mt-6 flex flex-wrap items-center gap-2">
+        <input
+          className={`${inputCls} min-w-[16rem] flex-1`}
+          placeholder="Search by name or email…"
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          aria-label="Search members"
+        />
+        <select
+          className={inputCls}
+          value={roleFilter}
+          onChange={(e) => setRoleFilter(e.target.value)}
+          aria-label="Filter by role"
+        >
+          <option value="all">All roles</option>
+          {INTERNAL_TENANT_ROLES.map((r) => (
+            <option key={r} value={r}>
+              {roleLabel(r)}
+            </option>
+          ))}
+        </select>
+        <select
+          className={inputCls}
+          value={statusFilter}
+          onChange={(e) => setStatusFilter(e.target.value)}
+          aria-label="Filter by status"
+        >
+          <option value="all">All status</option>
+          <option value="active">Active</option>
+          <option value="inactive">Deactivated</option>
+        </select>
+      </div>
+
+      <Card className="mt-4 p-0">
         <TableShell className="border-0">
           <Thead>
             <Th>Member</Th>
             <Th>Roles</Th>
             <Th>Status</Th>
+            <Th>Joined</Th>
             <Th>Actions</Th>
           </Thead>
           <Tbody>
             {users.length === 0 ? (
               <Tr>
-                <Td colSpan={4} className="text-neutral-500">
+                <Td colSpan={5} className="text-neutral-500">
                   No members yet.
                 </Td>
               </Tr>
+            ) : filtered.length === 0 ? (
+              <Tr>
+                <Td colSpan={5} className="text-neutral-500">
+                  No members match these filters.
+                </Td>
+              </Tr>
             ) : (
-              users.map((u) => <UserRow key={u.membershipId} user={u} onChanged={refresh} />)
+              filtered.map((u) => <UserRow key={u.membershipId} user={u} onChanged={refresh} />)
             )}
           </Tbody>
         </TableShell>
@@ -293,6 +374,7 @@ function UserRow({ user, onChanged }: { user: TenantUserAdminRow; onChanged: () 
         <Td>
           <Badge tone={active ? "success" : "warning"}>{active ? "Active" : "Deactivated"}</Badge>
         </Td>
+        <Td className="whitespace-nowrap text-sm text-neutral-600">{fmtJoined(user.createdAt)}</Td>
         <Td>
           <div className="flex items-center gap-3">
             <button
@@ -331,7 +413,7 @@ function UserRow({ user, onChanged }: { user: TenantUserAdminRow; onChanged: () 
       </Tr>
       {editing ? (
         <Tr>
-          <Td colSpan={4} className="bg-neutral-50">
+          <Td colSpan={5} className="bg-neutral-50">
             <RoleEditor
               user={user}
               saving={updateRoles.isPending}

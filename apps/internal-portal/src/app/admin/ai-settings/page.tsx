@@ -1,6 +1,8 @@
 import { requireAdmin, sessionUserChip } from "@/lib/auth";
 import { createServerTRPCCaller } from "@/lib/trpc-server";
 import { AppShell } from "@/components/nav/AppShell";
+import { PageHeader } from "@/components/patterns";
+import { AiModelOverview } from "./AiModelOverview";
 import { AiSettingsClient } from "./AiSettingsClient";
 import { BiasLexiconClient } from "./BiasLexiconClient";
 import { ScoringWeightsClient } from "./ScoringWeightsClient";
@@ -32,6 +34,13 @@ export default async function AiSettingsPage() {
 
   return (
     <AppShell title="AI settings" isAdmin active="ai-settings" user={sessionUserChip(session)}>
+      <div className="mx-auto w-full max-w-3xl px-6 pt-8">
+        <PageHeader
+          title="AI settings"
+          subtitle="Model, scoring emphasis, bias gate and compliance — every control here is consumed by the real AI call path."
+        />
+      </div>
+      <AiModelOverview usage={usage} />
       <AiSettingsClient initialSettings={settings} usage={usage} />
       <ScoringWeightsClient initialWeights={weights} />
       <BiasLexiconClient initialLexicon={lexicon} />

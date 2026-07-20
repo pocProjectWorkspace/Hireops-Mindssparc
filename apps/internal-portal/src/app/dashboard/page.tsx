@@ -4,6 +4,7 @@ import { AppShell } from "@/components/nav/AppShell";
 import { PersonaDashboard } from "@/components/dashboard/PersonaDashboard";
 import { HrHeadDashboard } from "@/components/dashboard/HrHeadDashboard";
 import { RecruiterDashboard } from "@/components/dashboard/RecruiterDashboard";
+import { AdminDashboard } from "@/components/dashboard/AdminDashboard";
 import { PanelDashboard } from "@/components/panel/PanelDashboard";
 import { RequirementOwnerDashboard } from "@/components/requirements/RequirementOwnerDashboard";
 
@@ -25,6 +26,9 @@ export default async function DashboardPage() {
   const caller = createServerTRPCCaller(session);
   const data = await caller.getMyDashboard();
 
+  // admin gets the bespoke admin console home (AD-01) — governance tiles + tasks
+  // + quick actions. Takes precedence over every other persona branch.
+  const isAdmin = session.roles.includes("admin");
   // hr_head (but not the admin superset) gets the bespoke surface.
   const isHrHead = session.roles.includes("hr_head") && !session.roles.includes("admin");
   // panel_member (but not the admin superset, and not also an hr_head) gets the
@@ -56,7 +60,13 @@ export default async function DashboardPage() {
       active="home"
       user={sessionUserChip(session)}
     >
-      {isHrHead ? (
+      {isAdmin ? (
+        <AdminDashboard
+          initialExtras={await caller.getAdminDashboardExtras()}
+          tasks={data.actions}
+          displayName={session.email?.split("@")[0] ?? "there"}
+        />
+      ) : isHrHead ? (
         <HrHeadDashboard
           initialExtras={await caller.getHrHeadDashboardExtras()}
           tasks={data.actions}

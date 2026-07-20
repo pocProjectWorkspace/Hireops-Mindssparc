@@ -65,8 +65,9 @@ export function AiSettingsClient({
 
   return (
     <div className="mx-auto w-full max-w-3xl px-6 py-8">
+      <h2 className="mb-1 text-base font-semibold text-neutral-900">Per-feature controls</h2>
       <p className="mb-6 text-sm text-neutral-600">
-        Per-tenant controls consumed directly by the AI call path. Model, temperature and token
+        Per-tenant kill-switches consumed directly by the AI call path. Model, temperature and token
         ceiling apply to the next call each feature makes; disabling a feature stops its AI calls
         entirely. Usage figures are the last 30 days.
       </p>
