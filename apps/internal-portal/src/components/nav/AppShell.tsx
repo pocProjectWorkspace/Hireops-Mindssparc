@@ -125,7 +125,15 @@ interface NavItem {
 const MAIN_NAV: NavItem[] = [
   // DASH-01: the persona landing dashboard is Home — first item, all roles.
   { key: "home", label: "Home", href: "/dashboard", icon: <IconHome /> },
-  { key: "triage", label: "Triage", href: "/triage", icon: <IconTriage /> },
+  {
+    // RBAC-01: Triage is the recruiter's candidate-scoring feed — recruiter +
+    // admin (was a legacy un-gated leftover). Matches the listCandidates read.
+    key: "triage",
+    label: "Triage",
+    href: "/triage",
+    icon: <IconTriage />,
+    roles: ["recruiter", "admin"],
+  },
   {
     // RECR-02: the recruiter's grouped-by-role candidates surface + the AI
     // shortlist. recruiter + admin, matching the RECRUITER_SURFACE_ROLES API
@@ -143,8 +151,24 @@ const MAIN_NAV: NavItem[] = [
     icon: <IconFeasibility />,
     roles: ["recruiter", "admin"],
   },
-  { key: "approvals", label: "Approvals", href: "/approvals", icon: <IconApprovals /> },
-  { key: "onboarding", label: "Onboarding", href: "/onboarding", icon: <IconOnboarding /> },
+  {
+    // RBAC-01: the agent-draft approval queue — owned by the recruiter
+    // (owning_recruiter approves) + admin (was legacy un-gated).
+    key: "approvals",
+    label: "Approvals",
+    href: "/approvals",
+    icon: <IconApprovals />,
+    roles: ["recruiter", "admin"],
+  },
+  {
+    // RBAC-01: onboarding is worked by the recruiter (day-0) and HR ops —
+    // recruiter + hr_ops + people_ops + admin (was legacy un-gated).
+    key: "onboarding",
+    label: "Onboarding",
+    href: "/onboarding",
+    icon: <IconOnboarding />,
+    roles: ["recruiter", "hr_ops", "people_ops", "admin"],
+  },
   {
     // OFFBOARD-03: departures are an HR operation — hr_ops + people_ops + admin
     // only (NOT recruiter). Matches the OFFBOARD_MANAGE_ROLES API gate.

@@ -981,6 +981,10 @@ const USERS_ADMIN_ROLES = new Set(["admin"]);
 // RLS still scopes rows to the tenant on top of this persona gate.
 const OFFBOARD_MANAGE_ROLES = new Set(["admin", "hr_ops", "people_ops"]);
 
+// RBAC-01 — onboarding is worked by the recruiter (day-0 handoff) and HR ops.
+// Matches the /onboarding nav gate; RLS still scopes rows to the tenant.
+const ONBOARDING_MANAGE_ROLES = new Set(["admin", "recruiter", "hr_ops", "people_ops"]);
+
 // HRHEAD-02 — Market Intelligence + Feasibility (HR-head persona).
 // Market benchmarks READ is a planning surface for anyone who owns or approves
 // reqs: hr_head (the persona), admin (super-role), and hiring_manager (reads the
@@ -3271,6 +3275,14 @@ export const appRouter = router({
     .input(listCandidatesInputSchema)
     .output(listCandidatesOutputSchema)
     .query(async ({ ctx, input }) => {
+      // RBAC-01 — the triage/candidate feed reads pipeline data. Broad read set
+      // (recruiter triages; hr_head/HM read for governance/masking); the page
+      // nav is recruiter-only but the procedure serves those reads too.
+      requireAnyRole(
+        ctx,
+        REQUISITION_READ_ROLES,
+        "Candidate triage is not available for your role",
+      );
       const db = requireDb(ctx);
       const limit = input.pagination.limit;
       const cursor = input.pagination.cursor ? new Date(input.pagination.cursor) : null;
@@ -9897,6 +9909,8 @@ export const appRouter = router({
     .input(listPendingApprovalsInputSchema)
     .output(listPendingApprovalsOutputSchema)
     .query(async ({ ctx, input }) => {
+      // RBAC-01 — the agent-draft approval queue is a recruiter surface.
+      requireAnyRole(ctx, RECRUITER_SURFACE_ROLES, "Approvals are not available for your role");
       const db = requireDb(ctx);
       // Cursor is the proposed_at of the last row from the previous page —
       // strict-greater-than walks forward, no OFFSET cost. Limit +1 lets
@@ -10501,6 +10515,8 @@ export const appRouter = router({
     .input(listOnboardingCasesInputSchema)
     .output(listOnboardingCasesOutputSchema)
     .query(async ({ ctx, input }) => {
+      // RBAC-01 — onboarding is a recruiter + HR-ops surface.
+      requireAnyRole(ctx, ONBOARDING_MANAGE_ROLES, "Onboarding is not available for your role");
       const db = requireDb(ctx);
       if (!ctx.tenantId) {
         throw new TRPCError({
