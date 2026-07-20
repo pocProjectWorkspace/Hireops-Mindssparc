@@ -407,7 +407,12 @@ const ADMIN_NAV: NavItem[] = [
   // AD-03 — admin persona pass. Honest surfaces: an email delivery log
   // (notification_outbox), system-setup (email alerts + escalation), and the
   // Bias Shield refusal statement (real lexicon posture; no demographic scoring).
-  { key: "bias-shield", label: "Bias Shield", href: "/admin/bias-shield", icon: <IconBiasShield /> },
+  {
+    key: "bias-shield",
+    label: "Bias Shield",
+    href: "/admin/bias-shield",
+    icon: <IconBiasShield />,
+  },
   { key: "messaging", label: "Messaging", href: "/admin/messaging", icon: <IconMessaging /> },
   {
     key: "system-setup",

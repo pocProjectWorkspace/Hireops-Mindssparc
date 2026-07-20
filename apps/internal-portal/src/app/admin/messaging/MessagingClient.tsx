@@ -141,7 +141,9 @@ export function MessagingClient({ initial }: { initial: ListNotificationLogOutpu
             {items.map((r) => (
               <Tr key={r.id}>
                 <Td className="whitespace-nowrap">
-                  <span className="block text-neutral-800 tabular-nums">{absolute(r.created_at)}</span>
+                  <span className="block text-neutral-800 tabular-nums">
+                    {absolute(r.created_at)}
+                  </span>
                   {r.sent_at ? (
                     <span className="block text-xs text-neutral-400">
                       sent {absolute(r.sent_at)}
@@ -197,7 +199,10 @@ export function MessagingClient({ initial }: { initial: ListNotificationLogOutpu
             </div>
             <ul className="space-y-3">
               {templates.map((t) => (
-                <li key={t.key} className="border-t border-neutral-100 pt-3 first:border-0 first:pt-0">
+                <li
+                  key={t.key}
+                  className="border-t border-neutral-100 pt-3 first:border-0 first:pt-0"
+                >
                   <div className="flex items-center justify-between gap-2">
                     <span className="text-sm font-medium text-neutral-800">{t.label}</span>
                     <code className="text-[11px] text-neutral-400">{t.key}</code>
@@ -213,15 +218,7 @@ export function MessagingClient({ initial }: { initial: ListNotificationLogOutpu
   );
 }
 
-function StatCard({
-  label,
-  value,
-  tone,
-}: {
-  label: string;
-  value: number;
-  tone: BadgeTone;
-}) {
+function StatCard({ label, value, tone }: { label: string; value: number; tone: BadgeTone }) {
   const accent =
     tone === "success"
       ? "text-status-positive-600"

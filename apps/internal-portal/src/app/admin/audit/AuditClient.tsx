@@ -97,9 +97,7 @@ export function AuditClient({ initial }: { initial: ListAuditEventsOutput }) {
 
   const query = trpc.listAuditEvents.useInfiniteQuery(input, {
     getNextPageParam: (last) => last.nextCursor ?? undefined,
-    initialData: serverFiltersActive
-      ? undefined
-      : { pages: [initial], pageParams: [undefined] },
+    initialData: serverFiltersActive ? undefined : { pages: [initial], pageParams: [undefined] },
     refetchOnWindowFocus: false,
     staleTime: 5_000,
   });
@@ -162,7 +160,10 @@ export function AuditClient({ initial }: { initial: ListAuditEventsOutput }) {
       });
       const filtered = (res.items as AuditEventRow[]).filter(refine);
       const csv = buildCsv(filtered);
-      downloadCsv(csv, `audit-log-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-")}.csv`);
+      downloadCsv(
+        csv,
+        `audit-log-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-")}.csv`,
+      );
       setExportNote(
         `Exported ${filtered.length.toLocaleString()} event${filtered.length === 1 ? "" : "s"}` +
           (res.truncated ? " (capped at 5,000 — narrow the filters for a complete export)" : "") +
@@ -274,9 +275,7 @@ export function AuditClient({ initial }: { initial: ListAuditEventsOutput }) {
         <Card padded={false}>
           <EmptyState
             title={
-              clientRefined || serverFiltersActive
-                ? "No audit events match"
-                : "No audit events yet"
+              clientRefined || serverFiltersActive ? "No audit events match" : "No audit events yet"
             }
             hint={
               clientRefined || serverFiltersActive

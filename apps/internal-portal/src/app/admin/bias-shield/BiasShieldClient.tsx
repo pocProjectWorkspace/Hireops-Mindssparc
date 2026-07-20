@@ -18,24 +18,26 @@ import { Card, Badge, type BadgeTone } from "@/components/ui";
  * read live from getBiasLexicon.
  */
 
-const ENFORCEMENT_META: Record<BiasEnforcementMode, { label: string; tone: BadgeTone; blurb: string }> =
-  {
-    off: {
-      label: "Off",
-      tone: "neutral",
-      blurb: "The gate is disabled. No JD language is flagged.",
-    },
-    warn: {
-      label: "Warn",
-      tone: "warning",
-      blurb: "Flagged language is recorded for the HR head; submissions still proceed.",
-    },
-    block: {
-      label: "Block",
-      tone: "error",
-      blurb: "Terms marked ‘block’ stop a submission until the wording is revised.",
-    },
-  };
+const ENFORCEMENT_META: Record<
+  BiasEnforcementMode,
+  { label: string; tone: BadgeTone; blurb: string }
+> = {
+  off: {
+    label: "Off",
+    tone: "neutral",
+    blurb: "The gate is disabled. No JD language is flagged.",
+  },
+  warn: {
+    label: "Warn",
+    tone: "warning",
+    blurb: "Flagged language is recorded for the HR head; submissions still proceed.",
+  },
+  block: {
+    label: "Block",
+    tone: "error",
+    blurb: "Terms marked ‘block’ stop a submission until the wording is revised.",
+  },
+};
 
 // The prototype's demographic rules — named explicitly so the refusal is
 // concrete, not hand-wavy. We do NOT implement any of these.
@@ -84,14 +86,15 @@ export function BiasShieldClient({ lexicon }: { lexicon: BiasLexicon }) {
             HireOps does not score people by who they are.
           </h2>
           <p className="mt-3 max-w-2xl text-sm leading-relaxed text-neutral-700">
-            We deliberately collect and infer <span className="font-semibold">no protected
-            attributes</span> — no gender, ethnicity, age, or demographic signal — and we build{" "}
+            We deliberately collect and infer{" "}
+            <span className="font-semibold">no protected attributes</span> — no gender, ethnicity,
+            age, or demographic signal — and we build{" "}
             <span className="font-semibold">no demographic scoring or monitoring</span> anywhere in
             the platform. There is nothing to switch off here, because it was never built. A hiring
             system that measured people by protected class would be exactly the high-risk profiling
-            the EU AI Act restricts. Our bias controls act on the <span className="font-semibold">
-            text of a job description</span> and on <span className="font-semibold">what a reviewer
-            can see</span> — never on the person.
+            the EU AI Act restricts. Our bias controls act on the{" "}
+            <span className="font-semibold">text of a job description</span> and on{" "}
+            <span className="font-semibold">what a reviewer can see</span> — never on the person.
           </p>
         </div>
 
@@ -113,7 +116,9 @@ export function BiasShieldClient({ lexicon }: { lexicon: BiasLexicon }) {
       </section>
 
       {/* ── What we DO run ── */}
-      <h3 className="mb-1 text-base font-semibold text-neutral-900">What the shield actually does</h3>
+      <h3 className="mb-1 text-base font-semibold text-neutral-900">
+        What the shield actually does
+      </h3>
       <p className="mb-4 max-w-2xl text-sm text-neutral-600">
         Two real, deterministic controls — no inference about any candidate.
       </p>

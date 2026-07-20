@@ -92,10 +92,7 @@ export function auditEventSeverity(action: string, entityType: string): AuditSev
   return "info";
 }
 
-export const AUDIT_SEVERITY_META: Record<
-  AuditSeverity,
-  { label: string; description: string }
-> = {
+export const AUDIT_SEVERITY_META: Record<AuditSeverity, { label: string; description: string }> = {
   info: {
     label: "Info",
     description: "Routine record creation. No governed-state or security implication.",
@@ -284,29 +281,31 @@ export const SYSTEM_ALERT_TYPES = [
 export const systemAlertTypeSchema = z.enum(SYSTEM_ALERT_TYPES);
 export type SystemAlertType = z.infer<typeof systemAlertTypeSchema>;
 
-export const SYSTEM_ALERT_TYPE_META: Record<SystemAlertType, { label: string; description: string }> =
-  {
-    workflow_failure: {
-      label: "Workflow failure",
-      description: "An automation run failed or a job errored out.",
-    },
-    approval_pending: {
-      label: "Approval pending",
-      description: "A requisition or offer approval is waiting on a decision.",
-    },
-    sla_breach: {
-      label: "SLA breach",
-      description: "A stage crossed its service-level threshold.",
-    },
-    integration_error: {
-      label: "Integration error",
-      description: "A connector (e.g. the Workday seam) reported an error.",
-    },
-    offer_expiring: {
-      label: "Offer expiring",
-      description: "An extended offer is approaching its response deadline.",
-    },
-  };
+export const SYSTEM_ALERT_TYPE_META: Record<
+  SystemAlertType,
+  { label: string; description: string }
+> = {
+  workflow_failure: {
+    label: "Workflow failure",
+    description: "An automation run failed or a job errored out.",
+  },
+  approval_pending: {
+    label: "Approval pending",
+    description: "A requisition or offer approval is waiting on a decision.",
+  },
+  sla_breach: {
+    label: "SLA breach",
+    description: "A stage crossed its service-level threshold.",
+  },
+  integration_error: {
+    label: "Integration error",
+    description: "A connector (e.g. the Workday seam) reported an error.",
+  },
+  offer_expiring: {
+    label: "Offer expiring",
+    description: "An extended offer is approaching its response deadline.",
+  },
+};
 
 export const emailAlertsConfigSchema = z.object({
   enabled: z.boolean().default(false),

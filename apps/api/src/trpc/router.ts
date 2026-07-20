@@ -7357,6 +7357,8 @@ export const appRouter = router({
     .input(getAiUsageSummaryInputSchema)
     .output(getAiUsageSummaryOutputSchema)
     .query(async ({ ctx, input }) => {
+      // AD18 — server-side admin gate (page redirect alone left the procedure open).
+      requireAnyRole(ctx, USERS_ADMIN_ROLES, "AI cost usage is admin-only");
       const db = requireDb(ctx);
       if (!ctx.tenantId) {
         throw new TRPCError({
@@ -8064,6 +8066,8 @@ export const appRouter = router({
     .input(getRecruitmentReportInputSchema)
     .output(getRecruitmentReportOutputSchema)
     .query(async ({ ctx, input }) => {
+      // AD18 — server-side admin gate (page redirect alone left the procedure open).
+      requireAnyRole(ctx, USERS_ADMIN_ROLES, "Recruitment reports are admin-only");
       const db = requireDb(ctx);
       if (!ctx.tenantId) {
         throw new TRPCError({
