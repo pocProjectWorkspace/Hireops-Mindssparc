@@ -94,6 +94,8 @@ import {
   applicationDocuments,
   hrCaseNotes,
   hrPolicyDocuments,
+  hrPolicyDocumentVersions,
+  jdTemplates,
   approvalRequests,
   approvalDecisions,
   recordPiiAccess,
@@ -537,7 +539,28 @@ import {
   getCaseAuditTimelineOutputSchema,
   addCaseAuditNoteInputSchema,
   addCaseAuditNoteOutputSchema,
+  listHrPoliciesInputSchema,
   listHrPoliciesOutputSchema,
+  createHrPolicyInputSchema,
+  createHrPolicyOutputSchema,
+  updateHrPolicyInputSchema,
+  updateHrPolicyOutputSchema,
+  archiveHrPolicyInputSchema,
+  archiveHrPolicyOutputSchema,
+  listHrPolicyVersionsInputSchema,
+  listHrPolicyVersionsOutputSchema,
+  listJdTemplatesInputSchema,
+  listJdTemplatesOutputSchema,
+  createJdTemplateInputSchema,
+  createJdTemplateOutputSchema,
+  updateJdTemplateInputSchema,
+  updateJdTemplateOutputSchema,
+  archiveJdTemplateInputSchema,
+  archiveJdTemplateOutputSchema,
+  type HrPolicyDocumentRow,
+  type HrPolicyVersionRow,
+  type JdTemplateRow,
+  type JdTemplateSkill,
   type ApplicationDocumentRow,
   type ApplicationDocumentCandidateRow,
   type ApplicationDocumentOverall,
@@ -1054,6 +1077,12 @@ const OFFER_APPROVAL_DECIDE_ROLES = new Set(["admin", "hr_head"]);
 // gate). RLS still scopes every read/write to the tenant on top of this gate.
 const HR_OPS_DOC_ROLES = new Set(["admin", "hr_ops"]);
 
+// T12/G11 — the JD-template library on /jd-library → Templates. Curated by the
+// hiring_manager persona (who authors requisitions) + admin. recruiter / hr_ops
+// / hr_head / panel get FORBIDDEN (matches the jd-library page's READ_ROLES gate
+// and the nav). RLS scopes every read/write to the tenant on top of this gate.
+const JD_TEMPLATE_ROLES = new Set(["admin", "hiring_manager"]);
+
 // The application stages that make up the pre-offer / HR-ops window: a
 // candidate deep enough in the pipeline to collect documents on, up to and
 // including offer-accept. Shared by /hr-documents and /case-audit.
@@ -1268,6 +1297,69 @@ function benchmarkRowToApi(row: typeof marketBenchmarks.$inferSelect): MarketBen
 function normalizeTrendingSkills(raw: unknown): string[] {
   if (!Array.isArray(raw)) return [];
   return raw.filter((s): s is string => typeof s === "string").slice(0, 20);
+}
+
+/** Map an hr_policy_documents DB row → the wire shape (T12). */
+function hrPolicyRowToApi(row: {
+  id: string;
+  title: string;
+  category: string;
+  summary: string;
+  bodyMd: string;
+  version: number;
+  isArchived: boolean;
+  updatedAt: Date | string | null;
+}): HrPolicyDocumentRow {
+  return {
+    id: row.id,
+    title: row.title,
+    category: row.category as "offers" | "benefits" | "policies",
+    summary: row.summary,
+    bodyMd: row.bodyMd,
+    version: row.version,
+    isArchived: row.isArchived,
+    updatedAt: toIsoString(row.updatedAt) ?? new Date(0).toISOString(),
+  };
+}
+
+/** Coerce the jd_templates.skills jsonb into the typed preset array (T12). */
+function normalizeJdTemplateSkills(raw: unknown): JdTemplateSkill[] {
+  if (!Array.isArray(raw)) return [];
+  const out: JdTemplateSkill[] = [];
+  for (const item of raw) {
+    if (!item || typeof item !== "object") continue;
+    const s = item as Record<string, unknown>;
+    if (typeof s.skillName !== "string") continue;
+    out.push({
+      skillName: s.skillName,
+      category: typeof s.category === "string" ? s.category : "General",
+      weight: typeof s.weight === "number" ? s.weight : 1,
+      isRequired: typeof s.isRequired === "boolean" ? s.isRequired : false,
+      minYears: typeof s.minYears === "number" ? s.minYears : null,
+    });
+  }
+  return out.slice(0, 50);
+}
+
+/** Map a jd_templates DB row → the wire shape (T12). */
+function jdTemplateRowToApi(row: typeof jdTemplates.$inferSelect): JdTemplateRow {
+  return {
+    id: row.id,
+    label: row.label,
+    title: row.title,
+    roleFamily: row.roleFamily,
+    seniority: row.seniority,
+    locationType: row.locationType as "remote" | "hybrid" | "onsite" | "multi",
+    budgetMinInr: Number(row.budgetMinInr),
+    budgetMaxInr: Number(row.budgetMaxInr),
+    extraContext: row.extraContext,
+    bodyMd: row.bodyMd,
+    legalClauses: row.legalClauses,
+    skills: normalizeJdTemplateSkills(row.skills),
+    isArchived: row.isArchived,
+    sortOrder: row.sortOrder,
+    updatedAt: toIsoString(row.updatedAt) ?? new Date(0).toISOString(),
+  };
 }
 
 async function loadTenantBenchmarks(
@@ -16738,39 +16830,415 @@ export const appRouter = router({
   // ═══════════════════ HROPS-03 — templates & policies ═══════════════════
 
   /**
-   * listHrPolicies — the tenant's curated templates & policies library
-   * (/hr-policies). Read-only; seeded by db:seed:hr-policies as curated
-   * reference content (labelled in the UI). Tenant-scoped (RLS + predicate).
+   * listHrPolicies — the tenant's editable templates & policies library
+   * (/hr-policies). Seeded by db:seed:hr-policies as the STARTING library
+   * (curated reference content, labelled in the UI); hr_ops + admin author,
+   * edit, version, and archive their own policies (T12/G10). Archived policies
+   * are hidden unless `includeArchived`. Tenant-scoped (RLS + predicate).
    */
-  listHrPolicies: protectedProcedure.output(listHrPoliciesOutputSchema).query(async ({ ctx }) => {
-    requireAnyRole(ctx, HR_OPS_DOC_ROLES, "Policies is an HR-ops surface.");
-    const db = requireDb(ctx);
-    if (!ctx.tenantId) {
-      throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
-    }
-    const rows = await db
-      .select({
-        id: hrPolicyDocuments.id,
-        title: hrPolicyDocuments.title,
-        category: hrPolicyDocuments.category,
-        summary: hrPolicyDocuments.summary,
-        bodyMd: hrPolicyDocuments.bodyMd,
-        updatedAt: hrPolicyDocuments.updatedAt,
-      })
-      .from(hrPolicyDocuments)
-      .where(eq(hrPolicyDocuments.tenantId, ctx.tenantId))
-      .orderBy(hrPolicyDocuments.category, hrPolicyDocuments.title);
-    return {
-      items: rows.map((r) => ({
-        id: r.id,
-        title: r.title,
-        category: r.category as "offers" | "benefits" | "policies",
-        summary: r.summary,
-        bodyMd: r.bodyMd,
-        updatedAt: toIsoString(r.updatedAt) ?? new Date(0).toISOString(),
-      })),
-    };
-  }),
+  listHrPolicies: protectedProcedure
+    .input(listHrPoliciesInputSchema)
+    .output(listHrPoliciesOutputSchema)
+    .query(async ({ ctx, input }) => {
+      requireAnyRole(ctx, HR_OPS_DOC_ROLES, "Policies is an HR-ops surface.");
+      const db = requireDb(ctx);
+      if (!ctx.tenantId) {
+        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
+      }
+      const rows = await db
+        .select({
+          id: hrPolicyDocuments.id,
+          title: hrPolicyDocuments.title,
+          category: hrPolicyDocuments.category,
+          summary: hrPolicyDocuments.summary,
+          bodyMd: hrPolicyDocuments.bodyMd,
+          version: hrPolicyDocuments.version,
+          isArchived: hrPolicyDocuments.isArchived,
+          updatedAt: hrPolicyDocuments.updatedAt,
+        })
+        .from(hrPolicyDocuments)
+        .where(
+          input.includeArchived
+            ? eq(hrPolicyDocuments.tenantId, ctx.tenantId)
+            : and(
+                eq(hrPolicyDocuments.tenantId, ctx.tenantId),
+                eq(hrPolicyDocuments.isArchived, false),
+              ),
+        )
+        .orderBy(hrPolicyDocuments.category, hrPolicyDocuments.title);
+      return { items: rows.map(hrPolicyRowToApi) };
+    }),
+
+  /**
+   * createHrPolicy (T12/G10) — author a new policy at version 1 and write the
+   * matching v1 snapshot into hr_policy_document_versions in the same
+   * (withTenantContext) transaction. hr_ops + admin; audited via withAudit
+   * (the table carries no row-change trigger — the versions table is the
+   * content-change history; see the schema headers).
+   */
+  createHrPolicy: protectedProcedure
+    .input(createHrPolicyInputSchema)
+    .output(createHrPolicyOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      return withAudit("create_hr_policy", ctx, input, async () => {
+        requireAnyRole(ctx, HR_OPS_DOC_ROLES, "Policies is an HR-ops surface.");
+        const db = requireDb(ctx);
+        if (!ctx.tenantId) {
+          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
+        }
+        const tenantId = ctx.tenantId;
+        const membershipId = await resolveActorMembership(db, ctx);
+        const [row] = await db
+          .insert(hrPolicyDocuments)
+          .values({
+            tenantId,
+            title: input.title,
+            category: input.category,
+            summary: input.summary,
+            bodyMd: input.bodyMd,
+            version: 1,
+            isArchived: false,
+            updatedByMembershipId: membershipId,
+            updatedAt: new Date(),
+          })
+          .returning();
+        if (!row) {
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: "policy insert returned no row",
+          });
+        }
+        await db.insert(hrPolicyDocumentVersions).values({
+          tenantId,
+          policyDocumentId: row.id,
+          version: 1,
+          title: row.title,
+          category: row.category,
+          summary: row.summary,
+          bodyMd: row.bodyMd,
+          changeNote: input.changeNote ?? null,
+          editedByMembershipId: membershipId,
+        });
+        return { row: hrPolicyRowToApi(row) };
+      });
+    }),
+
+  /**
+   * updateHrPolicy (T12/G10) — edit a policy. If the doc has no history rows yet
+   * (a seeded policy edited for the first time), backfill the CURRENT content as
+   * a v1 snapshot first, then append the new-version snapshot and bump the doc.
+   * Everything runs in the single per-call transaction so the doc version and
+   * its snapshots never drift. hr_ops + admin; audited.
+   */
+  updateHrPolicy: protectedProcedure
+    .input(updateHrPolicyInputSchema)
+    .output(updateHrPolicyOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      return withAudit("update_hr_policy", ctx, input, async () => {
+        requireAnyRole(ctx, HR_OPS_DOC_ROLES, "Policies is an HR-ops surface.");
+        const db = requireDb(ctx);
+        if (!ctx.tenantId) {
+          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
+        }
+        const tenantId = ctx.tenantId;
+        const membershipId = await resolveActorMembership(db, ctx);
+
+        const [current] = await db
+          .select()
+          .from(hrPolicyDocuments)
+          .where(and(eq(hrPolicyDocuments.tenantId, tenantId), eq(hrPolicyDocuments.id, input.id)))
+          .limit(1);
+        if (!current) {
+          throw new TRPCError({ code: "NOT_FOUND", message: "policy not found" });
+        }
+
+        // Backfill a v1 snapshot of the CURRENT content when no history exists
+        // yet (the doc predates versioning / was only ever seeded).
+        const [{ count: historyCount } = { count: 0 }] = await db
+          .select({ count: dsql<number>`count(*)::int` })
+          .from(hrPolicyDocumentVersions)
+          .where(
+            and(
+              eq(hrPolicyDocumentVersions.tenantId, tenantId),
+              eq(hrPolicyDocumentVersions.policyDocumentId, input.id),
+            ),
+          );
+        if (Number(historyCount) === 0) {
+          await db.insert(hrPolicyDocumentVersions).values({
+            tenantId,
+            policyDocumentId: current.id,
+            version: current.version,
+            title: current.title,
+            category: current.category,
+            summary: current.summary,
+            bodyMd: current.bodyMd,
+            changeNote: "Snapshot of the policy as it stood before its first edit.",
+            editedByMembershipId: current.updatedByMembershipId,
+          });
+        }
+
+        const nextVersion = current.version + 1;
+        await db.insert(hrPolicyDocumentVersions).values({
+          tenantId,
+          policyDocumentId: current.id,
+          version: nextVersion,
+          title: input.title,
+          category: input.category,
+          summary: input.summary,
+          bodyMd: input.bodyMd,
+          changeNote: input.changeNote ?? null,
+          editedByMembershipId: membershipId,
+        });
+
+        const [row] = await db
+          .update(hrPolicyDocuments)
+          .set({
+            title: input.title,
+            category: input.category,
+            summary: input.summary,
+            bodyMd: input.bodyMd,
+            version: nextVersion,
+            updatedByMembershipId: membershipId,
+            updatedAt: new Date(),
+          })
+          .where(and(eq(hrPolicyDocuments.tenantId, tenantId), eq(hrPolicyDocuments.id, input.id)))
+          .returning();
+        if (!row) {
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: "policy update returned no row",
+          });
+        }
+        return { row: hrPolicyRowToApi(row) };
+      });
+    }),
+
+  /**
+   * archiveHrPolicy (T12/G10) — soft archive (or restore) a policy. History is
+   * preserved; the row is only hidden from the default library. hr_ops + admin;
+   * audited.
+   */
+  archiveHrPolicy: protectedProcedure
+    .input(archiveHrPolicyInputSchema)
+    .output(archiveHrPolicyOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      return withAudit("archive_hr_policy", ctx, input, async () => {
+        requireAnyRole(ctx, HR_OPS_DOC_ROLES, "Policies is an HR-ops surface.");
+        const db = requireDb(ctx);
+        if (!ctx.tenantId) {
+          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
+        }
+        const tenantId = ctx.tenantId;
+        const membershipId = await resolveActorMembership(db, ctx);
+        const [row] = await db
+          .update(hrPolicyDocuments)
+          .set({
+            isArchived: input.isArchived,
+            updatedByMembershipId: membershipId,
+            updatedAt: new Date(),
+          })
+          .where(and(eq(hrPolicyDocuments.tenantId, tenantId), eq(hrPolicyDocuments.id, input.id)))
+          .returning();
+        if (!row) {
+          throw new TRPCError({ code: "NOT_FOUND", message: "policy not found" });
+        }
+        return { row: hrPolicyRowToApi(row) };
+      });
+    }),
+
+  /**
+   * listHrPolicyVersions (T12/G10) — the version history for one policy, newest
+   * first, powering the "Version history" viewer. Read-only; hr_ops + admin;
+   * tenant-scoped (RLS + predicate).
+   */
+  listHrPolicyVersions: protectedProcedure
+    .input(listHrPolicyVersionsInputSchema)
+    .output(listHrPolicyVersionsOutputSchema)
+    .query(async ({ ctx, input }) => {
+      requireAnyRole(ctx, HR_OPS_DOC_ROLES, "Policies is an HR-ops surface.");
+      const db = requireDb(ctx);
+      if (!ctx.tenantId) {
+        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
+      }
+      const rows = await db
+        .select()
+        .from(hrPolicyDocumentVersions)
+        .where(
+          and(
+            eq(hrPolicyDocumentVersions.tenantId, ctx.tenantId),
+            eq(hrPolicyDocumentVersions.policyDocumentId, input.policyId),
+          ),
+        )
+        .orderBy(desc(hrPolicyDocumentVersions.version));
+      return {
+        items: rows.map(
+          (r): HrPolicyVersionRow => ({
+            id: r.id,
+            policyDocumentId: r.policyDocumentId,
+            version: r.version,
+            title: r.title,
+            category: r.category as "offers" | "benefits" | "policies",
+            summary: r.summary,
+            bodyMd: r.bodyMd,
+            changeNote: r.changeNote,
+            createdAt: toIsoString(r.createdAt) ?? new Date(0).toISOString(),
+          }),
+        ),
+      };
+    }),
+
+  // ═══════════════════ T12/G11 — JD-template library ═══════════════════
+
+  /**
+   * listJdTemplates — the org's curated JD-template library (jd_templates),
+   * rendered on /jd-library → Templates AND read by the requisition wizard's
+   * Quick-start row (which falls back to the ROLE_TEMPLATES constant when this
+   * returns nothing). admin + hiring_manager; archived hidden unless requested.
+   */
+  listJdTemplates: protectedProcedure
+    .input(listJdTemplatesInputSchema)
+    .output(listJdTemplatesOutputSchema)
+    .query(async ({ ctx, input }) => {
+      requireAnyRole(ctx, JD_TEMPLATE_ROLES, "JD templates is a hiring-manager surface.");
+      const db = requireDb(ctx);
+      if (!ctx.tenantId) {
+        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
+      }
+      const rows = await db
+        .select()
+        .from(jdTemplates)
+        .where(
+          input.includeArchived
+            ? eq(jdTemplates.tenantId, ctx.tenantId)
+            : and(eq(jdTemplates.tenantId, ctx.tenantId), eq(jdTemplates.isArchived, false)),
+        )
+        .orderBy(jdTemplates.sortOrder, jdTemplates.title);
+      return { items: rows.map(jdTemplateRowToApi) };
+    }),
+
+  /**
+   * createJdTemplate (T12/G11) — add a template to the library. admin +
+   * hiring_manager; audited (jd_templates carries the audit_record_change
+   * trigger — market_benchmarks' treatment). Tenant-scoped.
+   */
+  createJdTemplate: protectedProcedure
+    .input(createJdTemplateInputSchema)
+    .output(createJdTemplateOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      return withAudit("create_jd_template", ctx, input, async () => {
+        requireAnyRole(ctx, JD_TEMPLATE_ROLES, "JD templates is a hiring-manager surface.");
+        const db = requireDb(ctx);
+        if (!ctx.tenantId) {
+          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
+        }
+        const tenantId = ctx.tenantId;
+        const membershipId = await resolveActorMembership(db, ctx);
+        const [row] = await db
+          .insert(jdTemplates)
+          .values({
+            tenantId,
+            label: input.label,
+            title: input.title,
+            roleFamily: input.roleFamily,
+            seniority: input.seniority,
+            locationType: input.locationType,
+            budgetMinInr: input.budgetMinInr,
+            budgetMaxInr: input.budgetMaxInr,
+            extraContext: input.extraContext,
+            bodyMd: input.bodyMd,
+            legalClauses: input.legalClauses,
+            skills: input.skills,
+            isArchived: false,
+            sortOrder: input.sortOrder,
+            createdByMembershipId: membershipId,
+            updatedByMembershipId: membershipId,
+            updatedAt: new Date(),
+          })
+          .returning();
+        if (!row) {
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: "jd template insert returned no row",
+          });
+        }
+        return { row: jdTemplateRowToApi(row) };
+      });
+    }),
+
+  /**
+   * updateJdTemplate (T12/G11) — edit a template. admin + hiring_manager;
+   * audited; tenant-scoped.
+   */
+  updateJdTemplate: protectedProcedure
+    .input(updateJdTemplateInputSchema)
+    .output(updateJdTemplateOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      return withAudit("update_jd_template", ctx, input, async () => {
+        requireAnyRole(ctx, JD_TEMPLATE_ROLES, "JD templates is a hiring-manager surface.");
+        const db = requireDb(ctx);
+        if (!ctx.tenantId) {
+          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
+        }
+        const tenantId = ctx.tenantId;
+        const membershipId = await resolveActorMembership(db, ctx);
+        const [row] = await db
+          .update(jdTemplates)
+          .set({
+            label: input.label,
+            title: input.title,
+            roleFamily: input.roleFamily,
+            seniority: input.seniority,
+            locationType: input.locationType,
+            budgetMinInr: input.budgetMinInr,
+            budgetMaxInr: input.budgetMaxInr,
+            extraContext: input.extraContext,
+            bodyMd: input.bodyMd,
+            legalClauses: input.legalClauses,
+            skills: input.skills,
+            sortOrder: input.sortOrder,
+            updatedByMembershipId: membershipId,
+            updatedAt: new Date(),
+          })
+          .where(and(eq(jdTemplates.tenantId, tenantId), eq(jdTemplates.id, input.id)))
+          .returning();
+        if (!row) {
+          throw new TRPCError({ code: "NOT_FOUND", message: "jd template not found" });
+        }
+        return { row: jdTemplateRowToApi(row) };
+      });
+    }),
+
+  /**
+   * archiveJdTemplate (T12/G11) — soft archive (or restore) a template. admin +
+   * hiring_manager; audited; tenant-scoped.
+   */
+  archiveJdTemplate: protectedProcedure
+    .input(archiveJdTemplateInputSchema)
+    .output(archiveJdTemplateOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      return withAudit("archive_jd_template", ctx, input, async () => {
+        requireAnyRole(ctx, JD_TEMPLATE_ROLES, "JD templates is a hiring-manager surface.");
+        const db = requireDb(ctx);
+        if (!ctx.tenantId) {
+          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
+        }
+        const tenantId = ctx.tenantId;
+        const membershipId = await resolveActorMembership(db, ctx);
+        const [row] = await db
+          .update(jdTemplates)
+          .set({
+            isArchived: input.isArchived,
+            updatedByMembershipId: membershipId,
+            updatedAt: new Date(),
+          })
+          .where(and(eq(jdTemplates.tenantId, tenantId), eq(jdTemplates.id, input.id)))
+          .returning();
+        if (!row) {
+          throw new TRPCError({ code: "NOT_FOUND", message: "jd template not found" });
+        }
+        return { row: jdTemplateRowToApi(row) };
+      });
+    }),
 
   // ═══════════ RO-03 — JD library, panel setup, requisition insights ═══════════
   //

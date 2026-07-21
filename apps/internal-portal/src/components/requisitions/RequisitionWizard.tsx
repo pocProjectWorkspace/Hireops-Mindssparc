@@ -145,6 +145,37 @@ export function RequisitionWizard({ initialRid }: { initialRid: string | null })
   const updateDraft = trpc.updateRequisitionDraft.useMutation();
   const submit = trpc.submitRequisitionForApproval.useMutation();
 
+  // T12/G11 — the Quick-start row reads the org's curated JD-template library
+  // (jd_templates) when it has rows, and FALLS BACK to the ROLE_TEMPLATES
+  // constant whenever the query is loading, errored, or empty. `retry: false`
+  // keeps a FORBIDDEN (non-curator role) from spinning — it falls straight back
+  // to the offline presets, so the wizard behaves identically to before.
+  const templatesQuery = trpc.listJdTemplates.useQuery(
+    {},
+    { staleTime: 60_000, refetchOnWindowFocus: false, retry: false },
+  );
+  const templates: RoleTemplate[] = useMemo(() => {
+    const rows = templatesQuery.data?.items;
+    if (!rows || rows.length === 0) return ROLE_TEMPLATES;
+    return rows.map((r) => ({
+      id: r.id,
+      label: r.label,
+      title: r.title,
+      seniority: r.seniority,
+      locationType: r.locationType,
+      budgetMinInr: r.budgetMinInr,
+      budgetMaxInr: r.budgetMaxInr,
+      extraContext: r.extraContext,
+      skills: r.skills.map((s) => ({
+        skillName: s.skillName,
+        category: s.category,
+        weight: s.weight,
+        isRequired: s.isRequired,
+        minYears: s.minYears,
+      })),
+    }));
+  }, [templatesQuery.data]);
+
   // Hydrate an existing draft (resume / seeded mid-wizard demo draft).
   const detailQuery = trpc.getRequisitionDetail.useQuery(
     { requisitionId: rid ?? "" },
@@ -430,7 +461,7 @@ export function RequisitionWizard({ initialRid }: { initialRid: string | null })
               </span>
             </p>
             <div className="flex flex-wrap gap-2">
-              {ROLE_TEMPLATES.map((t) => (
+              {templates.map((t) => (
                 <button
                   key={t.id}
                   type="button"

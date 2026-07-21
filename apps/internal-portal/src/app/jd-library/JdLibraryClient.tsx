@@ -1,10 +1,16 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import type { ListJdLibraryOutput, JdVersionHistoryItem } from "@hireops/api-types";
+import type {
+  ListJdLibraryOutput,
+  ListJdTemplatesOutput,
+  JdVersionHistoryItem,
+} from "@hireops/api-types";
 import { Badge, EmptyState, TableShell, Thead, Th, Tbody, Tr, Td } from "@/components/ui";
 import type { BadgeTone } from "@/components/ui";
 import { trpc } from "@/lib/trpc-client";
+import { JdTemplatesPanel } from "@/components/jd-library/JdTemplatesPanel";
+import { cn } from "@/components/ui/cn";
 
 /**
  * RO-03 — the /jd-library client. A searchable table over the current JD of
@@ -42,7 +48,61 @@ function formatDate(iso: string): string {
 
 type Row = ListJdLibraryOutput["rows"][number];
 
-export function JdLibraryClient({ initial }: { initial: ListJdLibraryOutput }) {
+type Tab = "descriptions" | "templates";
+
+/**
+ * The /jd-library shell with two tabs: "Job descriptions" (the RO-03 table over
+ * my requisitions' current JDs) and "Templates" (the T12/G11 curated JD-template
+ * library, full CRUD). Both surfaces are admin + hiring_manager only, enforced
+ * server-side + at the page level.
+ */
+export function JdLibraryClient({
+  initial,
+  initialTemplates,
+}: {
+  initial: ListJdLibraryOutput;
+  initialTemplates: ListJdTemplatesOutput;
+}) {
+  const [tab, setTab] = useState<Tab>("descriptions");
+
+  return (
+    <div>
+      <div className="border-b border-neutral-200 px-8">
+        <nav className="mx-auto flex w-full max-w-6xl gap-1" aria-label="JD library sections">
+          {(
+            [
+              ["descriptions", "Job descriptions"],
+              ["templates", "Templates"],
+            ] as [Tab, string][]
+          ).map(([key, label]) => (
+            <button
+              key={key}
+              type="button"
+              onClick={() => setTab(key)}
+              className={cn(
+                "-mb-px border-b-2 px-3 py-3 text-sm font-medium transition-colors",
+                tab === key
+                  ? "border-brand-600 text-brand-700"
+                  : "border-transparent text-neutral-500 hover:text-neutral-800",
+              )}
+              aria-current={tab === key ? "page" : undefined}
+            >
+              {label}
+            </button>
+          ))}
+        </nav>
+      </div>
+
+      {tab === "descriptions" ? (
+        <JdDescriptionsTab initial={initial} />
+      ) : (
+        <JdTemplatesPanel initial={initialTemplates} />
+      )}
+    </div>
+  );
+}
+
+function JdDescriptionsTab({ initial }: { initial: ListJdLibraryOutput }) {
   const query = trpc.listJdLibrary.useQuery(
     { limit: 100 },
     { initialData: initial, refetchOnWindowFocus: false, staleTime: 5_000 },

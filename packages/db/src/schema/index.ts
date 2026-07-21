@@ -97,6 +97,9 @@ export * from "./comp-recommendations";
 export * from "./application-documents";
 export * from "./hr-case-notes";
 export * from "./hr-policy-documents";
+// Org-editable policy versioning + JD templates (T12 / G10+G11)
+export * from "./hr-policy-document-versions";
+export * from "./jd-templates";
 // Requirement-owner AI revision suggestions — cached per rejected req (RO-01)
 export * from "./req-revision-suggestions";
 // Recruiter Missing Info Tracker + AI brief cache (RECR-03)

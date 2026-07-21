@@ -3,6 +3,8 @@ import {
   pgTable,
   uuid,
   text,
+  integer,
+  boolean,
   timestamp,
   index,
   unique,
@@ -12,18 +14,32 @@ import {
 import { tenants } from "./tenants";
 
 /**
- * hr_policy_documents — the curated templates & policies library (HROPS-03).
+ * hr_policy_documents — the org's editable templates & policies library
+ * (HROPS-03, made org-editable in T12/G10).
  *
- * Read-only reference content surfaced on /hr-policies: standard offer letter,
- * health-insurance policy, leave policy, probation guidelines, relocation
- * allowance, employee referral program. Tenant-scoped (each tenant owns its
- * own library) so it carries the standard tenant_isolation policy — unlike the
- * platform-wide document_types reference table which has no tenant_id.
+ * Originally seeded READ-ONLY reference content surfaced on /hr-policies:
+ * standard offer letter, health-insurance policy, leave policy, probation
+ * guidelines, relocation allowance, employee referral program. As of T12 the
+ * seeded set is the STARTING library — hr_ops + admin can now author, edit,
+ * version, and archive their own policies through create/update/version/archive
+ * mutations (see router.ts). Tenant-scoped (each tenant owns its own library),
+ * carrying the standard tenant_isolation policy.
  *
- * Content is CURATED REFERENCE material (labelled as such in the UI), seeded by
- * db:seed:hr-policies with India-appropriate, labour-law-neutral wording. It is
- * NOT legal advice and NOT AI-generated. body_md is Markdown rendered read-only
- * in the View panel.
+ * The seeded content stays CURATED REFERENCE material (labelled as such in the
+ * UI) written with India-appropriate, labour-law-neutral wording — NOT legal
+ * advice and NOT AI-generated. body_md is Markdown, rendered in the View panel
+ * and editable in the authoring panel.
+ *
+ * VERSIONING (T12): `version` is the current version number; each save appends
+ * an immutable snapshot row to hr_policy_document_versions (the history log).
+ * `is_archived` hides a policy from the default library without deleting it
+ * (history is preserved). `updated_by_membership_id` stamps the last editor.
+ *
+ * AUDIT stance (unchanged from 0067): this table deliberately carries NO
+ * row-change trigger — an idempotent seed re-run would spray audit noise. The
+ * write mutations capture INTENT via withAudit (api_audit_logs), and
+ * hr_policy_document_versions is itself the content-change history. It keeps
+ * FORCE RLS + tenant isolation.
  *
  * unique(tenant_id, title) is the idempotent upsert key for the seed.
  */
@@ -38,6 +54,10 @@ export const hrPolicyDocuments = pgTable(
     category: text("category").notNull(),
     summary: text("summary").notNull(),
     bodyMd: text("body_md").notNull(),
+    // T12 — org-editable versioning + archive.
+    version: integer("version").notNull().default(1),
+    isArchived: boolean("is_archived").notNull().default(false),
+    updatedByMembershipId: uuid("updated_by_membership_id"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },

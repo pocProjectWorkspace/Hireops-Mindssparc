@@ -4459,14 +4459,192 @@ export const hrPolicyDocumentRowSchema = z.object({
   category: hrPolicyCategorySchema,
   summary: z.string(),
   bodyMd: z.string(),
+  // T12 (G10): org-editable versioning + soft archive.
+  version: z.number().int().positive(),
+  isArchived: z.boolean(),
   updatedAt: z.string(),
 });
 export type HrPolicyDocumentRow = z.infer<typeof hrPolicyDocumentRowSchema>;
+
+/**
+ * listHrPolicies input (T12). Empty by default — the library hides archived
+ * policies unless `includeArchived` is set (the "Show archived" toggle on
+ * /hr-policies). The whole surface stays HR_OPS_DOC_ROLES-gated + tenant-scoped.
+ */
+export const listHrPoliciesInputSchema = z
+  .object({
+    includeArchived: z.boolean().optional(),
+  })
+  .default({});
+export type ListHrPoliciesInput = z.infer<typeof listHrPoliciesInputSchema>;
 
 export const listHrPoliciesOutputSchema = z.object({
   items: z.array(hrPolicyDocumentRowSchema),
 });
 export type ListHrPoliciesOutput = z.infer<typeof listHrPoliciesOutputSchema>;
+
+/**
+ * createHrPolicy (T12/G10) — author a NEW policy. Lands at version 1 and writes
+ * a matching v1 snapshot into hr_policy_document_versions. hr_ops + admin.
+ */
+export const createHrPolicyInputSchema = z.object({
+  title: z.string().min(2).max(200),
+  category: hrPolicyCategorySchema,
+  summary: z.string().min(1).max(500),
+  bodyMd: z.string().min(1).max(50_000),
+  /** Optional note stamped on the v1 snapshot. */
+  changeNote: z.string().max(500).optional(),
+});
+export type CreateHrPolicyInput = z.infer<typeof createHrPolicyInputSchema>;
+export const createHrPolicyOutputSchema = z.object({
+  row: hrPolicyDocumentRowSchema,
+});
+export type CreateHrPolicyOutput = z.infer<typeof createHrPolicyOutputSchema>;
+
+/**
+ * updateHrPolicy (T12/G10) — edit an existing policy. Appends a new immutable
+ * snapshot (version + 1) to the history and bumps the document. `changeNote`
+ * records WHY the edit was made (surfaced in the version viewer).
+ */
+export const updateHrPolicyInputSchema = z.object({
+  id: z.string().uuid(),
+  title: z.string().min(2).max(200),
+  category: hrPolicyCategorySchema,
+  summary: z.string().min(1).max(500),
+  bodyMd: z.string().min(1).max(50_000),
+  changeNote: z.string().max(500).optional(),
+});
+export type UpdateHrPolicyInput = z.infer<typeof updateHrPolicyInputSchema>;
+export const updateHrPolicyOutputSchema = z.object({
+  row: hrPolicyDocumentRowSchema,
+});
+export type UpdateHrPolicyOutput = z.infer<typeof updateHrPolicyOutputSchema>;
+
+/**
+ * archiveHrPolicy (T12/G10) — soft archive / restore. `isArchived` defaults to
+ * true (the Archive action); passing false restores a policy from the archived
+ * view. History is preserved either way.
+ */
+export const archiveHrPolicyInputSchema = z.object({
+  id: z.string().uuid(),
+  isArchived: z.boolean().default(true),
+});
+export type ArchiveHrPolicyInput = z.infer<typeof archiveHrPolicyInputSchema>;
+export const archiveHrPolicyOutputSchema = z.object({
+  row: hrPolicyDocumentRowSchema,
+});
+export type ArchiveHrPolicyOutput = z.infer<typeof archiveHrPolicyOutputSchema>;
+
+/** One immutable snapshot in a policy's version history (T12). */
+export const hrPolicyVersionRowSchema = z.object({
+  id: z.string().uuid(),
+  policyDocumentId: z.string().uuid(),
+  version: z.number().int().positive(),
+  title: z.string(),
+  category: hrPolicyCategorySchema,
+  summary: z.string(),
+  bodyMd: z.string(),
+  changeNote: z.string().nullable(),
+  createdAt: z.string(),
+});
+export type HrPolicyVersionRow = z.infer<typeof hrPolicyVersionRowSchema>;
+
+export const listHrPolicyVersionsInputSchema = z.object({
+  policyId: z.string().uuid(),
+});
+export type ListHrPolicyVersionsInput = z.infer<typeof listHrPolicyVersionsInputSchema>;
+export const listHrPolicyVersionsOutputSchema = z.object({
+  items: z.array(hrPolicyVersionRowSchema),
+});
+export type ListHrPolicyVersionsOutput = z.infer<typeof listHrPolicyVersionsOutputSchema>;
+
+// ─────────── JD templates (T12/G11 — /jd-library → Templates) ───────────
+//
+// The org's curated JD-template library (jd_templates). Replaces the hardcoded
+// ROLE_TEMPLATES TS constant with a tenant-scoped, editable table. Money:
+// budgetMin/MaxInr are annual INR in MAJOR units (rupees), matching the wizard's
+// compBand fields — NOT the paise convention. admin + hiring_manager curate;
+// the requisition wizard reads presets from here (falling back to the seeded
+// defaults when a tenant has none).
+
+/** A JD-template skill preset — the { skillName, category, weight, isRequired,
+ * minYears } shape the SkillWeightsEditor consumes (RO-02). */
+export const jdTemplateSkillSchema = z.object({
+  skillName: z.string().min(1).max(120),
+  category: z.string().min(1).max(80),
+  weight: z.number().min(0).max(10),
+  isRequired: z.boolean(),
+  minYears: z.number().int().min(0).max(50).nullable(),
+});
+export type JdTemplateSkill = z.infer<typeof jdTemplateSkillSchema>;
+
+export const jdTemplateRowSchema = z.object({
+  id: z.string().uuid(),
+  label: z.string(),
+  title: z.string(),
+  roleFamily: z.string(),
+  seniority: z.string(),
+  locationType: requisitionLocationTypeSchema,
+  budgetMinInr: z.number().int().nonnegative(),
+  budgetMaxInr: z.number().int().nonnegative(),
+  extraContext: z.string(),
+  bodyMd: z.string(),
+  legalClauses: z.string(),
+  skills: z.array(jdTemplateSkillSchema),
+  isArchived: z.boolean(),
+  sortOrder: z.number().int(),
+  updatedAt: z.string(),
+});
+export type JdTemplateRow = z.infer<typeof jdTemplateRowSchema>;
+
+export const listJdTemplatesInputSchema = z
+  .object({
+    includeArchived: z.boolean().optional(),
+  })
+  .default({});
+export type ListJdTemplatesInput = z.infer<typeof listJdTemplatesInputSchema>;
+export const listJdTemplatesOutputSchema = z.object({
+  items: z.array(jdTemplateRowSchema),
+});
+export type ListJdTemplatesOutput = z.infer<typeof listJdTemplatesOutputSchema>;
+
+/** Shared write shape for create/update. All fields fully editable; nothing
+ * here is authoritative — a template is a starting point (labelled in the UI). */
+const jdTemplateWriteFields = {
+  label: z.string().min(1).max(120),
+  title: z.string().min(1).max(200),
+  roleFamily: z.string().min(1).max(120),
+  seniority: z.string().min(1).max(120),
+  locationType: requisitionLocationTypeSchema,
+  budgetMinInr: z.number().int().nonnegative(),
+  budgetMaxInr: z.number().int().nonnegative(),
+  extraContext: z.string().max(2000).default(""),
+  bodyMd: z.string().max(50_000).default(""),
+  legalClauses: z.string().max(20_000).default(""),
+  skills: z.array(jdTemplateSkillSchema).max(50).default([]),
+  sortOrder: z.number().int().min(0).max(9999).default(0),
+};
+
+export const createJdTemplateInputSchema = z.object(jdTemplateWriteFields);
+export type CreateJdTemplateInput = z.infer<typeof createJdTemplateInputSchema>;
+export const createJdTemplateOutputSchema = z.object({ row: jdTemplateRowSchema });
+export type CreateJdTemplateOutput = z.infer<typeof createJdTemplateOutputSchema>;
+
+export const updateJdTemplateInputSchema = z.object({
+  id: z.string().uuid(),
+  ...jdTemplateWriteFields,
+});
+export type UpdateJdTemplateInput = z.infer<typeof updateJdTemplateInputSchema>;
+export const updateJdTemplateOutputSchema = z.object({ row: jdTemplateRowSchema });
+export type UpdateJdTemplateOutput = z.infer<typeof updateJdTemplateOutputSchema>;
+
+export const archiveJdTemplateInputSchema = z.object({
+  id: z.string().uuid(),
+  isArchived: z.boolean().default(true),
+});
+export type ArchiveJdTemplateInput = z.infer<typeof archiveJdTemplateInputSchema>;
+export const archiveJdTemplateOutputSchema = z.object({ row: jdTemplateRowSchema });
+export type ArchiveJdTemplateOutput = z.infer<typeof archiveJdTemplateOutputSchema>;
 
 // ═══════════════════════ PANEL-01 — panel-member workboard ═══════════════════════
 //

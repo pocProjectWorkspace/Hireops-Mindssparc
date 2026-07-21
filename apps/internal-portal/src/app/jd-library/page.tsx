@@ -56,7 +56,10 @@ export default async function JdLibraryPage() {
   }
 
   const caller = createServerTRPCCaller(session);
-  const initial = await caller.listJdLibrary({ limit: 100 });
+  const [initial, initialTemplates] = await Promise.all([
+    caller.listJdLibrary({ limit: 100 }),
+    caller.listJdTemplates({}),
+  ]);
 
   return (
     <AppShell
@@ -67,7 +70,7 @@ export default async function JdLibraryPage() {
       user={sessionUserChip(session)}
       actions={<LinkButton href="/requisitions/new">Create new JD</LinkButton>}
     >
-      <JdLibraryClient initial={initial} />
+      <JdLibraryClient initial={initial} initialTemplates={initialTemplates} />
     </AppShell>
   );
 }
