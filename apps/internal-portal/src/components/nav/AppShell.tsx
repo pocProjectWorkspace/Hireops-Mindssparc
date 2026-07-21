@@ -108,7 +108,9 @@ export type PortalNavKey =
   // AD-03 admin persona pass
   | "messaging"
   | "system-setup"
-  | "bias-shield";
+  | "bias-shield"
+  // T1.3 — configurable approval routing (G13)
+  | "approval-routing";
 
 interface NavItem {
   key: PortalNavKey;
@@ -448,6 +450,13 @@ const ADMIN_NAV: NavItem[] = [
     label: "System setup",
     href: "/admin/system-setup",
     icon: <IconSystemSetup />,
+  },
+  // T1.3 — configurable approval routing (G13, option b).
+  {
+    key: "approval-routing",
+    label: "Approval routing",
+    href: "/admin/approval-routing",
+    icon: <IconWorkflows />,
   },
 ];
 

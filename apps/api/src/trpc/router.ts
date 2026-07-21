@@ -26,6 +26,7 @@ import {
   and,
   desc,
   eq,
+  gt,
   gte,
   inArray,
   isNull,
@@ -276,6 +277,10 @@ import {
   updateTenantBrandingInputSchema,
   updateTenantBrandingOutputSchema,
   resolveBrandingSettings,
+  listApprovalMatricesInputSchema,
+  listApprovalMatricesOutputSchema,
+  upsertApprovalMatrixInputSchema,
+  upsertApprovalMatrixOutputSchema,
   getBiasLexiconInputSchema,
   getBiasLexiconOutputSchema,
   updateTenantBiasLexiconInputSchema,
@@ -2569,6 +2574,38 @@ async function loadCompDeskAssembled(
  * OFFERS, then a fresh immutable chain from it (mirror of the requisition chain
  * resolver — offers route out-of-band approval to the HR head). Returns chain id.
  */
+/**
+ * T1.3 (G13), OPTION (b): derive the immutable `resolved_steps` a fresh approval
+ * chain snapshots from an authored matrix's opaque `rules`. The chain routes to
+ * whoever the matrix's steps name, so changing the approver role in the admin
+ * surface actually changes who the platform asks — closing the config-lie where
+ * the resolver hardcoded a single hr_head step regardless of the matrix.
+ *
+ * Returns null for a rules blob with no usable steps (malformed / empty), which
+ * signals the resolver to fall back to its literal single-step create path. Maps
+ * every step faithfully; the admin editor only ever authors a single step today,
+ * so multi-step matrices do not exist — but if one did, this reflects it rather
+ * than lying about it.
+ */
+function deriveResolvedSteps(rules: unknown) {
+  const steps = (rules as { steps?: unknown } | null | undefined)?.steps;
+  if (!Array.isArray(steps) || steps.length === 0) return null;
+  return steps.map((step, i) => {
+    const s = (step ?? {}) as {
+      approver_kind?: string;
+      approver_ref?: string;
+      required?: boolean;
+    };
+    return {
+      step_index: i,
+      approver_kind: s.approver_kind ?? "role",
+      approver_ref: s.approver_ref,
+      required: s.required ?? true,
+      order_index: i,
+    };
+  });
+}
+
 async function resolveOfferApprovalChain(
   db: NonNullable<HonoTRPCContext["db"]>,
   tenantId: string,
@@ -2588,16 +2625,29 @@ async function resolveOfferApprovalChain(
     },
   ];
 
+  // OPTION (b): prefer the matrix that is IN FORCE right now and DERIVE the
+  // resolved steps from its rules, so an admin authoring a different approver
+  // role (or effective-dating a change) actually reroutes the chain. Fall back
+  // to the literal single-step hr_head create only when no matrix is effective.
+  const now = new Date();
   const [existing] = await db
     .select({ id: approvalMatrices.id, rules: approvalMatrices.rules })
     .from(approvalMatrices)
-    .where(and(eq(approvalMatrices.tenantId, tenantId), eq(approvalMatrices.subjectType, "offer")))
+    .where(
+      and(
+        eq(approvalMatrices.tenantId, tenantId),
+        eq(approvalMatrices.subjectType, "offer"),
+        lte(approvalMatrices.effectiveFrom, now),
+        or(isNull(approvalMatrices.effectiveTo), gt(approvalMatrices.effectiveTo, now)),
+      ),
+    )
     .orderBy(desc(approvalMatrices.effectiveFrom))
     .limit(1);
 
   let matrixId = existing?.id;
   let matrixRules: unknown = existing?.rules;
-  if (!matrixId) {
+  let resolvedSteps = existing ? deriveResolvedSteps(existing.rules) : null;
+  if (!matrixId || !resolvedSteps) {
     const [created] = await db
       .insert(approvalMatrices)
       .values({
@@ -2611,6 +2661,7 @@ async function resolveOfferApprovalChain(
       .returning({ id: approvalMatrices.id, rules: approvalMatrices.rules });
     matrixId = created?.id;
     matrixRules = created?.rules;
+    resolvedSteps = RESOLVED_STEPS;
   }
   if (!matrixId) {
     throw new TRPCError({
@@ -2625,7 +2676,7 @@ async function resolveOfferApprovalChain(
       tenantId,
       matrixId,
       matrixVersionSnapshot: matrixRules ?? RULES,
-      resolvedSteps: RESOLVED_STEPS,
+      resolvedSteps,
     })
     .returning({ id: approvalChains.id });
   if (!chain) {
@@ -7805,6 +7856,157 @@ export const appRouter = router({
             darkModeDefault: brandingBlock.darkModeDefault,
           },
         };
+      });
+    }),
+
+  // ─────────────────── listApprovalMatrices (T1.3 / G13, option b) ───────────────────
+  //
+  // Admin read of the tenant's authored approval matrices. Each matrix carries a
+  // single approver step (option b's hard limit); `approverRole` is derived from
+  // rules.steps[0].approver_ref and `isActiveNow` from the effective window vs the
+  // server clock. Ordered by subject_type then effective_from desc (newest first).
+  // Read-only, admin-gated, no withAudit (matches the other admin reads). Reads
+  // through the tenant-scoped client — approval_matrices is standard
+  // tenant_isolation RLS.
+  listApprovalMatrices: protectedProcedure
+    .input(listApprovalMatricesInputSchema)
+    .output(listApprovalMatricesOutputSchema)
+    .query(async ({ ctx, input }) => {
+      requireAnyRole(ctx, USERS_ADMIN_ROLES, "Approval routing is admin-only");
+      const db = requireDb(ctx);
+      if (!ctx.tenantId) {
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: "protected procedure missing tenantId",
+        });
+      }
+      const tenantId = ctx.tenantId;
+      // The admin surface only authors requisition + offer matrices; restrict to
+      // those two so the row's subject_type narrows to the api-types enum.
+      const conditions = [
+        eq(approvalMatrices.tenantId, tenantId),
+        inArray(approvalMatrices.subjectType, ["requisition", "offer"] as const),
+      ];
+      if (input.subjectType) {
+        conditions.push(eq(approvalMatrices.subjectType, input.subjectType));
+      }
+      const rows = await db
+        .select({
+          id: approvalMatrices.id,
+          subjectType: approvalMatrices.subjectType,
+          name: approvalMatrices.name,
+          rules: approvalMatrices.rules,
+          effectiveFrom: approvalMatrices.effectiveFrom,
+          effectiveTo: approvalMatrices.effectiveTo,
+          createdAt: approvalMatrices.createdAt,
+        })
+        .from(approvalMatrices)
+        .where(and(...conditions))
+        .orderBy(approvalMatrices.subjectType, desc(approvalMatrices.effectiveFrom));
+
+      const now = new Date();
+      return {
+        matrices: rows.map((r) => {
+          const steps = (r.rules as { steps?: { approver_ref?: unknown }[] } | null)?.steps;
+          const approverRef =
+            Array.isArray(steps) && steps.length > 0 ? steps[0]?.approver_ref : undefined;
+          const isActiveNow =
+            r.effectiveFrom.getTime() <= now.getTime() &&
+            (r.effectiveTo === null || r.effectiveTo.getTime() > now.getTime());
+          return {
+            id: r.id,
+            subjectType: r.subjectType as "requisition" | "offer",
+            name: r.name,
+            approverRole: typeof approverRef === "string" ? approverRef : "unknown",
+            effectiveFrom: r.effectiveFrom.toISOString(),
+            effectiveTo: r.effectiveTo ? r.effectiveTo.toISOString() : null,
+            isActiveNow,
+            createdAt: r.createdAt.toISOString(),
+          };
+        }),
+      };
+    }),
+
+  // ─────────────────── upsertApprovalMatrix (T1.3 / G13, option b) ───────────────────
+  //
+  // Admin write of ONE single-approver matrix. Authors WHO approves (a role the
+  // decision spine actually accepts — hr_head or admin, enforced by the zod enum
+  // and mirrored from REQUISITION/OFFER_APPROVAL_DECIDE_ROLES) and WHEN the policy
+  // is in force (effective_from + optional effective_to). Deliberately NO multi-
+  // step authoring: a second step would be silently ignored by the decision
+  // procedures — the exact config-lie this ticket exists to kill. The resolvers
+  // derive resolved_steps from the currently-effective matrix, so a change here
+  // reroutes the next chain. Admin-gated + audited; tenant-scoped client.
+  upsertApprovalMatrix: protectedProcedure
+    .input(upsertApprovalMatrixInputSchema)
+    .output(upsertApprovalMatrixOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      return withAudit("upsert_approval_matrix", ctx, input, async () => {
+        requireAnyRole(ctx, USERS_ADMIN_ROLES, "Approval routing is admin-only");
+        const db = requireDb(ctx);
+        if (!ctx.tenantId) {
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: "protected procedure missing tenantId",
+          });
+        }
+        const tenantId = ctx.tenantId;
+
+        const effectiveFrom = new Date(input.effectiveFrom);
+        const effectiveTo = input.effectiveTo ? new Date(input.effectiveTo) : null;
+        if (effectiveTo && effectiveTo.getTime() <= effectiveFrom.getTime()) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: "The effective-to date must be after the effective-from date.",
+          });
+        }
+
+        // Single-step rules — option (b)'s hard limit. approver_ref is validated
+        // to hr_head | admin by the input schema.
+        const rules = {
+          version: 1,
+          steps: [{ approver_kind: "role", approver_ref: input.approverRole, required: true }],
+        };
+
+        if (input.id) {
+          const [updated] = await db
+            .update(approvalMatrices)
+            .set({
+              subjectType: input.subjectType,
+              name: input.name,
+              rules,
+              effectiveFrom,
+              effectiveTo,
+              updatedAt: new Date(),
+            })
+            .where(and(eq(approvalMatrices.tenantId, tenantId), eq(approvalMatrices.id, input.id)))
+            .returning({ id: approvalMatrices.id });
+          if (!updated) {
+            throw new TRPCError({ code: "NOT_FOUND", message: "Approval matrix not found." });
+          }
+          return { id: updated.id };
+        }
+
+        const membershipId = await resolveActorMembership(db, ctx);
+        const [created] = await db
+          .insert(approvalMatrices)
+          .values({
+            tenantId,
+            subjectType: input.subjectType,
+            name: input.name,
+            rules,
+            effectiveFrom,
+            effectiveTo,
+            createdByMembershipId: membershipId,
+          })
+          .returning({ id: approvalMatrices.id });
+        if (!created) {
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: "approval_matrix insert returned no row",
+          });
+        }
+        return { id: created.id };
       });
     }),
 
@@ -21001,18 +21203,29 @@ async function resolveRequisitionApprovalChain(
     },
   ];
 
+  // OPTION (b): prefer the matrix that is IN FORCE right now and DERIVE the
+  // resolved steps from its rules, so an admin authoring a different approver
+  // role (or effective-dating a change) actually reroutes the chain. Fall back
+  // to the literal single-step hr_head create only when no matrix is effective.
+  const now = new Date();
   const [existing] = await db
     .select({ id: approvalMatrices.id, rules: approvalMatrices.rules })
     .from(approvalMatrices)
     .where(
-      and(eq(approvalMatrices.tenantId, tenantId), eq(approvalMatrices.subjectType, "requisition")),
+      and(
+        eq(approvalMatrices.tenantId, tenantId),
+        eq(approvalMatrices.subjectType, "requisition"),
+        lte(approvalMatrices.effectiveFrom, now),
+        or(isNull(approvalMatrices.effectiveTo), gt(approvalMatrices.effectiveTo, now)),
+      ),
     )
     .orderBy(desc(approvalMatrices.effectiveFrom))
     .limit(1);
 
   let matrixId = existing?.id;
   let matrixRules: unknown = existing?.rules;
-  if (!matrixId) {
+  let resolvedSteps = existing ? deriveResolvedSteps(existing.rules) : null;
+  if (!matrixId || !resolvedSteps) {
     const [created] = await db
       .insert(approvalMatrices)
       .values({
@@ -21026,6 +21239,7 @@ async function resolveRequisitionApprovalChain(
       .returning({ id: approvalMatrices.id, rules: approvalMatrices.rules });
     matrixId = created?.id;
     matrixRules = created?.rules;
+    resolvedSteps = RESOLVED_STEPS;
   }
   if (!matrixId) {
     throw new TRPCError({
@@ -21040,7 +21254,7 @@ async function resolveRequisitionApprovalChain(
       tenantId,
       matrixId,
       matrixVersionSnapshot: matrixRules ?? RULES,
-      resolvedSteps: RESOLVED_STEPS,
+      resolvedSteps,
     })
     .returning({ id: approvalChains.id });
   if (!chain) {
