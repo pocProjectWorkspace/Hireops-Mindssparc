@@ -88,6 +88,7 @@ import {
   documentTypes,
   marketBenchmarks,
   tenantApplicationSources,
+  candidateFieldPolicy,
   tenantEmailTemplateOverrides,
   requisitionFeasibility,
   hrRoundAssessments,
@@ -469,6 +470,13 @@ import {
   upsertTenantSourceOutputSchema,
   setTenantSourceEnabledInputSchema,
   setTenantSourceEnabledOutputSchema,
+  getCandidateFieldPolicyInputSchema,
+  getCandidateFieldPolicyOutputSchema,
+  upsertCandidateFieldPolicyInputSchema,
+  upsertCandidateFieldPolicyOutputSchema,
+  resetCandidateFieldPolicyInputSchema,
+  resetCandidateFieldPolicyOutputSchema,
+  type CandidateFieldPolicyEntry,
   type TenantSourceRow,
   // T1.4 / G09 email/notification copy overrides
   getEmailTemplateCatalogInputSchema,
@@ -715,11 +723,15 @@ import {
 } from "../lib/req-revision";
 import {
   computeMissingInfo,
-  blocksAdvanceLabelFor,
+  blocksAdvanceLabelForDef,
   fieldDef as missingInfoFieldDef,
+  fieldDefFrom,
   isMissingInfoFieldKey,
+  effectiveMissingInfoFields,
+  MISSING_INFO_FIELDS,
   type FieldPresence,
   type MissingInfoFieldKey,
+  type MissingInfoPolicyOverride,
 } from "../lib/missing-info";
 import {
   buildRecruiterBriefPrompt,
@@ -1079,6 +1091,145 @@ function tenantSourceRowToApi(row: typeof tenantApplicationSources.$inferSelect)
     notes: row.notes ?? null,
     updatedAt: row.updatedAt.toISOString(),
   };
+}
+
+// T2.1 / G05 — the required-candidate-field policy. Reading + editing the
+// requiredness/gate override over the seven-field Missing-Info catalog is
+// admin-only tenant config, like every other admin config surface. RLS scopes
+// rows to the tenant on top; the tracker READS the effective policy (recruiter
+// surfaces render it), but only an admin writes it.
+const CANDIDATE_FIELD_POLICY_ROLES = new Set(["admin"]);
+
+/** Is a raw string a valid application_stage? Guards a text policy column value
+ * (blocks_advance_stage) before it is treated as an ApplicationStage. */
+function isApplicationStageValue(value: string | null): value is ApplicationStage {
+  return value !== null && (applicationStageEnum.enumValues as readonly string[]).includes(value);
+}
+
+/**
+ * Load a tenant's candidate_field_policy rows as effective-policy OVERRIDES for
+ * the pure missing-info engine (T2.1 / G05). Only rows for the seven known keys
+ * with a valid requiredness are returned; an invalid/legacy blocks_advance_stage
+ * degrades to null (tracked-only). Drives the tracker/brief DISPLAY. Empty array
+ * when the tenant has no policy → callers are byte-identical to today.
+ */
+async function loadCandidateFieldPolicyOverrides(
+  db: NonNullable<HonoTRPCContext["db"]>,
+  tenantId: string,
+): Promise<MissingInfoPolicyOverride[]> {
+  const rows = await db
+    .select({
+      fieldKey: candidateFieldPolicy.fieldKey,
+      requiredness: candidateFieldPolicy.requiredness,
+      blocksAdvanceStage: candidateFieldPolicy.blocksAdvanceStage,
+    })
+    .from(candidateFieldPolicy)
+    .where(eq(candidateFieldPolicy.tenantId, tenantId));
+  const out: MissingInfoPolicyOverride[] = [];
+  for (const r of rows) {
+    if (!isMissingInfoFieldKey(r.fieldKey)) continue;
+    if (r.requiredness !== "required" && r.requiredness !== "optional") continue;
+    out.push({
+      fieldKey: r.fieldKey,
+      requiredness: r.requiredness,
+      blocksAdvanceStage: isApplicationStageValue(r.blocksAdvanceStage)
+        ? r.blocksAdvanceStage
+        : null,
+    });
+  }
+  return out;
+}
+
+/** Build the seven catalog entries the admin editor renders — each field's code
+ * default + this tenant's EFFECTIVE requiredness/gate + whether a saved policy
+ * row drives (and ENFORCES) it (`isConfigured`). */
+function buildCandidateFieldPolicyEntries(
+  overrides: readonly MissingInfoPolicyOverride[],
+): CandidateFieldPolicyEntry[] {
+  const byKey = new Map(overrides.map((o) => [o.fieldKey, o]));
+  return MISSING_INFO_FIELDS.map((def) => {
+    const o = byKey.get(def.key);
+    return {
+      fieldKey: def.key,
+      label: def.label,
+      dataSource: def.source,
+      requiredness: o?.requiredness ?? def.requiredness,
+      blocksAdvanceStage: o ? o.blocksAdvanceStage : def.blocksAdvanceStage,
+      defaultRequiredness: def.requiredness,
+      defaultBlocksAdvanceStage: def.blocksAdvanceStage,
+      isConfigured: o !== undefined,
+    };
+  });
+}
+
+/**
+ * Deterministic field presence for ONE application — the enforcement read. Same
+ * inputs as the tracker's computeFieldPresence (expected salary + parsed resume +
+ * person location). Empty map when the application is not found.
+ */
+async function loadApplicationFieldPresence(
+  db: NonNullable<HonoTRPCContext["db"]>,
+  applicationId: string,
+): Promise<FieldPresence> {
+  const [row] = await db
+    .select({
+      expectedSalaryInrPaise: applications.expectedSalaryInrPaise,
+      parsedSkills: candidates.parsedSkills,
+      personLocationCountry: persons.locationCountry,
+    })
+    .from(applications)
+    .innerJoin(candidates, eq(candidates.id, applications.candidateId))
+    .innerJoin(persons, eq(persons.id, candidates.personId))
+    .where(eq(applications.id, applicationId))
+    .limit(1);
+  if (!row) return {};
+  return computeFieldPresence({
+    expectedSalaryInrPaise: row.expectedSalaryInrPaise,
+    parsed: narrowParsedResume(row.parsedSkills),
+    personLocationCountry: row.personLocationCountry,
+  });
+}
+
+/**
+ * T2.1 / G05 REAL GATE. Returns a refusal message when advancing `applicationId`
+ * to `targetStage` is blocked by the tenant's EFFECTIVE candidate-field policy,
+ * or null when it is allowed.
+ *
+ * The gate reuses the pure engine (effectiveMissingInfoFields + computeMissingInfo)
+ * so it is driven by the SAME policy the tracker displays: for a field whose
+ * effective requiredness is 'required' and whose effective blocks_advance_stage
+ * equals `targetStage`, a MISSING value refuses the transition. A tenant with no
+ * policy rows falls back to the code-default catalog (effectiveMissingInfoFields
+ * returns the constant), so the effective policy is exactly the constant.
+ *
+ * ENFORCEMENT-TRACE NOTE (honesty mandate): before T2.1 these blocks_advance_stage
+ * values were DISPLAY-ONLY — transitionApplicationStage gated only on the HROPS-01
+ * HR-round assessment; draftOffer/extendOffer gated only on stage/comp; the
+ * knockout engine is a SEPARATE apply-time mechanism. This is the first place the
+ * catalog's gate is enforced. See the hand-back for the behaviour-change footprint
+ * on flows that advance under-populated candidates.
+ */
+async function candidateFieldPolicyAdvanceBlock(
+  db: NonNullable<HonoTRPCContext["db"]>,
+  tenantId: string,
+  applicationId: string,
+  targetStage: ApplicationStage,
+): Promise<string | null> {
+  const overrides = await loadCandidateFieldPolicyOverrides(db, tenantId);
+  const fields = effectiveMissingInfoFields(overrides);
+  const gatesThisStage = fields.some(
+    (f) => f.requiredness === "required" && f.blocksAdvanceStage === targetStage,
+  );
+  if (!gatesThisStage) return null;
+
+  const presence = await loadApplicationFieldPresence(db, applicationId);
+  const missingLabels = computeMissingInfo(presence, fields)
+    .filter((v) => v.requiredness === "required" && v.blocksAdvanceStage === targetStage)
+    .map((v) => v.fieldLabel);
+  if (missingLabels.length === 0) return null;
+
+  const stageName = STAGE_LABELS[targetStage] ?? targetStage.replace(/_/g, " ");
+  return `Cannot advance to ${stageName}: this tenant's candidate-field policy requires ${missingLabels.join(", ")} before this stage. Chase the missing information (Missing Info tracker), or relax the policy in Admin → Candidate fields.`;
 }
 
 // T1.4 / G09 — email/notification copy overrides. Reading the catalog + editing
@@ -18223,7 +18374,11 @@ export const appRouter = router({
           parsed,
           personLocationCountry: row.personLocationCountry,
         });
-        const verdicts = computeMissingInfo(presence);
+        // T2.1 / G05 — display the tenant's EFFECTIVE required-field policy (the
+        // override merged over the code catalog). No policy rows → the constant.
+        const briefPolicyOverrides = await loadCandidateFieldPolicyOverrides(db, ctx.tenantId);
+        const briefEffectiveFields = effectiveMissingInfoFields(briefPolicyOverrides);
+        const verdicts = computeMissingInfo(presence, briefEffectiveFields);
 
         const reqRows = await db
           .select({ fieldKey: missingInfoRequests.fieldKey, status: missingInfoRequests.status })
@@ -18452,6 +18607,12 @@ export const appRouter = router({
           requestRows.map((r) => [`${r.applicationId}::${r.fieldKey}`, r]),
         );
 
+        // T2.1 / G05 — the tenant's EFFECTIVE required-field policy (override
+        // merged over the code catalog). No policy rows → the constant, so the
+        // tracker renders byte-identically to today.
+        const policyOverrides = await loadCandidateFieldPolicyOverrides(db, tenantId);
+        const effectiveFields = effectiveMissingInfoFields(policyOverrides);
+
         const rows: MissingInfoRow[] = [];
         for (const a of appRows) {
           if (TERMINAL_APP_STAGES.has(a.currentStage)) continue;
@@ -18461,7 +18622,7 @@ export const appRouter = router({
             parsed,
             personLocationCountry: a.personLocationCountry,
           });
-          const verdicts = computeMissingInfo(presence);
+          const verdicts = computeMissingInfo(presence, effectiveFields);
           const candidateRef = `RC-${a.candidateId.slice(0, 6).toUpperCase()}`;
 
           // Union: currently-missing fields (pending unless a row upgrades them)
@@ -18470,7 +18631,7 @@ export const appRouter = router({
           const emit = (fieldKey: MissingInfoFieldKey) => {
             if (seen.has(fieldKey)) return;
             seen.add(fieldKey);
-            const def = missingInfoFieldDef(fieldKey);
+            const def = fieldDefFrom(effectiveFields, fieldKey);
             if (!def) return;
             const req = requestByKey.get(`${a.applicationId}::${fieldKey}`);
             const status = (req?.status as MissingInfoStatus) ?? "pending";
@@ -18486,7 +18647,7 @@ export const appRouter = router({
               status,
               lastContactAt: req?.lastContactAt ? toIsoString(req.lastContactAt) : null,
               blocksAdvanceStage: def.blocksAdvanceStage,
-              blocksAdvanceLabel: blocksAdvanceLabelFor(fieldKey),
+              blocksAdvanceLabel: blocksAdvanceLabelForDef(def),
               requestId: req?.requestId ?? null,
             });
           };
@@ -18827,6 +18988,136 @@ export const appRouter = router({
           throw new TRPCError({ code: "NOT_FOUND", message: "sourcing channel not found" });
         }
         return { row: tenantSourceRowToApi(row) };
+      });
+    }),
+
+  // ═══════════ T2.1 / G05 — required-candidate-field policy ═══════════
+  //
+  // A tenant's editable requiredness/gate OVERRIDE over the seven-field
+  // Missing-Info CATALOG (apps/api/src/lib/missing-info.ts). The code constant
+  // stays the canonical catalog (which fields are trackable + their data source);
+  // these procedures let an admin override a field's requiredness and the stage a
+  // missing REQUIRED field gates. field_key ∈ the seven; a field with no row falls
+  // back to the code default. Admin-only; audited. RLS scopes rows to the tenant.
+
+  /**
+   * getCandidateFieldPolicy — the full seven-field catalog plus, for each field,
+   * this tenant's EFFECTIVE requiredness/gate (override merged over the code
+   * default), the data-source label, and whether a saved policy row drives it.
+   * Admin read; the editor renders directly from this.
+   */
+  getCandidateFieldPolicy: protectedProcedure
+    .input(getCandidateFieldPolicyInputSchema)
+    .output(getCandidateFieldPolicyOutputSchema)
+    .query(async ({ ctx }) => {
+      requireAnyRole(
+        ctx,
+        CANDIDATE_FIELD_POLICY_ROLES,
+        "The candidate-field policy is admin-only",
+      );
+      const db = requireDb(ctx);
+      if (!ctx.tenantId) {
+        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
+      }
+      const overrides = await loadCandidateFieldPolicyOverrides(db, ctx.tenantId);
+      return { fields: buildCandidateFieldPolicyEntries(overrides) };
+    }),
+
+  /**
+   * upsertCandidateFieldPolicy — admin-only, audited override of ONE catalog
+   * field, keyed by (tenant, field_key). zod pins field_key to the seven known
+   * keys, requiredness to the enum, and blocksAdvanceStage to a valid
+   * ApplicationStage or null, so unknowns are rejected before this runs. The saved
+   * policy drives BOTH the tracker display AND the advance gate
+   * (candidateFieldPolicyAdvanceBlock).
+   */
+  upsertCandidateFieldPolicy: protectedProcedure
+    .input(upsertCandidateFieldPolicyInputSchema)
+    .output(upsertCandidateFieldPolicyOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      return withAudit("upsert_candidate_field_policy", ctx, input, async () => {
+        requireAnyRole(
+          ctx,
+          CANDIDATE_FIELD_POLICY_ROLES,
+          "Editing the candidate-field policy is admin-only",
+        );
+        const db = requireDb(ctx);
+        if (!ctx.tenantId) {
+          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
+        }
+        const tenantId = ctx.tenantId;
+        const membershipId = await resolveActorMembership(db, ctx);
+        await db
+          .insert(candidateFieldPolicy)
+          .values({
+            tenantId,
+            fieldKey: input.fieldKey,
+            requiredness: input.requiredness,
+            blocksAdvanceStage: input.blocksAdvanceStage,
+            updatedBy: membershipId,
+            updatedAt: new Date(),
+          })
+          .onConflictDoUpdate({
+            target: [candidateFieldPolicy.tenantId, candidateFieldPolicy.fieldKey],
+            set: {
+              requiredness: input.requiredness,
+              blocksAdvanceStage: input.blocksAdvanceStage,
+              updatedBy: membershipId,
+              updatedAt: new Date(),
+            },
+          });
+        const overrides = await loadCandidateFieldPolicyOverrides(db, tenantId);
+        const entries = buildCandidateFieldPolicyEntries(overrides);
+        const field = entries.find((e) => e.fieldKey === input.fieldKey);
+        if (!field) {
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: "candidate field policy upsert returned no entry",
+          });
+        }
+        return { field };
+      });
+    }),
+
+  /**
+   * resetCandidateFieldPolicy — admin-only, audited delete of ONE field's policy
+   * row, returning the field to its code default (tracked-only unless the default
+   * gate applies). Idempotent — resetting an already-default field returns the
+   * current (default) entry.
+   */
+  resetCandidateFieldPolicy: protectedProcedure
+    .input(resetCandidateFieldPolicyInputSchema)
+    .output(resetCandidateFieldPolicyOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      return withAudit("reset_candidate_field_policy", ctx, input, async () => {
+        requireAnyRole(
+          ctx,
+          CANDIDATE_FIELD_POLICY_ROLES,
+          "Editing the candidate-field policy is admin-only",
+        );
+        const db = requireDb(ctx);
+        if (!ctx.tenantId) {
+          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
+        }
+        const tenantId = ctx.tenantId;
+        await db
+          .delete(candidateFieldPolicy)
+          .where(
+            and(
+              eq(candidateFieldPolicy.tenantId, tenantId),
+              eq(candidateFieldPolicy.fieldKey, input.fieldKey),
+            ),
+          );
+        const overrides = await loadCandidateFieldPolicyOverrides(db, tenantId);
+        const entries = buildCandidateFieldPolicyEntries(overrides);
+        const field = entries.find((e) => e.fieldKey === input.fieldKey);
+        if (!field) {
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: "candidate field policy reset returned no entry",
+          });
+        }
+        return { field };
       });
     }),
 
@@ -21092,6 +21383,24 @@ async function transitionApplicationStage(
     }
   }
 
+  // T2.1 / G05 deterministic gate: on a FORWARD advance, the tenant's effective
+  // candidate-field policy can require certain fields before a stage. A missing
+  // REQUIRED field whose effective blocks_advance_stage === targetStage refuses
+  // the move server-side (the first real enforcement of the Missing-Info catalog's
+  // gate — previously display-only). Non-forward moves (reject to a terminal,
+  // any step-back) are never gated, mirroring the HROPS-01 forward-only gate above.
+  if (STAGE_ORDER_INDEX[targetStage] > STAGE_ORDER_INDEX[app.currentStage]) {
+    const policyBlock = await candidateFieldPolicyAdvanceBlock(
+      db,
+      app.tenantId,
+      applicationId,
+      targetStage,
+    );
+    if (policyBlock) {
+      throw new TRPCError({ code: "BAD_REQUEST", message: policyBlock });
+    }
+  }
+
   const membershipId = await resolveActorMembership(db, ctx);
 
   const [tx] = await db
@@ -21169,6 +21478,15 @@ async function transitionApplicationStage(
  * on a saved 'proceed' HR-round assessment (see transitionApplicationStage).
  */
 const HR_ROUND_FORWARD_STAGES = new Set<ApplicationStage>(["offer_drafted", "offer_accepted"]);
+
+/**
+ * Canonical stage ordering (the application_stage enum's declared order is the
+ * typical forward progression). Used to tell a FORWARD advance from a step-back /
+ * reject so the T2.1 candidate-field gate only fires on forward moves.
+ */
+const STAGE_ORDER_INDEX: Record<ApplicationStage, number> = Object.fromEntries(
+  applicationStageEnum.enumValues.map((s, i) => [s, i]),
+) as Record<ApplicationStage, number>;
 
 const CANDIDATE_VISIBLE_STAGES = new Set<ApplicationStage>([
   "shortlisted",

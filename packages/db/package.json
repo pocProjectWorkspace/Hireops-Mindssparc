@@ -31,6 +31,7 @@
     "db:seed:t11-sources": "tsx src/scripts/seed-t11-sources.ts",
     "db:seed:t13": "tsx src/scripts/seed-t13-approval-routing.ts",
     "db:seed:t14": "tsx src/scripts/seed-t14-email-overrides.ts",
+    "db:seed:t21": "tsx src/scripts/seed-t21-field-policy.ts",
     "db:groom:demo-data": "tsx src/scripts/groom-demo-data.ts",
     "db:store:demo-ai-credential": "tsx src/scripts/store-demo-ai-credential.ts"
   },

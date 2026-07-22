@@ -112,7 +112,9 @@ export type PortalNavKey =
   // T1.3 — configurable approval routing (G13)
   | "approval-routing"
   // T1.4 — email/notification copy overrides (G09)
-  | "email-templates";
+  | "email-templates"
+  // T2.1 — required-candidate-field policy (G05)
+  | "candidate-fields";
 
 interface NavItem {
   key: PortalNavKey;
@@ -467,6 +469,14 @@ const ADMIN_NAV: NavItem[] = [
     label: "Email templates",
     href: "/admin/email-templates",
     icon: <IconBranding />,
+  },
+  // T2.1 — required-candidate-field policy (G05). Reuses IconMissingInfo — this
+  // configures the recruiter's Missing Info catalog (requiredness + gates).
+  {
+    key: "candidate-fields",
+    label: "Candidate fields",
+    href: "/admin/candidate-fields",
+    icon: <IconMissingInfo />,
   },
 ];
 

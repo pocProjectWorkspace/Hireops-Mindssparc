@@ -125,15 +125,62 @@ export function stageLabel(stage: ApplicationStage): string {
   return STAGE_LABEL[stage] ?? stage.replace(/_/g, " ");
 }
 
-/** A field's deterministic "Blocks advance to <stage>" label, or null. */
+/** A def's deterministic "Blocks advance to <stage>" label, or null. Works off a
+ * field DEF (not the constant), so it honours an effective/tenant-overridden gate. */
+export function blocksAdvanceLabelForDef(def: MissingInfoFieldDef): string | null {
+  if (def.blocksAdvanceStage === null) return null;
+  return `Blocks advance to ${stageLabel(def.blocksAdvanceStage)}`;
+}
+
+/** A field's deterministic "Blocks advance to <stage>" label, or null. Reads the
+ * code-owned default catalog — for the effective (tenant-policy) label use
+ * blocksAdvanceLabelForDef with an effective def. */
 export function blocksAdvanceLabelFor(key: MissingInfoFieldKey): string | null {
   const def = FIELD_BY_KEY[key];
-  if (!def || def.blocksAdvanceStage === null) return null;
-  return `Blocks advance to ${stageLabel(def.blocksAdvanceStage)}`;
+  if (!def) return null;
+  return blocksAdvanceLabelForDef(def);
 }
 
 export function fieldDef(key: MissingInfoFieldKey): MissingInfoFieldDef | undefined {
   return FIELD_BY_KEY[key];
+}
+
+/**
+ * A tenant's override for ONE catalog field (T2.1 / G05). The router loads these
+ * from candidate_field_policy and merges them over the code default catalog. Only
+ * the seven known keys are representable; `blocksAdvanceStage: null` = tracked-only.
+ */
+export interface MissingInfoPolicyOverride {
+  fieldKey: MissingInfoFieldKey;
+  requiredness: MissingInfoRequiredness;
+  blocksAdvanceStage: ApplicationStage | null;
+}
+
+/**
+ * Merge a tenant's policy overrides over the code default catalog and return the
+ * EFFECTIVE field defs (same order as MISSING_INFO_FIELDS). A field with no
+ * override keeps its code default byte-identically; with no overrides at all this
+ * returns the constant itself (referential identity), so callers without a policy
+ * are unchanged. Pure: no I/O.
+ */
+export function effectiveMissingInfoFields(
+  overrides: readonly MissingInfoPolicyOverride[] = [],
+): readonly MissingInfoFieldDef[] {
+  if (overrides.length === 0) return MISSING_INFO_FIELDS;
+  const byKey = new Map(overrides.map((o) => [o.fieldKey, o]));
+  return MISSING_INFO_FIELDS.map((def) => {
+    const o = byKey.get(def.key);
+    if (!o) return def;
+    return { ...def, requiredness: o.requiredness, blocksAdvanceStage: o.blocksAdvanceStage };
+  });
+}
+
+/** Look up a def by key in a (possibly effective) field-def array. */
+export function fieldDefFrom(
+  fields: readonly MissingInfoFieldDef[],
+  key: MissingInfoFieldKey,
+): MissingInfoFieldDef | undefined {
+  return fields.find((f) => f.key === key);
 }
 
 export function isMissingInfoFieldKey(key: string): key is MissingInfoFieldKey {
@@ -157,17 +204,24 @@ export interface MissingFieldVerdict {
  * (presence explicitly false). A field absent from the map is treated as
  * "unknown" and skipped — the caller decides presence; this engine only
  * classifies. Order follows the registry order. Pure: no I/O, no AI.
+ *
+ * `fields` defaults to the code-owned catalog, so callers without a tenant policy
+ * are byte-identical to before. The router passes the EFFECTIVE defs
+ * (effectiveMissingInfoFields) so the tracker display honours the tenant's policy.
  */
-export function computeMissingInfo(presence: FieldPresence): MissingFieldVerdict[] {
+export function computeMissingInfo(
+  presence: FieldPresence,
+  fields: readonly MissingInfoFieldDef[] = MISSING_INFO_FIELDS,
+): MissingFieldVerdict[] {
   const out: MissingFieldVerdict[] = [];
-  for (const def of MISSING_INFO_FIELDS) {
+  for (const def of fields) {
     if (presence[def.key] !== false) continue;
     out.push({
       fieldKey: def.key,
       fieldLabel: def.label,
       requiredness: def.requiredness,
       blocksAdvanceStage: def.blocksAdvanceStage,
-      blocksAdvanceLabel: blocksAdvanceLabelFor(def.key),
+      blocksAdvanceLabel: blocksAdvanceLabelForDef(def),
     });
   }
   return out;

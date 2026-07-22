@@ -26,5 +26,6 @@ export * from "./recruiter-brief";
 export * from "./admin-dashboard";
 export * from "./branding";
 export * from "./tenant-sources";
+export * from "./candidate-field-policy";
 export * from "./admin-approval-routing";
 export * from "./email-template-overrides";
