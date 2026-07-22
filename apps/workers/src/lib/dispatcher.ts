@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { sql as poolSql } from "@hireops/db";
 import { getEmailProvider, type EmailProvider, type TemplateKey } from "@hireops/notifications";
-import { renderTemplate } from "@hireops/email-templates";
+import { renderTemplate, type EmailTemplateOverrides } from "@hireops/email-templates";
 import type { Logger } from "@hireops/observability";
 
 /**
@@ -45,6 +45,39 @@ interface ClaimedRow {
 const DEFAULT_BATCH = 25;
 const DEFAULT_ATTEMPT_CAP = 5;
 
+interface OverrideRow {
+  subject_override: string | null;
+  slot_overrides: Record<string, string> | null;
+}
+
+/**
+ * Load the tenant's ENABLED copy override for (tenant, template_key), if any
+ * (T1.4 / G09). No row, or a disabled row, yields `undefined` — the render then
+ * uses the code-owned default copy (byte-identical to a tenant with no override).
+ * Only the subject + named text slots are carried; there is no raw-HTML path.
+ */
+async function loadTemplateOverrides(
+  tenantId: string,
+  templateKey: string,
+): Promise<EmailTemplateOverrides | undefined> {
+  const [row] = await poolSql<OverrideRow[]>`
+    SELECT subject_override, slot_overrides
+    FROM public.tenant_email_template_overrides
+    WHERE tenant_id = ${tenantId} AND template_key = ${templateKey} AND enabled = true
+    LIMIT 1
+  `;
+  if (!row) return undefined;
+  const slots = row.slot_overrides ?? {};
+  const overrides: EmailTemplateOverrides = {};
+  if (row.subject_override && row.subject_override.trim().length > 0) {
+    overrides.subject = row.subject_override;
+  }
+  if (Object.keys(slots).length > 0) overrides.slots = slots;
+  // A row that enables an override but carries neither a subject nor any slot is
+  // functionally a no-op — return undefined so the render stays default.
+  return overrides.subject || overrides.slots ? overrides : undefined;
+}
+
 export async function drainOutboxOnce(opts: DispatcherOpts): Promise<{
   claimed: number;
   sent: number;
@@ -86,9 +119,11 @@ export async function drainOutboxOnce(opts: DispatcherOpts): Promise<{
       attempt: row.attempt_count,
     });
     try {
+      const overrides = await loadTemplateOverrides(row.tenant_id, row.template_key);
       const rendered = await renderTemplate(
         row.template_key as TemplateKey,
         row.template_data ?? {},
+        overrides,
       );
       const provider: EmailProvider = getEmailProvider(row.tenant_id);
       const result = await provider.send({

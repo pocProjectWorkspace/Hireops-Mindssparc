@@ -62,6 +62,9 @@ importers:
       '@hireops/db':
         specifier: workspace:*
         version: link:../../packages/db
+      '@hireops/email-templates':
+        specifier: workspace:*
+        version: link:../../packages/email-templates
       '@hireops/notifications':
         specifier: workspace:*
         version: link:../../packages/notifications

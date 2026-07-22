@@ -1,4 +1,6 @@
 export * from "./render";
+export * from "./catalog";
+export { type SlotOverrides } from "./slots";
 export {
   ApplicationReceived,
   type ApplicationReceivedProps,

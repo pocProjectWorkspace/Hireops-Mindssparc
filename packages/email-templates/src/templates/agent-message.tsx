@@ -1,5 +1,6 @@
 /** @jsxRuntime automatic @jsxImportSource react */
 import { Body, Container, Head, Html, Preview, Section, Text } from "@react-email/components";
+import { resolveSlot, type SlotOverrides } from "../slots";
 
 export interface AgentMessageProps {
   candidateName: string;
@@ -12,6 +13,9 @@ export interface AgentMessageProps {
    * visible tags rather than injected markup.
    */
   body: string;
+  /** T1.4 — optional tenant copy overrides. The body is the approved draft
+   * (never overridable); only the sign-off is exposed as a slot. */
+  slots?: SlotOverrides;
 }
 
 /**
@@ -32,7 +36,9 @@ export function AgentMessage({
   positionTitle,
   companyName,
   body,
+  slots,
 }: AgentMessageProps) {
+  const tok = { candidateName, positionTitle, companyName };
   // Defensive: a candidate-facing send must never crash on a missing or
   // non-string body. Coerce, then fall back to a plain greeting so the
   // email still goes out (the worker marks the row sent, not failed).
@@ -60,7 +66,9 @@ export function AgentMessage({
             ) : (
               <Text style={text}>Hi {candidateName},</Text>
             )}
-            <Text style={textMuted}>— The {companyName} recruiting team</Text>
+            <Text style={textMuted}>
+              {resolveSlot(slots?.signOff, tok, <>— The {companyName} recruiting team</>)}
+            </Text>
           </Section>
         </Container>
       </Body>

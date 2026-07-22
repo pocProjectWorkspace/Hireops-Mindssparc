@@ -10,6 +10,7 @@ import {
   Section,
   Text,
 } from "@react-email/components";
+import { resolveSlot, type SlotOverrides } from "../slots";
 
 export interface InterviewInvitationProps {
   candidateName: string;
@@ -29,6 +30,8 @@ export interface InterviewInvitationProps {
    * without them still render; a missing start simply yields no calendar file. */
   interviewStartIso?: string;
   interviewId?: string;
+  /** T1.4 — optional tenant copy overrides. */
+  slots?: SlotOverrides;
 }
 
 /**
@@ -51,19 +54,29 @@ export function InterviewInvitation({
   durationMinutes,
   meetingUrl,
   confirmUrl,
+  slots,
 }: InterviewInvitationProps) {
+  const tok = { candidateName, companyName, positionTitle, roundName };
   return (
     <Html>
       <Head />
       <Preview>{`Your ${roundName} interview for ${positionTitle} at ${companyName}`}</Preview>
       <Body style={body}>
         <Container style={container}>
-          <Heading style={h1}>Interview Invitation</Heading>
+          <Heading style={h1}>
+            {resolveSlot(slots?.heading, tok, <>Interview Invitation</>)}
+          </Heading>
           <Section>
-            <Text style={text}>Hi {candidateName},</Text>
+            <Text style={text}>{resolveSlot(slots?.greeting, tok, <>Hi {candidateName},</>)}</Text>
             <Text style={text}>
-              You&rsquo;re invited to the <strong>{roundName}</strong> round for the{" "}
-              <strong>{positionTitle}</strong> role at <strong>{companyName}</strong>.
+              {resolveSlot(
+                slots?.intro,
+                tok,
+                <>
+                  You&rsquo;re invited to the <strong>{roundName}</strong> round for the{" "}
+                  <strong>{positionTitle}</strong> role at <strong>{companyName}</strong>.
+                </>,
+              )}
             </Text>
             <Section style={summaryBox}>
               <Text style={summaryLine}>
@@ -84,17 +97,31 @@ export function InterviewInvitation({
                 </Text>
               ) : null}
             </Section>
-            <Text style={text}>Please confirm your attendance so we can finalise the panel.</Text>
+            <Text style={text}>
+              {resolveSlot(
+                slots?.confirmLine,
+                tok,
+                <>Please confirm your attendance so we can finalise the panel.</>,
+              )}
+            </Text>
             <Section style={{ textAlign: "center", margin: "24px 0" }}>
               <Link href={confirmUrl} style={button}>
-                Confirm attendance
+                {resolveSlot(slots?.ctaLabel, tok, <>Confirm attendance</>)}
               </Link>
             </Section>
             <Text style={textMuted}>
-              This link is private to you. If the timing doesn&rsquo;t work, reply to your recruiter
-              to reschedule.
+              {resolveSlot(
+                slots?.privateNote,
+                tok,
+                <>
+                  This link is private to you. If the timing doesn&rsquo;t work, reply to your
+                  recruiter to reschedule.
+                </>,
+              )}
             </Text>
-            <Text style={textMuted}>— The {companyName} recruiting team</Text>
+            <Text style={textMuted}>
+              {resolveSlot(slots?.signOff, tok, <>— The {companyName} recruiting team</>)}
+            </Text>
           </Section>
         </Container>
       </Body>

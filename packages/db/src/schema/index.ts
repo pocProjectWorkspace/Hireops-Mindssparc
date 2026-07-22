@@ -105,3 +105,5 @@ export * from "./req-revision-suggestions";
 // Recruiter Missing Info Tracker + AI brief cache (RECR-03)
 export * from "./missing-info-requests";
 export * from "./recruiter-brief";
+// Tenant email/notification copy overrides (T1.4 / G09)
+export * from "./tenant-email-template-overrides";

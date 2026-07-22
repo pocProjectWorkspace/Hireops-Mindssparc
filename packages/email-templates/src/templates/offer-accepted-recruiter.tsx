@@ -10,6 +10,7 @@ import {
   Section,
   Text,
 } from "@react-email/components";
+import { resolveSlot, type SlotOverrides } from "../slots";
 
 export interface OfferAcceptedRecruiterProps {
   recruiterName: string;
@@ -18,6 +19,8 @@ export interface OfferAcceptedRecruiterProps {
   acceptedAtFormatted: string;
   joiningDate: string;
   triageUrl: string;
+  /** T1.4 — optional tenant copy overrides. */
+  slots?: SlotOverrides;
 }
 
 /**
@@ -32,30 +35,42 @@ export function OfferAcceptedRecruiter({
   acceptedAtFormatted,
   joiningDate,
   triageUrl,
+  slots,
 }: OfferAcceptedRecruiterProps) {
+  const tok = { recruiterName, candidateName, positionTitle, acceptedAtFormatted, joiningDate };
   return (
     <Html>
       <Head />
       <Preview>{`${candidateName} accepted the offer for ${positionTitle}`}</Preview>
       <Body style={body}>
         <Container style={container}>
-          <Heading style={h1}>Offer accepted</Heading>
+          <Heading style={h1}>{resolveSlot(slots?.heading, tok, <>Offer accepted</>)}</Heading>
           <Section>
-            <Text style={text}>Hi {recruiterName},</Text>
+            <Text style={text}>{resolveSlot(slots?.greeting, tok, <>Hi {recruiterName},</>)}</Text>
             <Text style={text}>
-              <strong>{candidateName}</strong> accepted the offer for{" "}
-              <strong>{positionTitle}</strong> on {acceptedAtFormatted}. Joining date:{" "}
-              <strong>{joiningDate}</strong>.
+              {resolveSlot(
+                slots?.body,
+                tok,
+                <>
+                  <strong>{candidateName}</strong> accepted the offer for{" "}
+                  <strong>{positionTitle}</strong> on {acceptedAtFormatted}. Joining date:{" "}
+                  <strong>{joiningDate}</strong>.
+                </>,
+              )}
             </Text>
             <Text style={text}>
-              The Workday Hire event has been queued. Onboarding paperwork follows next.
+              {resolveSlot(
+                slots?.workdayNote,
+                tok,
+                <>The Workday Hire event has been queued. Onboarding paperwork follows next.</>,
+              )}
             </Text>
             <Text style={text}>
               <Link href={triageUrl} style={link}>
-                Open triage
+                {resolveSlot(slots?.ctaLabel, tok, <>Open triage</>)}
               </Link>
             </Text>
-            <Text style={textMuted}>— HireOps</Text>
+            <Text style={textMuted}>{resolveSlot(slots?.signOff, tok, <>— HireOps</>)}</Text>
           </Section>
         </Container>
       </Body>

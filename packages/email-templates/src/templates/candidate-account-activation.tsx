@@ -10,11 +10,14 @@ import {
   Section,
   Text,
 } from "@react-email/components";
+import { resolveSlot, type SlotOverrides } from "../slots";
 
 export interface CandidateAccountActivationProps {
   candidateName: string;
   companyName: string;
   activationUrl: string;
+  /** T1.4 — optional tenant copy overrides. */
+  slots?: SlotOverrides;
 }
 
 /**
@@ -32,32 +35,50 @@ export function CandidateAccountActivation({
   candidateName,
   companyName,
   activationUrl,
+  slots,
 }: CandidateAccountActivationProps) {
+  const tok = { candidateName, companyName };
   return (
     <Html>
       <Head />
       <Preview>{`Activate your ${companyName} candidate account`}</Preview>
       <Body style={body}>
         <Container style={container}>
-          <Heading style={h1}>Activate your account</Heading>
+          <Heading style={h1}>
+            {resolveSlot(slots?.heading, tok, <>Activate your account</>)}
+          </Heading>
           <Section>
-            <Text style={text}>Hi {candidateName},</Text>
+            <Text style={text}>{resolveSlot(slots?.greeting, tok, <>Hi {candidateName},</>)}</Text>
             <Text style={text}>
-              You can now follow your applications and interviews with{" "}
-              <strong>{companyName}</strong> in one place. Set a password to activate your candidate
-              account.
+              {resolveSlot(
+                slots?.body,
+                tok,
+                <>
+                  You can now follow your applications and interviews with{" "}
+                  <strong>{companyName}</strong> in one place. Set a password to activate your
+                  candidate account.
+                </>,
+              )}
             </Text>
             <Section style={{ textAlign: "center", margin: "28px 0" }}>
               <Link href={activationUrl} style={button}>
-                Set your password
+                {resolveSlot(slots?.ctaLabel, tok, <>Set your password</>)}
               </Link>
             </Section>
             <Text style={textMuted}>
-              This link is private to you and can be used once. If it expires, just request a new
-              one from the sign-in page. If you weren&rsquo;t expecting this, you can safely ignore
-              it.
+              {resolveSlot(
+                slots?.privateNote,
+                tok,
+                <>
+                  This link is private to you and can be used once. If it expires, just request a
+                  new one from the sign-in page. If you weren&rsquo;t expecting this, you can safely
+                  ignore it.
+                </>,
+              )}
             </Text>
-            <Text style={textMuted}>— The {companyName} recruiting team</Text>
+            <Text style={textMuted}>
+              {resolveSlot(slots?.signOff, tok, <>— The {companyName} recruiting team</>)}
+            </Text>
           </Section>
         </Container>
       </Body>

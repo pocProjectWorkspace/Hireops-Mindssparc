@@ -10,6 +10,7 @@ import {
   Section,
   Text,
 } from "@react-email/components";
+import { resolveSlot, type SlotOverrides } from "../slots";
 
 export interface OfferDeclinedRecruiterProps {
   recruiterName: string;
@@ -18,6 +19,8 @@ export interface OfferDeclinedRecruiterProps {
   declinedAtFormatted: string;
   declinedReason?: string;
   triageUrl: string;
+  /** T1.4 — optional tenant copy overrides. */
+  slots?: SlotOverrides;
 }
 
 /**
@@ -32,19 +35,27 @@ export function OfferDeclinedRecruiter({
   declinedAtFormatted,
   declinedReason,
   triageUrl,
+  slots,
 }: OfferDeclinedRecruiterProps) {
+  const tok = { recruiterName, candidateName, positionTitle, declinedAtFormatted };
   return (
     <Html>
       <Head />
       <Preview>{`${candidateName} declined the offer for ${positionTitle}`}</Preview>
       <Body style={body}>
         <Container style={container}>
-          <Heading style={h1}>Offer declined</Heading>
+          <Heading style={h1}>{resolveSlot(slots?.heading, tok, <>Offer declined</>)}</Heading>
           <Section>
-            <Text style={text}>Hi {recruiterName},</Text>
+            <Text style={text}>{resolveSlot(slots?.greeting, tok, <>Hi {recruiterName},</>)}</Text>
             <Text style={text}>
-              <strong>{candidateName}</strong> declined the offer for{" "}
-              <strong>{positionTitle}</strong> on {declinedAtFormatted}.
+              {resolveSlot(
+                slots?.body,
+                tok,
+                <>
+                  <strong>{candidateName}</strong> declined the offer for{" "}
+                  <strong>{positionTitle}</strong> on {declinedAtFormatted}.
+                </>,
+              )}
             </Text>
             {declinedReason ? (
               <Section style={reasonBox}>
@@ -52,14 +63,16 @@ export function OfferDeclinedRecruiter({
                 <Text style={reasonText}>{declinedReason}</Text>
               </Section>
             ) : (
-              <Text style={text}>No reason was provided.</Text>
+              <Text style={text}>
+                {resolveSlot(slots?.noReason, tok, <>No reason was provided.</>)}
+              </Text>
             )}
             <Text style={text}>
               <Link href={triageUrl} style={link}>
-                Open triage
+                {resolveSlot(slots?.ctaLabel, tok, <>Open triage</>)}
               </Link>
             </Text>
-            <Text style={textMuted}>— HireOps</Text>
+            <Text style={textMuted}>{resolveSlot(slots?.signOff, tok, <>— HireOps</>)}</Text>
           </Section>
         </Container>
       </Body>

@@ -27,3 +27,4 @@ export * from "./admin-dashboard";
 export * from "./branding";
 export * from "./tenant-sources";
 export * from "./admin-approval-routing";
+export * from "./email-template-overrides";

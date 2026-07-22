@@ -88,6 +88,7 @@ import {
   documentTypes,
   marketBenchmarks,
   tenantApplicationSources,
+  tenantEmailTemplateOverrides,
   requisitionFeasibility,
   hrRoundAssessments,
   compRecommendations,
@@ -469,6 +470,20 @@ import {
   setTenantSourceEnabledInputSchema,
   setTenantSourceEnabledOutputSchema,
   type TenantSourceRow,
+  // T1.4 / G09 email/notification copy overrides
+  getEmailTemplateCatalogInputSchema,
+  getEmailTemplateCatalogOutputSchema,
+  listEmailTemplateOverridesInputSchema,
+  listEmailTemplateOverridesOutputSchema,
+  upsertEmailTemplateOverrideInputSchema,
+  upsertEmailTemplateOverrideOutputSchema,
+  resetEmailTemplateOverrideInputSchema,
+  resetEmailTemplateOverrideOutputSchema,
+  previewEmailTemplateInputSchema,
+  previewEmailTemplateOutputSchema,
+  type EmailTemplateKey,
+  type EmailTemplateOverrideRow,
+  type EmailTemplateCatalogEntry,
   // HRHEAD-02 market intelligence + feasibility
   listMarketBenchmarksInputSchema,
   listMarketBenchmarksOutputSchema,
@@ -730,6 +745,13 @@ import {
   type MatchTier,
 } from "../lib/recruiter-urgency";
 import { enqueueNotification, signLink, hashToken, verifyLink } from "@hireops/notifications";
+import type { TemplateKey } from "@hireops/notifications";
+import {
+  EMAIL_TEMPLATE_CATALOG,
+  EMAIL_TEMPLATE_SAMPLE_DATA,
+  renderTemplate,
+  type EmailTemplateOverrides,
+} from "@hireops/email-templates";
 import { assertRuleAttachable, IncompatibleApprovalRuleError } from "@hireops/agent-actions";
 import {
   router,
@@ -1058,6 +1080,83 @@ function tenantSourceRowToApi(row: typeof tenantApplicationSources.$inferSelect)
     updatedAt: row.updatedAt.toISOString(),
   };
 }
+
+// T1.4 / G09 — email/notification copy overrides. Reading the catalog + editing
+// overrides is admin-only tenant config (the copy is org branding an admin owns),
+// like every other admin config surface. RLS scopes rows to the tenant on top.
+const EMAIL_TEMPLATE_ROLES = new Set(["admin"]);
+
+/** Narrow a jsonb slot-overrides blob to a string→string map (an older/hand row
+ * could carry a non-string value; drop those defensively). */
+function narrowSlotOverrides(value: unknown): Record<string, string> {
+  const out: Record<string, string> = {};
+  if (value && typeof value === "object") {
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+      if (typeof v === "string") out[k] = v;
+    }
+  }
+  return out;
+}
+
+/** DB row → API override row. */
+function emailOverrideRowToApi(
+  row: typeof tenantEmailTemplateOverrides.$inferSelect,
+): EmailTemplateOverrideRow {
+  return {
+    templateKey: row.templateKey as EmailTemplateKey,
+    subjectOverride: row.subjectOverride ?? null,
+    slotOverrides: narrowSlotOverrides(row.slotOverrides),
+    enabled: row.enabled,
+    hasOverride: true,
+    updatedAt: row.updatedAt.toISOString(),
+  };
+}
+
+/**
+ * Validate an override against the template's catalog (the honesty gate): the
+ * templateKey must be a real, overridable template; every slotKey must be one
+ * the template declares; and every `{token}` a subject/slot references must be a
+ * token that slot/subject actually provides. Returns a human error string on the
+ * first violation, else null.
+ */
+function validateEmailOverride(
+  templateKey: EmailTemplateKey,
+  subjectOverride: string | null,
+  slotOverrides: Record<string, string>,
+): string | null {
+  const entry = EMAIL_TEMPLATE_CATALOG[templateKey as TemplateKey];
+  if (!entry) return `Unknown template: ${templateKey}`;
+
+  const usedTokens = (text: string): string[] => {
+    const found = new Set<string>();
+    for (const m of text.matchAll(/\{(\w+)\}/g)) {
+      if (m[1]) found.add(m[1]);
+    }
+    return [...found];
+  };
+
+  if (subjectOverride && subjectOverride.trim().length > 0) {
+    if (!entry.subject) {
+      return `The "${entry.label}" template's subject is composed at send time and cannot be overridden`;
+    }
+    const allowed = new Set(entry.subject.tokens);
+    for (const t of usedTokens(subjectOverride)) {
+      if (!allowed.has(t)) return `Subject references unknown token {${t}}`;
+    }
+  }
+
+  const slotByKey = new Map(entry.slots.map((s) => [s.slotKey, s]));
+  for (const [slotKey, text] of Object.entries(slotOverrides)) {
+    const slot = slotByKey.get(slotKey);
+    if (!slot) return `Unknown slot "${slotKey}" for the "${entry.label}" template`;
+    const allowed = new Set(slot.tokens);
+    for (const t of usedTokens(text)) {
+      if (!allowed.has(t)) return `Slot "${slot.label}" references unknown token {${t}}`;
+    }
+  }
+  return null;
+}
+
 const FEASIBILITY_ROLES = new Set(["admin", "hr_head"]);
 
 // HROPS-01 — the HR-Ops cases workspace + HR round is the post-technical-rounds
@@ -18729,6 +18828,196 @@ export const appRouter = router({
         }
         return { row: tenantSourceRowToApi(row) };
       });
+    }),
+
+  // ═══════════ T1.4 / G09 — email/notification copy overrides ═══════════
+  //
+  // A tenant's editable SUBJECT + NAMED TEXT SLOTS over the 12 code-owned
+  // transactional templates. Layout, styles, and DATA bindings stay code-owned;
+  // there is deliberately no raw-HTML editor. The slot/token catalog is the
+  // single source of truth in @hireops/email-templates (EMAIL_TEMPLATE_CATALOG);
+  // the resolver, these procedures, the editor, and the preview all read it. A
+  // template with no enabled override row renders byte-identically to today.
+
+  /**
+   * getEmailTemplateCatalog — the full slot catalog for all 12 templates plus,
+   * for each, this tenant's current effective override (null when none). Admin
+   * read; the editor renders directly from this.
+   */
+  getEmailTemplateCatalog: protectedProcedure
+    .input(getEmailTemplateCatalogInputSchema)
+    .output(getEmailTemplateCatalogOutputSchema)
+    .query(async ({ ctx }) => {
+      requireAnyRole(ctx, EMAIL_TEMPLATE_ROLES, "Editing email templates is admin-only");
+      const db = requireDb(ctx);
+      if (!ctx.tenantId) {
+        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
+      }
+      const rows = await db
+        .select()
+        .from(tenantEmailTemplateOverrides)
+        .where(eq(tenantEmailTemplateOverrides.tenantId, ctx.tenantId));
+      const byKey = new Map(rows.map((r) => [r.templateKey, r]));
+      const templates: EmailTemplateCatalogEntry[] = Object.values(EMAIL_TEMPLATE_CATALOG).map(
+        (entry) => {
+          const row = byKey.get(entry.templateKey);
+          return {
+            templateKey: entry.templateKey as EmailTemplateKey,
+            label: entry.label,
+            description: entry.description,
+            subject: entry.subject,
+            slots: entry.slots,
+            override: row ? emailOverrideRowToApi(row) : null,
+          };
+        },
+      );
+      return { templates };
+    }),
+
+  /**
+   * listEmailTemplateOverrides — just the stored override rows for the tenant
+   * (templates with no row are omitted). Admin read.
+   */
+  listEmailTemplateOverrides: protectedProcedure
+    .input(listEmailTemplateOverridesInputSchema)
+    .output(listEmailTemplateOverridesOutputSchema)
+    .query(async ({ ctx }) => {
+      requireAnyRole(ctx, EMAIL_TEMPLATE_ROLES, "Editing email templates is admin-only");
+      const db = requireDb(ctx);
+      if (!ctx.tenantId) {
+        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
+      }
+      const rows = await db
+        .select()
+        .from(tenantEmailTemplateOverrides)
+        .where(eq(tenantEmailTemplateOverrides.tenantId, ctx.tenantId))
+        .orderBy(tenantEmailTemplateOverrides.templateKey);
+      return { rows: rows.map(emailOverrideRowToApi) };
+    }),
+
+  /**
+   * upsertEmailTemplateOverride — admin-only, audited upsert of one override
+   * row, keyed by (tenant, templateKey). Rejects an unknown template, an unknown
+   * slotKey, and any subject/slot override that references a token the template
+   * does not provide (the honesty gate). Uses the tenant-scoped client (the
+   * table's tenant_isolation policy is FOR ALL); the audit trigger + withAudit
+   * record it.
+   */
+  upsertEmailTemplateOverride: protectedProcedure
+    .input(upsertEmailTemplateOverrideInputSchema)
+    .output(upsertEmailTemplateOverrideOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      return withAudit("upsert_email_template_override", ctx, input, async () => {
+        requireAnyRole(ctx, EMAIL_TEMPLATE_ROLES, "Editing email templates is admin-only");
+        const db = requireDb(ctx);
+        if (!ctx.tenantId) {
+          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
+        }
+        const validationError = validateEmailOverride(
+          input.templateKey,
+          input.subjectOverride,
+          input.slotOverrides,
+        );
+        if (validationError) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: validationError });
+        }
+        const tenantId = ctx.tenantId;
+        const subjectOverride =
+          input.subjectOverride && input.subjectOverride.trim().length > 0
+            ? input.subjectOverride
+            : null;
+        const [row] = await db
+          .insert(tenantEmailTemplateOverrides)
+          .values({
+            tenantId,
+            templateKey: input.templateKey,
+            subjectOverride,
+            slotOverrides: input.slotOverrides,
+            enabled: input.enabled,
+            updatedBy: ctx.userId ?? null,
+            updatedAt: new Date(),
+          })
+          .onConflictDoUpdate({
+            target: [
+              tenantEmailTemplateOverrides.tenantId,
+              tenantEmailTemplateOverrides.templateKey,
+            ],
+            set: {
+              subjectOverride,
+              slotOverrides: input.slotOverrides,
+              enabled: input.enabled,
+              updatedBy: ctx.userId ?? null,
+              updatedAt: new Date(),
+            },
+          })
+          .returning();
+        if (!row) {
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: "email template override upsert returned no row",
+          });
+        }
+        return { row: emailOverrideRowToApi(row) };
+      });
+    }),
+
+  /**
+   * resetEmailTemplateOverride — admin-only, audited delete of the tenant's
+   * override row for a template → back to the shipped defaults. Idempotent
+   * (deleting a non-existent row still returns reset:true — the end state is the
+   * same: default copy).
+   */
+  resetEmailTemplateOverride: protectedProcedure
+    .input(resetEmailTemplateOverrideInputSchema)
+    .output(resetEmailTemplateOverrideOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      return withAudit("reset_email_template_override", ctx, input, async () => {
+        requireAnyRole(ctx, EMAIL_TEMPLATE_ROLES, "Editing email templates is admin-only");
+        const db = requireDb(ctx);
+        if (!ctx.tenantId) {
+          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
+        }
+        await db
+          .delete(tenantEmailTemplateOverrides)
+          .where(eq(tenantEmailTemplateOverrides.templateKey, input.templateKey));
+        return { templateKey: input.templateKey, reset: true };
+      });
+    }),
+
+  /**
+   * previewEmailTemplate — render a template through the REAL render path with
+   * representative sample data + the DRAFT overrides (not yet saved), so the
+   * admin's live preview equals what would send. Validates the draft overrides
+   * against the catalog first (same honesty gate as the upsert). Admin read; no
+   * DB write, no withAudit.
+   */
+  previewEmailTemplate: protectedProcedure
+    .input(previewEmailTemplateInputSchema)
+    .output(previewEmailTemplateOutputSchema)
+    .query(async ({ ctx, input }) => {
+      requireAnyRole(ctx, EMAIL_TEMPLATE_ROLES, "Editing email templates is admin-only");
+      const slotOverrides = input.slotOverrides ?? {};
+      const subjectOverride = input.subjectOverride ?? null;
+      const validationError = validateEmailOverride(
+        input.templateKey,
+        subjectOverride,
+        slotOverrides,
+      );
+      if (validationError) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: validationError });
+      }
+      const overrides: EmailTemplateOverrides = {};
+      if (subjectOverride && subjectOverride.trim().length > 0) {
+        overrides.subject = subjectOverride;
+      }
+      if (Object.keys(slotOverrides).length > 0) overrides.slots = slotOverrides;
+      const sample = EMAIL_TEMPLATE_SAMPLE_DATA[input.templateKey as TemplateKey];
+      const rendered = await renderTemplate(
+        input.templateKey as TemplateKey,
+        sample,
+        Object.keys(overrides).length > 0 ? overrides : undefined,
+      );
+      return { subject: rendered.subject, html: rendered.html };
     }),
 });
 

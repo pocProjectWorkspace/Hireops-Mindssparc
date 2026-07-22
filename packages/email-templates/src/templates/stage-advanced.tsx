@@ -10,6 +10,7 @@ import {
   Section,
   Text,
 } from "@react-email/components";
+import { resolveSlot, type SlotOverrides } from "../slots";
 
 export interface StageAdvancedProps {
   candidateName: string;
@@ -19,6 +20,8 @@ export interface StageAdvancedProps {
   /** Optional signed-link URL — present for stages that ask the candidate to act (e.g. accept offer). */
   actionUrl?: string;
   actionLabel?: string;
+  /** T1.4 — optional tenant copy overrides. */
+  slots?: SlotOverrides;
 }
 
 /**
@@ -34,19 +37,29 @@ export function StageAdvanced({
   newStageLabel,
   actionUrl,
   actionLabel,
+  slots,
 }: StageAdvancedProps) {
+  const tok = { candidateName, positionTitle, companyName, newStageLabel };
   return (
     <Html>
       <Head />
       <Preview>Update on your application for {positionTitle}</Preview>
       <Body style={body}>
         <Container style={container}>
-          <Heading style={h1}>Your application has moved forward</Heading>
+          <Heading style={h1}>
+            {resolveSlot(slots?.heading, tok, <>Your application has moved forward</>)}
+          </Heading>
           <Section>
-            <Text style={text}>Hi {candidateName},</Text>
+            <Text style={text}>{resolveSlot(slots?.greeting, tok, <>Hi {candidateName},</>)}</Text>
             <Text style={text}>
-              Your application for <strong>{positionTitle}</strong> at {companyName} has been
-              advanced to <strong>{newStageLabel}</strong>.
+              {resolveSlot(
+                slots?.body,
+                tok,
+                <>
+                  Your application for <strong>{positionTitle}</strong> at {companyName} has been
+                  advanced to <strong>{newStageLabel}</strong>.
+                </>,
+              )}
             </Text>
             {actionUrl && actionLabel ? (
               <Text style={text}>
@@ -55,9 +68,17 @@ export function StageAdvanced({
                 </Link>
               </Text>
             ) : (
-              <Text style={text}>The recruiting team will reach out with next steps shortly.</Text>
+              <Text style={text}>
+                {resolveSlot(
+                  slots?.noActionNote,
+                  tok,
+                  <>The recruiting team will reach out with next steps shortly.</>,
+                )}
+              </Text>
             )}
-            <Text style={textMuted}>— The {companyName} recruiting team</Text>
+            <Text style={textMuted}>
+              {resolveSlot(slots?.signOff, tok, <>— The {companyName} recruiting team</>)}
+            </Text>
           </Section>
         </Container>
       </Body>

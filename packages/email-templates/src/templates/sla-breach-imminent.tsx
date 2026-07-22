@@ -10,11 +10,14 @@ import {
   Section,
   Text,
 } from "@react-email/components";
+import { resolveSlot, type SlotOverrides } from "../slots";
 
 export interface SlaBreachImminentProps {
   recruiterName: string;
   applicationCount: number;
   triageUrl: string;
+  /** T1.4 — optional tenant copy overrides. */
+  slots?: SlotOverrides;
 }
 
 /**
@@ -30,29 +33,45 @@ export function SlaBreachImminent({
   recruiterName,
   applicationCount,
   triageUrl,
+  slots,
 }: SlaBreachImminentProps) {
   const noun = applicationCount === 1 ? "application" : "applications";
+  const tok = { recruiterName, applicationCount: String(applicationCount), noun };
   return (
     <Html>
       <Head />
       <Preview>{`${applicationCount} ${noun} near SLA breach`}</Preview>
       <Body style={body}>
         <Container style={container}>
-          <Heading style={h1}>Heads up — SLA breach imminent</Heading>
+          <Heading style={h1}>
+            {resolveSlot(slots?.heading, tok, <>Heads up — SLA breach imminent</>)}
+          </Heading>
           <Section>
-            <Text style={text}>Hi {recruiterName},</Text>
+            <Text style={text}>{resolveSlot(slots?.greeting, tok, <>Hi {recruiterName},</>)}</Text>
             <Text style={text}>
-              You have <strong>{String(applicationCount)}</strong> {noun} approaching the stage SLA
-              threshold. Quickest path: open the Hot Zone on your triage board.
+              {resolveSlot(
+                slots?.body,
+                tok,
+                <>
+                  You have <strong>{String(applicationCount)}</strong> {noun} approaching the stage
+                  SLA threshold. Quickest path: open the Hot Zone on your triage board.
+                </>,
+              )}
             </Text>
             <Text style={text}>
               <Link href={triageUrl} style={link}>
-                Open triage
+                {resolveSlot(slots?.ctaLabel, tok, <>Open triage</>)}
               </Link>
             </Text>
             <Text style={textMuted}>
-              You&rsquo;re receiving this because you&rsquo;re a primary recruiter on these
-              requisitions.
+              {resolveSlot(
+                slots?.footer,
+                tok,
+                <>
+                  You&rsquo;re receiving this because you&rsquo;re a primary recruiter on these
+                  requisitions.
+                </>,
+              )}
             </Text>
           </Section>
         </Container>

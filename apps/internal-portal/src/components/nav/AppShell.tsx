@@ -110,7 +110,9 @@ export type PortalNavKey =
   | "system-setup"
   | "bias-shield"
   // T1.3 — configurable approval routing (G13)
-  | "approval-routing";
+  | "approval-routing"
+  // T1.4 — email/notification copy overrides (G09)
+  | "email-templates";
 
 interface NavItem {
   key: PortalNavKey;
@@ -457,6 +459,14 @@ const ADMIN_NAV: NavItem[] = [
     label: "Approval routing",
     href: "/admin/approval-routing",
     icon: <IconWorkflows />,
+  },
+  // T1.4 — email/notification copy overrides (G09). Reuses IconBranding (no
+  // dedicated mail icon exists) — this is org copy/branding config.
+  {
+    key: "email-templates",
+    label: "Email templates",
+    href: "/admin/email-templates",
+    icon: <IconBranding />,
   },
 ];
 

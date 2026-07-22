@@ -1,6 +1,8 @@
 import { render } from "@react-email/render";
 import type { TemplateKey, EmailAttachment } from "@hireops/notifications";
 import { buildInterviewIcs } from "./ics";
+import { interpolateSlot, type EmailTemplateOverrides } from "./catalog";
+import type { SlotOverrides } from "./slots";
 import {
   ApplicationReceived,
   type ApplicationReceivedProps,
@@ -37,6 +39,16 @@ import { AgentMessage, type AgentMessageProps } from "./templates/agent-message"
  * Subject lines are owned by the registry, not the caller — keeps
  * copy editable in one place.
  *
+ * TENANT COPY OVERRIDES (T1.4 / G09): the optional third arg carries a tenant's
+ * subject + named-slot overrides (loaded by the dispatcher from
+ * tenant_email_template_overrides). When present, the override subject is
+ * token-interpolated against the template's data and the slot overrides are
+ * passed as the template's `slots` prop; when ABSENT (undefined), every case
+ * emits exactly the code-owned defaults — the render is byte-identical to a
+ * tenant with no override row. Only the subject + the named text slots in
+ * EMAIL_TEMPLATE_CATALOG are overridable; layout, styles, and DATA bindings
+ * stay code-owned (there is deliberately no raw-HTML editor).
+ *
  * REQUIRED for every new template `.tsx`: start the file with the pragma
  *   /** @jsxRuntime automatic @jsxImportSource react *\/
  * The worker consumes these files' SOURCE through `tsx`, which applies a
@@ -60,41 +72,65 @@ export interface RenderedTemplate {
   attachments?: EmailAttachment[];
 }
 
+/** Resolve the subject line: interpolate the tenant override against the
+ * template's tokens when present, else fall back to the code-owned default. */
+function resolveSubject(
+  override: string | undefined,
+  tokens: Record<string, string>,
+  fallback: string,
+): string {
+  return override ? interpolateSlot(override, tokens) : fallback;
+}
+
 export async function renderTemplate(
   key: TemplateKey,
   data: Record<string, unknown>,
+  overrides?: EmailTemplateOverrides,
 ): Promise<RenderedTemplate> {
+  const slots: SlotOverrides | undefined = overrides?.slots;
   switch (key) {
     case "candidate.application_received": {
       const props = data as unknown as ApplicationReceivedProps;
-      const element = ApplicationReceived(props);
+      const element = ApplicationReceived({ ...props, slots });
       return {
-        subject: `We received your application for ${props.positionTitle}`,
+        subject: resolveSubject(
+          overrides?.subject,
+          { positionTitle: props.positionTitle },
+          `We received your application for ${props.positionTitle}`,
+        ),
         html: await render(element),
         text: await render(element, { plainText: true }),
       };
     }
     case "candidate.stage_advanced": {
       const props = data as unknown as StageAdvancedProps;
-      const element = StageAdvanced(props);
+      const element = StageAdvanced({ ...props, slots });
       return {
-        subject: `Update on your application — ${props.positionTitle}`,
+        subject: resolveSubject(
+          overrides?.subject,
+          { positionTitle: props.positionTitle },
+          `Update on your application — ${props.positionTitle}`,
+        ),
         html: await render(element),
         text: await render(element, { plainText: true }),
       };
     }
     case "candidate.offer_extended": {
       const props = data as unknown as OfferExtendedProps;
-      const element = OfferExtended(props);
+      const element = OfferExtended({ ...props, slots });
       return {
-        subject: `Your offer of employment — ${props.positionTitle} at ${props.companyName}`,
+        subject: resolveSubject(
+          overrides?.subject,
+          { positionTitle: props.positionTitle, companyName: props.companyName },
+          `Your offer of employment — ${props.positionTitle} at ${props.companyName}`,
+        ),
         html: await render(element),
         text: await render(element, { plainText: true }),
       };
     }
     case "candidate.interview_invitation": {
       const props = data as unknown as InterviewInvitationProps;
-      const element = InterviewInvitation(props);
+      const element = InterviewInvitation({ ...props, slots });
       // A13 honest slice — attach a REAL generated .ics when we have a concrete
       // start instant. A TBC interview gets no calendar file (we don't invent a
       // time). No third-party API, no fake sync.
@@ -114,7 +150,11 @@ export async function renderTemplate(
             })
           : null;
       return {
-        subject: `Interview invitation — ${props.roundName} for ${props.positionTitle}`,
+        subject: resolveSubject(
+          overrides?.subject,
+          { roundName: props.roundName, positionTitle: props.positionTitle },
+          `Interview invitation — ${props.roundName} for ${props.positionTitle}`,
+        ),
         html: await render(element),
         text: await render(element, { plainText: true }),
         ...(ics ? { attachments: [ics] } : {}),
@@ -122,18 +162,26 @@ export async function renderTemplate(
     }
     case "candidate.interview_cancelled": {
       const props = data as unknown as InterviewCancelledProps;
-      const element = InterviewCancelled(props);
+      const element = InterviewCancelled({ ...props, slots });
       return {
-        subject: `Your ${props.roundName} interview for ${props.positionTitle} has been cancelled`,
+        subject: resolveSubject(
+          overrides?.subject,
+          { roundName: props.roundName, positionTitle: props.positionTitle },
+          `Your ${props.roundName} interview for ${props.positionTitle} has been cancelled`,
+        ),
         html: await render(element),
         text: await render(element, { plainText: true }),
       };
     }
     case "candidate.account_activation": {
       const props = data as unknown as CandidateAccountActivationProps;
-      const element = CandidateAccountActivation(props);
+      const element = CandidateAccountActivation({ ...props, slots });
       return {
-        subject: `Activate your ${props.companyName} candidate account`,
+        subject: resolveSubject(
+          overrides?.subject,
+          { companyName: props.companyName },
+          `Activate your ${props.companyName} candidate account`,
+        ),
         html: await render(element),
         text: await render(element, { plainText: true }),
       };
@@ -145,11 +193,17 @@ export async function renderTemplate(
       // if templateData somehow lacks one, so a missing field degrades
       // to a sane email rather than an empty subject line.
       const props = data as unknown as AgentMessageProps & { subject?: unknown };
-      const element = AgentMessage(props);
+      const element = AgentMessage({ ...props, slots });
+      // The approved subject wins. When the draft carries none, the tenant's
+      // subject override (if any) is the fallback, else the registry default.
       const approvedSubject =
         typeof props.subject === "string" && props.subject.trim().length > 0
           ? props.subject
-          : `Update on your application — ${props.positionTitle}`;
+          : resolveSubject(
+              overrides?.subject,
+              { positionTitle: props.positionTitle },
+              `Update on your application — ${props.positionTitle}`,
+            );
       return {
         subject: approvedSubject,
         html: await render(element),
@@ -158,10 +212,14 @@ export async function renderTemplate(
     }
     case "recruiter.sla_breach_imminent": {
       const props = data as unknown as SlaBreachImminentProps;
-      const element = SlaBreachImminent(props);
+      const element = SlaBreachImminent({ ...props, slots });
       const noun = props.applicationCount === 1 ? "application" : "applications";
       return {
-        subject: `Heads up — ${props.applicationCount} ${noun} near SLA breach`,
+        subject: resolveSubject(
+          overrides?.subject,
+          { applicationCount: String(props.applicationCount), noun },
+          `Heads up — ${props.applicationCount} ${noun} near SLA breach`,
+        ),
         html: await render(element),
         text: await render(element, { plainText: true }),
       };
@@ -184,18 +242,26 @@ export async function renderTemplate(
     }
     case "recruiter.offer_accepted": {
       const props = data as unknown as OfferAcceptedRecruiterProps;
-      const element = OfferAcceptedRecruiter(props);
+      const element = OfferAcceptedRecruiter({ ...props, slots });
       return {
-        subject: `Offer accepted — ${props.candidateName} for ${props.positionTitle}`,
+        subject: resolveSubject(
+          overrides?.subject,
+          { candidateName: props.candidateName, positionTitle: props.positionTitle },
+          `Offer accepted — ${props.candidateName} for ${props.positionTitle}`,
+        ),
         html: await render(element),
         text: await render(element, { plainText: true }),
       };
     }
     case "recruiter.offer_declined": {
       const props = data as unknown as OfferDeclinedRecruiterProps;
-      const element = OfferDeclinedRecruiter(props);
+      const element = OfferDeclinedRecruiter({ ...props, slots });
       return {
-        subject: `Offer declined — ${props.candidateName} for ${props.positionTitle}`,
+        subject: resolveSubject(
+          overrides?.subject,
+          { candidateName: props.candidateName, positionTitle: props.positionTitle },
+          `Offer declined — ${props.candidateName} for ${props.positionTitle}`,
+        ),
         html: await render(element),
         text: await render(element, { plainText: true }),
       };

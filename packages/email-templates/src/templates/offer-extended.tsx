@@ -10,6 +10,7 @@ import {
   Section,
   Text,
 } from "@react-email/components";
+import { resolveSlot, type SlotOverrides } from "../slots";
 
 export interface OfferExtendedProps {
   candidateName: string;
@@ -20,6 +21,8 @@ export interface OfferExtendedProps {
   location: string;
   expiryAtFormatted: string;
   acceptUrl: string;
+  /** T1.4 — optional tenant copy overrides. */
+  slots?: SlotOverrides;
 }
 
 /**
@@ -40,19 +43,34 @@ export function OfferExtended({
   location,
   expiryAtFormatted,
   acceptUrl,
+  slots,
 }: OfferExtendedProps) {
+  const tok = { candidateName, companyName, positionTitle, expiryAtFormatted };
   return (
     <Html>
       <Head />
       <Preview>{`Your offer of employment for ${positionTitle} at ${companyName}`}</Preview>
       <Body style={body}>
         <Container style={container}>
-          <Heading style={h1}>Offer of Employment</Heading>
+          <Heading style={h1}>{resolveSlot(slots?.heading, tok, <>Offer of Employment</>)}</Heading>
           <Section>
-            <Text style={text}>Hi {candidateName},</Text>
+            <Text style={text}>{resolveSlot(slots?.greeting, tok, <>Hi {candidateName},</>)}</Text>
+            {/*
+              The {" "} placement below is byte-significant to the react-email output:
+              reflowing it moves the whitespace across the <strong> and changes the
+              rendered HTML. Frozen with prettier-ignore to keep the no-override render
+              byte-identical to the pre-T1.4 template.
+            */}
+            {/* prettier-ignore */}
             <Text style={text}>
-              We&rsquo;re pleased to extend an offer of employment at <strong>{companyName}</strong>{" "}
-              for the role of <strong>{positionTitle}</strong>.
+              {resolveSlot(
+                slots?.intro,
+                tok,
+                <>
+                  We&rsquo;re pleased to extend an offer of employment at <strong>{companyName}</strong>{" "}
+                  for the role of <strong>{positionTitle}</strong>.
+                </>,
+              )}
             </Text>
             <Section style={summaryBox}>
               <Text style={summaryLine}>
@@ -71,17 +89,31 @@ export function OfferExtended({
                 <strong>Expires:</strong> {expiryAtFormatted}
               </Text>
             </Section>
-            <Text style={text}>Please review the full offer and confirm your decision below.</Text>
+            <Text style={text}>
+              {resolveSlot(
+                slots?.reviewLine,
+                tok,
+                <>Please review the full offer and confirm your decision below.</>,
+              )}
+            </Text>
             <Section style={{ textAlign: "center", margin: "24px 0" }}>
               <Link href={acceptUrl} style={button}>
-                Review &amp; Respond
+                {resolveSlot(slots?.ctaLabel, tok, <>Review &amp; Respond</>)}
               </Link>
             </Section>
             <Text style={textMuted}>
-              This link is private to you and expires on {expiryAtFormatted}. If you didn&rsquo;t
-              request this offer, please ignore this email.
+              {resolveSlot(
+                slots?.privateNote,
+                tok,
+                <>
+                  This link is private to you and expires on {expiryAtFormatted}. If you
+                  didn&rsquo;t request this offer, please ignore this email.
+                </>,
+              )}
             </Text>
-            <Text style={textMuted}>— The {companyName} recruiting team</Text>
+            <Text style={textMuted}>
+              {resolveSlot(slots?.signOff, tok, <>— The {companyName} recruiting team</>)}
+            </Text>
           </Section>
         </Container>
       </Body>
