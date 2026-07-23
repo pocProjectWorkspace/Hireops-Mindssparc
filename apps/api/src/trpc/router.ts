@@ -289,6 +289,12 @@ import {
   updateSystemSetupOutputSchema,
   resolveSystemSetup,
   type SystemSetup,
+  getShortlistDefaultsInputSchema,
+  getShortlistDefaultsOutputSchema,
+  updateShortlistDefaultsInputSchema,
+  updateShortlistDefaultsOutputSchema,
+  resolveShortlistDefaults,
+  type ShortlistDefaults,
   type NotificationStatus,
   getAiUsageSummaryInputSchema,
   getAiUsageSummaryOutputSchema,
@@ -7901,6 +7907,77 @@ export const appRouter = router({
         }
 
         return { ok: true as const, systemSetup: nextBlock };
+      });
+    }),
+
+  // ─────────────────────── getShortlistDefaults (T2.3 / G08) ───────────────────────
+  //
+  // Read of the per-tenant shortlist defaults (threshold + tier cutoffs) from
+  // tenants.settings.shortlistDefaults, merged over the code defaults
+  // (75 / 90 / 75 / 60). Gated on RECRUITER_SURFACE_ROLES (admin + recruiter):
+  // the recruiter shortlist surface SEEDS its Min-score buttons + count-card
+  // labels from these resolved cutoffs, so a recruiter must be able to read
+  // them. Read-only, no withAudit (matches the other settings reads).
+  getShortlistDefaults: protectedProcedure
+    .input(getShortlistDefaultsInputSchema)
+    .output(getShortlistDefaultsOutputSchema)
+    .query(async ({ ctx }) => {
+      requireAnyRole(ctx, RECRUITER_SURFACE_ROLES, "Shortlist defaults are a recruiter surface.");
+      const db = requireDb(ctx);
+      if (!ctx.tenantId) {
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: "protected procedure missing tenantId",
+        });
+      }
+      const [row] = await db
+        .select({ settings: tenants.settings })
+        .from(tenants)
+        .where(eq(tenants.id, ctx.tenantId))
+        .limit(1);
+      const settings = (row?.settings ?? {}) as Record<string, unknown>;
+      return resolveShortlistDefaults(settings.shortlistDefaults);
+    }),
+
+  // ─────────────────────── updateShortlistDefaults (T2.3 / G08) ───────────────────────
+  //
+  // Admin write of the shortlist-defaults block. Admin-gated + audited. Merges
+  // the validated block into tenants.settings under `shortlistDefaults` via the
+  // same atomic top-level jsonb `||` merge used by updateSystemSetup — a SIBLING
+  // key, preserving aiSettings / systemSetup / biasLexicon / scoringWeights etc.
+  // verbatim. The saved block DRIVES listShortlist (threshold + tier bucketing),
+  // not merely the UI — that's the honesty guarantee for this ticket.
+  updateShortlistDefaults: protectedProcedure
+    .input(updateShortlistDefaultsInputSchema)
+    .output(updateShortlistDefaultsOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      return withAudit("update_shortlist_defaults", ctx, input, async () => {
+        requireAnyRole(ctx, USERS_ADMIN_ROLES, "Shortlist defaults are admin-only");
+        if (!ctx.tenantId) {
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: "protected procedure missing tenantId",
+          });
+        }
+        const tenantId = ctx.tenantId;
+        const nextBlock: ShortlistDefaults = resolveShortlistDefaults(input);
+
+        const res = await poolDb.execute(dsql`
+          UPDATE public.tenants
+          SET settings = COALESCE(settings, '{}'::jsonb)
+              || jsonb_build_object('shortlistDefaults', ${JSON.stringify(nextBlock)}::jsonb)
+          WHERE id = ${tenantId}::uuid
+          RETURNING id
+        `);
+        const updated = (res as { rows?: unknown[] }).rows ?? (res as unknown[]);
+        if (updated.length !== 1) {
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: "tenant settings update affected an unexpected number of rows",
+          });
+        }
+
+        return { ok: true as const, shortlistDefaults: nextBlock };
       });
     }),
 
@@ -18332,6 +18409,24 @@ export const appRouter = router({
       requireAnyRole(ctx, RECRUITER_SURFACE_ROLES, "Shortlist is a recruiter surface.");
       const db = requireDb(ctx);
 
+      // T2.3 / G08 — resolve the tenant's shortlist defaults (threshold + tier
+      // cutoffs). The saved defaults DRIVE this computation: an omitted input
+      // threshold falls back to the tenant default, and the tier bucketing uses
+      // the tenant's cutoffs (defaults are byte-identical to the historic
+      // constants, so an unconfigured tenant behaves exactly as before).
+      let shortlistDefaults: ShortlistDefaults = resolveShortlistDefaults({});
+      if (ctx.tenantId) {
+        const [settingsRow] = await db
+          .select({ settings: tenants.settings })
+          .from(tenants)
+          .where(eq(tenants.id, ctx.tenantId))
+          .limit(1);
+        const settings = (settingsRow?.settings ?? {}) as Record<string, unknown>;
+        shortlistDefaults = resolveShortlistDefaults(settings.shortlistDefaults);
+      }
+      const effectiveThreshold = input.threshold ?? shortlistDefaults.threshold;
+      const cutoffs = shortlistDefaults.tierCutoffs;
+
       const rows = await db
         .select({
           candidateId: candidates.id,
@@ -18397,13 +18492,13 @@ export const appRouter = router({
 
       for (const r of rows) {
         const score = Number(r.aiScore);
-        const tier = matchTier(score);
+        const tier = matchTier(score, cutoffs);
         if (tier === "excellent") tierCounts.excellent += 1;
         else if (tier === "good") tierCounts.good += 1;
         else if (tier === "partial") tierCounts.partial += 1;
         // Below the partial floor never belongs on the shortlist.
         if (tier === null || tier === "below") continue;
-        if (score < input.threshold) continue;
+        if (score < effectiveThreshold) continue;
 
         const parsed = narrowParsedSkills(r.parsedSkills);
         const noticePeriodDays = parsed.notice_period_days ?? null;
@@ -18443,7 +18538,12 @@ export const appRouter = router({
       }
 
       return {
-        threshold: input.threshold,
+        threshold: effectiveThreshold,
+        tierCutoffs: {
+          excellent: cutoffs.excellent,
+          good: cutoffs.good,
+          partial: cutoffs.partial,
+        },
         tierCounts,
         rows: shaped as never,
       };

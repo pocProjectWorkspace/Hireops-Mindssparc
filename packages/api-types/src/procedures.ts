@@ -278,8 +278,10 @@ export const riskFlagSchema = z.enum(["skill_mismatch", "salary_gap"]);
 
 export const listShortlistInputSchema = z.object({
   /** Minimum real ai_score to include in the table (0–100). Tier count cards
-   * always summarise the full scored pool, independent of this. */
-  threshold: z.number().min(0).max(100).default(75),
+   * always summarise the full scored pool, independent of this. When omitted,
+   * the procedure falls back to the tenant's configured shortlist default
+   * threshold (tenants.settings.shortlistDefaults) — T2.3 / G08. */
+  threshold: z.number().min(0).max(100).optional(),
 });
 
 export const shortlistRowSchema = z.object({
@@ -301,7 +303,16 @@ export const shortlistRowSchema = z.object({
 });
 
 export const listShortlistOutputSchema = z.object({
+  /** Effective threshold applied to this response: `input.threshold` when
+   * supplied, else the tenant's configured shortlist default (T2.3 / G08). */
   threshold: z.number(),
+  /** Resolved per-tenant tier floors (inclusive min score per tier) driving the
+   * bucketing below — so the UI renders honest labels, not fixed 90/75/60. */
+  tierCutoffs: z.object({
+    excellent: z.number().int().min(0).max(100),
+    good: z.number().int().min(0).max(100),
+    partial: z.number().int().min(0).max(100),
+  }),
   tierCounts: z.object({
     excellent: z.number().int().min(0),
     good: z.number().int().min(0),

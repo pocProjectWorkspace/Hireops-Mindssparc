@@ -42,7 +42,9 @@ export default async function ShortlistPage() {
   }
 
   const caller = createServerTRPCCaller(session);
-  const initial = await caller.listShortlist({ threshold: 75 });
+  // Seed from the tenant's configured shortlist default (T2.3 / G08) — omit
+  // threshold so the procedure resolves tenants.settings.shortlistDefaults.
+  const initial = await caller.listShortlist({});
 
   return (
     <UndoToastProvider>
@@ -53,7 +55,7 @@ export default async function ShortlistPage() {
         active="shortlist"
         user={sessionUserChip(session)}
       >
-        <ShortlistView initial={initial} />
+        <ShortlistView initial={initial} canManageDefaults={isAdmin} />
         <CandidateDetailDrawer />
       </AppShell>
     </UndoToastProvider>

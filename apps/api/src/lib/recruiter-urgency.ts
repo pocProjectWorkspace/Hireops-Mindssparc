@@ -234,16 +234,30 @@ export const MATCH_TIERS: MatchTierMeta[] = [
   },
 ];
 
+/** Per-tenant tier floors (inclusive min score per tier). When omitted, the
+ * module constants (90 / 75 / 60) are the DEFAULT, so every existing caller
+ * stays byte-identical. T2.3 / G08 lets a tenant override these. */
+export interface MatchTierCutoffs {
+  excellent: number;
+  good: number;
+  partial: number;
+}
+
 /**
  * Bucket a real ai_score (0–100) into a tier. Returns null for an unscored
  * application (null score) OR a score below the partial floor — those never
  * belong on the shortlist. Deterministic, boundary-inclusive at each tier min.
+ * Optional `cutoffs` override the module-constant floors (T2.3 / G08); omitting
+ * them preserves the historic 90 / 75 / 60 behaviour exactly.
  */
-export function matchTier(aiScore: number | null): MatchTier | null {
+export function matchTier(aiScore: number | null, cutoffs?: MatchTierCutoffs): MatchTier | null {
   if (aiScore == null) return null;
-  if (aiScore >= MATCH_TIER_EXCELLENT_MIN) return "excellent";
-  if (aiScore >= MATCH_TIER_GOOD_MIN) return "good";
-  if (aiScore >= MATCH_TIER_PARTIAL_MIN) return "partial";
+  const excellent = cutoffs?.excellent ?? MATCH_TIER_EXCELLENT_MIN;
+  const good = cutoffs?.good ?? MATCH_TIER_GOOD_MIN;
+  const partial = cutoffs?.partial ?? MATCH_TIER_PARTIAL_MIN;
+  if (aiScore >= excellent) return "excellent";
+  if (aiScore >= good) return "good";
+  if (aiScore >= partial) return "partial";
   return "below";
 }
 

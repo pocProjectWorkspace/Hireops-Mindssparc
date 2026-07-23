@@ -363,3 +363,64 @@ export const updateSystemSetupOutputSchema = z.object({
   systemSetup: systemSetupSchema,
 });
 export type UpdateSystemSetupOutput = z.infer<typeof updateSystemSetupOutputSchema>;
+
+// ─────────────────── T2.3 / G08 — shortlist threshold + tier defaults ───────────────────
+//
+// Per-tenant defaults for the AI Shortlist surface, persisted to
+// tenants.settings.shortlistDefaults (a SIBLING of systemSetup — no new table).
+// The saved defaults DRIVE the shortlist computation: listShortlist reads the
+// resolved threshold + tierCutoffs and uses them for the min-score filter and
+// the match-tier bucketing. The code defaults (75 / 90 / 75 / 60) are
+// byte-identical to the constants in apps/api/src/lib/recruiter-urgency.ts
+// (MATCH_TIER_*_MIN) and the historic listShortlist `.default(75)` threshold, so
+// an UNCONFIGURED tenant behaves exactly as before this ticket.
+
+export const SHORTLIST_DEFAULTS_VERSION = 1 as const;
+
+/** The three deterministic match-tier floors (inclusive min score per tier).
+ * Cross-field sanity: partial ≤ good ≤ excellent. */
+export const tierCutoffsSchema = z
+  .object({
+    excellent: z.number().int().min(0).max(100).default(90),
+    good: z.number().int().min(0).max(100).default(75),
+    partial: z.number().int().min(0).max(100).default(60),
+  })
+  .refine((c) => c.partial <= c.good && c.good <= c.excellent, {
+    message: "Tier cutoffs must be ordered: partial ≤ good ≤ excellent.",
+  });
+export type TierCutoffs = z.infer<typeof tierCutoffsSchema>;
+
+export const shortlistDefaultsSchema = z.object({
+  version: z.literal(SHORTLIST_DEFAULTS_VERSION).default(SHORTLIST_DEFAULTS_VERSION),
+  /** Default minimum real ai_score to include in the shortlist table (0–100). */
+  threshold: z.number().min(0).max(100).default(75),
+  tierCutoffs: tierCutoffsSchema.default(() => tierCutoffsSchema.parse({})),
+});
+export type ShortlistDefaults = z.infer<typeof shortlistDefaultsSchema>;
+
+export function defaultShortlistDefaults(): ShortlistDefaults {
+  return shortlistDefaultsSchema.parse({});
+}
+
+/**
+ * Merge a raw stored `shortlistDefaults` block (partial / unknown / absent) with
+ * defaults, returning a complete validated config. Malformed / future /
+ * cross-field-invalid blocks fall back to defaults rather than throwing — same
+ * discipline as `resolveSystemSetup`.
+ */
+export function resolveShortlistDefaults(raw: unknown): ShortlistDefaults {
+  const parsed = shortlistDefaultsSchema.safeParse(raw ?? {});
+  return parsed.success ? parsed.data : defaultShortlistDefaults();
+}
+
+export const getShortlistDefaultsInputSchema = z.object({});
+export const getShortlistDefaultsOutputSchema = shortlistDefaultsSchema;
+export type GetShortlistDefaultsOutput = z.infer<typeof getShortlistDefaultsOutputSchema>;
+
+export const updateShortlistDefaultsInputSchema = shortlistDefaultsSchema;
+export type UpdateShortlistDefaultsInput = z.infer<typeof updateShortlistDefaultsInputSchema>;
+export const updateShortlistDefaultsOutputSchema = z.object({
+  ok: z.literal(true),
+  shortlistDefaults: shortlistDefaultsSchema,
+});
+export type UpdateShortlistDefaultsOutput = z.infer<typeof updateShortlistDefaultsOutputSchema>;

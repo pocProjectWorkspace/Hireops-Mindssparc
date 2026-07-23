@@ -2,11 +2,12 @@
 
 import { useState } from "react";
 import type { ListShortlistOutput } from "@hireops/api-types";
-import { trpc } from "@/lib/trpc-client";
+import { trpc, handleTRPCError } from "@/lib/trpc-client";
 import { useDrawerRouting } from "@/lib/use-drawer-routing";
 import {
   Avatar,
   Badge,
+  Button,
   EmptyState,
   ScoreMeter,
   StatTile,
@@ -38,8 +39,6 @@ type Row = Omit<RawRow, "aiScoreExplanation"> & { aiScoreExplanation?: unknown }
  * skill-overlap ratio (— when not computable); Risk is deterministic flags.
  * No fabricated confidence anywhere.
  */
-
-const THRESHOLDS = [60, 75, 90];
 
 function noticeLabel(days: number | null): string {
   if (days == null) return "Not captured";
@@ -99,9 +98,17 @@ function ShortlistRowView({
   );
 }
 
-export function ShortlistView({ initial }: { initial: Output }) {
+export function ShortlistView({
+  initial,
+  canManageDefaults = false,
+}: {
+  initial: Output;
+  canManageDefaults?: boolean;
+}) {
   const [threshold, setThreshold] = useState(initial.threshold);
+  const [saveError, setSaveError] = useState<string | null>(null);
   const { open, candidateId } = useDrawerRouting();
+  const utils = trpc.useUtils();
 
   const query = trpc.listShortlist.useQuery(
     { threshold },
@@ -113,6 +120,38 @@ export function ShortlistView({ initial }: { initial: Output }) {
 
   const data = query.data ?? initial;
   const rows = data.rows;
+  const cutoffs = data.tierCutoffs;
+
+  // The Min-score button set IS the tenant's three resolved tier floors (T2.3 /
+  // G08) — not fixed 60/75/90 — so the control is honest about the boundaries.
+  const thresholdOptions = [cutoffs.partial, cutoffs.good, cutoffs.excellent];
+
+  const saveDefault = trpc.updateShortlistDefaults.useMutation({
+    onSuccess: () => {
+      void utils.listShortlist.invalidate();
+      void utils.getShortlistDefaults.invalidate();
+    },
+  });
+
+  async function persistDefault() {
+    setSaveError(null);
+    try {
+      // Persist the CURRENT threshold + the tenant's current cutoffs as the
+      // tenant default — genuinely consumed by listShortlist on reload.
+      await saveDefault.mutateAsync({
+        version: 1,
+        threshold,
+        tierCutoffs: {
+          excellent: cutoffs.excellent,
+          good: cutoffs.good,
+          partial: cutoffs.partial,
+        },
+      });
+    } catch (err) {
+      handleTRPCError(err, { onMessage: (m) => setSaveError(m) });
+      setSaveError((prev) => prev ?? "Could not save the default. Please try again.");
+    }
+  }
 
   return (
     <div className="mx-auto w-full max-w-6xl px-8 py-6">
@@ -127,7 +166,7 @@ export function ShortlistView({ initial }: { initial: Output }) {
           <span className="text-xs font-medium uppercase tracking-wide text-neutral-500">
             Min score
           </span>
-          {THRESHOLDS.map((t) => (
+          {thresholdOptions.map((t) => (
             <button
               key={t}
               type="button"
@@ -142,23 +181,44 @@ export function ShortlistView({ initial }: { initial: Output }) {
               {t}%
             </button>
           ))}
+          {canManageDefaults ? (
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => void persistDefault()}
+              disabled={saveDefault.isPending}
+              title="Persist the current threshold as this tenant's shortlist default"
+            >
+              {saveDefault.isPending
+                ? "Saving…"
+                : saveDefault.isSuccess
+                  ? "Saved as default"
+                  : "Save current as default"}
+            </Button>
+          ) : null}
         </div>
       </div>
+
+      {saveError ? (
+        <p className="mb-4 text-sm text-danger-600" role="alert">
+          {saveError}
+        </p>
+      ) : null}
 
       <div className="mb-5 grid grid-cols-1 gap-4 sm:grid-cols-3">
         <StatTile
           tone="accent"
-          label="Excellent match (90+)"
+          label={`Excellent match (${cutoffs.excellent}+)`}
           value={data.tierCounts.excellent}
           hint="candidates in the scored pool"
         />
         <StatTile
-          label="Good match (75–89)"
+          label={`Good match (${cutoffs.good}–${cutoffs.excellent - 1})`}
           value={data.tierCounts.good}
           hint="candidates in the scored pool"
         />
         <StatTile
-          label="Partial match (60–74)"
+          label={`Partial match (${cutoffs.partial}–${cutoffs.good - 1})`}
           value={data.tierCounts.partial}
           hint="candidates in the scored pool"
         />
