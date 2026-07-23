@@ -56,6 +56,7 @@ import {
   IconIntegrations,
   IconSources,
   IconBusinessUnits,
+  IconCompBands,
   IconUsers,
   IconMissingInfo,
   IconMessaging,
@@ -118,7 +119,9 @@ export type PortalNavKey =
   | "candidate-fields"
   | "interview-templates"
   // T3.1 — business-unit management (G14)
-  | "business-units";
+  | "business-units"
+  // T3.2 — comp-band library (G15)
+  | "comp-bands";
 
 interface NavItem {
   key: PortalNavKey;
@@ -497,6 +500,14 @@ const ADMIN_NAV: NavItem[] = [
     label: "Business units",
     href: "/admin/business-units",
     icon: <IconBusinessUnits />,
+  },
+  // T3.2 / G15 — comp-band library (org structure). The managed bands drive the
+  // requisition wizard's comp-band picker + populate the position's comp values.
+  {
+    key: "comp-bands",
+    label: "Comp bands",
+    href: "/admin/comp-bands",
+    icon: <IconCompBands />,
   },
 ];
 

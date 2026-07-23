@@ -51,6 +51,7 @@ import {
   requisitionStateTransitions,
   positions,
   businessUnits,
+  compBands,
   jdVersions,
   jdSkills,
   approvalChains,
@@ -533,6 +534,16 @@ import {
   setBusinessUnitArchivedInputSchema,
   setBusinessUnitArchivedOutputSchema,
   type BusinessUnitRow,
+  // T3.2 / G15 comp-band library
+  listCompBandsInputSchema,
+  listCompBandsOutputSchema,
+  createCompBandInputSchema,
+  createCompBandOutputSchema,
+  updateCompBandInputSchema,
+  updateCompBandOutputSchema,
+  setCompBandArchivedInputSchema,
+  setCompBandArchivedOutputSchema,
+  type CompBandRow,
   // HRHEAD-02 market intelligence + feasibility
   listMarketBenchmarksInputSchema,
   listMarketBenchmarksOutputSchema,
@@ -1120,6 +1131,28 @@ const TENANT_SOURCE_ADMIN_ROLES = new Set(["admin"]);
 // archive) is admin-only config, like every other org-structure surface.
 const BUSINESS_UNIT_READ_ROLES = new Set(["admin", "hiring_manager", "recruiter"]);
 const BUSINESS_UNIT_ADMIN_ROLES = new Set(["admin"]);
+
+// T3.2 / G15 — comp-band library. The wizard picker (admin / hiring_manager /
+// recruiter) reads the non-archived bands; managing them (create / update /
+// archive) is admin + hr_head config, like every other org-structure surface.
+const COMP_BAND_READ_ROLES = new Set(["admin", "hiring_manager", "recruiter"]);
+const COMP_BAND_WRITE_ROLES = new Set(["admin", "hr_head"]);
+
+/** DB row → API row for a comp band. numeric columns come back as strings —
+ * convert to number; timestamps to ISO strings. */
+function compBandRowToApi(row: typeof compBands.$inferSelect): CompBandRow {
+  return {
+    id: row.id,
+    name: row.name,
+    level: row.level ?? null,
+    currency: row.currency,
+    minMajor: Number(row.minMajor),
+    maxMajor: Number(row.maxMajor),
+    isArchived: row.isArchived,
+    createdAt: row.createdAt.toISOString(),
+    updatedAt: row.updatedAt.toISOString(),
+  };
+}
 
 /** DB row → API row for a business unit. Timestamps to ISO strings. */
 function businessUnitRowToApi(row: typeof businessUnits.$inferSelect): BusinessUnitRow {
@@ -4251,6 +4284,49 @@ export const appRouter = router({
           });
         }
 
+        // T3.2 / G15 — resolve the comp band (if the wizard sent one) and derive
+        // the position's comp values. The band GENUINELY drives comp: when the
+        // request omits explicit compBandMin/Max, we COPY the band's
+        // min/max/currency onto the position (server-authoritative). When it DOES
+        // send them (an override), we use those but STILL retain comp_band_id as
+        // provenance, so an edited value reads as a divergence from the band.
+        let compBandId: string | null = null;
+        let compBandMin = input.compBandMin;
+        let compBandMax = input.compBandMax;
+        let compCurrency = input.compCurrency;
+        if (input.compBandId) {
+          const [band] = await db
+            .select({
+              id: compBands.id,
+              minMajor: compBands.minMajor,
+              maxMajor: compBands.maxMajor,
+              currency: compBands.currency,
+              isArchived: compBands.isArchived,
+            })
+            .from(compBands)
+            .where(and(eq(compBands.tenantId, tenantId), eq(compBands.id, input.compBandId)))
+            .limit(1);
+          if (!band) {
+            throw new TRPCError({ code: "BAD_REQUEST", message: "Comp band not found" });
+          }
+          if (band.isArchived) {
+            throw new TRPCError({
+              code: "BAD_REQUEST",
+              message: "That comp band is archived — pick an active band",
+            });
+          }
+          compBandId = band.id;
+          // Copy from the band unless the request explicitly overrides min/max.
+          if (input.compBandMin === undefined && input.compBandMax === undefined) {
+            compBandMin = Number(band.minMajor);
+            compBandMax = Number(band.maxMajor);
+            compCurrency = band.currency;
+          } else if (compCurrency === undefined) {
+            // Override path: keep the explicit values; default currency to the band's.
+            compCurrency = band.currency;
+          }
+        }
+
         // Create the position. An active position can't share a title in
         // the same BU (partial unique) — surface a clean 400 rather than a
         // raw 23505 so the hiring manager can pick a more specific title.
@@ -4265,9 +4341,10 @@ export const appRouter = router({
               level: input.seniority ?? null,
               locationType: input.locationType,
               primaryLocation: input.primaryLocation ?? null,
-              compBandMin: input.compBandMin !== undefined ? String(input.compBandMin) : null,
-              compBandMax: input.compBandMax !== undefined ? String(input.compBandMax) : null,
-              compCurrency: input.compCurrency ?? null,
+              compBandMin: compBandMin !== undefined ? String(compBandMin) : null,
+              compBandMax: compBandMax !== undefined ? String(compBandMax) : null,
+              compCurrency: compCurrency ?? null,
+              compBandId,
               hiringManagerId: membershipId,
               createdBy: membershipId,
             })
@@ -19511,6 +19588,204 @@ export const appRouter = router({
           throw new TRPCError({ code: "NOT_FOUND", message: "business unit not found" });
         }
         return { row: businessUnitRowToApi(row) };
+      });
+    }),
+
+  // ═══════════ T3.2 / G15 — comp-band library ═══════════
+  //
+  // A tenant's FLAT, named set of compensation bands (min/max/currency, optional
+  // level label). HONESTY: this GENUINELY drives requisition creation —
+  // createRequisitionDraft (above), when the wizard sends a compBandId, COPIES
+  // the band's min/max/currency onto the position's comp columns, which the
+  // deterministic comp-rules verdict engine + feasibility/detail views already
+  // read. The position keeps comp_band_id as provenance so an edited value shows
+  // as a divergence. Reads (picker) = admin / hiring_manager / recruiter; writes
+  // (manage) = admin / hr_head. Archiving retires a band from the picker without
+  // breaking positions already on it. RLS scopes rows to the tenant.
+
+  /**
+   * listCompBands — flat rows for the tenant, ordered by name. Excludes archived
+   * bands unless `includeArchived` (the admin surface shows them; the wizard
+   * picker does not). Read roles (picker + admin surface).
+   */
+  listCompBands: protectedProcedure
+    .input(listCompBandsInputSchema)
+    .output(listCompBandsOutputSchema)
+    .query(async ({ ctx, input }) => {
+      requireAnyRole(
+        ctx,
+        COMP_BAND_READ_ROLES,
+        "The comp-band list requires the hiring_manager, recruiter, or admin role",
+      );
+      const db = requireDb(ctx);
+      if (!ctx.tenantId) {
+        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
+      }
+      const where = input.includeArchived
+        ? eq(compBands.tenantId, ctx.tenantId)
+        : and(eq(compBands.tenantId, ctx.tenantId), eq(compBands.isArchived, false));
+      const rows = await db.select().from(compBands).where(where).orderBy(compBands.name);
+      return { rows: rows.map(compBandRowToApi) };
+    }),
+
+  /**
+   * createCompBand — admin / hr_head, audited. A (tenant, name) collision
+   * surfaces a clean BAD_REQUEST, not a raw 23505. minMajor ≤ maxMajor enforced
+   * (defence in depth over the zod refine + the DB CHECK).
+   */
+  createCompBand: protectedProcedure
+    .input(createCompBandInputSchema)
+    .output(createCompBandOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      return withAudit("create_comp_band", ctx, input, async () => {
+        requireAnyRole(
+          ctx,
+          COMP_BAND_WRITE_ROLES,
+          "Managing comp bands requires the admin or hr_head role",
+        );
+        const db = requireDb(ctx);
+        if (!ctx.tenantId) {
+          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
+        }
+        if (input.minMajor > input.maxMajor) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: "The band minimum must be less than or equal to the maximum",
+          });
+        }
+        const tenantId = ctx.tenantId;
+        const name = input.name.trim();
+        let row: typeof compBands.$inferSelect | undefined;
+        try {
+          // Nested transaction (SAVEPOINT): a (tenant, name) unique violation
+          // rolls back to the savepoint rather than aborting the request's outer
+          // RLS transaction. Without this, the aborted-tx state resurfaces the
+          // raw 23505 as an INTERNAL_SERVER_ERROR at commit time — masking the
+          // clean BAD_REQUEST below (no existing test exercised a real 23505 →
+          // BAD_REQUEST over HTTP, so this latent behaviour was never caught).
+          [row] = await db.transaction((tx) =>
+            tx
+              .insert(compBands)
+              .values({
+                tenantId,
+                name,
+                level: input.level?.trim() ? input.level.trim() : null,
+                currency: input.currency,
+                minMajor: String(input.minMajor),
+                maxMajor: String(input.maxMajor),
+              })
+              .returning(),
+          );
+        } catch (err) {
+          if (isUniqueViolation(err)) {
+            throw new TRPCError({
+              code: "BAD_REQUEST",
+              message: `A comp band named "${name}" already exists. Pick a distinct name.`,
+            });
+          }
+          throw err;
+        }
+        if (!row) {
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: "comp band insert returned no row",
+          });
+        }
+        return { row: compBandRowToApi(row) };
+      });
+    }),
+
+  /**
+   * updateCompBand — admin / hr_head, audited. Updates name / level / currency /
+   * min / max. minMajor ≤ maxMajor enforced. A (tenant, name) collision surfaces
+   * a clean BAD_REQUEST. NOT_FOUND if the id is not the tenant's.
+   */
+  updateCompBand: protectedProcedure
+    .input(updateCompBandInputSchema)
+    .output(updateCompBandOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      return withAudit("update_comp_band", ctx, input, async () => {
+        requireAnyRole(
+          ctx,
+          COMP_BAND_WRITE_ROLES,
+          "Managing comp bands requires the admin or hr_head role",
+        );
+        const db = requireDb(ctx);
+        if (!ctx.tenantId) {
+          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
+        }
+        if (input.minMajor > input.maxMajor) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: "The band minimum must be less than or equal to the maximum",
+          });
+        }
+        const tenantId = ctx.tenantId;
+        const name = input.name.trim();
+        let row: typeof compBands.$inferSelect | undefined;
+        try {
+          // Nested transaction (SAVEPOINT): a rename onto an existing (tenant,
+          // name) rolls back to the savepoint rather than aborting the request's
+          // outer RLS transaction, so the clean BAD_REQUEST below survives (see
+          // createCompBand for the full rationale).
+          [row] = await db.transaction((tx) =>
+            tx
+              .update(compBands)
+              .set({
+                name,
+                level: input.level?.trim() ? input.level.trim() : null,
+                currency: input.currency,
+                minMajor: String(input.minMajor),
+                maxMajor: String(input.maxMajor),
+                updatedAt: new Date(),
+              })
+              .where(and(eq(compBands.tenantId, tenantId), eq(compBands.id, input.id)))
+              .returning(),
+          );
+        } catch (err) {
+          if (isUniqueViolation(err)) {
+            throw new TRPCError({
+              code: "BAD_REQUEST",
+              message: `A comp band named "${name}" already exists. Pick a distinct name.`,
+            });
+          }
+          throw err;
+        }
+        if (!row) {
+          throw new TRPCError({ code: "NOT_FOUND", message: "comp band not found" });
+        }
+        return { row: compBandRowToApi(row) };
+      });
+    }),
+
+  /**
+   * setCompBandArchived — admin / hr_head, audited. Flips is_archived. Archiving
+   * retires the band from the wizard picker (listCompBands default excludes it)
+   * but positions already populated from it stay valid.
+   */
+  setCompBandArchived: protectedProcedure
+    .input(setCompBandArchivedInputSchema)
+    .output(setCompBandArchivedOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      return withAudit("set_comp_band_archived", ctx, input, async () => {
+        requireAnyRole(
+          ctx,
+          COMP_BAND_WRITE_ROLES,
+          "Managing comp bands requires the admin or hr_head role",
+        );
+        const db = requireDb(ctx);
+        if (!ctx.tenantId) {
+          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
+        }
+        const [row] = await db
+          .update(compBands)
+          .set({ isArchived: input.archived, updatedAt: new Date() })
+          .where(and(eq(compBands.tenantId, ctx.tenantId), eq(compBands.id, input.id)))
+          .returning();
+        if (!row) {
+          throw new TRPCError({ code: "NOT_FOUND", message: "comp band not found" });
+        }
+        return { row: compBandRowToApi(row) };
       });
     }),
 

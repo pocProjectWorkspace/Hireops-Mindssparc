@@ -252,6 +252,18 @@ export function IconBusinessUnits() {
   );
 }
 
+export function IconCompBands() {
+  // A pay-band glyph: stacked bars of increasing length (comp tiers) with a base.
+  return (
+    <Svg>
+      <path d="M4 20h16" />
+      <rect x="5" y="14" width="4" height="4" rx="1" />
+      <rect x="10" y="9" width="4" height="9" rx="1" />
+      <rect x="15" y="4" width="4" height="14" rx="1" />
+    </Svg>
+  );
+}
+
 export function IconSources() {
   // Converging channels → one pipeline (the registry's whole idea).
   return (

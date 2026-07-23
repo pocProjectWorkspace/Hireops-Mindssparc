@@ -70,6 +70,9 @@ interface BasicsState {
   employmentType: string;
   numberOfOpenings: number;
   targetStartDate: string;
+  /** T3.2 / G15 — the CONTROLLED comp-band id the picker sends. Empty = manual /
+   * template entry (no band; comp columns come from the typed values). */
+  compBandId: string;
   compBandMin: string; // INR annual, as string for the input
   compBandMax: string;
 }
@@ -84,6 +87,7 @@ const EMPTY_BASICS: BasicsState = {
   employmentType: "",
   numberOfOpenings: 1,
   targetStartDate: "",
+  compBandId: "",
   compBandMin: "",
   compBandMax: "",
 };
@@ -163,6 +167,18 @@ export function RequisitionWizard({
   );
   const noBusinessUnits = businessUnitsQuery.isSuccess && businessUnits.length === 0;
 
+  // T3.2 / G15 — the managed comp-band library drives the Basics comp picker.
+  // Picking a band POPULATES the min/max/currency (still editable) and records
+  // the band id as provenance; the server copies the band's values onto the
+  // position. Non-archived only. Optional: the manual-entry path stays.
+  const compBandsQuery = trpc.listCompBands.useQuery({});
+  const compBands = useMemo(() => compBandsQuery.data?.rows ?? [], [compBandsQuery.data]);
+  const noCompBands = compBandsQuery.isSuccess && compBands.length === 0;
+  const pickedBand = useMemo(
+    () => compBands.find((b) => b.id === basics.compBandId) ?? null,
+    [compBands, basics.compBandId],
+  );
+
   // Resuming a draft: getRequisitionDetail returns the department NAME, not the
   // unit id — best-effort match it back to a managed unit so the picker shows
   // the current selection.
@@ -226,6 +242,7 @@ export function RequisitionWizard({
       employmentType: "",
       numberOfOpenings: d.numberOfOpenings,
       targetStartDate: d.targetStartDate ?? "",
+      compBandId: "",
       compBandMin: d.compBandMin ?? "",
       compBandMax: d.compBandMax ?? "",
     });
@@ -321,6 +338,9 @@ export function RequisitionWizard({
       title: t.title,
       seniority: t.seniority,
       locationType: t.locationType,
+      // A JD-template prefill is a manual comp path — clear any picked band so
+      // the template's budget isn't mislabelled as coming from a comp band.
+      compBandId: "",
       compBandMin: String(t.budgetMinInr),
       compBandMax: String(t.budgetMaxInr),
     }));
@@ -350,6 +370,10 @@ export function RequisitionWizard({
         employmentType: basics.employmentType || undefined,
         numberOfOpenings: basics.numberOfOpenings,
         targetStartDate: basics.targetStartDate || undefined,
+        // T3.2 / G15 — send the picked band id as provenance. If the user left
+        // the filled values untouched the server copies from the band; if they
+        // edited them, the explicit values override yet the band id is retained.
+        compBandId: basics.compBandId || undefined,
         compBandMin: basics.compBandMin ? Number(basics.compBandMin) : undefined,
         compBandMax: basics.compBandMax ? Number(basics.compBandMax) : undefined,
         compCurrency: basics.compBandMin || basics.compBandMax ? "INR" : undefined,
@@ -605,6 +629,57 @@ export function RequisitionWizard({
                 }
               />
             </Field>
+            <div className="col-span-2">
+              <Field label="Comp band (optional)">
+                {noCompBands ? (
+                  <div className="rounded-button border border-neutral-200 bg-neutral-50 px-3 py-2 text-xs text-neutral-600">
+                    {isAdmin ? (
+                      <>
+                        No comp bands are defined yet.{" "}
+                        <a href="/admin/comp-bands" className="font-medium underline">
+                          Add comp bands
+                        </a>{" "}
+                        to pick from a managed library, or enter the budget manually below.
+                      </>
+                    ) : (
+                      "No comp bands are defined yet — enter the budget manually below, or ask an administrator to add a comp-band library."
+                    )}
+                  </div>
+                ) : (
+                  <select
+                    className={inputCls}
+                    value={basics.compBandId}
+                    disabled={compBandsQuery.isLoading}
+                    onChange={(e) => {
+                      const id = e.target.value;
+                      const band = compBands.find((b) => b.id === id);
+                      if (band) {
+                        // Picking a band fills the budget (still editable) and
+                        // records the band as provenance.
+                        setBasics({
+                          ...basics,
+                          compBandId: band.id,
+                          compBandMin: String(band.minMajor),
+                          compBandMax: String(band.maxMajor),
+                        });
+                      } else {
+                        // "None" — manual entry; drop the provenance, keep typed values.
+                        setBasics({ ...basics, compBandId: "" });
+                      }
+                    }}
+                  >
+                    <option value="">— None (enter budget manually) —</option>
+                    {compBands.map((b) => (
+                      <option key={b.id} value={b.id}>
+                        {b.name}
+                        {b.level ? ` · ${b.level}` : ""} ({b.currency}{" "}
+                        {b.minMajor.toLocaleString("en-IN")}–{b.maxMajor.toLocaleString("en-IN")})
+                      </option>
+                    ))}
+                  </select>
+                )}
+              </Field>
+            </div>
             <Field label="Budget band — min (INR / year)">
               <input
                 type="number"
@@ -902,6 +977,7 @@ export function RequisitionWizard({
               label="Location"
               value={`${basics.primaryLocation || "—"} (${basics.locationType})`}
             />
+            <Row label="Comp band" value={pickedBand ? pickedBand.name : "Manual entry"} />
             <Row
               label="Budget band"
               value={

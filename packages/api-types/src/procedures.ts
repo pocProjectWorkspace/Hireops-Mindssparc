@@ -607,6 +607,15 @@ export const createRequisitionDraftInputSchema = z.object({
   numberOfOpenings: z.number().int().min(1).max(999).default(1),
   /** ISO date (yyyy-mm-dd). */
   targetStartDate: z.string().optional(),
+  /**
+   * T3.2 / G15 — the CONTROLLED comp-band id the wizard picker sends. When
+   * present the server looks up the tenant's non-archived band and COPIES its
+   * min/max/currency onto the position's comp columns (unless the request also
+   * carries explicit compBandMin/Max — a retained-provenance override). The
+   * position keeps comp_band_id as provenance so an override reads as a value
+   * divergence. Absent → free-typed / null comp exactly as before.
+   */
+  compBandId: z.string().uuid().optional(),
   compBandMin: z.number().nonnegative().optional(),
   compBandMax: z.number().nonnegative().optional(),
   compCurrency: z.string().length(3).optional(),

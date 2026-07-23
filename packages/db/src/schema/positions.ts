@@ -16,6 +16,7 @@ import {
 } from "drizzle-orm/pg-core";
 import { tenants } from "./tenants";
 import { businessUnits } from "./business-units";
+import { compBands } from "./comp-bands";
 import { tenantUserMemberships } from "./tenant-user-memberships";
 import { locationTypeEnum } from "./location-type";
 
@@ -53,6 +54,11 @@ export const positions = pgTable(
     compBandMin: numeric("comp_band_min", { precision: 12, scale: 2 }),
     compBandMax: numeric("comp_band_max", { precision: 12, scale: 2 }),
     compCurrency: char("comp_currency", { length: 3 }),
+    // T3.2 / G15 — provenance: the comp-band this position's comp values were
+    // populated from (nullable; free-typed / seed positions carry no band). The
+    // band's min/max/currency are COPIED onto the comp_* columns above, so an
+    // edited value shows as a divergence from the linked band.
+    compBandId: uuid("comp_band_id"),
     hiringManagerId: uuid("hiring_manager_id"),
     workdayPositionWid: text("workday_position_wid"),
     isActive: boolean("is_active").notNull().default(true),
@@ -87,6 +93,14 @@ export const positions = pgTable(
       foreignColumns: [tenantUserMemberships.tenantId, tenantUserMemberships.id],
       name: "fk_positions_hiring_manager",
     }).onDelete("set null"),
+    // T3.2 / G15 — provenance FK to the comp-band library. Compound (tenant, id)
+    // so a position + its band share a tenant. RESTRICT: bands are archived,
+    // never deleted, so a linked band can't vanish out from under a position.
+    foreignKey({
+      columns: [table.tenantId, table.compBandId],
+      foreignColumns: [compBands.tenantId, compBands.id],
+      name: "fk_positions_comp_band",
+    }).onDelete("restrict"),
     foreignKey({
       columns: [table.tenantId, table.createdBy],
       foreignColumns: [tenantUserMemberships.tenantId, tenantUserMemberships.id],
