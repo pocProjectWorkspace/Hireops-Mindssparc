@@ -4,6 +4,7 @@ import {
   uuid,
   text,
   integer,
+  jsonb,
   timestamp,
   index,
   unique,
@@ -65,6 +66,15 @@ export const interviews = pgTable(
     // against. Nullable: rows scheduled before 0055 whose plan round was
     // already removed have no snapshot and fall back to 'general', as before.
     scorecardTemplate: text("scorecard_template"),
+    // T2.2 / G07 — IMMUTABILITY. doScheduleRound RESOLVES the round's scorecard
+    // criteria (a tenant CUSTOM rubric from tenant_scorecard_template, or one of
+    // the 4 code defaults) and SNAPSHOTS them here at schedule time as an ordered
+    // [{key,label}, ...] array. The panel brief / saveInterviewFeedback / decision
+    // summary read this snapshot so editing a tenant scorecard template LATER
+    // cannot retro-change the rubric a scheduled interview is scored against.
+    // Nullable: rows scheduled before migration 0102 fall back to live-resolve via
+    // scorecardCriteriaFor(scorecard_template), byte-identically to before.
+    scorecardCriteriaSnapshot: jsonb("scorecard_criteria_snapshot"),
 
     scheduledStart: timestamp("scheduled_start", { withTimezone: true }),
     scheduledEnd: timestamp("scheduled_end", { withTimezone: true }),
@@ -109,6 +119,14 @@ export const interviews = pgTable(
       sql`${table.status} IN ('scheduled', 'completed', 'cancelled', 'no_show')`,
     ),
     check("interviews_mode_check", sql`${table.mode} IN ('video', 'onsite', 'phone')`),
+    // T2.2 / G07: the snapshot key had NO DB CHECK (0055 added it nullable). Add
+    // the SAME lax shape guard as interview_plans (NULL allowed) for parity —
+    // the column is stamped from the already-validated plan round, so this is
+    // defence-in-depth. Migration 0102 adds the DB constraint.
+    check(
+      "interviews_scorecard_template_check",
+      sql`${table.scorecardTemplate} IS NULL OR ${table.scorecardTemplate} ~ '^[a-z0-9_]{1,64}$'`,
+    ),
 
     foreignKey({
       columns: [table.tenantId, table.applicationId],

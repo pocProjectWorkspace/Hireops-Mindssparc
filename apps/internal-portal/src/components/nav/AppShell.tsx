@@ -114,7 +114,8 @@ export type PortalNavKey =
   // T1.4 — email/notification copy overrides (G09)
   | "email-templates"
   // T2.1 — required-candidate-field policy (G05)
-  | "candidate-fields";
+  | "candidate-fields"
+  | "interview-templates";
 
 interface NavItem {
   key: PortalNavKey;
@@ -477,6 +478,14 @@ const ADMIN_NAV: NavItem[] = [
     label: "Candidate fields",
     href: "/admin/candidate-fields",
     icon: <IconMissingInfo />,
+  },
+  // T2.2 — tenant interview round templates + custom scorecard values (G07).
+  // Reuses IconInterviews — this configures the interview loop + scorecards.
+  {
+    key: "interview-templates",
+    label: "Interview templates",
+    href: "/admin/interview-templates",
+    icon: <IconInterviews />,
   },
 ];
 

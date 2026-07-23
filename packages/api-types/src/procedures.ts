@@ -3,7 +3,6 @@ import {
   applicationStageSchema,
   applicationSourceSchema,
   interviewModeSchema,
-  interviewScorecardTemplateSchema,
   interviewStatusSchema,
   type InterviewScorecardTemplate,
 } from "./enums";
@@ -2714,12 +2713,27 @@ export type GetDocumentRetentionOutput = z.infer<typeof getDocumentRetentionOutp
  * scheduling modal's panel picker. Validated server-side as real active
  * memberships on upsert.
  */
+/**
+ * A scorecard-template KEY (T2.2 / G07). RELAXED from the fixed 4-value enum
+ * (interviewScorecardTemplateSchema) to a lax snake_case SHAPE so a tenant can
+ * name one of its OWN saved scorecard keys (tenant_scorecard_template) as well
+ * as the 4 code defaults. Shape only — membership in {4 defaults} ∪ {the tenant's
+ * saved keys} is enforced server-side at write (upsertInterviewPlan /
+ * applyInterviewRoundTemplate). Mirrors the DB shape check in migration 0102.
+ */
+export const scorecardTemplateKeySchema = z
+  .string()
+  .min(1)
+  .max(64)
+  .regex(/^[a-z0-9_]+$/, "scorecard key must be lowercase snake_case");
+export type ScorecardTemplateKey = z.infer<typeof scorecardTemplateKeySchema>;
+
 export const interviewPlanRoundSchema = z.object({
   roundNumber: z.number().int().min(1).max(20),
   roundName: z.string().min(1).max(120),
   durationMinutes: z.number().int().min(15).max(480),
   mode: interviewModeSchema,
-  scorecardTemplate: interviewScorecardTemplateSchema,
+  scorecardTemplate: scorecardTemplateKeySchema,
   competencyFocus: z.array(z.string().min(1).max(80)).max(20).default([]),
   defaultPanelMembershipIds: z.array(z.string().uuid()).max(20).default([]),
 });
@@ -2974,8 +2988,20 @@ export const SCORECARD_CRITERIA: Record<InterviewScorecardTemplate, readonly Sco
     ],
   };
 
+/** The 4 RESERVED code-default scorecard keys. A tenant custom scorecard
+ * (tenant_scorecard_template) may NOT redefine one of these — the procedure
+ * rejects the collision. Membership validation at plan write is against
+ * {these} ∪ {the tenant's saved custom keys}. */
+export const CODE_SCORECARD_KEYS = ["technical", "manager", "hr", "general"] as const;
+export type CodeScorecardKey = (typeof CODE_SCORECARD_KEYS)[number];
+export function isCodeScorecardKey(key: string): key is CodeScorecardKey {
+  return (CODE_SCORECARD_KEYS as readonly string[]).includes(key);
+}
+
 /** Criteria set for a template, defaulting to `general` for an unknown/missing
- * template (e.g. the interview's plan round was removed after scheduling). */
+ * template (e.g. the interview's plan round was removed after scheduling). This
+ * resolves the 4 CODE DEFAULTS ONLY — for a tenant CUSTOM key, resolve against
+ * the tenant's saved criteria via resolveScorecardCriteria (below). */
 export function scorecardCriteriaFor(
   template: string | null | undefined,
 ): readonly ScorecardCriterion[] {
@@ -2983,6 +3009,47 @@ export function scorecardCriteriaFor(
     return SCORECARD_CRITERIA[template as InterviewScorecardTemplate] ?? SCORECARD_CRITERIA.general;
   }
   return SCORECARD_CRITERIA.general;
+}
+
+/**
+ * T2.2 / G07 — resolve the criteria for a scorecard KEY, consulting a tenant's
+ * CUSTOM rubrics first and falling back to the 4 code defaults. `tenantCriteria`
+ * is a map of the tenant's saved scorecard_key → its ordered criteria (loaded by
+ * the router from tenant_scorecard_template). A key present in the map returns
+ * the tenant's rubric; any other key falls back to scorecardCriteriaFor (code
+ * defaults / general). This is the single resolver the plan/panel paths use, so
+ * custom criteria genuinely DRIVE the assessment rather than just being stored.
+ */
+export function resolveScorecardCriteria(
+  template: string | null | undefined,
+  tenantCriteria?: ReadonlyMap<string, readonly ScorecardCriterion[]> | null,
+): readonly ScorecardCriterion[] {
+  if (template && tenantCriteria && tenantCriteria.has(template)) {
+    const custom = tenantCriteria.get(template);
+    if (custom && custom.length > 0) return custom;
+  }
+  return scorecardCriteriaFor(template);
+}
+
+/** A stored/resolved criteria snapshot ([{key,label}, ...]) coerced back to the
+ * ScorecardCriterion shape, tolerating a null/garbage jsonb value (returns []). */
+export function coerceScorecardCriteria(value: unknown): ScorecardCriterion[] {
+  if (!Array.isArray(value)) return [];
+  const out: ScorecardCriterion[] = [];
+  for (const item of value) {
+    if (
+      item &&
+      typeof item === "object" &&
+      typeof (item as { key?: unknown }).key === "string" &&
+      typeof (item as { label?: unknown }).label === "string"
+    ) {
+      out.push({
+        key: (item as ScorecardCriterion).key,
+        label: (item as ScorecardCriterion).label,
+      });
+    }
+  }
+  return out;
 }
 
 export const interviewRecommendationSchema = z.enum(["strong_yes", "yes", "hold", "no"]);
@@ -3066,7 +3133,7 @@ export const getPanelInterviewBriefOutputSchema = z.object({
     yearsOfExperience: z.number().nullable(),
   }),
   round: z.object({
-    scorecardTemplate: interviewScorecardTemplateSchema,
+    scorecardTemplate: scorecardTemplateKeySchema,
     competencyFocus: z.array(z.string()),
   }),
   // PANEL-02: deterministic Resume-vs-JD skills overlap (no AI). Computed
@@ -3240,7 +3307,7 @@ export const getInterviewDecisionSummaryOutputSchema = z.object({
   roundNumber: z.number().int(),
   roundName: z.string(),
   status: interviewStatusSchema,
-  scorecardTemplate: interviewScorecardTemplateSchema,
+  scorecardTemplate: scorecardTemplateKeySchema,
   panelists: z.array(decisionPanelistSchema),
   rollup: decisionRollupSchema,
 });
@@ -4821,7 +4888,7 @@ export const panelSetupRoundSchema = z.object({
   roundName: z.string(),
   durationMinutes: z.number().int(),
   mode: interviewModeSchema,
-  scorecardTemplate: interviewScorecardTemplateSchema,
+  scorecardTemplate: scorecardTemplateKeySchema,
   // Read-only default panellists carried by the plan (resolved display names).
   // Actual per-round panel assignment happens at scheduling (/interviews).
   defaultPanelists: z.array(z.string()),

@@ -108,3 +108,6 @@ export * from "./missing-info-requests";
 export * from "./recruiter-brief";
 // Tenant email/notification copy overrides (T1.4 / G09)
 export * from "./tenant-email-template-overrides";
+// Tenant interview round templates + custom scorecard values (T2.2 / G07)
+export * from "./tenant-interview-round-template";
+export * from "./tenant-scorecard-template";

@@ -90,6 +90,8 @@ import {
   tenantApplicationSources,
   candidateFieldPolicy,
   tenantEmailTemplateOverrides,
+  tenantInterviewRoundTemplate,
+  tenantScorecardTemplate,
   requisitionFeasibility,
   hrRoundAssessments,
   compRecommendations,
@@ -189,7 +191,28 @@ import {
   getPanelInterviewBriefOutputSchema,
   saveInterviewFeedbackInputSchema,
   saveInterviewFeedbackOutputSchema,
-  scorecardCriteriaFor,
+  resolveScorecardCriteria,
+  coerceScorecardCriteria,
+  SCORECARD_CRITERIA,
+  CODE_SCORECARD_KEYS,
+  isCodeScorecardKey,
+  type ScorecardCriterion,
+  // T2.2 / G07 — tenant interview round templates + custom scorecard values
+  listInterviewRoundTemplatesInputSchema,
+  listInterviewRoundTemplatesOutputSchema,
+  upsertInterviewRoundTemplateInputSchema,
+  upsertInterviewRoundTemplateOutputSchema,
+  deleteInterviewRoundTemplateInputSchema,
+  deleteInterviewRoundTemplateOutputSchema,
+  applyInterviewRoundTemplateInputSchema,
+  applyInterviewRoundTemplateOutputSchema,
+  listScorecardTemplatesInputSchema,
+  listScorecardTemplatesOutputSchema,
+  upsertScorecardTemplateInputSchema,
+  upsertScorecardTemplateOutputSchema,
+  deleteScorecardTemplateInputSchema,
+  deleteScorecardTemplateOutputSchema,
+  type ScorecardTemplateOption,
   type FeedbackState,
   type GetPanelInterviewBriefOutput,
   type SaveInterviewFeedbackOutput,
@@ -1099,6 +1122,63 @@ function tenantSourceRowToApi(row: typeof tenantApplicationSources.$inferSelect)
 // rows to the tenant on top; the tracker READS the effective policy (recruiter
 // surfaces render it), but only an admin writes it.
 const CANDIDATE_FIELD_POLICY_ROLES = new Set(["admin"]);
+
+// T2.2 / G07 — authoring the tenant interview round loop + custom scorecard
+// rubrics is admin-only tenant config, like every other admin config surface.
+// (Applying a template to a requisition's plan is a plan-authoring action —
+// INTERVIEW_MANAGE_ROLES — since it writes interview_plans.)
+const INTERVIEW_TEMPLATE_ADMIN_ROLES = new Set(["admin"]);
+
+// Friendly labels for the 4 code-default scorecards in the picker (T2.2 / G07).
+const CODE_SCORECARD_LABELS: Record<(typeof CODE_SCORECARD_KEYS)[number], string> = {
+  technical: "Technical (built-in)",
+  manager: "Hiring manager (built-in)",
+  hr: "HR / culture (built-in)",
+  general: "General (built-in)",
+};
+
+/**
+ * Load a tenant's CUSTOM scorecard rubrics (tenant_scorecard_template) as a Map
+ * of scorecard_key → ordered criteria (T2.2 / G07). This is the single source
+ * resolveScorecardCriteria consults for custom keys; the 4 code defaults are the
+ * fallback. Malformed/empty criteria rows are skipped (they'd resolve to the code
+ * default anyway). Empty map when the tenant has no custom rubrics → the panel /
+ * plan paths are byte-identical to today.
+ */
+async function loadTenantScorecardCriteria(
+  db: NonNullable<HonoTRPCContext["db"]>,
+  tenantId: string,
+): Promise<Map<string, readonly ScorecardCriterion[]>> {
+  const rows = await db
+    .select({
+      scorecardKey: tenantScorecardTemplate.scorecardKey,
+      criteria: tenantScorecardTemplate.criteria,
+    })
+    .from(tenantScorecardTemplate)
+    .where(eq(tenantScorecardTemplate.tenantId, tenantId));
+  const map = new Map<string, readonly ScorecardCriterion[]>();
+  for (const r of rows) {
+    const criteria = coerceScorecardCriteria(r.criteria);
+    if (criteria.length > 0) map.set(r.scorecardKey, criteria);
+  }
+  return map;
+}
+
+/** The set of scorecard keys a plan round may reference: the 4 code defaults ∪
+ * the tenant's saved custom keys (T2.2 / G07). The write-validation set for
+ * upsertInterviewPlan + applyInterviewRoundTemplate. */
+async function loadValidScorecardKeys(
+  db: NonNullable<HonoTRPCContext["db"]>,
+  tenantId: string,
+): Promise<Set<string>> {
+  const keys = new Set<string>(CODE_SCORECARD_KEYS);
+  const rows = await db
+    .select({ scorecardKey: tenantScorecardTemplate.scorecardKey })
+    .from(tenantScorecardTemplate)
+    .where(eq(tenantScorecardTemplate.tenantId, tenantId));
+  for (const r of rows) keys.add(r.scorecardKey);
+  return keys;
+}
 
 /** Is a raw string a valid application_stage? Guards a text policy column value
  * (blocks_advance_stage) before it is treated as an ApplicationStage. */
@@ -5761,6 +5841,21 @@ export const appRouter = router({
           .limit(1);
         if (!req) throw new TRPCError({ code: "NOT_FOUND", message: "Requisition not found" });
 
+        // T2.2 / G07 — the scorecard_template CHECK is now a lax SHAPE check
+        // (migration 0102); the strict membership guard lives HERE. Every round's
+        // scorecardTemplate must be one of {4 code defaults} ∪ {the tenant's saved
+        // custom scorecard keys}. Unknown keys are rejected (no "anything goes").
+        const validScorecardKeys = await loadValidScorecardKeys(db, req.tenantId);
+        const unknownScorecard = input.rounds.find(
+          (r) => !validScorecardKeys.has(r.scorecardTemplate),
+        );
+        if (unknownScorecard) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: `Unknown scorecard '${unknownScorecard.scorecardTemplate}' on round ${unknownScorecard.roundNumber}. Use a default (technical, manager, hr, general) or a saved custom scorecard.`,
+          });
+        }
+
         // Validate every advisory default-panel membership is a real active
         // membership in this tenant before persisting the plan.
         const defaultPanelIds = [
@@ -5813,7 +5908,9 @@ export const appRouter = router({
           roundName: r.roundName,
           durationMinutes: r.durationMinutes,
           mode: r.mode as "video" | "onsite" | "phone",
-          scorecardTemplate: r.scorecardTemplate as "technical" | "manager" | "hr" | "general",
+          // T2.2 / G07: scorecardTemplate may be a code default OR a tenant custom
+          // key — the output schema is a relaxed snake_case string.
+          scorecardTemplate: r.scorecardTemplate,
           competencyFocus: Array.isArray(r.competencyFocus) ? (r.competencyFocus as string[]) : [],
           defaultPanelMembershipIds: r.defaultPanelMembershipIds ?? [],
         })),
@@ -6065,6 +6162,9 @@ export const appRouter = router({
             candidateConfirmedAt: interviews.candidateConfirmedAt,
             // INT-04: prefer this snapshot over the live plan round below.
             scorecardTemplateSnapshot: interviews.scorecardTemplate,
+            // T2.2 / G07: the resolved criteria snapshot (tenant custom rubric or
+            // code default), frozen at schedule time — the immutable rubric.
+            scorecardCriteriaSnapshot: interviews.scorecardCriteriaSnapshot,
             candidateId: applications.candidateId,
             currentStage: applications.currentStage,
             positionTitle: positions.title,
@@ -6136,12 +6236,23 @@ export const appRouter = router({
             ),
           )
           .limit(1);
-        const scorecardTemplate = (iv.scorecardTemplateSnapshot ??
-          planRound?.scorecardTemplate ??
-          "general") as "technical" | "manager" | "hr" | "general";
+        const scorecardTemplate =
+          iv.scorecardTemplateSnapshot ?? planRound?.scorecardTemplate ?? "general";
         const competencyFocus = Array.isArray(planRound?.competencyFocus)
           ? (planRound.competencyFocus as string[])
           : [];
+        // T2.2 / G07 — the rubric the panelist is scored against. Prefer the
+        // interview's frozen criteria SNAPSHOT (immutable — a later template edit
+        // can't retro-change it); pre-snapshot rows live-resolve against the
+        // tenant's custom rubrics, falling back to the 4 code defaults.
+        const resolvedCriteria = coerceScorecardCriteria(iv.scorecardCriteriaSnapshot);
+        const criteriaDefs =
+          resolvedCriteria.length > 0
+            ? resolvedCriteria
+            : resolveScorecardCriteria(
+                scorecardTemplate,
+                ctx.tenantId ? await loadTenantScorecardCriteria(db, ctx.tenantId) : null,
+              );
 
         // Co-panelists (whole panel, self flagged).
         const panel = await fetchInterviewPanels(db, [input.interviewId]);
@@ -6190,7 +6301,7 @@ export const appRouter = router({
           myFeedbackRow && myFeedbackRow.scorecard && typeof myFeedbackRow.scorecard === "object"
             ? (myFeedbackRow.scorecard as Record<string, number>)
             : {};
-        const criteria = scorecardCriteriaFor(scorecardTemplate).map((c) => {
+        const criteria = criteriaDefs.map((c) => {
           const saved = savedScores[c.key];
           return {
             key: c.key,
@@ -6266,6 +6377,7 @@ export const appRouter = router({
             requisitionId: interviews.requisitionId,
             roundNumber: interviews.roundNumber,
             scorecardTemplateSnapshot: interviews.scorecardTemplate,
+            scorecardCriteriaSnapshot: interviews.scorecardCriteriaSnapshot,
           })
           .from(interviews)
           .where(eq(interviews.id, input.interviewId))
@@ -6299,7 +6411,18 @@ export const appRouter = router({
           )
           .limit(1);
         const template = iv.scorecardTemplateSnapshot ?? planRound?.scorecardTemplate ?? "general";
-        const validKeys = new Set(scorecardCriteriaFor(template).map((c) => c.key));
+        // T2.2 / G07 — validate against the interview's FROZEN criteria snapshot
+        // (immutable rubric); pre-snapshot rows live-resolve against the tenant's
+        // custom rubrics, falling back to the 4 code defaults.
+        const snapshotCriteria = coerceScorecardCriteria(iv.scorecardCriteriaSnapshot);
+        const criteriaForValidation =
+          snapshotCriteria.length > 0
+            ? snapshotCriteria
+            : resolveScorecardCriteria(
+                template,
+                await loadTenantScorecardCriteria(db, iv.tenantId),
+              );
+        const validKeys = new Set(criteriaForValidation.map((c) => c.key));
         const badKeys = Object.keys(input.scorecard).filter((k) => !validKeys.has(k));
         if (badKeys.length > 0) {
           throw new TRPCError({
@@ -19010,11 +19133,7 @@ export const appRouter = router({
     .input(getCandidateFieldPolicyInputSchema)
     .output(getCandidateFieldPolicyOutputSchema)
     .query(async ({ ctx }) => {
-      requireAnyRole(
-        ctx,
-        CANDIDATE_FIELD_POLICY_ROLES,
-        "The candidate-field policy is admin-only",
-      );
+      requireAnyRole(ctx, CANDIDATE_FIELD_POLICY_ROLES, "The candidate-field policy is admin-only");
       const db = requireDb(ctx);
       if (!ctx.tenantId) {
         throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
@@ -19118,6 +19237,355 @@ export const appRouter = router({
           });
         }
         return { field };
+      });
+    }),
+
+  // ═══════════ T2.2 / G07 — tenant interview round templates + custom scorecards ═══════════
+  //
+  // Two tenant configs authored on /admin/interview-templates:
+  //   (A) the org's DEFAULT interview loop (tenant_interview_round_template) that
+  //       applyInterviewRoundTemplate SEEDS into a requisition's interview_plans;
+  //   (B) the org's CUSTOM scorecard rubrics (tenant_scorecard_template) that
+  //       extend the 4 code defaults and DRIVE the panel scorecard (resolved +
+  //       snapshot at schedule time).
+  // Admin-only authoring (INTERVIEW_TEMPLATE_ADMIN_ROLES); applying a template is
+  // a plan-authoring action (INTERVIEW_MANAGE_ROLES — it writes interview_plans).
+
+  listInterviewRoundTemplates: protectedProcedure
+    .input(listInterviewRoundTemplatesInputSchema)
+    .output(listInterviewRoundTemplatesOutputSchema)
+    .query(async ({ ctx }) => {
+      requireAnyRole(ctx, INTERVIEW_TEMPLATE_ADMIN_ROLES, "Interview templates are admin-only");
+      const db = requireDb(ctx);
+      if (!ctx.tenantId) {
+        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
+      }
+      const rows = await db
+        .select()
+        .from(tenantInterviewRoundTemplate)
+        .where(eq(tenantInterviewRoundTemplate.tenantId, ctx.tenantId))
+        .orderBy(tenantInterviewRoundTemplate.roundNumber);
+      return {
+        rounds: rows.map((r) => ({
+          roundNumber: r.roundNumber,
+          roundName: r.roundName,
+          durationMinutes: r.durationMinutes,
+          mode: r.mode as "video" | "onsite" | "phone",
+          scorecardTemplateKey: r.scorecardTemplateKey,
+          competencyFocus: Array.isArray(r.competencyFocus) ? (r.competencyFocus as string[]) : [],
+        })),
+      };
+    }),
+
+  /**
+   * upsertInterviewRoundTemplate — admin-only, audited REPLACE-SET of the tenant's
+   * default loop (mirrors upsertInterviewPlan). round_number must be unique; each
+   * round's scorecardTemplateKey must be one of {4 code defaults} ∪ {saved custom
+   * keys}. An empty array clears the loop.
+   */
+  upsertInterviewRoundTemplate: protectedProcedure
+    .input(upsertInterviewRoundTemplateInputSchema)
+    .output(upsertInterviewRoundTemplateOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      return withAudit("upsert_interview_round_template", ctx, input, async () => {
+        requireAnyRole(ctx, INTERVIEW_TEMPLATE_ADMIN_ROLES, "Interview templates are admin-only");
+        const db = requireDb(ctx);
+        if (!ctx.tenantId) {
+          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
+        }
+        const tenantId = ctx.tenantId;
+
+        const seen = new Set<number>();
+        for (const r of input.rounds) {
+          if (seen.has(r.roundNumber)) {
+            throw new TRPCError({
+              code: "BAD_REQUEST",
+              message: `Duplicate round_number ${r.roundNumber} in the template.`,
+            });
+          }
+          seen.add(r.roundNumber);
+        }
+
+        // Membership guard: every round's scorecard must be a known key.
+        const validScorecardKeys = await loadValidScorecardKeys(db, tenantId);
+        const unknown = input.rounds.find((r) => !validScorecardKeys.has(r.scorecardTemplateKey));
+        if (unknown) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: `Unknown scorecard '${unknown.scorecardTemplateKey}' on round ${unknown.roundNumber}. Use a default (technical, manager, hr, general) or a saved custom scorecard.`,
+          });
+        }
+
+        const membershipId = await resolveActorMembership(db, ctx);
+        // Replace-set: drop the tenant's existing template rows, insert these.
+        await db
+          .delete(tenantInterviewRoundTemplate)
+          .where(eq(tenantInterviewRoundTemplate.tenantId, tenantId));
+        if (input.rounds.length > 0) {
+          await db.insert(tenantInterviewRoundTemplate).values(
+            input.rounds.map((r) => ({
+              tenantId,
+              roundNumber: r.roundNumber,
+              roundName: r.roundName,
+              durationMinutes: r.durationMinutes,
+              mode: r.mode,
+              scorecardTemplateKey: r.scorecardTemplateKey,
+              competencyFocus: r.competencyFocus,
+              updatedBy: membershipId,
+              updatedAt: new Date(),
+            })),
+          );
+        }
+        return {
+          rounds: input.rounds.map((r) => ({
+            roundNumber: r.roundNumber,
+            roundName: r.roundName,
+            durationMinutes: r.durationMinutes,
+            mode: r.mode,
+            scorecardTemplateKey: r.scorecardTemplateKey,
+            competencyFocus: r.competencyFocus,
+          })),
+          roundCount: input.rounds.length,
+        };
+      });
+    }),
+
+  /** deleteInterviewRoundTemplate — admin-only, audited clear of the tenant's
+   * whole default loop. Idempotent. */
+  deleteInterviewRoundTemplate: protectedProcedure
+    .input(deleteInterviewRoundTemplateInputSchema)
+    .output(deleteInterviewRoundTemplateOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      return withAudit("delete_interview_round_template", ctx, input, async () => {
+        requireAnyRole(ctx, INTERVIEW_TEMPLATE_ADMIN_ROLES, "Interview templates are admin-only");
+        const db = requireDb(ctx);
+        if (!ctx.tenantId) {
+          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
+        }
+        await db
+          .delete(tenantInterviewRoundTemplate)
+          .where(eq(tenantInterviewRoundTemplate.tenantId, ctx.tenantId));
+        return { cleared: true };
+      });
+    }),
+
+  /**
+   * applyInterviewRoundTemplate — SEED a requisition's interview_plans from the
+   * tenant's default loop (INTERVIEW_MANAGE_ROLES — this writes interview_plans).
+   * Genuinely CONSUMES the template: replace-sets the req's plan with the template
+   * rounds. Honest fallback: when the tenant has NO template rows, returns
+   * applied:false / roundCount:0 and leaves the plan untouched — the caller builds
+   * it from scratch via upsertInterviewPlan exactly as today.
+   */
+  applyInterviewRoundTemplate: protectedProcedure
+    .input(applyInterviewRoundTemplateInputSchema)
+    .output(applyInterviewRoundTemplateOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      requireAnyRole(
+        ctx,
+        INTERVIEW_MANAGE_ROLES,
+        "Only hiring managers, recruiters and admins can apply an interview template.",
+      );
+      return withAudit("apply_interview_round_template", ctx, input, async () => {
+        const db = requireDb(ctx);
+        const [req] = await db
+          .select({ tenantId: requisitions.tenantId })
+          .from(requisitions)
+          .where(eq(requisitions.id, input.requisitionId))
+          .limit(1);
+        if (!req) throw new TRPCError({ code: "NOT_FOUND", message: "Requisition not found" });
+
+        const templateRounds = await db
+          .select()
+          .from(tenantInterviewRoundTemplate)
+          .where(eq(tenantInterviewRoundTemplate.tenantId, req.tenantId))
+          .orderBy(tenantInterviewRoundTemplate.roundNumber);
+        if (templateRounds.length === 0) {
+          // Honest fallback — no default loop to seed from.
+          return { requisitionId: input.requisitionId, applied: false, roundCount: 0 };
+        }
+
+        // Defensive membership guard (the keys were validated when authored, but a
+        // custom scorecard could have been deleted since — reject a stale ref).
+        const validScorecardKeys = await loadValidScorecardKeys(db, req.tenantId);
+        const stale = templateRounds.find((r) => !validScorecardKeys.has(r.scorecardTemplateKey));
+        if (stale) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: `The default loop references a scorecard '${stale.scorecardTemplateKey}' that no longer exists. Fix the template first.`,
+          });
+        }
+
+        // Replace-set the requisition's plan with the template rounds.
+        await db
+          .delete(interviewPlans)
+          .where(eq(interviewPlans.requisitionId, input.requisitionId));
+        await db.insert(interviewPlans).values(
+          templateRounds.map((r) => ({
+            tenantId: req.tenantId,
+            requisitionId: input.requisitionId,
+            roundNumber: r.roundNumber,
+            roundName: r.roundName,
+            durationMinutes: r.durationMinutes,
+            mode: r.mode,
+            scorecardTemplate: r.scorecardTemplateKey,
+            competencyFocus: Array.isArray(r.competencyFocus)
+              ? (r.competencyFocus as string[])
+              : [],
+            defaultPanelMembershipIds: [],
+          })),
+        );
+        return {
+          requisitionId: input.requisitionId,
+          applied: true,
+          roundCount: templateRounds.length,
+        };
+      });
+    }),
+
+  listScorecardTemplates: protectedProcedure
+    .input(listScorecardTemplatesInputSchema)
+    .output(listScorecardTemplatesOutputSchema)
+    .query(async ({ ctx }) => {
+      requireAnyRole(ctx, INTERVIEW_TEMPLATE_ADMIN_ROLES, "Interview templates are admin-only");
+      const db = requireDb(ctx);
+      if (!ctx.tenantId) {
+        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
+      }
+      const rows = await db
+        .select()
+        .from(tenantScorecardTemplate)
+        .where(eq(tenantScorecardTemplate.tenantId, ctx.tenantId))
+        .orderBy(tenantScorecardTemplate.scorecardKey);
+      const custom = rows.map((r) => ({
+        scorecardKey: r.scorecardKey,
+        label: r.label,
+        criteria: coerceScorecardCriteria(r.criteria),
+      }));
+      // The selectable set: the 4 code defaults (isCustom:false) + the tenant's
+      // custom rubrics (isCustom:true) — the plan/round-template picker renders this.
+      const options: ScorecardTemplateOption[] = [
+        ...CODE_SCORECARD_KEYS.map((key) => ({
+          scorecardKey: key,
+          label: CODE_SCORECARD_LABELS[key],
+          criteria: [...SCORECARD_CRITERIA[key]],
+          isCustom: false,
+        })),
+        ...custom.map((c) => ({
+          scorecardKey: c.scorecardKey,
+          label: c.label,
+          criteria: c.criteria,
+          isCustom: true,
+        })),
+      ];
+      return { custom, options };
+    }),
+
+  /**
+   * upsertScorecardTemplate — admin-only, audited upsert of ONE custom rubric,
+   * keyed by (tenant, scorecardKey). Rejects a key that collides with a reserved
+   * code default, and duplicate criterion keys within the rubric.
+   */
+  upsertScorecardTemplate: protectedProcedure
+    .input(upsertScorecardTemplateInputSchema)
+    .output(upsertScorecardTemplateOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      return withAudit("upsert_scorecard_template", ctx, input, async () => {
+        requireAnyRole(ctx, INTERVIEW_TEMPLATE_ADMIN_ROLES, "Interview templates are admin-only");
+        const db = requireDb(ctx);
+        if (!ctx.tenantId) {
+          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
+        }
+        const tenantId = ctx.tenantId;
+
+        if (isCodeScorecardKey(input.scorecardKey)) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: `'${input.scorecardKey}' is a reserved built-in scorecard and can't be redefined. Choose a different key.`,
+          });
+        }
+        const criterionKeys = new Set<string>();
+        for (const c of input.criteria) {
+          if (criterionKeys.has(c.key)) {
+            throw new TRPCError({
+              code: "BAD_REQUEST",
+              message: `Duplicate criterion key '${c.key}' in the rubric.`,
+            });
+          }
+          criterionKeys.add(c.key);
+        }
+
+        const membershipId = await resolveActorMembership(db, ctx);
+        await db
+          .insert(tenantScorecardTemplate)
+          .values({
+            tenantId,
+            scorecardKey: input.scorecardKey,
+            label: input.label,
+            criteria: input.criteria,
+            updatedBy: membershipId,
+            updatedAt: new Date(),
+          })
+          .onConflictDoUpdate({
+            target: [tenantScorecardTemplate.tenantId, tenantScorecardTemplate.scorecardKey],
+            set: {
+              label: input.label,
+              criteria: input.criteria,
+              updatedBy: membershipId,
+              updatedAt: new Date(),
+            },
+          });
+        return {
+          row: {
+            scorecardKey: input.scorecardKey,
+            label: input.label,
+            criteria: input.criteria,
+          },
+        };
+      });
+    }),
+
+  /**
+   * deleteScorecardTemplate — admin-only, audited delete of ONE custom rubric.
+   * Rejected when a round template still references the key (a dangling scorecard
+   * would break plan seeding). Idempotent otherwise.
+   */
+  deleteScorecardTemplate: protectedProcedure
+    .input(deleteScorecardTemplateInputSchema)
+    .output(deleteScorecardTemplateOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      return withAudit("delete_scorecard_template", ctx, input, async () => {
+        requireAnyRole(ctx, INTERVIEW_TEMPLATE_ADMIN_ROLES, "Interview templates are admin-only");
+        const db = requireDb(ctx);
+        if (!ctx.tenantId) {
+          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
+        }
+        const tenantId = ctx.tenantId;
+        const [referencing] = await db
+          .select({ roundNumber: tenantInterviewRoundTemplate.roundNumber })
+          .from(tenantInterviewRoundTemplate)
+          .where(
+            and(
+              eq(tenantInterviewRoundTemplate.tenantId, tenantId),
+              eq(tenantInterviewRoundTemplate.scorecardTemplateKey, input.scorecardKey),
+            ),
+          )
+          .limit(1);
+        if (referencing) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: `Round ${referencing.roundNumber} of the default loop uses '${input.scorecardKey}'. Update the round template before deleting this scorecard.`,
+          });
+        }
+        await db
+          .delete(tenantScorecardTemplate)
+          .where(
+            and(
+              eq(tenantScorecardTemplate.tenantId, tenantId),
+              eq(tenantScorecardTemplate.scorecardKey, input.scorecardKey),
+            ),
+          );
+        return { deleted: true };
       });
     }),
 
@@ -22414,11 +22882,13 @@ async function fetchInterviewDecisionSummary(
   const [iv] = await db
     .select({
       id: interviews.id,
+      tenantId: interviews.tenantId,
       requisitionId: interviews.requisitionId,
       roundNumber: interviews.roundNumber,
       roundName: interviews.roundName,
       status: interviews.status,
       scorecardTemplateSnapshot: interviews.scorecardTemplate,
+      scorecardCriteriaSnapshot: interviews.scorecardCriteriaSnapshot,
     })
     .from(interviews)
     .where(eq(interviews.id, interviewId))
@@ -22441,7 +22911,14 @@ async function fetchInterviewDecisionSummary(
       .limit(1);
     template = planRound?.scorecardTemplate ?? "general";
   }
-  const criteriaDefs = scorecardCriteriaFor(template);
+  // T2.2 / G07 — prefer the interview's FROZEN criteria snapshot (immutable
+  // rubric); pre-snapshot rows live-resolve against the tenant's custom rubrics,
+  // falling back to the 4 code defaults.
+  const snapshotCriteria = coerceScorecardCriteria(iv.scorecardCriteriaSnapshot);
+  const criteriaDefs =
+    snapshotCriteria.length > 0
+      ? snapshotCriteria
+      : resolveScorecardCriteria(template, await loadTenantScorecardCriteria(db, iv.tenantId));
 
   const rows = await db
     .select({
@@ -22504,7 +22981,8 @@ async function fetchInterviewDecisionSummary(
     roundNumber: iv.roundNumber,
     roundName: iv.roundName,
     status: iv.status as "scheduled" | "completed" | "cancelled" | "no_show",
-    scorecardTemplate: template as "technical" | "manager" | "hr" | "general",
+    // T2.2 / G07: may be a code default OR a tenant custom key (relaxed string).
+    scorecardTemplate: template,
     panelists,
     rollup: {
       panelistCount: rows.length,
@@ -22673,6 +23151,15 @@ async function doScheduleRound(
 
   const mode = input.mode ?? (plan.mode as "video" | "onsite" | "phone");
   const durationMinutes = input.durationMinutes ?? plan.durationMinutes;
+  // T2.2 / G07 — RESOLVE the round's scorecard rubric ONCE, here, from the
+  // tenant's custom rubrics (falling back to the 4 code defaults) and SNAPSHOT it
+  // onto the interview. This freezes the criteria the panelist is scored against
+  // so a later template edit can't retro-change a scheduled interview's rubric.
+  const tenantScorecardCriteria = await loadTenantScorecardCriteria(db, app.tenantId);
+  const resolvedScorecardCriteria = resolveScorecardCriteria(
+    plan.scorecardTemplate,
+    tenantScorecardCriteria,
+  );
   const scheduledStart = new Date(input.scheduledStart);
   const scheduledEnd = input.scheduledEnd
     ? new Date(input.scheduledEnd)
@@ -22693,6 +23180,10 @@ async function doScheduleRound(
         // schedule time (migration 0055) so a later plan edit can't drift the
         // criteria this interview is scored against.
         scorecardTemplate: plan.scorecardTemplate,
+        // T2.2 / G07: also snapshot the RESOLVED criteria (tenant custom rubric
+        // or code default) so editing a tenant scorecard template later can't
+        // retro-change this scheduled interview's rubric (migration 0102).
+        scorecardCriteriaSnapshot: resolvedScorecardCriteria,
         scheduledStart,
         scheduledEnd,
         durationMinutes,

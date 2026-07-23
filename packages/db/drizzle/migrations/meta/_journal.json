@@ -645,6 +645,34 @@
       "when": 1784500000231,
       "tag": "0099_t21_force_rls_audit",
       "breakpoints": true
+    },
+    {
+      "idx": 100,
+      "version": "7",
+      "when": 1784500000240,
+      "tag": "0100_t22_interview_round_templates",
+      "breakpoints": true
+    },
+    {
+      "idx": 101,
+      "version": "7",
+      "when": 1784500000241,
+      "tag": "0101_t22_scorecard_templates",
+      "breakpoints": true
+    },
+    {
+      "idx": 102,
+      "version": "7",
+      "when": 1784500000242,
+      "tag": "0102_t22_relax_scorecard_check",
+      "breakpoints": true
+    },
+    {
+      "idx": 103,
+      "version": "7",
+      "when": 1784500000243,
+      "tag": "0103_t22_force_rls_audit",
+      "breakpoints": true
     }
   ]
 }

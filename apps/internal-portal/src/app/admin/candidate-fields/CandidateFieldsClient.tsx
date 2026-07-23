@@ -183,10 +183,7 @@ export function CandidateFieldsClient({ initial }: { initial: GetCandidateFieldP
                   <td className="px-4 py-3">
                     {isRequired ? (
                       <Select
-                        options={[
-                          { value: NONE, label: "Doesn't gate" },
-                          ...GATE_STAGE_OPTIONS,
-                        ]}
+                        options={[{ value: NONE, label: "Doesn't gate" }, ...GATE_STAGE_OPTIONS]}
                         value={field.blocksAdvanceStage ?? NONE}
                         onValueChange={(v) =>
                           saveGate(field, v === NONE ? null : (v as ApplicationStage))

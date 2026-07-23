@@ -75,9 +75,16 @@ export const interviewPlans = pgTable(
     index("idx_interview_plans_requisition").on(table.tenantId, table.requisitionId),
 
     check("interview_plans_mode_check", sql`${table.mode} IN ('video', 'onsite', 'phone')`),
+    // T2.2 / G07: RELAXED from the fixed 4-value set to a lax SHAPE check
+    // (snake_case, ≤64) so a tenant-defined scorecard key (tenant_scorecard_
+    // template) is accepted. The strict membership guard MOVED to the procedure:
+    // upsertInterviewPlan / applyInterviewRoundTemplate reject any key not in
+    // {4 code defaults} ∪ {the tenant's saved scorecard keys}. The DB shape check
+    // backstops garbage/injection; the procedure enforces membership. Migration
+    // 0102 swaps the DB constraint.
     check(
       "interview_plans_scorecard_template_check",
-      sql`${table.scorecardTemplate} IN ('technical', 'manager', 'hr', 'general')`,
+      sql`${table.scorecardTemplate} ~ '^[a-z0-9_]{1,64}$'`,
     ),
 
     foreignKey({

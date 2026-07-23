@@ -107,6 +107,4 @@ export type ResetCandidateFieldPolicyInput = z.infer<typeof resetCandidateFieldP
 export const resetCandidateFieldPolicyOutputSchema = z.object({
   field: candidateFieldPolicyEntrySchema,
 });
-export type ResetCandidateFieldPolicyOutput = z.infer<
-  typeof resetCandidateFieldPolicyOutputSchema
->;
+export type ResetCandidateFieldPolicyOutput = z.infer<typeof resetCandidateFieldPolicyOutputSchema>;
