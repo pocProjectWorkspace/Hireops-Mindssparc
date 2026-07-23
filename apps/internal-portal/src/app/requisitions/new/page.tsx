@@ -34,7 +34,7 @@ export default async function NewRequisitionPage({
       user={sessionUserChip(session)}
     >
       {allowed ? (
-        <RequisitionWizard initialRid={rid ?? null} />
+        <RequisitionWizard initialRid={rid ?? null} isAdmin={isAdmin} />
       ) : (
         <RoleNotice
           title="Requisition creation isn't available for your role"

@@ -240,6 +240,18 @@ export function IconIntegrations() {
   );
 }
 
+export function IconBusinessUnits() {
+  // A simple org-chart / hierarchy glyph: a parent node over two children.
+  return (
+    <Svg>
+      <rect x="9" y="3" width="6" height="4" rx="1" />
+      <rect x="3" y="17" width="6" height="4" rx="1" />
+      <rect x="15" y="17" width="6" height="4" rx="1" />
+      <path d="M12 7v4M6 17v-2h12v2M12 13v2" />
+    </Svg>
+  );
+}
+
 export function IconSources() {
   // Converging channels → one pipeline (the registry's whole idea).
   return (

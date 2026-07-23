@@ -521,6 +521,18 @@ import {
   type EmailTemplateKey,
   type EmailTemplateOverrideRow,
   type EmailTemplateCatalogEntry,
+  // T3.1 / G14 business-unit management
+  listBusinessUnitsInputSchema,
+  listBusinessUnitsOutputSchema,
+  createBusinessUnitInputSchema,
+  createBusinessUnitOutputSchema,
+  renameBusinessUnitInputSchema,
+  renameBusinessUnitOutputSchema,
+  reparentBusinessUnitInputSchema,
+  reparentBusinessUnitOutputSchema,
+  setBusinessUnitArchivedInputSchema,
+  setBusinessUnitArchivedOutputSchema,
+  type BusinessUnitRow,
   // HRHEAD-02 market intelligence + feasibility
   listMarketBenchmarksInputSchema,
   listMarketBenchmarksOutputSchema,
@@ -1101,6 +1113,26 @@ const MARKET_BENCHMARK_ADMIN_ROLES = new Set(["admin"]);
 // config surface.
 const TENANT_SOURCE_READ_ROLES = new Set(["admin", "recruiter"]);
 const TENANT_SOURCE_ADMIN_ROLES = new Set(["admin"]);
+
+// T3.1 / G14 — business-unit management. The managed list GENUINELY drives
+// requisition creation: the wizard picker (hiring_manager / recruiter / admin)
+// reads the non-archived units; managing them (create / rename / reparent /
+// archive) is admin-only config, like every other org-structure surface.
+const BUSINESS_UNIT_READ_ROLES = new Set(["admin", "hiring_manager", "recruiter"]);
+const BUSINESS_UNIT_ADMIN_ROLES = new Set(["admin"]);
+
+/** DB row → API row for a business unit. Timestamps to ISO strings. */
+function businessUnitRowToApi(row: typeof businessUnits.$inferSelect): BusinessUnitRow {
+  return {
+    id: row.id,
+    parentBusinessUnitId: row.parentBusinessUnitId ?? null,
+    name: row.name,
+    slug: row.slug,
+    isArchived: row.isArchived,
+    createdAt: row.createdAt.toISOString(),
+    updatedAt: row.updatedAt.toISOString(),
+  };
+}
 
 /** DB row → API row for the sourcing-channel registry. `config` is a jsonb
  * string→string bag; coerce defensively (an older row could be null). */
@@ -4158,20 +4190,59 @@ export const appRouter = router({
           });
         }
 
-        // Resolve-or-create the department business_unit by slug.
-        const buSlug = slugifyDepartment(input.department);
-        const [existingBu] = await db
-          .select({ id: businessUnits.id })
-          .from(businessUnits)
-          .where(and(eq(businessUnits.tenantId, tenantId), eq(businessUnits.slug, buSlug)))
-          .limit(1);
-        let businessUnitId = existingBu?.id;
-        if (!businessUnitId) {
-          const [createdBu] = await db
-            .insert(businessUnits)
-            .values({ tenantId, name: input.department.trim(), slug: buSlug })
-            .returning({ id: businessUnits.id });
-          businessUnitId = createdBu?.id;
+        // Resolve the position's business unit. T3.1 / G14 — the wizard picker
+        // sends a CONTROLLED businessUnitId; use it directly (verify it's the
+        // tenant's and non-archived). The legacy free-text `department` path
+        // (seeds / programmatic callers) stays: resolve-or-create a unit by slug.
+        let businessUnitId: string | undefined;
+        // A human label for the "duplicate position title" error below.
+        let departmentLabel: string;
+        if (input.businessUnitId) {
+          const [picked] = await db
+            .select({
+              id: businessUnits.id,
+              name: businessUnits.name,
+              isArchived: businessUnits.isArchived,
+            })
+            .from(businessUnits)
+            .where(
+              and(eq(businessUnits.tenantId, tenantId), eq(businessUnits.id, input.businessUnitId)),
+            )
+            .limit(1);
+          if (!picked) {
+            throw new TRPCError({ code: "BAD_REQUEST", message: "Business unit not found" });
+          }
+          if (picked.isArchived) {
+            throw new TRPCError({
+              code: "BAD_REQUEST",
+              message: "That business unit is archived — pick an active unit",
+            });
+          }
+          businessUnitId = picked.id;
+          departmentLabel = picked.name;
+        } else {
+          const department = input.department?.trim();
+          if (!department) {
+            throw new TRPCError({
+              code: "BAD_REQUEST",
+              message: "A business unit is required",
+            });
+          }
+          departmentLabel = department;
+          const buSlug = slugifyDepartment(department);
+          const [existingBu] = await db
+            .select({ id: businessUnits.id })
+            .from(businessUnits)
+            .where(and(eq(businessUnits.tenantId, tenantId), eq(businessUnits.slug, buSlug)))
+            .limit(1);
+          businessUnitId = existingBu?.id;
+          if (!businessUnitId) {
+            const [createdBu] = await db
+              .insert(businessUnits)
+              .values({ tenantId, name: department, slug: buSlug })
+              .returning({ id: businessUnits.id });
+            businessUnitId = createdBu?.id;
+          }
         }
         if (!businessUnitId) {
           throw new TRPCError({
@@ -4212,7 +4283,7 @@ export const appRouter = router({
           if (isUniqueViolation(err)) {
             throw new TRPCError({
               code: "BAD_REQUEST",
-              message: `An active position titled "${input.title.trim()}" already exists in ${input.department.trim()}. Pick a more specific title.`,
+              message: `An active position titled "${input.title.trim()}" already exists in ${departmentLabel}. Pick a more specific title.`,
             });
           }
           throw err;
@@ -19211,6 +19282,235 @@ export const appRouter = router({
           throw new TRPCError({ code: "NOT_FOUND", message: "sourcing channel not found" });
         }
         return { row: tenantSourceRowToApi(row) };
+      });
+    }),
+
+  // ═══════════ T3.1 / G14 — business-unit management (org structure) ═══════════
+  //
+  // The org's intra-tenant business-unit hierarchy (business_units) as a MANAGED
+  // list. Reads flow to the requisition wizard's BU picker (hiring_manager /
+  // recruiter / admin) AND the admin surface; managing units (create / rename /
+  // reparent / archive) is admin-only config. RLS scopes every row to the tenant.
+  //
+  // HONESTY: this list GENUINELY drives requisition creation. createRequisitionDraft
+  // (below) attaches a position to a picked, non-archived unit by id — the wizard
+  // no longer invents units from free text. Rename touches `name` only (slug is
+  // immutable; positions FK by id and the department-name join reflects the rename
+  // live). Archiving retires a unit from the picker WITHOUT breaking positions on it.
+
+  /**
+   * listBusinessUnits — flat rows for the tenant (the UI builds the tree from
+   * parentBusinessUnitId), ordered by name. Excludes archived units unless
+   * `includeArchived`. read roles (picker + admin surface). RLS scopes the tenant.
+   */
+  listBusinessUnits: protectedProcedure
+    .input(listBusinessUnitsInputSchema)
+    .output(listBusinessUnitsOutputSchema)
+    .query(async ({ ctx, input }) => {
+      requireAnyRole(
+        ctx,
+        BUSINESS_UNIT_READ_ROLES,
+        "The business-unit list requires the hiring_manager, recruiter, or admin role",
+      );
+      const db = requireDb(ctx);
+      if (!ctx.tenantId) {
+        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
+      }
+      const where = input.includeArchived
+        ? eq(businessUnits.tenantId, ctx.tenantId)
+        : and(eq(businessUnits.tenantId, ctx.tenantId), eq(businessUnits.isArchived, false));
+      const rows = await db.select().from(businessUnits).where(where).orderBy(businessUnits.name);
+      return { rows: rows.map(businessUnitRowToApi) };
+    }),
+
+  /**
+   * createBusinessUnit — admin-only, audited. Slug via slugifyDepartment(name)
+   * (stable, immutable). An optional parent must belong to the tenant. A
+   * (tenant, slug) collision surfaces a clean BAD_REQUEST, not a raw 23505.
+   */
+  createBusinessUnit: protectedProcedure
+    .input(createBusinessUnitInputSchema)
+    .output(createBusinessUnitOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      return withAudit("create_business_unit", ctx, input, async () => {
+        requireAnyRole(ctx, BUSINESS_UNIT_ADMIN_ROLES, "Managing business units is admin-only");
+        const db = requireDb(ctx);
+        if (!ctx.tenantId) {
+          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
+        }
+        const tenantId = ctx.tenantId;
+        const name = input.name.trim();
+        const slug = slugifyDepartment(name);
+
+        if (input.parentBusinessUnitId) {
+          const [parent] = await db
+            .select({ id: businessUnits.id })
+            .from(businessUnits)
+            .where(
+              and(
+                eq(businessUnits.tenantId, tenantId),
+                eq(businessUnits.id, input.parentBusinessUnitId),
+              ),
+            )
+            .limit(1);
+          if (!parent) {
+            throw new TRPCError({ code: "BAD_REQUEST", message: "Parent business unit not found" });
+          }
+        }
+
+        let row: typeof businessUnits.$inferSelect | undefined;
+        try {
+          [row] = await db
+            .insert(businessUnits)
+            .values({
+              tenantId,
+              name,
+              slug,
+              parentBusinessUnitId: input.parentBusinessUnitId ?? null,
+            })
+            .returning();
+        } catch (err) {
+          if (isUniqueViolation(err)) {
+            throw new TRPCError({
+              code: "BAD_REQUEST",
+              message: `A business unit like "${name}" already exists (slug "${slug}"). Pick a distinct name.`,
+            });
+          }
+          throw err;
+        }
+        if (!row) {
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: "business unit insert returned no row",
+          });
+        }
+        return { row: businessUnitRowToApi(row) };
+      });
+    }),
+
+  /**
+   * renameBusinessUnit — admin-only, audited. Updates `name` ONLY; slug stays
+   * immutable so positions keep their FK and the rename reflects everywhere via
+   * the live department-name join. NOT_FOUND if the id is not the tenant's.
+   */
+  renameBusinessUnit: protectedProcedure
+    .input(renameBusinessUnitInputSchema)
+    .output(renameBusinessUnitOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      return withAudit("rename_business_unit", ctx, input, async () => {
+        requireAnyRole(ctx, BUSINESS_UNIT_ADMIN_ROLES, "Managing business units is admin-only");
+        const db = requireDb(ctx);
+        if (!ctx.tenantId) {
+          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
+        }
+        const [row] = await db
+          .update(businessUnits)
+          .set({ name: input.name.trim(), updatedAt: new Date() })
+          .where(and(eq(businessUnits.tenantId, ctx.tenantId), eq(businessUnits.id, input.id)))
+          .returning();
+        if (!row) {
+          throw new TRPCError({ code: "NOT_FOUND", message: "business unit not found" });
+        }
+        return { row: businessUnitRowToApi(row) };
+      });
+    }),
+
+  /**
+   * reparentBusinessUnit — admin-only, audited. Moves a unit under a new parent
+   * (or to the top level with null). CYCLE GUARD: rejects (BAD_REQUEST) a
+   * self-parent OR a parent that is a descendant of the unit — walking UP from
+   * the proposed parent, if we reach the unit it's a cycle. Parent (if any) must
+   * belong to the tenant.
+   */
+  reparentBusinessUnit: protectedProcedure
+    .input(reparentBusinessUnitInputSchema)
+    .output(reparentBusinessUnitOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      return withAudit("reparent_business_unit", ctx, input, async () => {
+        requireAnyRole(ctx, BUSINESS_UNIT_ADMIN_ROLES, "Managing business units is admin-only");
+        const db = requireDb(ctx);
+        if (!ctx.tenantId) {
+          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
+        }
+        const tenantId = ctx.tenantId;
+
+        if (input.parentBusinessUnitId === input.id) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: "A business unit cannot be its own parent",
+          });
+        }
+
+        // Load the tenant's id→parent map once to (a) confirm the unit exists,
+        // (b) confirm the new parent belongs to the tenant, and (c) walk UP from
+        // the proposed parent to detect a cycle (reaching the unit itself).
+        const all = await db
+          .select({ id: businessUnits.id, parentId: businessUnits.parentBusinessUnitId })
+          .from(businessUnits)
+          .where(eq(businessUnits.tenantId, tenantId));
+        const parentOf = new Map<string, string | null>();
+        for (const u of all) parentOf.set(u.id, u.parentId ?? null);
+
+        if (!parentOf.has(input.id)) {
+          throw new TRPCError({ code: "NOT_FOUND", message: "business unit not found" });
+        }
+
+        if (input.parentBusinessUnitId) {
+          if (!parentOf.has(input.parentBusinessUnitId)) {
+            throw new TRPCError({ code: "BAD_REQUEST", message: "Parent business unit not found" });
+          }
+          // Walk up from the proposed parent; a cycle exists if we reach input.id.
+          let cursor: string | null = input.parentBusinessUnitId;
+          const seen = new Set<string>();
+          while (cursor) {
+            if (cursor === input.id) {
+              throw new TRPCError({
+                code: "BAD_REQUEST",
+                message: "That parent would create a cycle (it is under this unit)",
+              });
+            }
+            if (seen.has(cursor)) break; // defensive: pre-existing loop, stop.
+            seen.add(cursor);
+            cursor = parentOf.get(cursor) ?? null;
+          }
+        }
+
+        const [row] = await db
+          .update(businessUnits)
+          .set({ parentBusinessUnitId: input.parentBusinessUnitId, updatedAt: new Date() })
+          .where(and(eq(businessUnits.tenantId, tenantId), eq(businessUnits.id, input.id)))
+          .returning();
+        if (!row) {
+          throw new TRPCError({ code: "NOT_FOUND", message: "business unit not found" });
+        }
+        return { row: businessUnitRowToApi(row) };
+      });
+    }),
+
+  /**
+   * setBusinessUnitArchived — admin-only, audited. Flips is_archived. Archiving
+   * retires the unit from the wizard picker (listBusinessUnits default excludes
+   * it) but positions already on it stay valid (FK + live join unaffected).
+   */
+  setBusinessUnitArchived: protectedProcedure
+    .input(setBusinessUnitArchivedInputSchema)
+    .output(setBusinessUnitArchivedOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      return withAudit("set_business_unit_archived", ctx, input, async () => {
+        requireAnyRole(ctx, BUSINESS_UNIT_ADMIN_ROLES, "Managing business units is admin-only");
+        const db = requireDb(ctx);
+        if (!ctx.tenantId) {
+          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
+        }
+        const [row] = await db
+          .update(businessUnits)
+          .set({ isArchived: input.archived, updatedAt: new Date() })
+          .where(and(eq(businessUnits.tenantId, ctx.tenantId), eq(businessUnits.id, input.id)))
+          .returning();
+        if (!row) {
+          throw new TRPCError({ code: "NOT_FOUND", message: "business unit not found" });
+        }
+        return { row: businessUnitRowToApi(row) };
       });
     }),
 

@@ -60,6 +60,9 @@ const KNOCKOUT_TYPES: RequisitionKnockoutInput["type"][] = [
 
 interface BasicsState {
   title: string;
+  /** T3.1 / G14 — the CONTROLLED business_unit id the picker sends. */
+  businessUnitId: string;
+  /** The selected unit's display NAME — kept for the review row + draft resume. */
   department: string;
   locationType: RequisitionLocationType;
   primaryLocation: string;
@@ -73,6 +76,7 @@ interface BasicsState {
 
 const EMPTY_BASICS: BasicsState = {
   title: "",
+  businessUnitId: "",
   department: "",
   locationType: "onsite",
   primaryLocation: "",
@@ -119,7 +123,13 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
   );
 }
 
-export function RequisitionWizard({ initialRid }: { initialRid: string | null }) {
+export function RequisitionWizard({
+  initialRid,
+  isAdmin = false,
+}: {
+  initialRid: string | null;
+  isAdmin?: boolean;
+}) {
   const router = useRouter();
   const searchParams = useSearchParams();
   const initialStep = ((): Step => {
@@ -142,6 +152,28 @@ export function RequisitionWizard({ initialRid }: { initialRid: string | null })
 
   const createDraft = trpc.createRequisitionDraft.useMutation();
   const generateJd = trpc.generateJdDraft.useMutation();
+
+  // T3.1 / G14 — the managed business-unit list drives the Basics picker. The
+  // creator picks a unit id from this controlled, non-archived list; free text
+  // is gone. Ordered by name (server-side).
+  const businessUnitsQuery = trpc.listBusinessUnits.useQuery({});
+  const businessUnits = useMemo(
+    () => businessUnitsQuery.data?.rows ?? [],
+    [businessUnitsQuery.data],
+  );
+  const noBusinessUnits = businessUnitsQuery.isSuccess && businessUnits.length === 0;
+
+  // Resuming a draft: getRequisitionDetail returns the department NAME, not the
+  // unit id — best-effort match it back to a managed unit so the picker shows
+  // the current selection.
+  useEffect(() => {
+    if (businessUnits.length === 0) return;
+    setBasics((b) => {
+      if (b.businessUnitId || !b.department) return b;
+      const match = businessUnits.find((u) => u.name === b.department);
+      return match ? { ...b, businessUnitId: match.id } : b;
+    });
+  }, [businessUnits]);
   const updateDraft = trpc.updateRequisitionDraft.useMutation();
   const submit = trpc.submitRequisitionForApproval.useMutation();
 
@@ -186,6 +218,7 @@ export function RequisitionWizard({ initialRid }: { initialRid: string | null })
     const d = detailQuery.data;
     setBasics({
       title: d.title ?? "",
+      businessUnitId: "",
       department: d.department ?? "",
       locationType: (d.locationType as RequisitionLocationType) ?? "onsite",
       primaryLocation: d.primaryLocation ?? "",
@@ -310,7 +343,7 @@ export function RequisitionWizard({ initialRid }: { initialRid: string | null })
     try {
       const res = await createDraft.mutateAsync({
         title: basics.title,
-        department: basics.department,
+        businessUnitId: basics.businessUnitId,
         locationType: basics.locationType,
         primaryLocation: basics.primaryLocation || undefined,
         seniority: basics.seniority || undefined,
@@ -486,12 +519,41 @@ export function RequisitionWizard({ initialRid }: { initialRid: string | null })
               </Field>
             </div>
             <Field label="Department / business unit">
-              <input
-                className={inputCls}
-                value={basics.department}
-                onChange={(e) => setBasics({ ...basics, department: e.target.value })}
-                placeholder="GCC — Bengaluru"
-              />
+              {noBusinessUnits ? (
+                <div className="rounded-button border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+                  {isAdmin ? (
+                    <>
+                      No business units are defined yet.{" "}
+                      <a href="/admin/business-units" className="font-medium underline">
+                        Define your org&apos;s business units
+                      </a>{" "}
+                      before creating a requisition.
+                    </>
+                  ) : (
+                    "No business units are defined yet. An administrator must define the org's business units before a requisition can be created."
+                  )}
+                </div>
+              ) : (
+                <select
+                  className={inputCls}
+                  value={basics.businessUnitId}
+                  disabled={businessUnitsQuery.isLoading}
+                  onChange={(e) => {
+                    const id = e.target.value;
+                    const unit = businessUnits.find((u) => u.id === id);
+                    setBasics({ ...basics, businessUnitId: id, department: unit?.name ?? "" });
+                  }}
+                >
+                  <option value="" disabled>
+                    {businessUnitsQuery.isLoading ? "Loading units…" : "Select a business unit"}
+                  </option>
+                  {businessUnits.map((u) => (
+                    <option key={u.id} value={u.id}>
+                      {u.name}
+                    </option>
+                  ))}
+                </select>
+              )}
             </Field>
             <Field label="Seniority">
               <input
@@ -580,7 +642,7 @@ export function RequisitionWizard({ initialRid }: { initialRid: string | null })
             ) : (
               <Button
                 onClick={onCreateBasics}
-                disabled={busy || basics.title.trim().length < 2 || !basics.department.trim()}
+                disabled={busy || basics.title.trim().length < 2 || !basics.businessUnitId}
               >
                 {createDraft.isPending ? "Creating…" : "Create draft & continue"}
               </Button>

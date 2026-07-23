@@ -4,6 +4,7 @@ import {
   uuid,
   text,
   timestamp,
+  boolean,
   index,
   uniqueIndex,
   unique,
@@ -37,6 +38,10 @@ export const businessUnits = pgTable(
 
     name: text("name").notNull(),
     slug: text("slug").notNull(),
+
+    // T3.1 / G14 — archived units are retired from the requisition-creation
+    // picker but stay valid for positions already attached to them.
+    isArchived: boolean("is_archived").notNull().default(false),
 
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),

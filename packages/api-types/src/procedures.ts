@@ -588,8 +588,18 @@ export type RequisitionKnockoutInput = z.infer<typeof requisitionKnockoutInputSc
 
 export const createRequisitionDraftInputSchema = z.object({
   title: z.string().min(2).max(200),
-  /** Free-text department/BU name — resolved-or-created to a business_unit. */
-  department: z.string().min(1).max(120),
+  /**
+   * T3.1 / G14 — the CONTROLLED business-unit id the wizard picker sends. When
+   * present the draft attaches the position to THIS managed unit directly (it
+   * must belong to the tenant and be non-archived); no ad-hoc unit is created.
+   */
+  businessUnitId: z.string().uuid().optional(),
+  /**
+   * Legacy free-text department/BU name — resolved-or-created to a
+   * business_unit. Optional now: kept as the back-compat path for seeds and
+   * programmatic callers that don't send a `businessUnitId`.
+   */
+  department: z.string().min(1).max(120).optional(),
   locationType: requisitionLocationTypeSchema,
   primaryLocation: z.string().max(200).optional(),
   seniority: z.string().max(120).optional(),

@@ -55,6 +55,7 @@ import {
   IconExecAudit,
   IconIntegrations,
   IconSources,
+  IconBusinessUnits,
   IconUsers,
   IconMissingInfo,
   IconMessaging,
@@ -115,7 +116,9 @@ export type PortalNavKey =
   | "email-templates"
   // T2.1 — required-candidate-field policy (G05)
   | "candidate-fields"
-  | "interview-templates";
+  | "interview-templates"
+  // T3.1 — business-unit management (G14)
+  | "business-units";
 
 interface NavItem {
   key: PortalNavKey;
@@ -486,6 +489,14 @@ const ADMIN_NAV: NavItem[] = [
     label: "Interview templates",
     href: "/admin/interview-templates",
     icon: <IconInterviews />,
+  },
+  // T3.1 / G14 — business-unit management (org structure). The managed list
+  // drives the requisition wizard's business-unit picker.
+  {
+    key: "business-units",
+    label: "Business units",
+    href: "/admin/business-units",
+    icon: <IconBusinessUnits />,
   },
 ];
 
