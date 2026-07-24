@@ -52,6 +52,8 @@ import {
   positions,
   businessUnits,
   compBands,
+  panelPools,
+  panelPoolMembers,
   jdVersions,
   jdSkills,
   approvalChains,
@@ -544,6 +546,18 @@ import {
   setCompBandArchivedInputSchema,
   setCompBandArchivedOutputSchema,
   type CompBandRow,
+  // T3.3 / G16 panel-pool library
+  listPanelPoolsInputSchema,
+  listPanelPoolsOutputSchema,
+  createPanelPoolInputSchema,
+  createPanelPoolOutputSchema,
+  renamePanelPoolInputSchema,
+  renamePanelPoolOutputSchema,
+  setPanelPoolMembersInputSchema,
+  setPanelPoolMembersOutputSchema,
+  setPanelPoolArchivedInputSchema,
+  setPanelPoolArchivedOutputSchema,
+  type PanelPoolRow,
   // HRHEAD-02 market intelligence + feasibility
   listMarketBenchmarksInputSchema,
   listMarketBenchmarksOutputSchema,
@@ -1138,6 +1152,15 @@ const BUSINESS_UNIT_ADMIN_ROLES = new Set(["admin"]);
 const COMP_BAND_READ_ROLES = new Set(["admin", "hiring_manager", "recruiter"]);
 const COMP_BAND_WRITE_ROLES = new Set(["admin", "hr_head"]);
 
+// T3.3 / G16 — panel-pool library. The plan-setup pool picker (admin /
+// hiring_manager / recruiter) reads the non-archived pools; managing them
+// (create / rename / set members / archive) is admin + recruiter config. The
+// picked pool GENUINELY drives an interview-plan round's default panel
+// (upsertInterviewPlan copies the pool's members), which INT-02 seeds
+// interview_panelists from.
+const PANEL_POOL_READ_ROLES = new Set(["admin", "hiring_manager", "recruiter"]);
+const PANEL_POOL_WRITE_ROLES = new Set(["admin", "recruiter"]);
+
 /** DB row → API row for a comp band. numeric columns come back as strings —
  * convert to number; timestamps to ISO strings. */
 function compBandRowToApi(row: typeof compBands.$inferSelect): CompBandRow {
@@ -1149,6 +1172,23 @@ function compBandRowToApi(row: typeof compBands.$inferSelect): CompBandRow {
     minMajor: Number(row.minMajor),
     maxMajor: Number(row.maxMajor),
     isArchived: row.isArchived,
+    createdAt: row.createdAt.toISOString(),
+    updatedAt: row.updatedAt.toISOString(),
+  };
+}
+
+/** DB row (+ its folded member membership ids) → API row for a panel pool.
+ * Timestamps to ISO strings. */
+function panelPoolRowToApi(
+  row: typeof panelPools.$inferSelect,
+  memberMembershipIds: string[],
+): PanelPoolRow {
+  return {
+    id: row.id,
+    name: row.name,
+    focus: row.focus ?? null,
+    isArchived: row.isArchived,
+    memberMembershipIds,
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
   };
@@ -6010,11 +6050,78 @@ export const appRouter = router({
           });
         }
 
-        // Validate every advisory default-panel membership is a real active
-        // membership in this tenant before persisting the plan.
-        const defaultPanelIds = [
-          ...new Set(input.rounds.flatMap((r) => r.defaultPanelMembershipIds)),
+        // T3.3 / G16 — resolve each round's effective default panel from its
+        // panel pool (if picked). A pool GENUINELY drives the round's panel: when
+        // a round carries a panelPoolId with an EMPTY defaultPanelMembershipIds
+        // (no manual override), the server COPIES the pool's member membership-ids
+        // into the round's default panel and persists panel_pool_id. A NON-empty
+        // defaultPanelMembershipIds is an override — the ids are kept as-is but
+        // panel_pool_id is still persisted as provenance. Pools must be the
+        // tenant's AND non-archived, else BAD_REQUEST.
+        const referencedPoolIds = [
+          ...new Set(input.rounds.map((r) => r.panelPoolId).filter((id): id is string => !!id)),
         ];
+        const poolMembersById = new Map<string, string[]>();
+        if (referencedPoolIds.length > 0) {
+          const poolRows = await db
+            .select({ id: panelPools.id, isArchived: panelPools.isArchived })
+            .from(panelPools)
+            .where(
+              and(eq(panelPools.tenantId, req.tenantId), inArray(panelPools.id, referencedPoolIds)),
+            );
+          const validPoolIds = new Set<string>();
+          for (const p of poolRows) {
+            if (p.isArchived) {
+              throw new TRPCError({
+                code: "BAD_REQUEST",
+                message: `Panel pool ${p.id} is archived and cannot be used on a round.`,
+              });
+            }
+            validPoolIds.add(p.id);
+          }
+          const missingPool = referencedPoolIds.find((id) => !validPoolIds.has(id));
+          if (missingPool) {
+            throw new TRPCError({
+              code: "BAD_REQUEST",
+              message: `Panel pool ${missingPool} is not a pool in this tenant.`,
+            });
+          }
+          const memberRows = await db
+            .select({
+              panelPoolId: panelPoolMembers.panelPoolId,
+              membershipId: panelPoolMembers.membershipId,
+            })
+            .from(panelPoolMembers)
+            .where(
+              and(
+                eq(panelPoolMembers.tenantId, req.tenantId),
+                inArray(panelPoolMembers.panelPoolId, referencedPoolIds),
+              ),
+            );
+          for (const m of memberRows) {
+            const list = poolMembersById.get(m.panelPoolId) ?? [];
+            list.push(m.membershipId);
+            poolMembersById.set(m.panelPoolId, list);
+          }
+        }
+
+        // Compute the effective (persisted) default panel + panel_pool_id per
+        // round: pool members when the pool drives it, the manual override
+        // otherwise. panel_pool_id is null when no pool was picked.
+        const resolvedRounds = input.rounds.map((r) => {
+          const panelPoolId = r.panelPoolId ?? null;
+          let effectivePanelIds = r.defaultPanelMembershipIds;
+          if (panelPoolId && r.defaultPanelMembershipIds.length === 0) {
+            // The pool drives the round: server-authoritative copy of its members.
+            effectivePanelIds = poolMembersById.get(panelPoolId) ?? [];
+          }
+          return { round: r, panelPoolId, effectivePanelIds };
+        });
+
+        // Validate every effective default-panel membership is a real active
+        // membership in this tenant before persisting the plan (now over the
+        // pool-resolved union — the pool's members are guarded too).
+        const defaultPanelIds = [...new Set(resolvedRounds.flatMap((r) => r.effectivePanelIds))];
         await assertActiveMemberships(ctx.sql, req.tenantId, defaultPanelIds);
 
         // Replace-set: drop the requisition's existing rounds, insert these.
@@ -6022,9 +6129,9 @@ export const appRouter = router({
           .delete(interviewPlans)
           .where(eq(interviewPlans.requisitionId, input.requisitionId));
 
-        if (input.rounds.length > 0) {
+        if (resolvedRounds.length > 0) {
           await db.insert(interviewPlans).values(
-            input.rounds.map((r) => ({
+            resolvedRounds.map(({ round: r, panelPoolId, effectivePanelIds }) => ({
               tenantId: req.tenantId,
               requisitionId: input.requisitionId,
               roundNumber: r.roundNumber,
@@ -6033,7 +6140,8 @@ export const appRouter = router({
               mode: r.mode,
               scorecardTemplate: r.scorecardTemplate,
               competencyFocus: r.competencyFocus,
-              defaultPanelMembershipIds: r.defaultPanelMembershipIds,
+              defaultPanelMembershipIds: effectivePanelIds,
+              panelPoolId,
             })),
           );
         }
@@ -6067,6 +6175,10 @@ export const appRouter = router({
           scorecardTemplate: r.scorecardTemplate,
           competencyFocus: Array.isArray(r.competencyFocus) ? (r.competencyFocus as string[]) : [],
           defaultPanelMembershipIds: r.defaultPanelMembershipIds ?? [],
+          // T3.3 / G16 — the panel pool this round's default panel came from
+          // (provenance; null when staffed manually). undefined → omitted, but
+          // the DB null maps to undefined for the optional schema field.
+          panelPoolId: r.panelPoolId ?? undefined,
         })),
       };
     }),
@@ -19786,6 +19898,280 @@ export const appRouter = router({
           throw new TRPCError({ code: "NOT_FOUND", message: "comp band not found" });
         }
         return { row: compBandRowToApi(row) };
+      });
+    }),
+
+  // ═══════════ T3.3 / G16 — panel-pool library ═══════════
+  //
+  // A tenant's editable set of NAMED interview-panel pools, each with a roster
+  // of memberships. The plan-setup pool picker reads the non-archived pools; an
+  // interview-plan round that picks a pool has its default panel COPIED from the
+  // pool's members (upsertInterviewPlan), which INT-02 seeds interview_panelists
+  // from — so a pool GENUINELY drives the round's panel, not decoratively.
+  // Reads: admin/hiring_manager/recruiter. Writes: admin/recruiter. Audited.
+
+  /**
+   * listPanelPools — read. Excludes archived unless includeArchived. Each row
+   * carries its member membership-ids (a grouped select over panel_pool_members),
+   * ordered by name.
+   */
+  listPanelPools: protectedProcedure
+    .input(listPanelPoolsInputSchema)
+    .output(listPanelPoolsOutputSchema)
+    .query(async ({ ctx, input }) => {
+      requireAnyRole(
+        ctx,
+        PANEL_POOL_READ_ROLES,
+        "The panel-pool list requires the hiring_manager, recruiter, or admin role",
+      );
+      const db = requireDb(ctx);
+      if (!ctx.tenantId) {
+        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
+      }
+      const where = input.includeArchived
+        ? eq(panelPools.tenantId, ctx.tenantId)
+        : and(eq(panelPools.tenantId, ctx.tenantId), eq(panelPools.isArchived, false));
+      const pools = await db.select().from(panelPools).where(where).orderBy(panelPools.name);
+      // Fold the members per pool (a single grouped read over this tenant).
+      const memberRows = await db
+        .select({
+          panelPoolId: panelPoolMembers.panelPoolId,
+          membershipId: panelPoolMembers.membershipId,
+        })
+        .from(panelPoolMembers)
+        .where(eq(panelPoolMembers.tenantId, ctx.tenantId));
+      const byPool = new Map<string, string[]>();
+      for (const m of memberRows) {
+        const list = byPool.get(m.panelPoolId) ?? [];
+        list.push(m.membershipId);
+        byPool.set(m.panelPoolId, list);
+      }
+      return {
+        rows: pools.map((p) => panelPoolRowToApi(p, byPool.get(p.id) ?? [])),
+      };
+    }),
+
+  /**
+   * createPanelPool — admin / recruiter, audited. A (tenant, name) collision
+   * surfaces a clean BAD_REQUEST (not a raw 23505) via a nested transaction
+   * (SAVEPOINT) — the createCompBand precedent. Starts with an empty roster.
+   */
+  createPanelPool: protectedProcedure
+    .input(createPanelPoolInputSchema)
+    .output(createPanelPoolOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      return withAudit("create_panel_pool", ctx, input, async () => {
+        requireAnyRole(
+          ctx,
+          PANEL_POOL_WRITE_ROLES,
+          "Managing panel pools requires the admin or recruiter role",
+        );
+        const db = requireDb(ctx);
+        if (!ctx.tenantId) {
+          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
+        }
+        const tenantId = ctx.tenantId;
+        const name = input.name.trim();
+        let row: typeof panelPools.$inferSelect | undefined;
+        try {
+          // Nested transaction (SAVEPOINT): a (tenant, name) unique violation
+          // rolls back to the savepoint rather than aborting the request's outer
+          // RLS transaction, so the clean BAD_REQUEST below survives (see
+          // createCompBand for the full rationale).
+          [row] = await db.transaction((tx) =>
+            tx
+              .insert(panelPools)
+              .values({
+                tenantId,
+                name,
+                focus: input.focus?.trim() ? input.focus.trim() : null,
+              })
+              .returning(),
+          );
+        } catch (err) {
+          if (isUniqueViolation(err)) {
+            throw new TRPCError({
+              code: "BAD_REQUEST",
+              message: `A panel pool named "${name}" already exists. Pick a distinct name.`,
+            });
+          }
+          throw err;
+        }
+        if (!row) {
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: "panel pool insert returned no row",
+          });
+        }
+        return { row: panelPoolRowToApi(row, []) };
+      });
+    }),
+
+  /**
+   * renamePanelPool — admin / recruiter, audited. Updates name / focus. A
+   * (tenant, name) collision surfaces a clean BAD_REQUEST. NOT_FOUND if the id
+   * is not the tenant's. Members are unchanged (returned as-is).
+   */
+  renamePanelPool: protectedProcedure
+    .input(renamePanelPoolInputSchema)
+    .output(renamePanelPoolOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      return withAudit("rename_panel_pool", ctx, input, async () => {
+        requireAnyRole(
+          ctx,
+          PANEL_POOL_WRITE_ROLES,
+          "Managing panel pools requires the admin or recruiter role",
+        );
+        const db = requireDb(ctx);
+        if (!ctx.tenantId) {
+          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
+        }
+        const tenantId = ctx.tenantId;
+        const name = input.name.trim();
+        // focus: undefined = leave as-is; null/"" = clear; string = set.
+        const focus =
+          input.focus === undefined
+            ? undefined
+            : input.focus && input.focus.trim()
+              ? input.focus.trim()
+              : null;
+        let row: typeof panelPools.$inferSelect | undefined;
+        try {
+          [row] = await db.transaction((tx) =>
+            tx
+              .update(panelPools)
+              .set({
+                name,
+                ...(focus === undefined ? {} : { focus }),
+                updatedAt: new Date(),
+              })
+              .where(and(eq(panelPools.tenantId, tenantId), eq(panelPools.id, input.id)))
+              .returning(),
+          );
+        } catch (err) {
+          if (isUniqueViolation(err)) {
+            throw new TRPCError({
+              code: "BAD_REQUEST",
+              message: `A panel pool named "${name}" already exists. Pick a distinct name.`,
+            });
+          }
+          throw err;
+        }
+        if (!row) {
+          throw new TRPCError({ code: "NOT_FOUND", message: "panel pool not found" });
+        }
+        const members = await db
+          .select({ membershipId: panelPoolMembers.membershipId })
+          .from(panelPoolMembers)
+          .where(
+            and(eq(panelPoolMembers.tenantId, tenantId), eq(panelPoolMembers.panelPoolId, row.id)),
+          );
+        return {
+          row: panelPoolRowToApi(
+            row,
+            members.map((m) => m.membershipId),
+          ),
+        };
+      });
+    }),
+
+  /**
+   * setPanelPoolMembers — admin / recruiter, audited. Replace-set the pool's
+   * roster. Validates the pool is the tenant's (NOT_FOUND otherwise) and that
+   * every membership id is an active membership in this tenant
+   * (assertActiveMemberships → BAD_REQUEST). Dedups the ids, deletes the pool's
+   * existing member rows, and inserts the given ones.
+   */
+  setPanelPoolMembers: protectedProcedure
+    .input(setPanelPoolMembersInputSchema)
+    .output(setPanelPoolMembersOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      return withAudit("set_panel_pool_members", ctx, input, async () => {
+        requireAnyRole(
+          ctx,
+          PANEL_POOL_WRITE_ROLES,
+          "Managing panel pools requires the admin or recruiter role",
+        );
+        const db = requireDb(ctx);
+        if (!ctx.tenantId) {
+          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
+        }
+        const tenantId = ctx.tenantId;
+
+        // Verify the pool is the tenant's before mutating its roster.
+        const [pool] = await db
+          .select()
+          .from(panelPools)
+          .where(and(eq(panelPools.tenantId, tenantId), eq(panelPools.id, input.id)))
+          .limit(1);
+        if (!pool) throw new TRPCError({ code: "NOT_FOUND", message: "panel pool not found" });
+
+        const membershipIds = [...new Set(input.membershipIds)];
+        // Reject any foreign / inactive membership before persisting.
+        await assertActiveMemberships(ctx.sql, tenantId, membershipIds);
+
+        // Replace-set: drop the pool's existing members, insert these.
+        await db
+          .delete(panelPoolMembers)
+          .where(
+            and(
+              eq(panelPoolMembers.tenantId, tenantId),
+              eq(panelPoolMembers.panelPoolId, input.id),
+            ),
+          );
+        if (membershipIds.length > 0) {
+          await db.insert(panelPoolMembers).values(
+            membershipIds.map((membershipId) => ({
+              tenantId,
+              panelPoolId: input.id,
+              membershipId,
+            })),
+          );
+        }
+        return { row: panelPoolRowToApi(pool, membershipIds) };
+      });
+    }),
+
+  /**
+   * setPanelPoolArchived — admin / recruiter, audited. Flips is_archived.
+   * Archiving retires the pool from the plan-setup picker (listPanelPools
+   * default excludes it) but rounds already linked to it stay valid.
+   */
+  setPanelPoolArchived: protectedProcedure
+    .input(setPanelPoolArchivedInputSchema)
+    .output(setPanelPoolArchivedOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      return withAudit("set_panel_pool_archived", ctx, input, async () => {
+        requireAnyRole(
+          ctx,
+          PANEL_POOL_WRITE_ROLES,
+          "Managing panel pools requires the admin or recruiter role",
+        );
+        const db = requireDb(ctx);
+        if (!ctx.tenantId) {
+          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
+        }
+        const tenantId = ctx.tenantId;
+        const [row] = await db
+          .update(panelPools)
+          .set({ isArchived: input.archived, updatedAt: new Date() })
+          .where(and(eq(panelPools.tenantId, tenantId), eq(panelPools.id, input.id)))
+          .returning();
+        if (!row) {
+          throw new TRPCError({ code: "NOT_FOUND", message: "panel pool not found" });
+        }
+        const members = await db
+          .select({ membershipId: panelPoolMembers.membershipId })
+          .from(panelPoolMembers)
+          .where(
+            and(eq(panelPoolMembers.tenantId, tenantId), eq(panelPoolMembers.panelPoolId, row.id)),
+          );
+        return {
+          row: panelPoolRowToApi(
+            row,
+            members.map((m) => m.membershipId),
+          ),
+        };
       });
     }),
 

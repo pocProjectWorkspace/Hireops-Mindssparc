@@ -2,6 +2,7 @@ export * from "./tenants";
 export * from "./tenant-encryption-keys";
 export * from "./business-units";
 export * from "./comp-bands";
+export * from "./panel-pools";
 export * from "./tenant-user-memberships";
 export * from "./users";
 export * from "./roles";

@@ -23,6 +23,10 @@ interface EditableRound {
   scorecardTemplate: Scorecard;
   competencyFocus: string; // comma-separated in the editor
   defaultPanelMembershipIds: string[];
+  // T3.3 / G16 — the panel pool this round draws its default panel from (or ""
+  // for a manual round). Picking a pool fills the panel checkboxes from its
+  // members; the checkboxes stay editable (an edit is a per-round override).
+  panelPoolId: string;
 }
 
 const MODE_OPTIONS = [
@@ -45,6 +49,7 @@ function toEditable(r: {
   scorecardTemplate: string;
   competencyFocus: string[];
   defaultPanelMembershipIds: string[];
+  panelPoolId?: string;
 }): EditableRound {
   return {
     roundNumber: r.roundNumber,
@@ -54,6 +59,7 @@ function toEditable(r: {
     scorecardTemplate: r.scorecardTemplate as Scorecard,
     competencyFocus: (r.competencyFocus ?? []).join(", "),
     defaultPanelMembershipIds: r.defaultPanelMembershipIds ?? [],
+    panelPoolId: r.panelPoolId ?? "",
   };
 }
 
@@ -66,6 +72,8 @@ export function InterviewPlanSection({
 }) {
   const plan = trpc.getInterviewPlan.useQuery({ requisitionId });
   const members = trpc.listTenantMemberships.useQuery(undefined, { enabled: canManage });
+  // T3.3 / G16 — the tenant's non-archived panel pools, for the per-round picker.
+  const pools = trpc.listPanelPools.useQuery({}, { enabled: canManage });
   const upsert = trpc.upsertInterviewPlan.useMutation();
 
   const [rounds, setRounds] = useState<EditableRound[] | null>(null);
@@ -86,6 +94,21 @@ export function InterviewPlanSection({
       })),
     [members.data],
   );
+
+  // Panel-pool picker options ("" = manual, no pool) + members-by-pool lookup.
+  const poolRows = useMemo(() => pools.data?.rows ?? [], [pools.data]);
+  const poolOptions = useMemo(
+    () => [
+      { value: "", label: "— No pool (manual) —" },
+      ...poolRows.map((p) => ({ value: p.id, label: p.name })),
+    ],
+    [poolRows],
+  );
+  const poolMembersById = useMemo(() => {
+    const map = new Map<string, string[]>();
+    for (const p of poolRows) map.set(p.id, p.memberMembershipIds);
+    return map;
+  }, [poolRows]);
 
   if (plan.isLoading) {
     return (
@@ -115,12 +138,31 @@ export function InterviewPlanSection({
           scorecardTemplate: "general",
           competencyFocus: "",
           defaultPanelMembershipIds: [],
+          panelPoolId: "",
         },
       ];
     });
   }
   function removeRound(idx: number) {
     setRounds((prev) => (prev ?? []).filter((_, i) => i !== idx));
+  }
+  function onPoolChange(idx: number, poolId: string) {
+    setRounds((prev) =>
+      (prev ?? []).map((r, i) => {
+        if (i !== idx) return r;
+        if (poolId === "") {
+          // Manual round — clear the pool link; keep the current panel picks.
+          return { ...r, panelPoolId: "" };
+        }
+        // Picking a pool fills the panel checkboxes from its members (still
+        // editable — an edit becomes a per-round override on save).
+        return {
+          ...r,
+          panelPoolId: poolId,
+          defaultPanelMembershipIds: poolMembersById.get(poolId) ?? [],
+        };
+      }),
+    );
   }
   function togglePanel(idx: number, membershipId: string) {
     setRounds((prev) =>
@@ -154,6 +196,7 @@ export function InterviewPlanSection({
             .map((s) => s.trim())
             .filter((s) => s.length > 0),
           defaultPanelMembershipIds: r.defaultPanelMembershipIds,
+          panelPoolId: r.panelPoolId ? r.panelPoolId : undefined,
         })),
       });
       setNotice(`Saved ${res.roundCount} round${res.roundCount === 1 ? "" : "s"}.`);
@@ -250,6 +293,29 @@ export function InterviewPlanSection({
                   onChange={(e) => update(idx, { competencyFocus: e.target.value })}
                   placeholder="system_design, ownership"
                 />
+              </div>
+              <div className="mt-3">
+                <Select
+                  label="Panel pool"
+                  options={poolOptions}
+                  value={r.panelPoolId}
+                  disabled={!canManage}
+                  onValueChange={(v) => onPoolChange(idx, v)}
+                />
+                {canManage && poolRows.length === 0 ? (
+                  <p className="mt-1 text-xs text-neutral-500">
+                    No panel pools yet. Admins and recruiters can create reusable pools under{" "}
+                    <a href="/admin/panel-pools" className="text-brand-600 hover:underline">
+                      Panel pools
+                    </a>{" "}
+                    — or staff this round manually below.
+                  </p>
+                ) : r.panelPoolId ? (
+                  <p className="mt-1 text-xs text-neutral-500">
+                    Panel seeded from this pool. Edits below become a per-round override (the pool
+                    is kept as provenance).
+                  </p>
+                ) : null}
               </div>
               <div className="mt-3">
                 <p className="mb-1 text-sm font-medium text-neutral-700">Default panel</p>

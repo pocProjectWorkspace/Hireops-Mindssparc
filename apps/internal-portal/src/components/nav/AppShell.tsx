@@ -57,6 +57,7 @@ import {
   IconSources,
   IconBusinessUnits,
   IconCompBands,
+  IconPanelPools,
   IconUsers,
   IconMissingInfo,
   IconMessaging,
@@ -121,7 +122,9 @@ export type PortalNavKey =
   // T3.1 — business-unit management (G14)
   | "business-units"
   // T3.2 — comp-band library (G15)
-  | "comp-bands";
+  | "comp-bands"
+  // T3.3 — panel-pool library (G16)
+  | "panel-pools";
 
 interface NavItem {
   key: PortalNavKey;
@@ -508,6 +511,14 @@ const ADMIN_NAV: NavItem[] = [
     label: "Comp bands",
     href: "/admin/comp-bands",
     icon: <IconCompBands />,
+  },
+  // T3.3 / G16 — panel-pool library (org structure). The managed pools drive an
+  // interview-plan round's default panel (upsertInterviewPlan copies the members).
+  {
+    key: "panel-pools",
+    label: "Panel pools",
+    href: "/admin/panel-pools",
+    icon: <IconPanelPools />,
   },
 ];
 

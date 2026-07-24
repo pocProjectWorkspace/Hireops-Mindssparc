@@ -264,6 +264,18 @@ export function IconCompBands() {
   );
 }
 
+export function IconPanelPools() {
+  // A group/roster glyph: two people side by side inside a bounded pool.
+  return (
+    <Svg>
+      <circle cx="8.5" cy="9" r="2.5" />
+      <circle cx="15.5" cy="9" r="2.5" />
+      <path d="M4 18v-1a3.5 3.5 0 0 1 3.5-3.5h2A3.5 3.5 0 0 1 13 17v1" />
+      <path d="M13 18v-1a3.5 3.5 0 0 1 3.5-3.5h0A3.5 3.5 0 0 1 20 17v1" />
+    </Svg>
+  );
+}
+
 export function IconSources() {
   // Converging channels → one pipeline (the registry's whole idea).
   return (

@@ -2766,6 +2766,11 @@ export const interviewPlanRoundSchema = z.object({
   scorecardTemplate: scorecardTemplateKeySchema,
   competencyFocus: z.array(z.string().min(1).max(80)).max(20).default([]),
   defaultPanelMembershipIds: z.array(z.string().uuid()).max(20).default([]),
+  // T3.3 / G16 — the panel pool this round draws its default panel FROM
+  // (provenance). When present with an EMPTY defaultPanelMembershipIds, the
+  // server COPIES the pool's members into the round's default panel; a non-empty
+  // defaultPanelMembershipIds is an override that keeps this id as provenance.
+  panelPoolId: z.string().uuid().optional(),
 });
 export type InterviewPlanRound = z.infer<typeof interviewPlanRoundSchema>;
 

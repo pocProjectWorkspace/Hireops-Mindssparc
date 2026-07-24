@@ -14,6 +14,7 @@ import {
 } from "drizzle-orm/pg-core";
 import { tenants } from "./tenants";
 import { requisitions } from "./requisitions";
+import { panelPools } from "./panel-pools";
 
 /**
  * interview_plans — per-requisition round templates (Wave B, INT-01).
@@ -59,6 +60,12 @@ export const interviewPlans = pgTable(
     // on interview_panelists). Bare uuid[] — intentionally NOT FK-enforced.
     defaultPanelMembershipIds: uuid("default_panel_membership_ids").array().notNull().default([]),
 
+    // T3.3 / G16 — provenance link to the panel pool this round's default panel
+    // was populated FROM (nullable; null when the round was staffed manually).
+    // Compound (tenant_id, panel_pool_id) FK, ON DELETE RESTRICT (pools are
+    // archived, never deleted — mirrors positions.comp_band_id).
+    panelPoolId: uuid("panel_pool_id"),
+
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
@@ -92,6 +99,15 @@ export const interviewPlans = pgTable(
       foreignColumns: [requisitions.tenantId, requisitions.id],
       name: "fk_interview_plans_requisition",
     }).onDelete("cascade"),
+
+    // T3.3 / G16 — provenance link to the panel pool. ON DELETE RESTRICT (pools
+    // are archived, never deleted).
+    index("idx_interview_plans_panel_pool").on(table.tenantId, table.panelPoolId),
+    foreignKey({
+      columns: [table.tenantId, table.panelPoolId],
+      foreignColumns: [panelPools.tenantId, panelPools.id],
+      name: "fk_interview_plans_panel_pool",
+    }).onDelete("restrict"),
 
     pgPolicy("tenant_isolation", {
       as: "permissive",
