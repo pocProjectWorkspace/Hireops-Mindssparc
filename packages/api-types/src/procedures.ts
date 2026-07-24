@@ -2720,6 +2720,12 @@ export type SetMembershipStatusOutput = z.infer<typeof setMembershipStatusOutput
  * Read-only data-retention reference (CONF-03). Surfaces the ONBOARD-01
  * document_types reference rows (retention years per geography). READ-ONLY —
  * enforcement automation is a future work package.
+ *
+ * `retentionYears` is the tenant-agnostic reference value from `document_types`;
+ * `effectiveRetentionYears` (T4.3) overlays the tenant's retentionPolicy on top
+ * (a code override wins over the reference value, then the tenant defaultYears,
+ * else null = no retention configured). It is what actually applies for THIS
+ * tenant and drives `listDocumentsPastRetention`.
  */
 export const documentRetentionRowSchema = z.object({
   code: z.string(),
@@ -2727,6 +2733,7 @@ export const documentRetentionRowSchema = z.object({
   geographyCode: z.string().nullable(),
   requiredForLifecycleStage: z.string().nullable(),
   retentionYears: z.number().int().nullable(),
+  effectiveRetentionYears: z.number().int().nullable(),
 });
 export type DocumentRetentionRow = z.infer<typeof documentRetentionRowSchema>;
 export const getDocumentRetentionInputSchema = z.object({}).optional();

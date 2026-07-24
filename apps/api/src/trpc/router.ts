@@ -433,6 +433,16 @@ import {
   setMembershipStatusOutputSchema,
   getDocumentRetentionInputSchema,
   getDocumentRetentionOutputSchema,
+  getRetentionPolicyInputSchema,
+  getRetentionPolicyOutputSchema,
+  updateRetentionPolicyInputSchema,
+  updateRetentionPolicyOutputSchema,
+  listDocumentsPastRetentionInputSchema,
+  listDocumentsPastRetentionOutputSchema,
+  resolveRetentionPolicy,
+  effectiveRetentionYears,
+  type RetentionPolicy,
+  type OverdueDocumentRow,
   INTERNAL_TENANT_ROLES,
   type ScoringWeights,
   type TenantUserAdminRow,
@@ -8422,6 +8432,215 @@ export const appRouter = router({
       });
     }),
 
+  // ─────────────────────── getRetentionPolicy (T4.3) ───────────────────────
+  //
+  // Read the per-tenant document-retention policy (settings.retentionPolicy)
+  // resolved over the defaults (defaultRetentionPolicy — no overrides, no
+  // fallback). Gated to {admin, hr_head} (GOVERNANCE_READ_ROLES): retention is a
+  // compliance/HR-head surface alongside admin. Read-only, no withAudit (matches
+  // the other settings reads). Returns the resolved policy so the admin surface
+  // can prefill.
+  getRetentionPolicy: protectedProcedure
+    .input(getRetentionPolicyInputSchema)
+    .output(getRetentionPolicyOutputSchema)
+    .query(async ({ ctx }): Promise<RetentionPolicy> => {
+      requireAnyRole(
+        ctx,
+        GOVERNANCE_READ_ROLES,
+        "Retention policy requires the hr_head or admin role",
+      );
+      const db = requireDb(ctx);
+      if (!ctx.tenantId) {
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: "protected procedure missing tenantId",
+        });
+      }
+      const [row] = await db
+        .select({ settings: tenants.settings })
+        .from(tenants)
+        .where(eq(tenants.id, ctx.tenantId))
+        .limit(1);
+      const settings = (row?.settings ?? {}) as Record<string, unknown>;
+      return resolveRetentionPolicy(settings.retentionPolicy);
+    }),
+
+  // ─────────────────────── updateRetentionPolicy (T4.3) ───────────────────────
+  //
+  // Write the per-tenant document-retention policy. Gated to {admin, hr_head} +
+  // audited. Merges the validated policy into tenants.settings under
+  // `retentionPolicy` via the same atomic top-level jsonb `||` merge used by
+  // updateSlaThresholds / updateGovernancePolicy — a SIBLING key, preserving
+  // every other settings block verbatim. Returns the resolved policy. The saved
+  // policy GENUINELY drives the effective-retention overlay + the
+  // listDocumentsPastRetention overdue register — no erasure/deletion happens
+  // (that is a MANUAL process, out of scope) — the honesty guarantee.
+  updateRetentionPolicy: protectedProcedure
+    .input(updateRetentionPolicyInputSchema)
+    .output(updateRetentionPolicyOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      return withAudit("update_retention_policy", ctx, input, async () => {
+        requireAnyRole(
+          ctx,
+          GOVERNANCE_READ_ROLES,
+          "Retention policy requires the hr_head or admin role",
+        );
+        if (!ctx.tenantId) {
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: "protected procedure missing tenantId",
+          });
+        }
+        const tenantId = ctx.tenantId;
+
+        const res = await poolDb.execute(dsql`
+          UPDATE public.tenants
+          SET settings = COALESCE(settings, '{}'::jsonb)
+              || jsonb_build_object('retentionPolicy', ${JSON.stringify(input)}::jsonb)
+          WHERE id = ${tenantId}::uuid
+          RETURNING id
+        `);
+        const updated = (res as { rows?: unknown[] }).rows ?? (res as unknown[]);
+        if (updated.length !== 1) {
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: "tenant settings update affected an unexpected number of rows",
+          });
+        }
+
+        return { ok: true as const, retentionPolicy: resolveRetentionPolicy(input) };
+      });
+    }),
+
+  // ─────────────────────── listDocumentsPastRetention (T4.3) ───────────────────────
+  //
+  // The honesty crux. An HONEST register of UPLOADED documents whose retention
+  // period has elapsed under the tenant's policy — NO deletion, NO anonymisation
+  // (erasure is a MANUAL process, deferred to a future ticket). Gated to
+  // {admin, hr_head} (GOVERNANCE_READ_ROLES). RLS + an explicit tenant_id filter
+  // scope every read to the caller's tenant.
+  //
+  // How overdue is computed: the resolved retentionPolicy + the document_types
+  // reference rows are folded (via effectiveRetentionYears) into a per-code
+  // effective-retention. Codes whose effective retention is null are dropped
+  // (never overdue). The surviving (code → years) pairs are assembled into a
+  // `CASE dt.code WHEN … THEN <years> … ELSE NULL END` SQL expression (codes come
+  // from the reference table — safe to interpolate; the years are bound params).
+  // For each source table — application_documents (WHERE uploaded_at IS NOT NULL,
+  // since a requested-but-not-uploaded doc has no blob) and onboarding_documents
+  // — a row is overdue when its effective retention IS NOT NULL AND
+  // `uploaded_at + (effectiveYears * interval '1 year') < now()`. Lowering a
+  // code's retention surfaces MORE rows; raising it removes them — the policy
+  // genuinely drives this, it is not a display.
+  listDocumentsPastRetention: protectedProcedure
+    .input(listDocumentsPastRetentionInputSchema)
+    .output(listDocumentsPastRetentionOutputSchema)
+    .query(async ({ ctx }) => {
+      requireAnyRole(
+        ctx,
+        GOVERNANCE_READ_ROLES,
+        "Retention register requires the hr_head or admin role",
+      );
+      const db = requireDb(ctx);
+      if (!ctx.tenantId) {
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: "protected procedure missing tenantId",
+        });
+      }
+      const tenantId = ctx.tenantId;
+      const policy = await resolveTenantRetentionPolicyDb(tenantId);
+
+      // Per-code effective retention (years) from the reference rows + the tenant
+      // policy. Only codes with a REAL number can produce an overdue doc.
+      const typeRows = await db
+        .select({ code: documentTypes.code, retentionYears: documentTypes.retentionYears })
+        .from(documentTypes);
+      const effByCode = typeRows
+        .map((t) => ({
+          code: t.code,
+          years: effectiveRetentionYears(t.code, t.retentionYears ?? null, policy),
+        }))
+        .filter((e): e is { code: string; years: number } => e.years !== null);
+
+      // No code carries an effective retention → nothing can be overdue.
+      if (effByCode.length === 0) {
+        return { items: [] };
+      }
+
+      const caseClauses = effByCode.map((e) => dsql`WHEN ${e.code} THEN ${e.years}::int`);
+      const effExpr = dsql`(CASE dt.code ${dsql.join(caseClauses, dsql.raw(" "))} ELSE NULL END)`;
+
+      interface OverdueSqlRow {
+        id: string;
+        source: string;
+        code: string;
+        name: string;
+        uploaded_at: string | Date;
+        owner_ref: string;
+        effective_years: number | string;
+      }
+      const extractRows = (result: unknown): OverdueSqlRow[] =>
+        (result as { rows?: OverdueSqlRow[] }).rows ?? (result as OverdueSqlRow[]);
+
+      // application_documents — uploaded_at is NULLABLE (requested-but-not-
+      // uploaded docs have no blob and are skipped).
+      const appResult = await db.execute(dsql`
+        SELECT id, source, code, name, uploaded_at, owner_ref, effective_years
+        FROM (
+          SELECT ad.id::text AS id, 'application'::text AS source, dt.code AS code,
+                 dt.name AS name, ad.uploaded_at AS uploaded_at,
+                 ad.application_id::text AS owner_ref, ${effExpr} AS effective_years
+          FROM public.application_documents ad
+          JOIN public.document_types dt ON dt.id = ad.document_type_id
+          WHERE ad.tenant_id = ${tenantId}::uuid AND ad.uploaded_at IS NOT NULL
+        ) app
+        WHERE effective_years IS NOT NULL
+          AND uploaded_at + (effective_years * interval '1 year') < now()
+      `);
+
+      // onboarding_documents — uploaded_at is notNull (default now()).
+      const onbResult = await db.execute(dsql`
+        SELECT id, source, code, name, uploaded_at, owner_ref, effective_years
+        FROM (
+          SELECT od.id::text AS id, 'onboarding'::text AS source, dt.code AS code,
+                 dt.name AS name, od.uploaded_at AS uploaded_at,
+                 od.case_id::text AS owner_ref, ${effExpr} AS effective_years
+          FROM public.onboarding_documents od
+          JOIN public.document_types dt ON dt.id = od.document_type_id
+          WHERE od.tenant_id = ${tenantId}::uuid
+        ) onb
+        WHERE effective_years IS NOT NULL
+          AND uploaded_at + (effective_years * interval '1 year') < now()
+      `);
+
+      const nowMs = Date.now();
+      const MS_PER_YEAR = 365.25 * 24 * 60 * 60 * 1000;
+      const items: OverdueDocumentRow[] = [
+        ...extractRows(appResult),
+        ...extractRows(onbResult),
+      ].map((r) => {
+        const uploadedAtIso = new Date(r.uploaded_at as string | Date).toISOString();
+        const ageYears = (nowMs - new Date(uploadedAtIso).getTime()) / MS_PER_YEAR;
+        const effYears = Number(r.effective_years);
+        return {
+          id: r.id,
+          source: r.source === "onboarding" ? ("onboarding" as const) : ("application" as const),
+          documentTypeCode: r.code,
+          documentTypeName: r.name,
+          uploadedAt: uploadedAtIso,
+          ageYears: Math.round(ageYears * 100) / 100,
+          effectiveRetentionYears: effYears,
+          ownerRef: r.owner_ref,
+        };
+      });
+      // Most-overdue first — by how far past retention (age − retention), desc.
+      items.sort(
+        (a, b) => b.ageYears - b.effectiveRetentionYears - (a.ageYears - a.effectiveRetentionYears),
+      );
+      return { items };
+    }),
+
   // ─────────────────────── getAiUsageSummary (ADMIN-03) ───────────────────────
   //
   // Admin AI-cost rollup for /admin/costs — "every Anthropic call logged with
@@ -11702,6 +11921,10 @@ export const appRouter = router({
         "Data retention view requires the hr_head or admin role",
       );
       const db = requireDb(ctx);
+      // T4.3 — overlay the tenant's retention policy (settings.retentionPolicy)
+      // on top of the tenant-agnostic reference rows so the view shows what
+      // actually applies for THIS tenant. Unconfigured → effective == reference.
+      const policy = await resolveTenantRetentionPolicyDb(ctx.tenantId);
       const rows = await db
         .select({
           code: documentTypes.code,
@@ -11722,6 +11945,7 @@ export const appRouter = router({
         geographyCode: r.geographyCode ?? null,
         requiredForLifecycleStage: r.requiredForLifecycleStage ?? null,
         retentionYears: r.retentionYears ?? null,
+        effectiveRetentionYears: effectiveRetentionYears(r.code, r.retentionYears ?? null, policy),
       }));
       return { items };
     }),
@@ -21142,6 +21366,29 @@ async function resolveTenantSlaThresholdsDb(
     .limit(1);
   const settings = (row?.settings ?? {}) as Record<string, unknown>;
   return resolveSlaThresholds(settings.slaThresholds);
+}
+
+/**
+ * T4.3 — resolve a tenant's document-retention policy (settings.retentionPolicy)
+ * merged over the defaults. Service-role read of tenants.settings, keyed by the
+ * caller's tenantId — same idiom as resolveTenantSlaThresholdsDb. An unconfigured
+ * (or corrupt) tenant resolves to defaultRetentionPolicy(), so the effective
+ * retention is simply the reference document_types.retention_years and the
+ * overdue register behaves exactly as before (empty where no reference retention
+ * exists). `tenantId` is optional purely to match the protectedProcedure ctx
+ * shape; a missing tenantId resolves to the default policy.
+ */
+async function resolveTenantRetentionPolicyDb(
+  tenantId: string | null | undefined,
+): Promise<RetentionPolicy> {
+  if (!tenantId) return resolveRetentionPolicy(undefined);
+  const [row] = await poolDb
+    .select({ settings: tenants.settings })
+    .from(tenants)
+    .where(eq(tenants.id, tenantId))
+    .limit(1);
+  const settings = (row?.settings ?? {}) as Record<string, unknown>;
+  return resolveRetentionPolicy(settings.retentionPolicy);
 }
 
 /** Resolve the SLA state for the urgency engine from live hours-in-stage vs the

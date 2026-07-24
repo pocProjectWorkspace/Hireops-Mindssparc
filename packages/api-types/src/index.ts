@@ -34,3 +34,4 @@ export * from "./business-units";
 export * from "./comp-bands";
 export * from "./panel-pools";
 export * from "./sla-thresholds";
+export * from "./retention-policy";

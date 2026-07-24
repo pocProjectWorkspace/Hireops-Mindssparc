@@ -296,6 +296,18 @@ export function IconGovernancePolicy() {
   );
 }
 
+export function IconRetentionPolicy() {
+  // An archive box + a clock: document retention is "how long we keep the box"
+  // (the retention-years policy + the overdue register).
+  return (
+    <Svg>
+      <path d="M3 7h18M4 7l1 12a2 2 0 0 0 2 2h6M5 7l1-3h12l1 3M10 11h4" />
+      <circle cx="17.5" cy="17.5" r="3.5" />
+      <path d="M17.5 16v1.7l1.2 1" />
+    </Svg>
+  );
+}
+
 export function IconSources() {
   // Converging channels → one pipeline (the registry's whole idea).
   return (

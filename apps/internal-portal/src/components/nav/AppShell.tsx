@@ -60,6 +60,7 @@ import {
   IconPanelPools,
   IconSlaThresholds,
   IconGovernancePolicy,
+  IconRetentionPolicy,
   IconUsers,
   IconMissingInfo,
   IconMessaging,
@@ -130,7 +131,9 @@ export type PortalNavKey =
   // T4.1 — tenant-configurable SLA thresholds
   | "sla-thresholds"
   // T4.2 — configurable governance/compliance policy
-  | "governance-policy";
+  | "governance-policy"
+  // T4.3 — document retention policy + overdue register
+  | "retention-policy";
 
 interface NavItem {
   key: PortalNavKey;
@@ -541,6 +544,14 @@ const ADMIN_NAV: NavItem[] = [
     label: "Governance policy",
     href: "/admin/governance-policy",
     icon: <IconGovernancePolicy />,
+  },
+  // T4.3 — document retention policy. The per-type retention years drive the
+  // honest "documents past retention" register (erasure stays a manual process).
+  {
+    key: "retention-policy",
+    label: "Retention policy",
+    href: "/admin/retention-policy",
+    icon: <IconRetentionPolicy />,
   },
 ];
 
