@@ -286,6 +286,16 @@ export function IconSlaThresholds() {
   );
 }
 
+export function IconGovernancePolicy() {
+  // A balance-scale glyph: governance / compliance policy is a judgement call
+  // (the compliance-score weights + governance SLA knobs).
+  return (
+    <Svg>
+      <path d="M12 4v16M7 20h10M6 7l-3 6a3 3 0 0 0 6 0l-3-6zM18 7l-3 6a3 3 0 0 0 6 0l-3-6zM6 7h12" />
+    </Svg>
+  );
+}
+
 export function IconSources() {
   // Converging channels → one pipeline (the registry's whole idea).
   return (

@@ -335,3 +335,87 @@ export const COMPLIANCE_WEIGHTS = {
   onboarding_docs_verified: 25,
   offers_within_band: 20,
 } as const;
+
+// ─────────────────────────── governancePolicy (T4.2) ───────────────────────────
+
+/**
+ * T4.2 — tenant-configurable governance / compliance policy. Persisted to
+ * `tenants.settings.governancePolicy` (a SIBLING of slaThresholds / systemSetup —
+ * NO migration, NO new table). It carries the four compliance-score weights PLUS
+ * the three governance SLA knobs (approvalSlaDays, feedbackSlaHours,
+ * unrealisticMustHaveThreshold) that the HR-head governance surface derives from.
+ *
+ * An unconfigured (or corrupt) tenant resolves to defaultGovernancePolicy() —
+ * built FROM the code constants (COMPLIANCE_WEIGHTS / REQUISITION_APPROVAL_SLA_DAYS
+ * / FEEDBACK_SLA_HOURS / UNREALISTIC_MUST_HAVE_THRESHOLD), which remain the
+ * fallback source — so it behaves BYTE-IDENTICAL to today until an admin/hr_head
+ * saves a complete override.
+ *
+ * HONESTY: these values GENUINELY drive the compliance score + risk flags.
+ * Changing a weight moves the executive-audit complianceScore; lowering
+ * approvalSlaDays flags more pending-approval breaches (rule b); feedbackSlaHours
+ * drives rule e + the feedback ratio; unrealisticMustHaveThreshold drives rule c.
+ * The four weights are a stated JUDGEMENT CALL, not a regulated formula.
+ */
+const complianceWeight = z.number().int().min(0).max(100);
+
+export const governancePolicySchema = z
+  .object({
+    weights: z.object({
+      approvals_within_sla: complianceWeight,
+      feedback_within_48h: complianceWeight,
+      onboarding_docs_verified: complianceWeight,
+      offers_within_band: complianceWeight,
+    }),
+    approvalSlaDays: z.number().int().min(1).max(60),
+    feedbackSlaHours: z.number().int().min(1).max(720),
+    unrealisticMustHaveThreshold: z.number().int().min(1).max(50),
+  })
+  .refine(
+    (p) =>
+      p.weights.approvals_within_sla +
+        p.weights.feedback_within_48h +
+        p.weights.onboarding_docs_verified +
+        p.weights.offers_within_band ===
+      100,
+    { message: "Compliance weights must sum to 100." },
+  );
+export type GovernancePolicy = z.infer<typeof governancePolicySchema>;
+
+/** The default policy — built from the code constants (unconfigured = today). */
+export function defaultGovernancePolicy(): GovernancePolicy {
+  return {
+    weights: {
+      approvals_within_sla: COMPLIANCE_WEIGHTS.approvals_within_sla,
+      feedback_within_48h: COMPLIANCE_WEIGHTS.feedback_within_48h,
+      onboarding_docs_verified: COMPLIANCE_WEIGHTS.onboarding_docs_verified,
+      offers_within_band: COMPLIANCE_WEIGHTS.offers_within_band,
+    },
+    approvalSlaDays: REQUISITION_APPROVAL_SLA_DAYS,
+    feedbackSlaHours: FEEDBACK_SLA_HOURS,
+    unrealisticMustHaveThreshold: UNREALISTIC_MUST_HAVE_THRESHOLD,
+  };
+}
+
+/**
+ * Merge a raw stored `governancePolicy` block with defaults. A partial / corrupt
+ * / absent block fails safeParse (the sum-100 refine means only a COMPLETE valid
+ * block parses) and falls back to the full default — never throws (the
+ * resolveSystemSetup discipline). An admin always saves a complete valid block.
+ */
+export function resolveGovernancePolicy(raw: unknown): GovernancePolicy {
+  const parsed = governancePolicySchema.safeParse(raw);
+  return parsed.success ? parsed.data : defaultGovernancePolicy();
+}
+
+export const getGovernancePolicyInputSchema = z.object({});
+export const getGovernancePolicyOutputSchema = governancePolicySchema;
+export type GetGovernancePolicyOutput = z.infer<typeof getGovernancePolicyOutputSchema>;
+
+export const updateGovernancePolicyInputSchema = governancePolicySchema;
+export type UpdateGovernancePolicyInput = z.infer<typeof updateGovernancePolicyInputSchema>;
+export const updateGovernancePolicyOutputSchema = z.object({
+  ok: z.literal(true),
+  governancePolicy: governancePolicySchema,
+});
+export type UpdateGovernancePolicyOutput = z.infer<typeof updateGovernancePolicyOutputSchema>;

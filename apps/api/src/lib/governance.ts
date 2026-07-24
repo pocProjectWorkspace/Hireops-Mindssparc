@@ -17,8 +17,8 @@ import type { ApplicationStage } from "@hireops/db";
 import {
   REQUISITION_APPROVAL_SLA_DAYS,
   FEEDBACK_SLA_HOURS,
-  UNREALISTIC_MUST_HAVE_THRESHOLD,
-  COMPLIANCE_WEIGHTS,
+  resolveGovernancePolicy,
+  type GovernancePolicy,
   type GovernanceRiskFlag,
   type RiskRuleKey,
   type RiskSeverity,
@@ -58,6 +58,28 @@ async function loadTenantSlaThresholds(
   return resolveSlaThresholds(settings.slaThresholds);
 }
 
+/**
+ * T4.2 — resolve this tenant's governance / compliance policy
+ * (settings.governancePolicy) merged over the code defaults, using the same
+ * tenant-bound (RLS-scoped) client the rest of the governance reads use. An
+ * unconfigured or corrupt tenant resolves to defaultGovernancePolicy() — built
+ * from the module constants — so the compliance score, the risk-flag thresholds,
+ * and the SLA table are byte-identical to before. The resolved policy GENUINELY
+ * drives the compliance-score weights (ratioToComponent), rule b's approval-SLA
+ * days, rule c's must-have threshold, and rule e's feedback-SLA hours.
+ */
+async function loadTenantGovernancePolicy(
+  db: ExecClient,
+  tenantId: string,
+): Promise<GovernancePolicy> {
+  const res = await db.execute(sql`
+    SELECT settings FROM public.tenants WHERE id = ${tenantId}::uuid LIMIT 1
+  `);
+  const [row] = asRows<{ settings: unknown }>(res);
+  const settings = (row?.settings ?? {}) as Record<string, unknown>;
+  return resolveGovernancePolicy(settings.governancePolicy);
+}
+
 // Status sets as inline SQL fragments (fixed literals we control — no user
 // input, so no injection surface). Written inline rather than bound as JS
 // arrays because postgres' `= ANY($1)` binding of a JS array is brittle here.
@@ -85,6 +107,11 @@ export async function computeGovernanceRiskFlags(
 ): Promise<GetGovernanceRiskFlagsOutput> {
   const flags: GovernanceRiskFlag[] = [];
   const skippedRules: { rule: RiskRuleKey; reason: string }[] = [];
+
+  // T4.2 — the tenant's governance policy drives the rule thresholds: rule (b)
+  // the approval-SLA days, rule (c) the must-have threshold, rule (e) the
+  // feedback-SLA hours. Unconfigured tenant resolves to the code constants.
+  const policy = await loadTenantGovernancePolicy(db, tenantId);
 
   const push = (
     rule: RiskRuleKey,
@@ -117,7 +144,7 @@ export async function computeGovernanceRiskFlags(
     WHERE ar.tenant_id = ${tenantId}::uuid
       AND ar.subject_type = 'requisition'
       AND ar.status = 'pending'
-      AND ar.requested_at < now() - (${REQUISITION_APPROVAL_SLA_DAYS} || ' days')::interval
+      AND ar.requested_at < now() - (${policy.approvalSlaDays} || ' days')::interval
     ORDER BY days DESC
   `);
   for (const row of asRows<{ req_id: string; days: number }>(overdueRes)) {
@@ -128,7 +155,7 @@ export async function computeGovernanceRiskFlags(
       "requisition",
       row.req_id,
       "Requisition approval overdue",
-      `Pending approval for ${days} day${days === 1 ? "" : "s"} (SLA is ${REQUISITION_APPROVAL_SLA_DAYS} days).`,
+      `Pending approval for ${days} day${days === 1 ? "" : "s"} (SLA is ${policy.approvalSlaDays} days).`,
       "Hiring is blocked while the requisition waits; time-to-fill slips day for day.",
       "/requisition-approvals",
     );
@@ -145,7 +172,7 @@ export async function computeGovernanceRiskFlags(
     WHERE r.tenant_id = ${tenantId}::uuid
       AND r.status IN ${OPEN_REQ_STATUSES}
     GROUP BY r.id
-    HAVING COUNT(*) > ${UNREALISTIC_MUST_HAVE_THRESHOLD}
+    HAVING COUNT(*) > ${policy.unrealisticMustHaveThreshold}
     ORDER BY COUNT(*) DESC
   `);
   for (const row of asRows<{ req_id: string; must_haves: number }>(mustHaveRes)) {
@@ -155,7 +182,7 @@ export async function computeGovernanceRiskFlags(
       "requisition",
       row.req_id,
       "Unrealistic must-have list",
-      `${row.must_haves} skills flagged as required (threshold is ${UNREALISTIC_MUST_HAVE_THRESHOLD}).`,
+      `${row.must_haves} skills flagged as required (threshold is ${policy.unrealisticMustHaveThreshold}).`,
       "Over-specified must-haves shrink the funnel and can screen out viable candidates.",
       `/requisitions/${row.req_id}`,
     );
@@ -195,7 +222,7 @@ export async function computeGovernanceRiskFlags(
     FROM public.interviews i
     WHERE i.tenant_id = ${tenantId}::uuid
       AND i.scheduled_end IS NOT NULL
-      AND i.scheduled_end < now() - (${FEEDBACK_SLA_HOURS} || ' hours')::interval
+      AND i.scheduled_end < now() - (${policy.feedbackSlaHours} || ' hours')::interval
       AND i.status IN ('scheduled', 'completed')
       AND NOT EXISTS (
         SELECT 1 FROM public.interview_feedback f
@@ -213,7 +240,7 @@ export async function computeGovernanceRiskFlags(
       "interview",
       row.interview_id,
       `Feedback overdue — ${row.round_name}`,
-      `No submitted feedback ${hours}h after the interview ended (SLA is ${FEEDBACK_SLA_HOURS}h).`,
+      `No submitted feedback ${hours}h after the interview ended (SLA is ${policy.feedbackSlaHours}h).`,
       "Stalled feedback holds up the candidate's next step and erodes the experience.",
       "/interviews",
     );
@@ -315,8 +342,16 @@ interface RatioRow {
   denominator: number;
 }
 
-/** Empty sample counts as fully compliant (no activity → no breach). */
-function ratioToComponent(key: ComplianceComponent["key"], row: RatioRow): ComplianceComponent {
+/**
+ * Empty sample counts as fully compliant (no activity → no breach). T4.2 — the
+ * per-key weight comes from the tenant's resolved policy weights (passed in), so
+ * the compliance-score sum genuinely reflects a tenant override.
+ */
+function ratioToComponent(
+  key: ComplianceComponent["key"],
+  row: RatioRow,
+  weights: GovernancePolicy["weights"],
+): ComplianceComponent {
   const denom = Number(row.denominator) || 0;
   const num = Number(row.numerator) || 0;
   const value = denom > 0 ? num / denom : 1;
@@ -324,7 +359,7 @@ function ratioToComponent(key: ComplianceComponent["key"], row: RatioRow): Compl
     key,
     label: COMPLIANCE_LABELS[key],
     value: Math.max(0, Math.min(1, value)),
-    weightPct: COMPLIANCE_WEIGHTS[key],
+    weightPct: weights[key],
     sampleSize: denom,
   };
 }
@@ -354,6 +389,10 @@ export async function computeExecutiveAudit(
   // T4.1 — the tenant's resolved SLA thresholds drive the application-stage SLA
   // rows + the live breach count. Loaded once and passed to both consumers.
   const slaThresholds = await loadTenantSlaThresholds(db, tenantId);
+  // T4.2 — the tenant's governance policy drives the compliance-score weights,
+  // the approvals/feedback ratio SLA windows, and the SLA-table targets. Loaded
+  // once alongside the SLA thresholds.
+  const policy = await loadTenantGovernancePolicy(db, tenantId);
 
   // Compliance components — one ratio query each.
   const approvalsRes = await db.execute(sql`
@@ -363,7 +402,7 @@ export async function computeExecutiveAudit(
       )::int AS denominator,
       COUNT(*) FILTER (
         WHERE status IN ('approved', 'rejected') AND decided_at IS NOT NULL
-          AND decided_at - requested_at <= (${REQUISITION_APPROVAL_SLA_DAYS} || ' days')::interval
+          AND decided_at - requested_at <= (${policy.approvalSlaDays} || ' days')::interval
       )::int AS numerator
     FROM public.approval_requests
     WHERE tenant_id = ${tenantId}::uuid AND subject_type = 'requisition'
@@ -373,7 +412,7 @@ export async function computeExecutiveAudit(
     SELECT
       COUNT(*)::int AS denominator,
       COUNT(*) FILTER (
-        WHERE f.submitted_at <= i.scheduled_end + (${FEEDBACK_SLA_HOURS} || ' hours')::interval
+        WHERE f.submitted_at <= i.scheduled_end + (${policy.feedbackSlaHours} || ' hours')::interval
       )::int AS numerator
     FROM public.interview_feedback f
     JOIN public.interviews i ON i.tenant_id = f.tenant_id AND i.id = f.interview_id
@@ -410,25 +449,29 @@ export async function computeExecutiveAudit(
     ratioToComponent(
       "approvals_within_sla",
       asRows<RatioRow>(approvalsRes)[0] ?? { numerator: 0, denominator: 0 },
+      policy.weights,
     ),
     ratioToComponent(
       "feedback_within_48h",
       asRows<RatioRow>(feedbackRes)[0] ?? { numerator: 0, denominator: 0 },
+      policy.weights,
     ),
     ratioToComponent(
       "onboarding_docs_verified",
       asRows<RatioRow>(docsRes)[0] ?? { numerator: 0, denominator: 0 },
+      policy.weights,
     ),
     ratioToComponent(
       "offers_within_band",
       asRows<RatioRow>(bandRes)[0] ?? { numerator: 0, denominator: 0 },
+      policy.weights,
     ),
   ];
 
   const complianceScore = Math.round(components.reduce((acc, c) => acc + c.value * c.weightPct, 0));
 
   // Per-stage SLA table.
-  const slaTable = await computeSlaTable(db, tenantId, slaThresholds);
+  const slaTable = await computeSlaTable(db, tenantId, slaThresholds, policy);
 
   // Top drop-off reasons — terminal-stage tallies.
   const dropOffRes = await db.execute(sql`
@@ -485,14 +528,21 @@ async function computeSlaTable(
   db: ExecClient,
   tenantId: string,
   thresholds: Record<ApplicationStage, number | null>,
+  policy: GovernancePolicy,
 ): Promise<SlaComplianceRow[]> {
   // T4.1 — the two APPLICATION-STAGE rows (recruiter_review, tech_interview)
-  // read the tenant's resolved per-stage thresholds; the non-application-stage
-  // rows (requisition_approval, interview_feedback, offer_decision) keep their
-  // own constants — those are out of the slaThresholds map's scope. A disabled
-  // (null) stage falls back to the constant so this table always has a target.
+  // read the tenant's resolved per-stage thresholds; a disabled (null) stage
+  // falls back to the constant so this table always has a target.
+  // T4.2 — the two GOVERNANCE-SLA rows (requisition_approval, interview_feedback)
+  // read the tenant's governance policy (approvalSlaDays → hours, feedbackSlaHours)
+  // so the SLA-table targets track the same policy that drives the score + flags.
+  // offer_decision has no policy knob and keeps its own constant.
   const effectiveTable: Record<SlaTableKey, { label: string; targetHours: number }> = {
     ...SLA_TABLE,
+    requisition_approval: {
+      ...SLA_TABLE.requisition_approval,
+      targetHours: policy.approvalSlaDays * 24,
+    },
     recruiter_review: {
       ...SLA_TABLE.recruiter_review,
       targetHours: thresholds.recruiter_review ?? SLA_TABLE.recruiter_review.targetHours,
@@ -500,6 +550,10 @@ async function computeSlaTable(
     tech_interview: {
       ...SLA_TABLE.tech_interview,
       targetHours: thresholds.tech_interview ?? SLA_TABLE.tech_interview.targetHours,
+    },
+    interview_feedback: {
+      ...SLA_TABLE.interview_feedback,
+      targetHours: policy.feedbackSlaHours,
     },
   };
 

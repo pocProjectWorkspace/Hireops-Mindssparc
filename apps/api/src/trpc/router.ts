@@ -414,6 +414,12 @@ import {
   candidateMaskLabel,
   getGovernanceRiskFlagsOutputSchema,
   getExecutiveAuditOutputSchema,
+  getGovernancePolicyInputSchema,
+  getGovernancePolicyOutputSchema,
+  updateGovernancePolicyInputSchema,
+  updateGovernancePolicyOutputSchema,
+  resolveGovernancePolicy,
+  type GovernancePolicy,
   type ScreeningPrivacy,
   type GetExecutiveAuditOutput,
   type GetGovernanceRiskFlagsOutput,
@@ -8333,6 +8339,86 @@ export const appRouter = router({
         }
 
         return { ok: true as const, slaThresholds: resolved };
+      });
+    }),
+
+  // ─────────────────────── getGovernancePolicy (T4.2) ───────────────────────
+  //
+  // Read the per-tenant governance / compliance policy (settings.governancePolicy)
+  // resolved over the code defaults (defaultGovernancePolicy — built from the
+  // COMPLIANCE_WEIGHTS / SLA constants). Gated to {admin, hr_head} (GOVERNANCE_READ_ROLES):
+  // the compliance weights + governance SLA knobs are HR-head territory alongside
+  // admin — the same roles that own the governance surface itself. Read-only, no
+  // withAudit (matches the other settings reads). Returns the FULL resolved policy
+  // so the admin surface can prefill.
+  getGovernancePolicy: protectedProcedure
+    .input(getGovernancePolicyInputSchema)
+    .output(getGovernancePolicyOutputSchema)
+    .query(async ({ ctx }): Promise<GovernancePolicy> => {
+      requireAnyRole(
+        ctx,
+        GOVERNANCE_READ_ROLES,
+        "Governance access requires the hr_head or admin role",
+      );
+      const db = requireDb(ctx);
+      if (!ctx.tenantId) {
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: "protected procedure missing tenantId",
+        });
+      }
+      const [row] = await db
+        .select({ settings: tenants.settings })
+        .from(tenants)
+        .where(eq(tenants.id, ctx.tenantId))
+        .limit(1);
+      const settings = (row?.settings ?? {}) as Record<string, unknown>;
+      return resolveGovernancePolicy(settings.governancePolicy);
+    }),
+
+  // ─────────────────────── updateGovernancePolicy (T4.2) ───────────────────────
+  //
+  // Write the per-tenant governance / compliance policy. Gated to {admin, hr_head}
+  // + audited. Merges the validated (complete, sum-to-100) policy into
+  // tenants.settings under `governancePolicy` via the same atomic top-level jsonb
+  // `||` merge used by updateSlaThresholds — a SIBLING key, preserving systemSetup
+  // / slaThresholds / aiSettings etc. verbatim. Returns the resolved policy. The
+  // saved policy GENUINELY drives the executive-audit compliance score + the
+  // deterministic risk-flag thresholds — the honesty guarantee.
+  updateGovernancePolicy: protectedProcedure
+    .input(updateGovernancePolicyInputSchema)
+    .output(updateGovernancePolicyOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      return withAudit("update_governance_policy", ctx, input, async () => {
+        requireAnyRole(
+          ctx,
+          GOVERNANCE_READ_ROLES,
+          "Governance access requires the hr_head or admin role",
+        );
+        if (!ctx.tenantId) {
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: "protected procedure missing tenantId",
+          });
+        }
+        const tenantId = ctx.tenantId;
+
+        const res = await poolDb.execute(dsql`
+          UPDATE public.tenants
+          SET settings = COALESCE(settings, '{}'::jsonb)
+              || jsonb_build_object('governancePolicy', ${JSON.stringify(input)}::jsonb)
+          WHERE id = ${tenantId}::uuid
+          RETURNING id
+        `);
+        const updated = (res as { rows?: unknown[] }).rows ?? (res as unknown[]);
+        if (updated.length !== 1) {
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: "tenant settings update affected an unexpected number of rows",
+          });
+        }
+
+        return { ok: true as const, governancePolicy: resolveGovernancePolicy(input) };
       });
     }),
 

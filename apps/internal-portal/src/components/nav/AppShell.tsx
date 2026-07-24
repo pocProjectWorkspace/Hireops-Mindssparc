@@ -59,6 +59,7 @@ import {
   IconCompBands,
   IconPanelPools,
   IconSlaThresholds,
+  IconGovernancePolicy,
   IconUsers,
   IconMissingInfo,
   IconMessaging,
@@ -127,7 +128,9 @@ export type PortalNavKey =
   // T3.3 — panel-pool library (G16)
   | "panel-pools"
   // T4.1 — tenant-configurable SLA thresholds
-  | "sla-thresholds";
+  | "sla-thresholds"
+  // T4.2 — configurable governance/compliance policy
+  | "governance-policy";
 
 interface NavItem {
   key: PortalNavKey;
@@ -530,6 +533,14 @@ const ADMIN_NAV: NavItem[] = [
     label: "SLA thresholds",
     href: "/admin/sla-thresholds",
     icon: <IconSlaThresholds />,
+  },
+  // T4.2 — configurable governance/compliance policy. The compliance-score
+  // weights + governance SLA knobs that drive the HR-head governance surface.
+  {
+    key: "governance-policy",
+    label: "Governance policy",
+    href: "/admin/governance-policy",
+    icon: <IconGovernancePolicy />,
   },
 ];
 
