@@ -55,3 +55,50 @@ export function thresholdHoursFor(stage: ApplicationStage): number {
   const t = SLA_THRESHOLDS_HOURS[stage];
   return t === null ? Number.POSITIVE_INFINITY : t;
 }
+
+/** Upper bound for a per-stage override (one year of hours). */
+const MAX_THRESHOLD_HOURS = 8760;
+
+/**
+ * T4.1 — resolve a tenant's stored SLA-threshold overrides over the code
+ * defaults, returning a COMPLETE per-stage map. This is the single resolver
+ * shared by the api (breach filter/sort, urgency, governance) AND the workers
+ * imminent-alert scan, so it is a PLAIN TS merge with NO zod dependency (the
+ * worker must be able to import it without pulling api-types).
+ *
+ * Merge discipline (mirrors resolveSystemSetup / resolveShortlistDefaults):
+ *   - Start from SLA_THRESHOLDS_HOURS — the guaranteed fallback its own header
+ *     comment predicted this ticket would make it.
+ *   - Only NON-terminal stages (those with a real default) are overridable.
+ *     Terminal stages stay `null` always; a terminal override is ignored.
+ *   - For each overridable stage present in `raw`: a finite number in
+ *     (0, 8760] wins; an explicit `null` disables that stage's SLA; anything
+ *     else (out of range, wrong type, absent) falls back to the default.
+ *   - Unknown keys are ignored.
+ *   - Never throws — malformed input (non-object, array, null) yields the full
+ *     default map, so an unconfigured or corrupt tenant is byte-identical to
+ *     today.
+ */
+export function resolveSlaThresholds(raw: unknown): Record<ApplicationStage, number | null> {
+  const out: Record<ApplicationStage, number | null> = { ...SLA_THRESHOLDS_HOURS };
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return out;
+  const obj = raw as Record<string, unknown>;
+  for (const [stage, def] of Object.entries(SLA_THRESHOLDS_HOURS) as [
+    ApplicationStage,
+    number | null,
+  ][]) {
+    // Terminal stages are never overridable — they stay null.
+    if (def === null) continue;
+    if (!(stage in obj)) continue;
+    const v = obj[stage];
+    if (v === null) {
+      out[stage] = null;
+      continue;
+    }
+    if (typeof v === "number" && Number.isFinite(v) && v > 0 && v <= MAX_THRESHOLD_HOURS) {
+      out[stage] = v;
+    }
+    // Anything else: leave the default in place.
+  }
+  return out;
+}

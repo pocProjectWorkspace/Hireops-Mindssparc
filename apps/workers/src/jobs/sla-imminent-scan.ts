@@ -1,6 +1,7 @@
 import { sql as poolSql, db as poolDb } from "@hireops/db";
+import type { ApplicationStage } from "@hireops/db";
 import { enqueueNotification } from "@hireops/notifications";
-import { SLA_THRESHOLDS_HOURS, SLA_BREACH_STAGES } from "@hireops/sla-thresholds";
+import { SLA_BREACH_STAGES, resolveSlaThresholds } from "@hireops/sla-thresholds";
 import { resolveSystemSetup, type SystemSetup } from "@hireops/api-types";
 import type { Logger } from "@hireops/observability";
 
@@ -55,14 +56,29 @@ interface RawRow {
 }
 
 export async function slaImminentScan(log: Logger): Promise<void> {
-  // Build the SQL CASE for breach window per stage.
+  // T4.1 — the imminent window is composed PER TENANT off each tenant's
+  // RESOLVED SLA thresholds (settings.slaThresholds merged over the code
+  // defaults), so a tenant SLA override genuinely shifts which applications
+  // page as imminent. An unconfigured (or corrupt) tenant resolves to the
+  // default map, so its branch is byte-identical to the pre-config single
+  // global CASE. Load every tenant's map once for the tick.
+  const thresholdsByTenant = await loadSlaThresholdsByTenant();
+
+  // Build the SQL CASE: one branch per (tenant, non-null stage). Tenant ids
+  // come from the DB (uuid literals) and stage names from the code enum map —
+  // the same injection profile as the pre-config unsafe interpolation.
   const thresholdCases: string[] = [];
-  for (const [stage, hours] of Object.entries(SLA_THRESHOLDS_HOURS)) {
-    if (hours === null) continue;
-    // imminent = stage entered between (threshold - window) and threshold hours ago.
-    thresholdCases.push(
-      `WHEN a.current_stage = '${stage}' AND a.stage_entered_at < now() - interval '${hours - IMMINENT_WINDOW_HOURS} hours' AND a.stage_entered_at > now() - interval '${hours} hours' THEN true`,
-    );
+  for (const [tenantId, thresholds] of thresholdsByTenant) {
+    for (const [stage, hours] of Object.entries(thresholds) as [
+      ApplicationStage,
+      number | null,
+    ][]) {
+      if (hours === null) continue;
+      // imminent = stage entered between (threshold - window) and threshold hours ago.
+      thresholdCases.push(
+        `WHEN a.tenant_id = '${tenantId}'::uuid AND a.current_stage = '${stage}' AND a.stage_entered_at < now() - interval '${hours - IMMINENT_WINDOW_HOURS} hours' AND a.stage_entered_at > now() - interval '${hours} hours' THEN true`,
+      );
+    }
   }
   if (thresholdCases.length === 0) {
     log.warn("sla_scan.no_thresholds_configured");
@@ -180,6 +196,29 @@ async function loadSystemSetupByTenant(): Promise<Map<string, SystemSetup>> {
   for (const r of rows) {
     const settings = (r.settings ?? {}) as Record<string, unknown>;
     map.set(r.tenant_id, resolveSystemSetup(settings.systemSetup));
+  }
+  return map;
+}
+
+/**
+ * T4.1 — load every tenant's RESOLVED per-stage SLA thresholds keyed by tenant
+ * id. Cross-tenant (service-role poolSql), matching loadSystemSetupByTenant.
+ * resolveSlaThresholds merges the stored `settings.slaThresholds` jsonb over
+ * SLA_THRESHOLDS_HOURS, so a tenant with no (or corrupt) override resolves to
+ * the code defaults — making its imminent-window branch byte-identical to the
+ * pre-config global CASE. This is the honest tenant-resolved map the imminent
+ * scan pages off, so a tenant lowering a stage's hours genuinely alerts sooner.
+ */
+async function loadSlaThresholdsByTenant(): Promise<
+  Map<string, Record<ApplicationStage, number | null>>
+> {
+  const rows = await poolSql<{ tenant_id: string; settings: unknown }[]>`
+    SELECT id::text AS tenant_id, settings FROM public.tenants
+  `;
+  const map = new Map<string, Record<ApplicationStage, number | null>>();
+  for (const r of rows) {
+    const settings = (r.settings ?? {}) as Record<string, unknown>;
+    map.set(r.tenant_id, resolveSlaThresholds(settings.slaThresholds));
   }
   return map;
 }

@@ -276,6 +276,16 @@ export function IconPanelPools() {
   );
 }
 
+export function IconSlaThresholds() {
+  // A clock/timer glyph: SLA thresholds are per-stage hour deadlines.
+  return (
+    <Svg>
+      <circle cx="12" cy="13" r="8" />
+      <path d="M12 9v4l2.5 2M9 3h6" />
+    </Svg>
+  );
+}
+
 export function IconSources() {
   // Converging channels → one pipeline (the registry's whole idea).
   return (

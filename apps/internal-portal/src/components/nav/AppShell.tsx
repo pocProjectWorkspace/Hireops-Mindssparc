@@ -58,6 +58,7 @@ import {
   IconBusinessUnits,
   IconCompBands,
   IconPanelPools,
+  IconSlaThresholds,
   IconUsers,
   IconMissingInfo,
   IconMessaging,
@@ -124,7 +125,9 @@ export type PortalNavKey =
   // T3.2 — comp-band library (G15)
   | "comp-bands"
   // T3.3 — panel-pool library (G16)
-  | "panel-pools";
+  | "panel-pools"
+  // T4.1 — tenant-configurable SLA thresholds
+  | "sla-thresholds";
 
 interface NavItem {
   key: PortalNavKey;
@@ -519,6 +522,14 @@ const ADMIN_NAV: NavItem[] = [
     label: "Panel pools",
     href: "/admin/panel-pools",
     icon: <IconPanelPools />,
+  },
+  // T4.1 — tenant-configurable SLA thresholds. The per-stage hours drive breach
+  // detection, urgency, governance and the imminent-alert emails.
+  {
+    key: "sla-thresholds",
+    label: "SLA thresholds",
+    href: "/admin/sla-thresholds",
+    icon: <IconSlaThresholds />,
   },
 ];
 

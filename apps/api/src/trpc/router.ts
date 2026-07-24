@@ -114,7 +114,7 @@ import {
   type TenantBoundDb,
 } from "@hireops/db";
 import { evaluateKnockouts, type KnockoutInput } from "@hireops/ai-scoring";
-import { SLA_THRESHOLDS_HOURS } from "../lib/sla-thresholds";
+import { SLA_THRESHOLDS_HOURS, resolveSlaThresholds } from "../lib/sla-thresholds";
 import { computeGovernanceRiskFlags, computeExecutiveAudit } from "../lib/governance";
 import {
   submitApplicationInputSchema,
@@ -298,6 +298,11 @@ import {
   updateShortlistDefaultsOutputSchema,
   resolveShortlistDefaults,
   type ShortlistDefaults,
+  getSlaThresholdsInputSchema,
+  getSlaThresholdsOutputSchema,
+  updateSlaThresholdsInputSchema,
+  updateSlaThresholdsOutputSchema,
+  type ResolvedSlaThresholds,
   type NotificationStatus,
   getAiUsageSummaryInputSchema,
   getAiUsageSummaryOutputSchema,
@@ -1151,6 +1156,13 @@ const BUSINESS_UNIT_ADMIN_ROLES = new Set(["admin"]);
 // archive) is admin + hr_head config, like every other org-structure surface.
 const COMP_BAND_READ_ROLES = new Set(["admin", "hiring_manager", "recruiter"]);
 const COMP_BAND_WRITE_ROLES = new Set(["admin", "hr_head"]);
+
+// T4.1 — tenant-configurable SLA thresholds. Both READ and WRITE are
+// {admin, hr_head}: the SLA hours drive breach detection, urgency, governance
+// and the imminent-alert emails — compliance/governance territory the HR head
+// owns alongside admin. recruiter / hiring_manager / panel read the *effect*
+// (breach flags on their surfaces) but do not configure the thresholds.
+const SLA_CONFIG_ROLES = new Set(["admin", "hr_head"]);
 
 // T3.3 / G16 — panel-pool library. The plan-setup pool picker (admin /
 // hiring_manager / recruiter) reads the non-archived pools; managing them
@@ -3908,12 +3920,17 @@ export const appRouter = router({
       const cursor = input.pagination.cursor ? new Date(input.pagination.cursor) : null;
       const filters = input.filters ?? {};
 
-      // SLA-breach predicate, composed as a SQL fragment from the
-      // hardcoded SLA_THRESHOLDS_HOURS map. A CASE expression returns
-      // hours-in-stage > threshold for each stage that has one; rows in
-      // terminal stages (threshold = null) drop out via the ELSE branch.
+      // SLA-breach predicate, composed as a SQL fragment from the tenant's
+      // RESOLVED SLA-threshold map (T4.1) — settings.slaThresholds merged over
+      // the code defaults, so a tenant override genuinely drives this filter/
+      // sort, and an unconfigured tenant is byte-identical to before. A CASE
+      // expression returns hours-in-stage > threshold for each stage that has
+      // one; rows in terminal stages (threshold = null) drop out via ELSE.
+      const slaThresholds = ctx.tenantId
+        ? await resolveTenantSlaThresholdsDb(ctx.tenantId)
+        : SLA_THRESHOLDS_HOURS;
       const slaBreachClauses = (
-        Object.entries(SLA_THRESHOLDS_HOURS) as [ApplicationStage, number | null][]
+        Object.entries(slaThresholds) as [ApplicationStage, number | null][]
       )
         .filter(([, hours]) => hours !== null)
         .map(
@@ -8238,6 +8255,84 @@ export const appRouter = router({
         }
 
         return { ok: true as const, shortlistDefaults: nextBlock };
+      });
+    }),
+
+  // ─────────────────────── getSlaThresholds (T4.1) ───────────────────────
+  //
+  // Read the per-tenant SLA-threshold map (settings.slaThresholds) resolved over
+  // the code defaults (SLA_THRESHOLDS_HOURS). Gated to {admin, hr_head}: the SLA
+  // hours drive breach detection, urgency, governance and the imminent-alert
+  // emails — the HR head owns this alongside admin. Read-only, no withAudit
+  // (matches the other settings reads). Returns the FULL resolved map (every
+  // stage, terminal stages as null) so the admin surface can prefill.
+  getSlaThresholds: protectedProcedure
+    .input(getSlaThresholdsInputSchema)
+    .output(getSlaThresholdsOutputSchema)
+    .query(async ({ ctx }) => {
+      requireAnyRole(ctx, SLA_CONFIG_ROLES, "SLA thresholds are an admin / HR-head surface.");
+      const db = requireDb(ctx);
+      if (!ctx.tenantId) {
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: "protected procedure missing tenantId",
+        });
+      }
+      const [row] = await db
+        .select({ settings: tenants.settings })
+        .from(tenants)
+        .where(eq(tenants.id, ctx.tenantId))
+        .limit(1);
+      const settings = (row?.settings ?? {}) as Record<string, unknown>;
+      // resolveSlaThresholds is the shared plain-TS resolver typed broadly
+      // (Record<ApplicationStage, number | null>); it guarantees terminal
+      // stages are null at runtime, so the narrower output-schema shape holds.
+      return resolveSlaThresholds(settings.slaThresholds) as ResolvedSlaThresholds;
+    }),
+
+  // ─────────────────────── updateSlaThresholds (T4.1) ───────────────────────
+  //
+  // Write the per-tenant SLA-threshold overrides. Gated to {admin, hr_head} +
+  // audited. Merges the validated PARTIAL override map into tenants.settings
+  // under `slaThresholds` via the same atomic top-level jsonb `||` merge used by
+  // updateSystemSetup — a SIBLING key, preserving systemSetup / shortlistDefaults
+  // / aiSettings / biasLexicon / scoringWeights etc. verbatim. Returns the FULL
+  // resolved map. The saved thresholds GENUINELY drive breach detection, urgency,
+  // governance and the imminent-alert worker — the honesty guarantee.
+  updateSlaThresholds: protectedProcedure
+    .input(updateSlaThresholdsInputSchema)
+    .output(updateSlaThresholdsOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      return withAudit("update_sla_thresholds", ctx, input, async () => {
+        requireAnyRole(ctx, SLA_CONFIG_ROLES, "SLA thresholds are an admin / HR-head surface.");
+        if (!ctx.tenantId) {
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: "protected procedure missing tenantId",
+          });
+        }
+        const tenantId = ctx.tenantId;
+        // Persist the raw (validated) partial override map; resolve for the echo.
+        // resolveSlaThresholds is typed broadly but guarantees terminal stages
+        // are null at runtime, so the narrower output shape holds.
+        const resolved = resolveSlaThresholds(input) as ResolvedSlaThresholds;
+
+        const res = await poolDb.execute(dsql`
+          UPDATE public.tenants
+          SET settings = COALESCE(settings, '{}'::jsonb)
+              || jsonb_build_object('slaThresholds', ${JSON.stringify(input)}::jsonb)
+          WHERE id = ${tenantId}::uuid
+          RETURNING id
+        `);
+        const updated = (res as { rows?: unknown[] }).rows ?? (res as unknown[]);
+        if (updated.length !== 1) {
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: "tenant settings update affected an unexpected number of rows",
+          });
+        }
+
+        return { ok: true as const, slaThresholds: resolved };
       });
     }),
 
@@ -18675,6 +18770,10 @@ export const appRouter = router({
       // the tenant's cutoffs (defaults are byte-identical to the historic
       // constants, so an unconfigured tenant behaves exactly as before).
       let shortlistDefaults: ShortlistDefaults = resolveShortlistDefaults({});
+      // T4.1 — the tenant's RESOLVED SLA thresholds feed the recruiter-urgency
+      // composite (slaStateFor) below, so a tenant SLA override genuinely shifts
+      // shortlist urgency. Read from the same settings row; default otherwise.
+      let slaThresholds: Record<ApplicationStage, number | null> = SLA_THRESHOLDS_HOURS;
       if (ctx.tenantId) {
         const [settingsRow] = await db
           .select({ settings: tenants.settings })
@@ -18683,6 +18782,7 @@ export const appRouter = router({
           .limit(1);
         const settings = (settingsRow?.settings ?? {}) as Record<string, unknown>;
         shortlistDefaults = resolveShortlistDefaults(settings.shortlistDefaults);
+        slaThresholds = resolveSlaThresholds(settings.slaThresholds);
       }
       const effectiveThreshold = input.threshold ?? shortlistDefaults.threshold;
       const cutoffs = shortlistDefaults.tierCutoffs;
@@ -18768,7 +18868,7 @@ export const appRouter = router({
         );
         const hoursInStage = (Date.now() - r.stageEnteredAt.getTime()) / (60 * 60 * 1000);
         const urgency = computeRecruiterUrgency({
-          slaState: slaStateFor(r.stage, hoursInStage),
+          slaState: slaStateFor(r.stage, hoursInStage, slaThresholds),
           daysInStage: Math.floor(hoursInStage / 24),
           noticePeriodDays,
         });
@@ -20938,10 +21038,36 @@ function rollupRequisitionPhase(
   return "closed";
 }
 
+/**
+ * T4.1 — resolve a tenant's per-stage SLA thresholds (settings.slaThresholds)
+ * merged over the code defaults. Service-role read of tenants.settings, keyed
+ * by the caller's tenantId — same idiom as resolveTenantScreeningPrivacyDb.
+ * An unconfigured (or corrupt) tenant resolves to SLA_THRESHOLDS_HOURS, so the
+ * breach filter/sort, urgency and dashboards behave exactly as before. This is
+ * the honest tenant-resolved map every in-app SLA consumer reads.
+ */
+async function resolveTenantSlaThresholdsDb(
+  tenantId: string,
+): Promise<Record<ApplicationStage, number | null>> {
+  const [row] = await poolDb
+    .select({ settings: tenants.settings })
+    .from(tenants)
+    .where(eq(tenants.id, tenantId))
+    .limit(1);
+  const settings = (row?.settings ?? {}) as Record<string, unknown>;
+  return resolveSlaThresholds(settings.slaThresholds);
+}
+
 /** Resolve the SLA state for the urgency engine from live hours-in-stage vs the
- * stage's SLA threshold. "at_risk" is the last quarter before breach. */
-function slaStateFor(stage: ApplicationStage, hoursInStage: number): UrgencySlaState {
-  const threshold = (SLA_THRESHOLDS_HOURS as Record<string, number | null>)[stage];
+ * stage's SLA threshold. "at_risk" is the last quarter before breach. The
+ * thresholds map defaults to SLA_THRESHOLDS_HOURS so non-tenant callers keep
+ * working; listShortlist passes the tenant-resolved map (T4.1). */
+function slaStateFor(
+  stage: ApplicationStage,
+  hoursInStage: number,
+  thresholds: Record<ApplicationStage, number | null> = SLA_THRESHOLDS_HOURS,
+): UrgencySlaState {
+  const threshold = (thresholds as Record<string, number | null>)[stage];
   if (threshold == null) return "none";
   if (hoursInStage > threshold) return "breached";
   if (hoursInStage > threshold * 0.75) return "at_risk";
@@ -21006,9 +21132,13 @@ function daysSince(at: Date | string | null): number {
 }
 
 /** The SLA-breach predicate (bare columns) for a raw SELECT on applications —
- * the same CASE the triage listCandidates query composes, reused here. */
-function slaBreachSql(): SQL {
-  const clauses = (Object.entries(SLA_THRESHOLDS_HOURS) as [ApplicationStage, number | null][])
+ * the same CASE the triage listCandidates query composes, reused here. Takes
+ * the tenant-resolved thresholds map (T4.1); defaults to SLA_THRESHOLDS_HOURS so
+ * an unconfigured tenant is byte-identical to before. */
+function slaBreachSql(
+  thresholds: Record<ApplicationStage, number | null> = SLA_THRESHOLDS_HOURS,
+): SQL {
+  const clauses = (Object.entries(thresholds) as [ApplicationStage, number | null][])
     .filter(([, h]) => h !== null)
     .map(
       ([stage, h]) =>
@@ -21224,7 +21354,7 @@ async function hrHeadSection(db: DashDb, tenantId: string): Promise<DashSection>
 
 async function recruiterSection(db: DashDb, tenantId: string): Promise<DashSection> {
   const T = dsql`tenant_id = ${tenantId}::uuid`;
-  const breach = slaBreachSql();
+  const breach = slaBreachSql(await resolveTenantSlaThresholdsDb(tenantId));
   const [newTriage, breaches, toSchedule, toComplete, offers, agentApprovals] = await Promise.all([
     dashScalar(
       db,
@@ -21384,7 +21514,7 @@ async function buildRecruiterDashboardExtras(
 ): Promise<GetRecruiterDashboardExtrasOutput> {
   const T = dsql`tenant_id = ${tenantId}::uuid`;
   const live = dsql`current_stage NOT IN ${dsql.raw(RECRUITER_TERMINAL_STAGES)}`;
-  const breach = slaBreachSql();
+  const breach = slaBreachSql(await resolveTenantSlaThresholdsDb(tenantId));
 
   const [
     stageRows,
@@ -24867,6 +24997,13 @@ async function buildRequisitionInsights(
 ): Promise<GetRequisitionInsightsOutput> {
   const scope = await resolveMyRequisitionScope(db, ctx);
 
+  // T4.1 — the tenant's RESOLVED per-stage SLA thresholds drive the SLA tiles +
+  // bottleneck note below (empty scaffold and live computation both). Falls back
+  // to the code defaults for a null tenant / unconfigured tenant.
+  const slaThresholds = ctx.tenantId
+    ? await resolveTenantSlaThresholdsDb(ctx.tenantId)
+    : SLA_THRESHOLDS_HOURS;
+
   // Requisition selector — my reqs, newest first.
   const optionRows =
     scope.ids.length > 0
@@ -24906,7 +25043,7 @@ async function buildRequisitionInsights(
     { key: "partial" as const, label: "Partial", range: "50–69", count: 0 },
     { key: "low" as const, label: "Low", range: "0–49", count: 0 },
   ];
-  const emptySla = (Object.entries(SLA_THRESHOLDS_HOURS) as [ApplicationStage, number | null][])
+  const emptySla = (Object.entries(slaThresholds) as [ApplicationStage, number | null][])
     .filter(([, h]) => h !== null)
     .map(([stage, h]) => ({
       stage,
@@ -25065,7 +25202,7 @@ async function buildRequisitionInsights(
     agg.n += 1;
     ageByStage.set(a.currentStage, agg);
   }
-  const slaTiles = (Object.entries(SLA_THRESHOLDS_HOURS) as [ApplicationStage, number | null][])
+  const slaTiles = (Object.entries(slaThresholds) as [ApplicationStage, number | null][])
     .filter(([, h]) => h !== null)
     .map(([stage, target]) => {
       const agg = ageByStage.get(stage);

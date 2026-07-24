@@ -12,7 +12,7 @@
  */
 
 import { sql } from "drizzle-orm";
-import { SLA_THRESHOLDS_HOURS } from "./sla-thresholds";
+import { resolveSlaThresholds } from "./sla-thresholds";
 import type { ApplicationStage } from "@hireops/db";
 import {
   REQUISITION_APPROVAL_SLA_DAYS,
@@ -36,6 +36,26 @@ interface ExecClient {
 
 function asRows<T>(res: unknown): T[] {
   return ((res as { rows?: T[] }).rows ?? (res as T[])) || [];
+}
+
+/**
+ * T4.1 — resolve this tenant's per-stage SLA thresholds (settings.slaThresholds)
+ * merged over the code defaults, using the same tenant-bound client the rest of
+ * the governance reads use (RLS-scoped SELECT on tenants). An unconfigured or
+ * corrupt tenant resolves to SLA_THRESHOLDS_HOURS, so the compliance numbers are
+ * byte-identical to before. The resolved hours drive the live SLA-breach count
+ * (countSlaBreaches) and the application-stage rows of the SLA table.
+ */
+async function loadTenantSlaThresholds(
+  db: ExecClient,
+  tenantId: string,
+): Promise<Record<ApplicationStage, number | null>> {
+  const res = await db.execute(sql`
+    SELECT settings FROM public.tenants WHERE id = ${tenantId}::uuid LIMIT 1
+  `);
+  const [row] = asRows<{ settings: unknown }>(res);
+  const settings = (row?.settings ?? {}) as Record<string, unknown>;
+  return resolveSlaThresholds(settings.slaThresholds);
 }
 
 // Status sets as inline SQL fragments (fixed literals we control — no user
@@ -331,6 +351,10 @@ export async function computeExecutiveAudit(
   db: ExecClient,
   tenantId: string,
 ): Promise<GetExecutiveAuditOutput> {
+  // T4.1 — the tenant's resolved SLA thresholds drive the application-stage SLA
+  // rows + the live breach count. Loaded once and passed to both consumers.
+  const slaThresholds = await loadTenantSlaThresholds(db, tenantId);
+
   // Compliance components — one ratio query each.
   const approvalsRes = await db.execute(sql`
     SELECT
@@ -404,7 +428,7 @@ export async function computeExecutiveAudit(
   const complianceScore = Math.round(components.reduce((acc, c) => acc + c.value * c.weightPct, 0));
 
   // Per-stage SLA table.
-  const slaTable = await computeSlaTable(db, tenantId);
+  const slaTable = await computeSlaTable(db, tenantId, slaThresholds);
 
   // Top drop-off reasons — terminal-stage tallies.
   const dropOffRes = await db.execute(sql`
@@ -425,7 +449,7 @@ export async function computeExecutiveAudit(
 
   // KPIs — SLA breaches (applications past their stage SLA now), offer accept
   // rate, plus the flag count + compliance score.
-  const slaBreaches = await countSlaBreaches(db, tenantId);
+  const slaBreaches = await countSlaBreaches(db, tenantId, slaThresholds);
   const offerRes = await db.execute(sql`
     SELECT
       COUNT(*) FILTER (WHERE status = 'accepted')::int AS accepted,
@@ -457,7 +481,28 @@ export async function computeExecutiveAudit(
   };
 }
 
-async function computeSlaTable(db: ExecClient, tenantId: string): Promise<SlaComplianceRow[]> {
+async function computeSlaTable(
+  db: ExecClient,
+  tenantId: string,
+  thresholds: Record<ApplicationStage, number | null>,
+): Promise<SlaComplianceRow[]> {
+  // T4.1 — the two APPLICATION-STAGE rows (recruiter_review, tech_interview)
+  // read the tenant's resolved per-stage thresholds; the non-application-stage
+  // rows (requisition_approval, interview_feedback, offer_decision) keep their
+  // own constants — those are out of the slaThresholds map's scope. A disabled
+  // (null) stage falls back to the constant so this table always has a target.
+  const effectiveTable: Record<SlaTableKey, { label: string; targetHours: number }> = {
+    ...SLA_TABLE,
+    recruiter_review: {
+      ...SLA_TABLE.recruiter_review,
+      targetHours: thresholds.recruiter_review ?? SLA_TABLE.recruiter_review.targetHours,
+    },
+    tech_interview: {
+      ...SLA_TABLE.tech_interview,
+      targetHours: thresholds.tech_interview ?? SLA_TABLE.tech_interview.targetHours,
+    },
+  };
+
   // 1 — requisition approval turnaround.
   const approvalRes = await db.execute(sql`
     WITH d AS (
@@ -468,7 +513,7 @@ async function computeSlaTable(db: ExecClient, tenantId: string): Promise<SlaCom
     )
     SELECT COUNT(*)::int AS n,
            percentile_cont(0.5) WITHIN GROUP (ORDER BY hours)::float8 AS median,
-           AVG((hours <= ${SLA_TABLE.requisition_approval.targetHours}::numeric)::int)::float8 AS within
+           AVG((hours <= ${effectiveTable.requisition_approval.targetHours}::numeric)::int)::float8 AS within
     FROM d
   `);
 
@@ -490,8 +535,8 @@ async function computeSlaTable(db: ExecClient, tenantId: string): Promise<SlaCom
     SELECT stage,
            COUNT(*)::int AS n,
            percentile_cont(0.5) WITHIN GROUP (ORDER BY hours)::float8 AS median,
-           AVG((hours <= (CASE stage WHEN 'recruiter_review' THEN ${SLA_TABLE.recruiter_review.targetHours}
-                                    ELSE ${SLA_TABLE.tech_interview.targetHours} END)::numeric)::int)::float8 AS within
+           AVG((hours <= (CASE stage WHEN 'recruiter_review' THEN ${effectiveTable.recruiter_review.targetHours}
+                                    ELSE ${effectiveTable.tech_interview.targetHours} END)::numeric)::int)::float8 AS within
     FROM d
     GROUP BY stage
   `);
@@ -507,7 +552,7 @@ async function computeSlaTable(db: ExecClient, tenantId: string): Promise<SlaCom
     )
     SELECT COUNT(*)::int AS n,
            percentile_cont(0.5) WITHIN GROUP (ORDER BY hours)::float8 AS median,
-           AVG((hours <= ${SLA_TABLE.interview_feedback.targetHours}::numeric)::int)::float8 AS within
+           AVG((hours <= ${effectiveTable.interview_feedback.targetHours}::numeric)::int)::float8 AS within
     FROM d
   `);
 
@@ -524,7 +569,7 @@ async function computeSlaTable(db: ExecClient, tenantId: string): Promise<SlaCom
     )
     SELECT COUNT(*)::int AS n,
            percentile_cont(0.5) WITHIN GROUP (ORDER BY hours)::float8 AS median,
-           AVG((hours <= ${SLA_TABLE.offer_decision.targetHours}::numeric)::int)::float8 AS within
+           AVG((hours <= ${effectiveTable.offer_decision.targetHours}::numeric)::int)::float8 AS within
     FROM d
   `);
 
@@ -538,7 +583,7 @@ async function computeSlaTable(db: ExecClient, tenantId: string): Promise<SlaCom
     key: SlaTableKey,
     src: { n: number; median: number | null; within: number | null } | undefined,
   ): SlaComplianceRow => {
-    const t = SLA_TABLE[key];
+    const t = effectiveTable[key];
     const n = Number(src?.n ?? 0);
     return {
       key,
@@ -568,9 +613,15 @@ async function computeSlaTable(db: ExecClient, tenantId: string): Promise<SlaCom
   ];
 }
 
-/** Count applications currently past their stage SLA (reuses the shared map). */
-async function countSlaBreaches(db: ExecClient, tenantId: string): Promise<number> {
-  const clauses = (Object.entries(SLA_THRESHOLDS_HOURS) as [ApplicationStage, number | null][])
+/** Count applications currently past their stage SLA. Uses the tenant's
+ * RESOLVED thresholds (T4.1) so a tenant override genuinely shifts the live
+ * breach KPI, not just the display. */
+async function countSlaBreaches(
+  db: ExecClient,
+  tenantId: string,
+  thresholds: Record<ApplicationStage, number | null>,
+): Promise<number> {
+  const clauses = (Object.entries(thresholds) as [ApplicationStage, number | null][])
     .filter(([, hours]) => hours !== null)
     .map(
       ([stage, hours]) =>

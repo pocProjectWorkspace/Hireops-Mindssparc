@@ -11,4 +11,5 @@ export {
   SLA_THRESHOLDS_HOURS,
   SLA_BREACH_STAGES,
   thresholdHoursFor,
+  resolveSlaThresholds,
 } from "@hireops/sla-thresholds";
