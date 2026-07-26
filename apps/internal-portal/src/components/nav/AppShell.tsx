@@ -68,6 +68,7 @@ import {
   IconBiasShield,
   IconSignOut,
 } from "./nav-icons";
+import { MobileNav } from "./MobileNav";
 
 export type PortalNavKey =
   | "home"
@@ -135,7 +136,7 @@ export type PortalNavKey =
   // T4.3 — document retention policy + overdue register
   | "retention-policy";
 
-interface NavItem {
+export interface NavItem {
   key: PortalNavKey;
   label: string;
   href: string;
@@ -688,7 +689,7 @@ function Sidebar({
   user: AppShellUser;
 }) {
   return (
-    <aside className="flex w-60 shrink-0 flex-col border-r border-sidebar-border bg-sidebar text-sidebar-fg">
+    <aside className="hidden w-60 shrink-0 flex-col border-r border-sidebar-border bg-sidebar text-sidebar-fg lg:flex">
       <Wordmark />
       <div className="flex-1 overflow-y-auto pb-4">
         <NavGroup items={visibleNav(MAIN_NAV, isAdmin, roles)} active={active} />
@@ -703,8 +704,8 @@ function Sidebar({
  * live shell and the skeleton so the two are pixel-consistent. */
 function PageHeader({ title, actions }: { title: string; actions?: ReactNode }) {
   return (
-    <header className="flex shrink-0 items-center justify-between gap-4 border-b border-neutral-200 bg-white px-8 py-4 shadow-1">
-      <h1 className="text-xl font-semibold tracking-tight text-neutral-900">{title}</h1>
+    <header className="flex shrink-0 items-center justify-between gap-4 border-b border-neutral-200 bg-white px-4 py-4 shadow-1 lg:px-8">
+      <h1 className="text-lg font-semibold tracking-tight text-neutral-900 lg:text-xl">{title}</h1>
       {actions ? <div className="flex items-center gap-2">{actions}</div> : null}
     </header>
   );
@@ -720,17 +721,27 @@ export function AppShell({
   fill = false,
   children,
 }: AppShellProps) {
+  // Mobile bottom-bar split: the persona's visible destinations (main +, for
+  // admins, the Admin group), first four in the tab bar, the rest under "More".
+  const mobileItems = isAdmin
+    ? [...visibleNav(MAIN_NAV, isAdmin, roles), ...ADMIN_NAV]
+    : visibleNav(MAIN_NAV, isAdmin, roles);
+  const mobilePrimary = mobileItems.slice(0, 4);
+  const mobileMore = mobileItems.slice(4);
+
   return (
     <div className="flex h-screen overflow-hidden bg-neutral-50 text-neutral-900">
       <Sidebar isAdmin={isAdmin} roles={roles} active={active} user={user} />
       <div className="flex min-w-0 flex-1 flex-col">
         <PageHeader title={title} actions={actions} />
+        {/* pb-16 clears the fixed mobile bottom bar; removed at lg where the bar is hidden. */}
         {fill ? (
-          <div className="flex min-h-0 flex-1 flex-col">{children}</div>
+          <div className="flex min-h-0 flex-1 flex-col pb-16 lg:pb-0">{children}</div>
         ) : (
-          <main className="min-h-0 flex-1 overflow-y-auto">{children}</main>
+          <main className="min-h-0 flex-1 overflow-y-auto pb-16 lg:pb-0">{children}</main>
         )}
       </div>
+      <MobileNav primary={mobilePrimary} more={mobileMore} active={active} user={user} />
     </div>
   );
 }
@@ -745,7 +756,7 @@ export function AppShell({
 export function AppShellSkeleton({ title, children }: { title: string; children: ReactNode }) {
   return (
     <div className="flex h-screen overflow-hidden bg-neutral-50 text-neutral-900">
-      <aside className="flex w-60 shrink-0 flex-col border-r border-sidebar-border bg-sidebar text-sidebar-fg">
+      <aside className="hidden w-60 shrink-0 flex-col border-r border-sidebar-border bg-sidebar text-sidebar-fg lg:flex">
         <Wordmark />
         <div className="flex-1 space-y-2 px-6 py-4">
           {[0, 1, 2, 3].map((i) => (
@@ -758,7 +769,16 @@ export function AppShellSkeleton({ title, children }: { title: string; children:
       </aside>
       <div className="flex min-w-0 flex-1 flex-col">
         <PageHeader title={title} />
-        <main className="min-h-0 flex-1 overflow-y-auto">{children}</main>
+        <main className="min-h-0 flex-1 overflow-y-auto pb-16 lg:pb-0">{children}</main>
+      </div>
+      {/* Skeletal mobile bottom bar — mirrors the live shell's tab bar. */}
+      <div className="fixed inset-x-0 bottom-0 z-40 flex items-stretch border-t border-sidebar-border bg-sidebar pb-[env(safe-area-inset-bottom)] lg:hidden">
+        {[0, 1, 2, 3, 4].map((i) => (
+          <div key={i} className="flex flex-1 flex-col items-center gap-1.5 py-3">
+            <div className="h-5 w-5 animate-pulse rounded bg-sidebar-elevated" />
+            <div className="h-2 w-8 animate-pulse rounded bg-sidebar-elevated" />
+          </div>
+        ))}
       </div>
     </div>
   );
