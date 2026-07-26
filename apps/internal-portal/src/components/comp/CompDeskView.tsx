@@ -3,7 +3,7 @@
 import { useMemo, useState } from "react";
 import type { ListCompDeskOutput, CompDeskRow } from "@hireops/api-types";
 import { trpc, handleTRPCError } from "@/lib/trpc-client";
-import { Button, EmptyState } from "@/components/ui";
+import { Button, EmptyState, TableShell, Thead, Th, Tbody, Tr, Td } from "@/components/ui";
 import { HeroStatCard, PageHeader } from "@/components/patterns";
 import { StatTile } from "@/components/ui";
 import { VerdictChip, OfferStatusChip, ApprovalStatusChip } from "./chips";
@@ -108,30 +108,28 @@ export function CompDeskView({ initial }: { initial: ListCompDeskOutput }) {
       </div>
 
       {/* Table */}
-      <div className="mt-4 overflow-x-auto rounded-card border border-neutral-200 bg-white shadow-card">
+      <div className="mt-4">
         {filtered.length === 0 ? (
-          <div className="p-8">
+          <div className="rounded-card border border-neutral-200 bg-white p-8 shadow-card">
             <EmptyState
               title="No candidates on the comp desk"
               hint="The desk covers applications in the HR round, offer-drafted, and offer-accepted stages."
             />
           </div>
         ) : (
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b border-neutral-200 text-left text-[11px] uppercase tracking-wide text-neutral-500">
-                <th className="px-4 py-2.5 font-semibold">Candidate</th>
-                <th className="px-4 py-2.5 font-semibold">Role</th>
-                <th className="px-4 py-2.5 font-semibold">Expected</th>
-                <th className="px-4 py-2.5 font-semibold">Band (min–max)</th>
-                <th className="px-4 py-2.5 font-semibold">Suggested</th>
-                <th className="px-4 py-2.5 font-semibold">Verdict</th>
-                <th className="px-4 py-2.5 font-semibold">Offer</th>
-                <th className="px-4 py-2.5 font-semibold">Approval</th>
-                <th className="px-4 py-2.5 font-semibold text-right">Actions</th>
-              </tr>
-            </thead>
-            <tbody>
+          <TableShell>
+            <Thead>
+              <Th>Candidate</Th>
+              <Th>Role</Th>
+              <Th>Expected</Th>
+              <Th>Band (min–max)</Th>
+              <Th>Suggested</Th>
+              <Th>Verdict</Th>
+              <Th>Offer</Th>
+              <Th>Approval</Th>
+              <Th numeric>Actions</Th>
+            </Thead>
+            <Tbody>
               {filtered.map((r) => (
                 <DeskRow
                   key={r.applicationId}
@@ -143,8 +141,8 @@ export function CompDeskView({ initial }: { initial: ListCompDeskOutput }) {
                   }}
                 />
               ))}
-            </tbody>
-          </table>
+            </Tbody>
+          </TableShell>
         )}
       </div>
 
@@ -175,26 +173,30 @@ function DeskRow({
       ? `${paiseToLpa(row.bandMinPaise)} – ${paiseToLpa(row.bandMaxPaise)}`
       : "—";
   return (
-    <tr className="border-b border-neutral-100 last:border-0 hover:bg-neutral-50/60">
-      <td className="px-4 py-3 font-medium text-neutral-900">{row.candidateName}</td>
-      <td className="px-4 py-3 text-neutral-600">{row.roleTitle}</td>
-      <td className="px-4 py-3 tabular-nums text-neutral-700">
+    <Tr>
+      <Td className="font-medium text-neutral-900">{row.candidateName}</Td>
+      <Td label="Role" className="text-neutral-600">
+        {row.roleTitle}
+      </Td>
+      <Td label="Expected" className="tabular-nums text-neutral-700">
         {paiseToLpa(row.expectedSalaryInrPaise) ?? <span className="text-neutral-400">—</span>}
-      </td>
-      <td className="px-4 py-3 tabular-nums text-neutral-600">{bandLabel}</td>
-      <td className="px-4 py-3 tabular-nums font-medium text-neutral-900">
+      </Td>
+      <Td label="Band (min–max)" className="tabular-nums text-neutral-600">
+        {bandLabel}
+      </Td>
+      <Td label="Suggested" className="tabular-nums font-medium text-neutral-900">
         {paiseToLpa(row.suggestedPaise) ?? <span className="text-neutral-400">—</span>}
-      </td>
-      <td className="px-4 py-3">
+      </Td>
+      <Td label="Verdict">
         <VerdictChip verdict={row.verdict} />
-      </td>
-      <td className="px-4 py-3">
+      </Td>
+      <Td label="Offer">
         <OfferStatusChip status={row.offerStatus} />
-      </td>
-      <td className="px-4 py-3">
+      </Td>
+      <Td label="Approval">
         <ApprovalStatusChip status={row.approvalStatus} />
-      </td>
-      <td className="px-4 py-3 text-right">
+      </Td>
+      <Td numeric label="Actions">
         <div className="flex justify-end gap-1.5">
           <Button variant="secondary" size="sm" onClick={onRec}>
             Rec
@@ -203,8 +205,8 @@ function DeskRow({
             Draft
           </Button>
         </div>
-      </td>
-    </tr>
+      </Td>
+    </Tr>
   );
 }
 

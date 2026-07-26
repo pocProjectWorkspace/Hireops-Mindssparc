@@ -8,7 +8,7 @@ import type {
   TenantSourceRow,
 } from "@hireops/api-types";
 import { Input, Select, Switch, Button } from "@hireops/ui";
-import { Card } from "@/components/ui";
+import { Card, TableShell, Thead, Th, Tbody, Tr, Td } from "@/components/ui";
 import { PageHeader } from "@/components/patterns";
 import { trpc, handleTRPCError } from "@/lib/trpc-client";
 
@@ -196,7 +196,7 @@ export function SourcesClient({ initial }: { initial: ListTenantSourcesOutput })
       </div>
 
       {/* Registry table */}
-      <Card className="mt-6 overflow-hidden p-0">
+      <Card className="mt-6 p-0">
         {rows.length === 0 ? (
           <div className="p-8 text-center">
             <p className="text-sm font-medium text-neutral-800">No channels configured yet</p>
@@ -205,31 +205,29 @@ export function SourcesClient({ initial }: { initial: ListTenantSourcesOutput })
             </p>
           </div>
         ) : (
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b border-neutral-200 bg-neutral-50/60 text-left text-[11px] font-semibold uppercase tracking-wider text-neutral-500">
-                <th className="px-4 py-2.5">Channel</th>
-                <th className="px-4 py-2.5">Taxonomy value</th>
-                <th className="px-4 py-2.5">Ingestion</th>
-                <th className="px-4 py-2.5">Enabled</th>
-                <th className="px-4 py-2.5 text-right">Actions</th>
-              </tr>
-            </thead>
-            <tbody>
+          <TableShell className="border-0">
+            <Thead>
+              <Th>Channel</Th>
+              <Th>Taxonomy value</Th>
+              <Th>Ingestion</Th>
+              <Th>Enabled</Th>
+              <Th numeric>Actions</Th>
+            </Thead>
+            <Tbody>
               {rows.map((row) => (
-                <tr key={row.id} className="border-b border-neutral-100 last:border-0">
-                  <td className="px-4 py-3">
+                <Tr key={row.id}>
+                  <Td>
                     <div className="font-medium text-neutral-900">{row.label}</div>
                     {row.notes ? (
                       <div className="mt-0.5 text-xs text-neutral-500">{row.notes}</div>
                     ) : null}
-                  </td>
-                  <td className="px-4 py-3">
+                  </Td>
+                  <Td label="Taxonomy value">
                     <code className="rounded bg-neutral-100 px-1.5 py-0.5 text-xs text-neutral-600">
                       {row.sourceEnum}
                     </code>
-                  </td>
-                  <td className="px-4 py-3">
+                  </Td>
+                  <Td label="Ingestion">
                     {row.ingestionMode === "connector_pending" ? (
                       <span className="inline-flex items-center rounded-full border border-amber-200 bg-amber-50 px-2 py-0.5 text-xs font-medium text-amber-700">
                         Connector (work package)
@@ -239,16 +237,16 @@ export function SourcesClient({ initial }: { initial: ListTenantSourcesOutput })
                         Manual / portal
                       </span>
                     )}
-                  </td>
-                  <td className="px-4 py-3">
+                  </Td>
+                  <Td label="Enabled">
                     <Switch
                       checked={row.enabled}
                       onCheckedChange={(next) => toggle.mutate({ id: row.id, enabled: next })}
                       disabled={toggle.isPending}
                       label={row.enabled ? "On" : "Off"}
                     />
-                  </td>
-                  <td className="px-4 py-3 text-right">
+                  </Td>
+                  <Td numeric label="Actions">
                     <button
                       type="button"
                       onClick={() => startEdit(row)}
@@ -256,11 +254,11 @@ export function SourcesClient({ initial }: { initial: ListTenantSourcesOutput })
                     >
                       Edit
                     </button>
-                  </td>
-                </tr>
+                  </Td>
+                </Tr>
               ))}
-            </tbody>
-          </table>
+            </Tbody>
+          </TableShell>
         )}
       </Card>
 

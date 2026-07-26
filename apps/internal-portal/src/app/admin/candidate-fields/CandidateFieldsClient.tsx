@@ -8,7 +8,7 @@ import type {
   MissingInfoRequiredness,
 } from "@hireops/api-types";
 import { Select, Switch } from "@hireops/ui";
-import { Card } from "@/components/ui";
+import { Card, TableShell, Thead, Th, Tbody, Tr, Td } from "@/components/ui";
 import { PageHeader } from "@/components/patterns";
 import { trpc, handleTRPCError } from "@/lib/trpc-client";
 
@@ -130,18 +130,16 @@ export function CandidateFieldsClient({ initial }: { initial: GetCandidateFieldP
         blocks.
       </div>
 
-      <Card className="mt-6 overflow-hidden p-0">
-        <table className="w-full text-sm">
-          <thead>
-            <tr className="border-b border-neutral-200 bg-neutral-50/60 text-left text-[11px] font-semibold uppercase tracking-wider text-neutral-500">
-              <th className="px-4 py-2.5">Field</th>
-              <th className="px-4 py-2.5">Data source</th>
-              <th className="px-4 py-2.5">Required</th>
-              <th className="px-4 py-2.5">Blocks advancement</th>
-              <th className="px-4 py-2.5 text-right">Default</th>
-            </tr>
-          </thead>
-          <tbody>
+      <Card className="mt-6 p-0">
+        <TableShell className="border-0">
+          <Thead>
+            <Th>Field</Th>
+            <Th>Data source</Th>
+            <Th>Required</Th>
+            <Th>Blocks advancement</Th>
+            <Th numeric>Default</Th>
+          </Thead>
+          <Tbody>
             {fields.map((field) => {
               const isRequired = field.requiredness === "required";
               const busy = savingKey === field.fieldKey && (upsert.isPending || reset.isPending);
@@ -149,8 +147,8 @@ export function CandidateFieldsClient({ initial }: { initial: GetCandidateFieldP
                 field.requiredness !== field.defaultRequiredness ||
                 field.blocksAdvanceStage !== field.defaultBlocksAdvanceStage;
               return (
-                <tr key={field.fieldKey} className="border-b border-neutral-100 last:border-0">
-                  <td className="px-4 py-3">
+                <Tr key={field.fieldKey}>
+                  <Td>
                     <div className="font-medium text-neutral-900">{field.label}</div>
                     <div className="mt-0.5 flex items-center gap-2">
                       <code className="rounded bg-neutral-100 px-1.5 py-0.5 text-xs text-neutral-500">
@@ -166,11 +164,11 @@ export function CandidateFieldsClient({ initial }: { initial: GetCandidateFieldP
                         </span>
                       )}
                     </div>
-                  </td>
-                  <td className="px-4 py-3">
+                  </Td>
+                  <Td label="Data source">
                     <code className="text-xs text-neutral-500">{field.dataSource}</code>
-                  </td>
-                  <td className="px-4 py-3">
+                  </Td>
+                  <Td label="Required">
                     <Switch
                       checked={isRequired}
                       onCheckedChange={(next) =>
@@ -179,8 +177,8 @@ export function CandidateFieldsClient({ initial }: { initial: GetCandidateFieldP
                       disabled={busy}
                       label={isRequired ? "Required" : "Optional"}
                     />
-                  </td>
-                  <td className="px-4 py-3">
+                  </Td>
+                  <Td label="Blocks advancement">
                     {isRequired ? (
                       <Select
                         options={[{ value: NONE, label: "Doesn't gate" }, ...GATE_STAGE_OPTIONS]}
@@ -195,8 +193,8 @@ export function CandidateFieldsClient({ initial }: { initial: GetCandidateFieldP
                         Optional — tracked, never gates
                       </span>
                     )}
-                  </td>
-                  <td className="px-4 py-3 text-right">
+                  </Td>
+                  <Td numeric label="Default">
                     <div className="text-xs text-neutral-500">
                       {field.defaultRequiredness === "required" ? "Required" : "Optional"}
                       {field.defaultBlocksAdvanceStage
@@ -213,12 +211,12 @@ export function CandidateFieldsClient({ initial }: { initial: GetCandidateFieldP
                         Reset to default
                       </button>
                     ) : null}
-                  </td>
-                </tr>
+                  </Td>
+                </Tr>
               );
             })}
-          </tbody>
-        </table>
+          </Tbody>
+        </TableShell>
       </Card>
     </div>
   );

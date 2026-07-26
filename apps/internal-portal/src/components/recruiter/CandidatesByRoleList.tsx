@@ -9,7 +9,18 @@ import type {
 import { trpc } from "@/lib/trpc-client";
 import { useDrawerRouting } from "@/lib/use-drawer-routing";
 import { useUndoToast } from "@/components/triage/UndoToastProvider";
-import { Avatar, Badge, EmptyState, cn } from "@/components/ui";
+import {
+  Avatar,
+  Badge,
+  EmptyState,
+  cn,
+  TableShell,
+  Thead,
+  Th,
+  Tbody,
+  Tr,
+  Td,
+} from "@/components/ui";
 import { ChevronRightIcon } from "@/components/patterns/icons";
 import {
   MatchTierChip,
@@ -189,86 +200,76 @@ function GroupAccordion({
       </button>
 
       {open ? (
-        <div className="overflow-x-auto border-t border-neutral-100">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b border-neutral-200 bg-neutral-50/60 text-left text-[11px] font-semibold uppercase tracking-wider text-neutral-500">
-                <th className="px-5 py-2 font-semibold">Candidate</th>
-                <th className="px-4 py-2 font-semibold">Stage</th>
-                <th className="px-4 py-2 font-semibold">AI Score</th>
-                <th className="px-4 py-2 font-semibold">Source</th>
-                <th className="px-4 py-2 font-semibold">Missing Info</th>
-                <th className="px-5 py-2 text-right font-semibold">Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              {group.rows.map((row) => {
-                const name = row.fullName ?? "(no name on file)";
-                const selected = selectedCandidateId === row.candidateId;
-                return (
-                  <tr
-                    key={row.applicationId}
-                    className={cn(
-                      "border-b border-neutral-100 last:border-0 hover:bg-neutral-50",
-                      selected && "bg-brand-50",
-                    )}
-                  >
-                    <td className="px-5 py-2.5">
-                      <div className="flex items-center gap-2.5">
-                        <Avatar name={name} seed={row.candidateId} size="sm" />
-                        <div className="min-w-0">
-                          <p className="truncate font-medium text-neutral-900">{name}</p>
-                          <p className="truncate text-xs text-neutral-500 tabular-nums">
-                            {row.refCode}
-                            {row.yearsOfExperience != null ? ` · ${row.yearsOfExperience} yrs` : ""}
-                          </p>
-                        </div>
+        <TableShell className="border-t border-neutral-100">
+          <Thead>
+            <Th>Candidate</Th>
+            <Th>Stage</Th>
+            <Th>AI Score</Th>
+            <Th>Source</Th>
+            <Th>Missing Info</Th>
+            <Th numeric>Actions</Th>
+          </Thead>
+          <Tbody>
+            {group.rows.map((row) => {
+              const name = row.fullName ?? "(no name on file)";
+              const selected = selectedCandidateId === row.candidateId;
+              return (
+                <Tr key={row.applicationId} className={cn(selected && "bg-brand-50")}>
+                  <Td>
+                    <div className="flex items-center gap-2.5">
+                      <Avatar name={name} seed={row.candidateId} size="sm" />
+                      <div className="min-w-0">
+                        <p className="truncate font-medium text-neutral-900">{name}</p>
+                        <p className="truncate text-xs text-neutral-500 tabular-nums">
+                          {row.refCode}
+                          {row.yearsOfExperience != null ? ` · ${row.yearsOfExperience} yrs` : ""}
+                        </p>
                       </div>
-                    </td>
-                    <td className="px-4 py-2.5">
-                      <StageBadge stage={row.stage} />
-                    </td>
-                    <td className="px-4 py-2.5">
-                      <div className="flex items-center gap-2">
-                        <ScoreValue score={row.aiScore} />
-                        {row.aiScore != null
-                          ? (() => {
-                              const tier =
-                                row.aiScore >= 90
-                                  ? "excellent"
-                                  : row.aiScore >= 75
-                                    ? "good"
-                                    : row.aiScore >= 60
-                                      ? "partial"
-                                      : "below";
-                              return tier !== "below" ? <MatchTierChip tier={tier} /> : null;
-                            })()
-                          : null}
-                      </div>
-                    </td>
-                    <td className="px-4 py-2.5 text-neutral-700">
-                      {sourceLabel(row.source, sourceLabels)}
-                    </td>
-                    <td className="px-4 py-2.5">
-                      <MissingInfoCell info={row.missingInfo} />
-                    </td>
-                    <td className="px-5 py-2.5">
-                      <RowActions
-                        row={row}
-                        onOpen={() =>
-                          onOpenRow({
-                            candidateId: row.candidateId,
-                            applicationId: row.applicationId,
-                          })
-                        }
-                      />
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
+                    </div>
+                  </Td>
+                  <Td label="Stage">
+                    <StageBadge stage={row.stage} />
+                  </Td>
+                  <Td label="AI Score">
+                    <div className="flex items-center gap-2">
+                      <ScoreValue score={row.aiScore} />
+                      {row.aiScore != null
+                        ? (() => {
+                            const tier =
+                              row.aiScore >= 90
+                                ? "excellent"
+                                : row.aiScore >= 75
+                                  ? "good"
+                                  : row.aiScore >= 60
+                                    ? "partial"
+                                    : "below";
+                            return tier !== "below" ? <MatchTierChip tier={tier} /> : null;
+                          })()
+                        : null}
+                    </div>
+                  </Td>
+                  <Td label="Source" className="text-neutral-700">
+                    {sourceLabel(row.source, sourceLabels)}
+                  </Td>
+                  <Td label="Missing Info">
+                    <MissingInfoCell info={row.missingInfo} />
+                  </Td>
+                  <Td label="Actions">
+                    <RowActions
+                      row={row}
+                      onOpen={() =>
+                        onOpenRow({
+                          candidateId: row.candidateId,
+                          applicationId: row.applicationId,
+                        })
+                      }
+                    />
+                  </Td>
+                </Tr>
+              );
+            })}
+          </Tbody>
+        </TableShell>
       ) : null}
     </div>
   );

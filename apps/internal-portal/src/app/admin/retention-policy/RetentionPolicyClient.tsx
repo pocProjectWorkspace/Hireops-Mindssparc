@@ -8,7 +8,7 @@ import type {
   UpdateRetentionPolicyInput,
 } from "@hireops/api-types";
 import { Button, Input } from "@hireops/ui";
-import { Card } from "@/components/ui";
+import { Card, TableShell, Thead, Th, Tbody, Tr, Td } from "@/components/ui";
 import { PageHeader } from "@/components/patterns";
 import { trpc, handleTRPCError } from "@/lib/trpc-client";
 
@@ -282,39 +282,41 @@ export function RetentionPolicyClient({
             No documents are past their retention period under the current policy.
           </div>
         ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-left text-sm">
-              <thead>
-                <tr className="border-b border-neutral-200 text-xs uppercase tracking-wide text-neutral-500">
-                  <th className="py-2 pr-4 font-medium">Document type</th>
-                  <th className="py-2 pr-4 font-medium">Source</th>
-                  <th className="py-2 pr-4 font-medium">Uploaded</th>
-                  <th className="py-2 pr-4 font-medium">Age</th>
-                  <th className="py-2 pr-4 font-medium">Retention</th>
-                  <th className="py-2 font-medium">Owner ref</th>
-                </tr>
-              </thead>
-              <tbody>
-                {overdue.map((d) => (
-                  <tr key={`${d.source}:${d.id}`} className="border-b border-neutral-100">
-                    <td className="py-2 pr-4">
-                      <div className="font-medium text-neutral-900">{d.documentTypeName}</div>
-                      <code className="text-xs text-neutral-500">{d.documentTypeCode}</code>
-                    </td>
-                    <td className="py-2 pr-4 capitalize text-neutral-700">{d.source}</td>
-                    <td className="py-2 pr-4 text-neutral-700">
-                      {new Date(d.uploadedAt).toLocaleDateString()}
-                    </td>
-                    <td className="py-2 pr-4 text-neutral-700">{d.ageYears.toFixed(1)} yrs</td>
-                    <td className="py-2 pr-4 text-neutral-700">{d.effectiveRetentionYears} yrs</td>
-                    <td className="py-2">
-                      <code className="text-xs text-neutral-500">{d.ownerRef}</code>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+          <TableShell>
+            <Thead>
+              <Th>Document type</Th>
+              <Th>Source</Th>
+              <Th>Uploaded</Th>
+              <Th>Age</Th>
+              <Th>Retention</Th>
+              <Th>Owner ref</Th>
+            </Thead>
+            <Tbody>
+              {overdue.map((d) => (
+                <Tr key={`${d.source}:${d.id}`}>
+                  <Td>
+                    <div className="font-medium text-neutral-900">{d.documentTypeName}</div>
+                    <code className="text-xs text-neutral-500">{d.documentTypeCode}</code>
+                  </Td>
+                  <Td label="Source" className="capitalize text-neutral-700">
+                    {d.source}
+                  </Td>
+                  <Td label="Uploaded" className="text-neutral-700">
+                    {new Date(d.uploadedAt).toLocaleDateString()}
+                  </Td>
+                  <Td label="Age" className="text-neutral-700">
+                    {d.ageYears.toFixed(1)} yrs
+                  </Td>
+                  <Td label="Retention" className="text-neutral-700">
+                    {d.effectiveRetentionYears} yrs
+                  </Td>
+                  <Td label="Owner ref">
+                    <code className="text-xs text-neutral-500">{d.ownerRef}</code>
+                  </Td>
+                </Tr>
+              ))}
+            </Tbody>
+          </TableShell>
         )}
       </Card>
     </div>
