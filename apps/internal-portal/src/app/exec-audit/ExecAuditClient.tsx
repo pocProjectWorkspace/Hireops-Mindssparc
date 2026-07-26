@@ -192,16 +192,16 @@ export function ExecAuditClient({ audit }: { audit: GetExecutiveAuditOutput }) {
                   r.withinTargetPct === null ? null : Math.round(r.withinTargetPct * 100);
                 return (
                   <Tr key={r.key}>
-                    <Td>
+                    <Td label="Stage">
                       <span className="font-medium text-neutral-800">{r.label}</span>
                     </Td>
-                    <Td numeric className="tabular-nums">
+                    <Td numeric label="Target (h)" className="tabular-nums">
                       {r.targetHours}
                     </Td>
-                    <Td numeric className="tabular-nums">
+                    <Td numeric label="Median (h)" className="tabular-nums">
                       {r.medianHours ?? "—"}
                     </Td>
-                    <Td numeric className="tabular-nums">
+                    <Td numeric label="Within target" className="tabular-nums">
                       {within === null ? (
                         <span className="text-neutral-400">—</span>
                       ) : (
@@ -218,7 +218,7 @@ export function ExecAuditClient({ audit }: { audit: GetExecutiveAuditOutput }) {
                         </span>
                       )}
                     </Td>
-                    <Td numeric className="tabular-nums text-neutral-500">
+                    <Td numeric label="Sample" className="tabular-nums text-neutral-500">
                       {r.sampleSize}
                     </Td>
                   </Tr>

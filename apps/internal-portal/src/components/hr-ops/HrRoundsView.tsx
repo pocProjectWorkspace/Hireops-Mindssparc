@@ -172,14 +172,18 @@ function HrRoundRowView({
   return (
     <Tr>
       <Td className="font-medium text-neutral-900">{row.candidateName ?? "Unknown candidate"}</Td>
-      <Td>{row.roleTitle ?? "—"}</Td>
-      <Td className="text-neutral-600">{formatWhen(row.scheduledStart)}</Td>
-      <Td className="capitalize">{row.mode ?? "—"}</Td>
-      <Td>{row.ownerName ?? "—"}</Td>
-      <Td>
+      <Td label="Role">{row.roleTitle ?? "—"}</Td>
+      <Td label="When" className="text-neutral-600">
+        {formatWhen(row.scheduledStart)}
+      </Td>
+      <Td label="Mode" className="capitalize">
+        {row.mode ?? "—"}
+      </Td>
+      <Td label="Owner">{row.ownerName ?? "—"}</Td>
+      <Td label="Status">
         <StatusBadge status={row.status} />
       </Td>
-      <Td numeric>
+      <Td numeric label="Rating">
         {row.hasAssessment && row.assessmentRecommendation ? (
           <div className="flex items-center justify-end gap-1.5">
             <span className="tabular-nums text-neutral-700">{row.rating}/5</span>

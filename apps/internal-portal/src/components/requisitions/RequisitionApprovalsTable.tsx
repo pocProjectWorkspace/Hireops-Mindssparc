@@ -93,20 +93,24 @@ export function RequisitionApprovalsTable({ rows }: { rows: RequisitionApprovalR
                 onClick={() => router.push(`/requisitions/${r.subjectId}`)}
                 className="cursor-pointer"
               >
-                <Td className="font-mono text-xs text-neutral-500">{shortRef(r.subjectId)}</Td>
-                <Td className="font-medium text-neutral-900">
+                <Td label="Ref" className="font-mono text-xs text-neutral-500">
+                  {shortRef(r.subjectId)}
+                </Td>
+                <Td label="Role" className="font-medium text-neutral-900">
                   {r.title ?? "Untitled requisition"}
                 </Td>
-                <Td>{r.department ?? "—"}</Td>
-                <Td>{r.budgetBand ?? "—"}</Td>
-                <Td>
+                <Td label="Dept">{r.department ?? "—"}</Td>
+                <Td label="Budget">{r.budgetBand ?? "—"}</Td>
+                <Td label="Priority">
                   <PriorityChip priority={r.priority} />
                 </Td>
-                <Td>{r.requestedByName ?? "—"}</Td>
-                <Td>
+                <Td label="Requested by">{r.requestedByName ?? "—"}</Td>
+                <Td label="Status">
                   <OutcomeChip outcome={r.outcome} />
                 </Td>
-                <Td numeric>{r.ageDays > 0 ? `${r.ageDays}d` : "today"}</Td>
+                <Td numeric label="Age">
+                  {r.ageDays > 0 ? `${r.ageDays}d` : "today"}
+                </Td>
                 <Td className="text-neutral-300" aria-hidden>
                   →
                 </Td>

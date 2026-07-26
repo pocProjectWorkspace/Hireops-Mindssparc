@@ -50,9 +50,11 @@ export function RetentionSection({ items }: { items: DocumentRetentionRow[] }) {
                     <span className="font-medium text-neutral-800">{r.name}</span>
                     <span className="ml-2 font-mono text-xs text-neutral-400">{r.code}</span>
                   </Td>
-                  <Td>{geoLabel(r.geographyCode)}</Td>
-                  <Td className="text-neutral-600">{r.requiredForLifecycleStage ?? "—"}</Td>
-                  <Td numeric className="tabular-nums">
+                  <Td label="Geography">{geoLabel(r.geographyCode)}</Td>
+                  <Td label="Lifecycle stage" className="text-neutral-600">
+                    {r.requiredForLifecycleStage ?? "—"}
+                  </Td>
+                  <Td numeric label="Retention (years)" className="tabular-nums">
                     {r.retentionYears ?? "—"}
                   </Td>
                 </Tr>

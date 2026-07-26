@@ -128,25 +128,27 @@ export function RequisitionsListV2({
           <Tbody>
             {filtered.map((r) => (
               <Tr key={r.id}>
-                <Td className="font-mono text-xs text-neutral-500">{r.id.slice(0, 8)}</Td>
-                <Td className="font-medium text-neutral-900">
+                <Td label="Req ID" className="font-mono text-xs text-neutral-500">
+                  {r.id.slice(0, 8)}
+                </Td>
+                <Td label="Role" className="font-medium text-neutral-900">
                   <a href={`/requisitions/${r.id}`} className="text-brand-700 hover:underline">
                     {r.title ?? "Untitled role"}
                   </a>
                 </Td>
-                <Td>{r.department ?? "—"}</Td>
-                <Td>
+                <Td label="Dept">{r.department ?? "—"}</Td>
+                <Td label="Status">
                   <ReqStatusChip status={r.status} />
                 </Td>
-                <Td>
+                <Td label="Health">
                   <HealthBar health={r.health} compact />
                 </Td>
-                <Td>
+                <Td label="Difficulty">
                   <DifficultyChip difficulty={r.difficulty} />
                 </Td>
-                <Td>{r.budgetBand ?? "—"}</Td>
-                <Td>{formatReqDate(r.createdAt)}</Td>
-                <Td>
+                <Td label="Budget">{r.budgetBand ?? "—"}</Td>
+                <Td label="Created">{formatReqDate(r.createdAt)}</Td>
+                <Td label="Actions">
                   <div className="flex items-center gap-2">
                     <a
                       href={`/requisitions/${r.id}`}

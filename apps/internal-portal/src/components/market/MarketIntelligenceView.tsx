@@ -108,15 +108,21 @@ export function MarketIntelligenceView({
                 {rows.map((r) => (
                   <Tr key={r.id}>
                     <Td className="font-medium text-neutral-900">{r.roleTitle}</Td>
-                    <Td numeric>{lpaLabel(r.medianSalaryMinor)}</Td>
-                    <Td numeric>{r.ttfDays}d</Td>
-                    <Td>
+                    <Td numeric label="Market median">
+                      {lpaLabel(r.medianSalaryMinor)}
+                    </Td>
+                    <Td numeric label="Time to fill">
+                      {r.ttfDays}d
+                    </Td>
+                    <Td label="Availability">
                       <Badge tone={LEVEL_TONE[r.availability]}>{cap(r.availability)}</Badge>
                     </Td>
-                    <Td>
+                    <Td label="Competitor demand">
                       <Badge tone={LEVEL_TONE[r.competitorDemand]}>{cap(r.competitorDemand)}</Badge>
                     </Td>
-                    <Td numeric>{r.recommendedRounds}</Td>
+                    <Td numeric label="Rounds">
+                      {r.recommendedRounds}
+                    </Td>
                     {canEdit ? (
                       <Td>
                         <Button

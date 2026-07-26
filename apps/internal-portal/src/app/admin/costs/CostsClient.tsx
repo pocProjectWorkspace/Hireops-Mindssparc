@@ -94,12 +94,24 @@ export function CostsClient({ initial }: { initial: GetAiUsageSummaryOutput }) {
               <Tbody>
                 {byFeature.map((f) => (
                   <Tr key={f.feature}>
-                    <Td className="font-mono text-xs">{f.feature}</Td>
-                    <Td numeric>{f.calls.toLocaleString()}</Td>
-                    <Td numeric>{f.input_tokens.toLocaleString()}</Td>
-                    <Td numeric>{f.output_tokens.toLocaleString()}</Td>
-                    <Td numeric>{formatMicrosUsd(f.cost_micros)}</Td>
-                    <Td numeric>{f.failures.toLocaleString()}</Td>
+                    <Td label="Feature" className="font-mono text-xs">
+                      {f.feature}
+                    </Td>
+                    <Td numeric label="Calls">
+                      {f.calls.toLocaleString()}
+                    </Td>
+                    <Td numeric label="Tokens in">
+                      {f.input_tokens.toLocaleString()}
+                    </Td>
+                    <Td numeric label="Tokens out">
+                      {f.output_tokens.toLocaleString()}
+                    </Td>
+                    <Td numeric label="Cost">
+                      {formatMicrosUsd(f.cost_micros)}
+                    </Td>
+                    <Td numeric label="Failures">
+                      {f.failures.toLocaleString()}
+                    </Td>
                   </Tr>
                 ))}
               </Tbody>
@@ -120,13 +132,27 @@ export function CostsClient({ initial }: { initial: GetAiUsageSummaryOutput }) {
               <Tbody>
                 {byModel.map((m) => (
                   <Tr key={`${m.provider}/${m.model}`}>
-                    <Td className="font-mono text-xs">{m.provider}</Td>
-                    <Td className="font-mono text-xs">{m.model}</Td>
-                    <Td numeric>{m.calls.toLocaleString()}</Td>
-                    <Td numeric>{m.input_tokens.toLocaleString()}</Td>
-                    <Td numeric>{m.output_tokens.toLocaleString()}</Td>
-                    <Td numeric>{formatMicrosUsd(m.cost_micros)}</Td>
-                    <Td numeric>{m.failures.toLocaleString()}</Td>
+                    <Td label="Provider" className="font-mono text-xs">
+                      {m.provider}
+                    </Td>
+                    <Td label="Model" className="font-mono text-xs">
+                      {m.model}
+                    </Td>
+                    <Td numeric label="Calls">
+                      {m.calls.toLocaleString()}
+                    </Td>
+                    <Td numeric label="Tokens in">
+                      {m.input_tokens.toLocaleString()}
+                    </Td>
+                    <Td numeric label="Tokens out">
+                      {m.output_tokens.toLocaleString()}
+                    </Td>
+                    <Td numeric label="Cost">
+                      {formatMicrosUsd(m.cost_micros)}
+                    </Td>
+                    <Td numeric label="Failures">
+                      {m.failures.toLocaleString()}
+                    </Td>
                   </Tr>
                 ))}
               </Tbody>

@@ -107,19 +107,19 @@ export function PanelHistory({ initialBoard }: { initialBoard: GetPanelDashboard
                     {s.candidateName ?? "Candidate"}
                   </a>
                 </Td>
-                <Td>{s.roleTitle}</Td>
-                <Td>
+                <Td label="Role">{s.roleTitle}</Td>
+                <Td label="Round">
                   <span className="inline-flex items-center rounded-full bg-neutral-100 px-2 py-0.5 text-[11px] font-medium text-neutral-600">
                     R{s.roundNumber}: {s.roundName}
                   </span>
                 </Td>
-                <Td>{fmtDate(s.submittedAt)}</Td>
-                <Td>
+                <Td label="Date">{fmtDate(s.submittedAt)}</Td>
+                <Td label="My avg score">
                   <span className="tabular-nums text-neutral-800">
                     {s.avgScore === null ? "—" : s.avgScore.toFixed(1)}
                   </span>
                 </Td>
-                <Td>
+                <Td label="My recommendation">
                   <RecommendationChip recommendation={s.recommendation} />
                 </Td>
               </Tr>

@@ -109,10 +109,14 @@ export function ReportsClient({ initial }: { initial: GetRecruitmentReportOutput
                 <Tbody>
                   {sourceMix.map((s) => (
                     <Tr key={s.source}>
-                      <Td>{humanize(s.source)}</Td>
-                      <Td numeric>{s.applications.toLocaleString()}</Td>
-                      <Td numeric>{s.hires.toLocaleString()}</Td>
-                      <Td numeric>
+                      <Td label="Source">{humanize(s.source)}</Td>
+                      <Td numeric label="Applications">
+                        {s.applications.toLocaleString()}
+                      </Td>
+                      <Td numeric label="Hires">
+                        {s.hires.toLocaleString()}
+                      </Td>
+                      <Td numeric label="Conversion">
                         {s.applications > 0
                           ? `${((s.hires / s.applications) * 100).toFixed(1)}%`
                           : "—"}
@@ -150,8 +154,10 @@ export function ReportsClient({ initial }: { initial: GetRecruitmentReportOutput
               <Tbody>
                 {stageDurations.map((s) => (
                   <Tr key={s.stage}>
-                    <Td>{humanize(s.stage)}</Td>
-                    <Td numeric>{formatDays(s.median_days)}</Td>
+                    <Td label="Stage">{humanize(s.stage)}</Td>
+                    <Td numeric label="Median days in stage">
+                      {formatDays(s.median_days)}
+                    </Td>
                   </Tr>
                 ))}
               </Tbody>

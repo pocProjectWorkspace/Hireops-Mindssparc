@@ -358,7 +358,7 @@ function UserRow({ user, onChanged }: { user: TenantUserAdminRow; onChanged: () 
             <span className="block text-xs text-neutral-500">{user.email}</span>
           ) : null}
         </Td>
-        <Td>
+        <Td label="Roles">
           <div className="flex flex-wrap gap-1">
             {user.roles.length === 0 ? (
               <span className="text-xs text-neutral-400">No roles</span>
@@ -371,11 +371,13 @@ function UserRow({ user, onChanged }: { user: TenantUserAdminRow; onChanged: () 
             )}
           </div>
         </Td>
-        <Td>
+        <Td label="Status">
           <Badge tone={active ? "success" : "warning"}>{active ? "Active" : "Deactivated"}</Badge>
         </Td>
-        <Td className="whitespace-nowrap text-sm text-neutral-600">{fmtJoined(user.createdAt)}</Td>
-        <Td>
+        <Td label="Joined" className="whitespace-nowrap text-sm text-neutral-600">
+          {fmtJoined(user.createdAt)}
+        </Td>
+        <Td label="Actions">
           <div className="flex items-center gap-3">
             <button
               type="button"

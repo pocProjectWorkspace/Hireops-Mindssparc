@@ -85,11 +85,21 @@ export function AiModelOverview({ usage }: { usage: GetAiUsageSummaryOutput }) {
             <Tbody>
               {byFeature.map((f) => (
                 <Tr key={f.feature}>
-                  <Td className="font-mono text-xs">{f.feature}</Td>
-                  <Td numeric>{f.calls.toLocaleString()}</Td>
-                  <Td numeric>{(f.input_tokens + f.output_tokens).toLocaleString()}</Td>
-                  <Td numeric>{formatMicrosUsd(f.cost_micros)}</Td>
-                  <Td numeric>{f.failures.toLocaleString()}</Td>
+                  <Td label="Feature" className="font-mono text-xs">
+                    {f.feature}
+                  </Td>
+                  <Td numeric label="Calls">
+                    {f.calls.toLocaleString()}
+                  </Td>
+                  <Td numeric label="Tokens">
+                    {(f.input_tokens + f.output_tokens).toLocaleString()}
+                  </Td>
+                  <Td numeric label="Cost (USD)">
+                    {formatMicrosUsd(f.cost_micros)}
+                  </Td>
+                  <Td numeric label="Failures">
+                    {f.failures.toLocaleString()}
+                  </Td>
                 </Tr>
               ))}
             </Tbody>

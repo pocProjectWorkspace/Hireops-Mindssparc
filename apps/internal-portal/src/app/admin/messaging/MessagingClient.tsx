@@ -140,7 +140,7 @@ export function MessagingClient({ initial }: { initial: ListNotificationLogOutpu
           <Tbody>
             {items.map((r) => (
               <Tr key={r.id}>
-                <Td className="whitespace-nowrap">
+                <Td label="When" className="whitespace-nowrap">
                   <span className="block text-neutral-800 tabular-nums">
                     {absolute(r.created_at)}
                   </span>
@@ -150,16 +150,16 @@ export function MessagingClient({ initial }: { initial: ListNotificationLogOutpu
                     </span>
                   ) : null}
                 </Td>
-                <Td>
+                <Td label="Recipient">
                   <span className="block text-neutral-800">{r.recipient_email}</span>
                   <span className="block text-xs text-neutral-400">{r.recipient_type}</span>
                 </Td>
-                <Td>
+                <Td label="Template">
                   <Badge tone="neutral" className="font-mono">
                     {templateLabel(r.template_key)}
                   </Badge>
                 </Td>
-                <Td className="max-w-xs">
+                <Td label="Subject" className="max-w-xs">
                   <span className="block truncate text-neutral-700" title={r.subject ?? undefined}>
                     {r.subject ?? "—"}
                   </span>
@@ -172,10 +172,12 @@ export function MessagingClient({ initial }: { initial: ListNotificationLogOutpu
                     </span>
                   ) : null}
                 </Td>
-                <Td>
+                <Td label="Status">
                   <Badge tone={statusTone(r.status)}>{statusLabel(r.status)}</Badge>
                 </Td>
-                <Td className="text-right tabular-nums text-neutral-600">{r.attempt_count}</Td>
+                <Td label="Attempts" className="text-right tabular-nums text-neutral-600">
+                  {r.attempt_count}
+                </Td>
               </Tr>
             ))}
           </Tbody>

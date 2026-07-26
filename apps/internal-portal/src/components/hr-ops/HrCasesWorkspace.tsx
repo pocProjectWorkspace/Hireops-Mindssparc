@@ -146,11 +146,11 @@ function HrCaseRow({ row, onOpen }: { row: HrCaseListRow; onOpen: () => void }) 
   return (
     <Tr onClick={onOpen} className="cursor-pointer">
       <Td className="font-medium text-neutral-900">{row.candidateName ?? "Unknown candidate"}</Td>
-      <Td>{row.roleTitle ?? "—"}</Td>
-      <Td>
+      <Td label="Role">{row.roleTitle ?? "—"}</Td>
+      <Td label="Stage">
         <StageChip stage={row.stage} />
       </Td>
-      <Td numeric>
+      <Td numeric label="AI score">
         {row.aiScore != null ? (
           <span className="font-semibold tabular-nums text-neutral-900">
             {Math.round(row.aiScore)}%
@@ -159,7 +159,7 @@ function HrCaseRow({ row, onOpen }: { row: HrCaseListRow; onOpen: () => void }) 
           <span className="text-neutral-400">—</span>
         )}
       </Td>
-      <Td>
+      <Td label="Interview rounds">
         {row.roundResults.length === 0 ? (
           <span className="text-neutral-400">No rounds</span>
         ) : (
@@ -174,9 +174,9 @@ function HrCaseRow({ row, onOpen }: { row: HrCaseListRow; onOpen: () => void }) 
           </div>
         )}
       </Td>
-      <Td>{row.salaryBand ?? "—"}</Td>
-      <Td>{row.assignedRecruiterName ?? "—"}</Td>
-      <Td numeric className="text-neutral-500">
+      <Td label="Salary band">{row.salaryBand ?? "—"}</Td>
+      <Td label="Recruiter">{row.assignedRecruiterName ?? "—"}</Td>
+      <Td numeric label="Last activity" className="text-neutral-500">
         {formatWhen(row.lastActivityAt)}
       </Td>
       <Td className="text-neutral-300" aria-hidden>

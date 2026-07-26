@@ -233,7 +233,7 @@ export function AgentDetailDrawer({
                     <Tbody>
                       {detail.data.recentRuns.map((run) => (
                         <Tr key={run.id}>
-                          <Td>
+                          <Td label="Status">
                             <RunStatusBadge status={run.status} />
                             {run.error ? (
                               <span
@@ -244,11 +244,13 @@ export function AgentDetailDrawer({
                               </span>
                             ) : null}
                           </Td>
-                          <Td className="text-neutral-600">{run.triggered_by}</Td>
-                          <Td className="tabular-nums text-neutral-600">
+                          <Td label="Triggered by" className="text-neutral-600">
+                            {run.triggered_by}
+                          </Td>
+                          <Td label="Triggered at" className="tabular-nums text-neutral-600">
                             {run.triggered_at.slice(0, 16).replace("T", " ")}
                           </Td>
-                          <Td className="tabular-nums text-neutral-600">
+                          <Td label="Completed" className="tabular-nums text-neutral-600">
                             {run.completed_at
                               ? run.completed_at.slice(0, 16).replace("T", " ")
                               : "—"}

@@ -204,8 +204,8 @@ function RowGroup({
             {row.title ?? "Untitled role"}
           </a>
         </Td>
-        <Td>{row.department ?? "—"}</Td>
-        <Td>
+        <Td label="Department">{row.department ?? "—"}</Td>
+        <Td label="Keywords">
           {row.keywords.length === 0 ? (
             <span className="text-neutral-400">—</span>
           ) : (
@@ -224,13 +224,13 @@ function RowGroup({
             </span>
           )}
         </Td>
-        <Td>
+        <Td label="JD status">
           <Badge tone={JD_STATUS_TONE[row.jdStatus] ?? "neutral"}>{label(row.jdStatus)}</Badge>
         </Td>
-        <Td>
+        <Td label="Requisition">
           <Badge tone={REQ_STATUS_TONE[row.reqStatus] ?? "neutral"}>{label(row.reqStatus)}</Badge>
         </Td>
-        <Td>{formatDate(row.createdAt)}</Td>
+        <Td label="Created">{formatDate(row.createdAt)}</Td>
         <Td>
           <button
             type="button"

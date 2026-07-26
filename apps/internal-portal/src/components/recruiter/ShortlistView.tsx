@@ -60,10 +60,10 @@ function ShortlistRowView({
   const name = row.fullName ?? "(no name on file)";
   return (
     <Tr className={cn("cursor-pointer", selected && "bg-brand-50")} onClick={onOpen}>
-      <Td numeric className="text-neutral-400">
+      <Td numeric label="#" className="text-neutral-400">
         {index}
       </Td>
-      <Td>
+      <Td label="Candidate">
         <div className="flex items-center gap-2.5">
           <Avatar name={name} seed={row.candidateId} size="sm" />
           <div className="min-w-0">
@@ -72,8 +72,10 @@ function ShortlistRowView({
           </div>
         </div>
       </Td>
-      <Td className="text-neutral-700">{row.roleTitle}</Td>
-      <Td>
+      <Td label="Role" className="text-neutral-700">
+        {row.roleTitle}
+      </Td>
+      <Td label="AI Score">
         <div className="flex items-center gap-2">
           <div className="w-24">
             <ScoreMeter score={row.aiScore} />
@@ -81,17 +83,19 @@ function ShortlistRowView({
           <MatchTierChip tier={row.tier} />
         </div>
       </Td>
-      <Td numeric className="text-neutral-700">
+      <Td numeric label="Must-have" className="text-neutral-700">
         {row.mustHavePct == null ? "—" : `${row.mustHavePct}%`}
       </Td>
-      <Td className="text-neutral-700">{noticeLabel(row.noticePeriodDays)}</Td>
-      <Td>
+      <Td label="Notice" className="text-neutral-700">
+        {noticeLabel(row.noticePeriodDays)}
+      </Td>
+      <Td label="Stage">
         <StageBadge stage={row.stage} />
       </Td>
-      <Td>
+      <Td label="Urgency">
         <UrgencyChip rank={row.urgencyRank} index={row.urgencyIndex} />
       </Td>
-      <Td>
+      <Td label="Risk">
         <RiskCell flags={row.riskFlags} />
       </Td>
     </Tr>

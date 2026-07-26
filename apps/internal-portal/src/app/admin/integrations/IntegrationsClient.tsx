@@ -268,14 +268,19 @@ function SyncRow({
   return (
     <>
       <Tr onClick={onToggle} className="cursor-pointer" aria-expanded={expanded}>
-        <Td className="font-mono text-xs text-neutral-700">{row.eventType}</Td>
-        <Td className="max-w-[16rem] truncate font-mono text-xs text-neutral-500">
+        <Td label="Event" className="font-mono text-xs text-neutral-700">
+          {row.eventType}
+        </Td>
+        <Td
+          label="Business key"
+          className="max-w-[16rem] truncate font-mono text-xs text-neutral-500"
+        >
           {row.businessKey}
         </Td>
-        <Td>
+        <Td label="Status">
           <StatusBadge status={row.status} />
         </Td>
-        <Td className="whitespace-nowrap tabular-nums text-xs text-neutral-500">
+        <Td label="Created" className="whitespace-nowrap tabular-nums text-xs text-neutral-500">
           {row.createdAt.slice(0, 16).replace("T", " ")}
         </Td>
         <Td className="text-right text-neutral-400">{expanded ? "▾" : "▸"}</Td>

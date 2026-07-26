@@ -157,14 +157,18 @@ export function JdTemplatesPanel({ initial }: { initial: ListJdTemplatesOutput }
                     </Badge>
                   ) : null}
                 </Td>
-                <Td>{r.title}</Td>
-                <Td>{r.roleFamily}</Td>
-                <Td>{r.seniority}</Td>
-                <Td className="capitalize">{r.locationType}</Td>
-                <Td numeric>
+                <Td label="Title">{r.title}</Td>
+                <Td label="Family">{r.roleFamily}</Td>
+                <Td label="Seniority">{r.seniority}</Td>
+                <Td label="Location" className="capitalize">
+                  {r.locationType}
+                </Td>
+                <Td numeric label="Budget band">
                   {lpa(r.budgetMinInr)} – {lpa(r.budgetMaxInr)}
                 </Td>
-                <Td numeric>{r.skills.length}</Td>
+                <Td numeric label="Skills">
+                  {r.skills.length}
+                </Td>
                 <Td>
                   <div className="flex justify-end gap-1">
                     <Button variant="ghost" size="sm" onClick={() => setEditing(r)}>

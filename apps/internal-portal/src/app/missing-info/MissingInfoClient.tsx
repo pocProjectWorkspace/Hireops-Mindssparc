@@ -155,18 +155,24 @@ export function MissingInfoClient({ initial }: { initial: ListMissingInfoOutput 
                       <p className="text-[11px] text-neutral-400">{row.candidateRef}</p>
                     ) : null}
                   </Td>
-                  <Td className="text-neutral-600">{row.roleTitle}</Td>
-                  <Td className="font-medium text-neutral-800">{row.fieldLabel}</Td>
-                  <Td>
+                  <Td label="Role" className="text-neutral-600">
+                    {row.roleTitle}
+                  </Td>
+                  <Td label="Missing field" className="font-medium text-neutral-800">
+                    {row.fieldLabel}
+                  </Td>
+                  <Td label="Required">
                     <Badge tone={row.requiredness === "required" ? "warning" : "neutral"}>
                       {row.requiredness}
                     </Badge>
                   </Td>
-                  <Td>
+                  <Td label="Status">
                     <Badge tone={STATUS_TONE[row.status]}>{row.status}</Badge>
                   </Td>
-                  <Td className="text-neutral-500 tabular-nums">{fmtDate(row.lastContactAt)}</Td>
-                  <Td>
+                  <Td label="Last contact" className="text-neutral-500 tabular-nums">
+                    {fmtDate(row.lastContactAt)}
+                  </Td>
+                  <Td label="Blocks advance">
                     {row.blocksAdvanceLabel ? (
                       <span className="text-xs text-status-warning-800">
                         {row.blocksAdvanceLabel}
@@ -175,7 +181,7 @@ export function MissingInfoClient({ initial }: { initial: ListMissingInfoOutput 
                       <span className="text-xs text-neutral-300">—</span>
                     )}
                   </Td>
-                  <Td>
+                  <Td label="Actions">
                     <div className="flex items-center justify-end gap-2 text-xs">
                       {row.status === "pending" || row.status === "requested" ? (
                         <button

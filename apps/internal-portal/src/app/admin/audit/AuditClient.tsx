@@ -336,23 +336,25 @@ function AuditRow({
   return (
     <>
       <Tr onClick={onToggle} className="cursor-pointer" aria-expanded={expanded}>
-        <Td className="whitespace-nowrap">
+        <Td label="When" className="whitespace-nowrap">
           <span className="block text-neutral-800 tabular-nums">{absolute(row.created_at)}</span>
           <span className="block text-xs text-neutral-400">{relative(row.created_at)}</span>
         </Td>
-        <Td>
+        <Td label="Entity">
           <Badge tone="neutral" className="font-mono">
             {row.entity_type}
           </Badge>
         </Td>
-        <Td>
+        <Td label="Action">
           <ActionBadge action={row.action} />
         </Td>
-        <Td>
+        <Td label="Severity">
           <Badge tone={SEVERITY_TONE[severity]}>{AUDIT_SEVERITY_META[severity].label}</Badge>
         </Td>
-        <Td className="font-mono text-xs text-neutral-500">{row.entity_id.slice(0, 8)}…</Td>
-        <Td className="font-mono text-xs text-neutral-500">
+        <Td label="Entity ID" className="font-mono text-xs text-neutral-500">
+          {row.entity_id.slice(0, 8)}…
+        </Td>
+        <Td label="Actor" className="font-mono text-xs text-neutral-500">
           {row.actor_user_id ? `${row.actor_user_id.slice(0, 8)}…` : "system"}
         </Td>
         <Td className="text-right text-neutral-400">{expanded ? "▾" : "▸"}</Td>

@@ -139,13 +139,13 @@ export function ApprovalTracker({
                       {h.title ?? "Untitled"}
                     </a>
                   </Td>
-                  <Td>{h.department ?? "—"}</Td>
-                  <Td>
+                  <Td label="Dept">{h.department ?? "—"}</Td>
+                  <Td label="Outcome">
                     <OutcomeChip outcome={h.outcome} />
                   </Td>
-                  <Td>{formatReqDate(h.submittedAt)}</Td>
-                  <Td>{h.decidedAt ? formatReqDate(h.decidedAt) : "—"}</Td>
-                  <Td>
+                  <Td label="Submitted">{formatReqDate(h.submittedAt)}</Td>
+                  <Td label="Decided">{h.decidedAt ? formatReqDate(h.decidedAt) : "—"}</Td>
+                  <Td label="SLA elapsed">
                     <span
                       className={
                         h.breach ? "font-medium text-status-error-700" : "text-neutral-700"
@@ -154,7 +154,7 @@ export function ApprovalTracker({
                       {fmtElapsed(h.slaElapsedHours)}
                     </span>
                   </Td>
-                  <Td className="max-w-xs">
+                  <Td label="Reason" className="max-w-xs">
                     <span className="line-clamp-2 text-xs text-neutral-600">
                       {h.decisionReason ?? "—"}
                     </span>
