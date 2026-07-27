@@ -8,6 +8,7 @@ import {
 } from "@hireops/api-types";
 import { Input, Button, Checkbox } from "@hireops/ui";
 import { Card, Badge, TableShell, Thead, Th, Tbody, Tr, Td } from "@/components/ui";
+import { humanize } from "@/lib/labels";
 import { trpc } from "@/lib/trpc-client";
 
 /**
@@ -22,11 +23,10 @@ import { trpc } from "@/lib/trpc-client";
  * so the affordance never dead-ends in an error.
  */
 
+// Shared humanizer — fixes acronym casing (hr_ops → "HR Ops", it_admin →
+// "IT Admin") that the old naive title-case mangled ("Hr Ops", "It Admin").
 function roleLabel(role: string): string {
-  return role
-    .split("_")
-    .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
-    .join(" ");
+  return humanize(role);
 }
 
 /** ISO → "07 Jul 2026" — the honest "Joined" column (createdAt). We do NOT

@@ -58,6 +58,26 @@ const KNOCKOUT_TYPES: RequisitionKnockoutInput["type"][] = [
   "enum",
 ];
 
+// Human labels for the knockout rule type — HR should never see the raw enum
+// ("numeric_min", "enum"). The label describes the check in plain terms.
+const KNOCKOUT_TYPE_LABELS: Record<RequisitionKnockoutInput["type"], string> = {
+  boolean: "Must be present",
+  numeric_min: "At least (minimum)",
+  numeric_max: "At most (maximum)",
+  enum: "One of allowed values",
+};
+
+// Common parsed-CV fields a knockout can check, with human labels. HR picks a
+// field instead of typing a machine path; the stored value is the raw path the
+// evaluator resolves. "Other (advanced)" reveals a free-text input for the long
+// tail of parsed-CV paths (e.g. nested skills), preserving full flexibility.
+const KNOCKOUT_FIELD_OPTIONS: { value: string; label: string }[] = [
+  { value: "total_years_experience", label: "Total years of experience" },
+  { value: "personal.location_country", label: "Location (country)" },
+  { value: "skills.technical", label: "Technical skills" },
+];
+const KNOCKOUT_FIELD_OTHER = "__other__";
+
 interface BasicsState {
   title: string;
   /** T3.1 / G14 — the CONTROLLED business_unit id the picker sends. */
@@ -795,84 +815,125 @@ export function RequisitionWizard({
               </p>
             ) : (
               <div className="space-y-3">
-                {knockouts.map((k) => (
-                  <div key={k.key} className="rounded-lg border border-neutral-200 p-3">
-                    <div className="grid grid-cols-2 gap-2">
-                      <div className="col-span-2">
-                        <input
-                          className={inputCls}
-                          value={k.questionText}
-                          placeholder="Minimum 5 years of backend experience"
-                          onChange={(e) =>
-                            setKnockouts(
-                              knockouts.map((x) =>
-                                x.key === k.key ? { ...x, questionText: e.target.value } : x,
-                              ),
-                            )
-                          }
-                        />
-                      </div>
-                      <select
-                        className={inputCls}
-                        value={k.type}
-                        onChange={(e) =>
-                          setKnockouts(
-                            knockouts.map((x) =>
-                              x.key === k.key
-                                ? { ...x, type: e.target.value as KnockoutRow["type"] }
-                                : x,
-                            ),
-                          )
-                        }
-                      >
-                        {KNOCKOUT_TYPES.map((t) => (
-                          <option key={t} value={t}>
-                            {t}
-                          </option>
-                        ))}
-                      </select>
-                      <input
-                        className={inputCls}
-                        value={k.fieldPath}
-                        placeholder="total_years_experience"
-                        title="Parsed-CV field path"
-                        onChange={(e) =>
-                          setKnockouts(
-                            knockouts.map((x) =>
-                              x.key === k.key ? { ...x, fieldPath: e.target.value } : x,
-                            ),
-                          )
-                        }
-                      />
-                      {k.type !== "boolean" ? (
-                        <div className="col-span-2">
+                {knockouts.map((k) => {
+                  const fieldIsKnown = KNOCKOUT_FIELD_OPTIONS.some((o) => o.value === k.fieldPath);
+                  return (
+                    <div key={k.key} className="rounded-lg border border-neutral-200 p-3">
+                      <div className="grid grid-cols-2 gap-2">
+                        <label className="col-span-2 flex flex-col gap-1 text-xs text-neutral-600">
+                          Requirement
                           <input
                             className={inputCls}
-                            value={k.value}
-                            placeholder={
-                              k.type === "enum"
-                                ? "Allowed values, comma-separated"
-                                : "Threshold number"
-                            }
+                            value={k.questionText}
+                            placeholder="Minimum 5 years of backend experience"
                             onChange={(e) =>
                               setKnockouts(
                                 knockouts.map((x) =>
-                                  x.key === k.key ? { ...x, value: e.target.value } : x,
+                                  x.key === k.key ? { ...x, questionText: e.target.value } : x,
                                 ),
                               )
                             }
                           />
-                        </div>
-                      ) : null}
+                        </label>
+                        <label className="flex flex-col gap-1 text-xs text-neutral-600">
+                          Rule
+                          <select
+                            className={inputCls}
+                            value={k.type}
+                            onChange={(e) =>
+                              setKnockouts(
+                                knockouts.map((x) =>
+                                  x.key === k.key
+                                    ? { ...x, type: e.target.value as KnockoutRow["type"] }
+                                    : x,
+                                ),
+                              )
+                            }
+                          >
+                            {KNOCKOUT_TYPES.map((t) => (
+                              <option key={t} value={t}>
+                                {KNOCKOUT_TYPE_LABELS[t]}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                        <label className="flex flex-col gap-1 text-xs text-neutral-600">
+                          CV detail to check
+                          <select
+                            className={inputCls}
+                            value={fieldIsKnown ? k.fieldPath : KNOCKOUT_FIELD_OTHER}
+                            onChange={(e) =>
+                              setKnockouts(
+                                knockouts.map((x) =>
+                                  x.key === k.key
+                                    ? {
+                                        ...x,
+                                        fieldPath:
+                                          e.target.value === KNOCKOUT_FIELD_OTHER
+                                            ? ""
+                                            : e.target.value,
+                                      }
+                                    : x,
+                                ),
+                              )
+                            }
+                          >
+                            {KNOCKOUT_FIELD_OPTIONS.map((o) => (
+                              <option key={o.value} value={o.value}>
+                                {o.label}
+                              </option>
+                            ))}
+                            <option value={KNOCKOUT_FIELD_OTHER}>Other (advanced)…</option>
+                          </select>
+                        </label>
+                        {!fieldIsKnown ? (
+                          <label className="col-span-2 flex flex-col gap-1 text-xs text-neutral-600">
+                            Advanced — parsed-CV field path
+                            <input
+                              className={inputCls}
+                              value={k.fieldPath}
+                              placeholder="e.g. skills.certifications"
+                              onChange={(e) =>
+                                setKnockouts(
+                                  knockouts.map((x) =>
+                                    x.key === k.key ? { ...x, fieldPath: e.target.value } : x,
+                                  ),
+                                )
+                              }
+                            />
+                          </label>
+                        ) : null}
+                        {k.type !== "boolean" ? (
+                          <label className="col-span-2 flex flex-col gap-1 text-xs text-neutral-600">
+                            {k.type === "enum" ? "Allowed values" : "Threshold"}
+                            <input
+                              className={inputCls}
+                              value={k.value}
+                              placeholder={
+                                k.type === "enum"
+                                  ? "Allowed values, comma-separated"
+                                  : "Threshold number"
+                              }
+                              onChange={(e) =>
+                                setKnockouts(
+                                  knockouts.map((x) =>
+                                    x.key === k.key ? { ...x, value: e.target.value } : x,
+                                  ),
+                                )
+                              }
+                            />
+                          </label>
+                        ) : null}
+                      </div>
+                      <button
+                        className="mt-2 text-xs text-status-error-600 hover:underline"
+                        onClick={() => setKnockouts(knockouts.filter((x) => x.key !== k.key))}
+                      >
+                        Remove
+                      </button>
                     </div>
-                    <button
-                      className="mt-2 text-xs text-status-error-600 hover:underline"
-                      onClick={() => setKnockouts(knockouts.filter((x) => x.key !== k.key))}
-                    >
-                      Remove
-                    </button>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             )}
           </div>
