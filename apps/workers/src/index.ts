@@ -7,6 +7,7 @@ import { drainOutboxOnce, recoverOrphans } from "./lib/dispatcher";
 import { runSchedulerTick, type ScheduledJob } from "./lib/scheduler";
 import { slaImminentScan } from "./jobs/sla-imminent-scan";
 import { stageStaleScan } from "./jobs/stage-stale-scan";
+import { aiBudgetScan } from "./jobs/ai-budget-scan";
 import { drainWorkdayOutboxOnce } from "./lib/workday-simulation-drain";
 import { drainAiScoreOutboxOnce } from "./lib/ai-score-drain";
 import { drainAgentRunOutboxOnce } from "./lib/agent-run-drain";
@@ -47,6 +48,15 @@ const SCHEDULED_JOBS: ScheduledJob[] = [
     name: "stage_stale_scan",
     intervalMs: 15 * 60_000,
     run: stageStaleScan,
+  },
+  {
+    // T5.1 / G24 — sum each tenant's month-to-date AI spend and email
+    // configured recipients once per crossed budget-threshold percent. 60-min
+    // cadence: AI spend accrues slowly, so a tighter tick just re-scans the
+    // same MTD totals. Alerting only — never blocks an AI call (T5.1b deferred).
+    name: "ai_budget_scan",
+    intervalMs: 60 * 60_000,
+    run: aiBudgetScan,
   },
 ];
 

@@ -19,11 +19,19 @@ export const dynamic = "force-dynamic"; // Admin-gated + reads the live AI usage
 export default async function CostsPage() {
   const session = await requireAdmin();
   const caller = createServerTRPCCaller(session);
-  const initial = await caller.getAiUsageSummary({});
+  const [initial, budgetStatusInitial, budgetInitial] = await Promise.all([
+    caller.getAiUsageSummary({}),
+    caller.getAiBudgetStatus({}),
+    caller.getAiBudget({}),
+  ]);
 
   return (
     <AppShell title="AI Cost" isAdmin active="costs" user={sessionUserChip(session)}>
-      <CostsClient initial={initial} />
+      <CostsClient
+        initial={initial}
+        budgetStatusInitial={budgetStatusInitial}
+        budgetInitial={budgetInitial}
+      />
     </AppShell>
   );
 }

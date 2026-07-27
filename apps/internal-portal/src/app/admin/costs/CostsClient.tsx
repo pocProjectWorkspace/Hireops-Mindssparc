@@ -1,8 +1,15 @@
 "use client";
 
-import type { ReactNode } from "react";
-import type { GetAiUsageSummaryOutput } from "@hireops/api-types";
+import { useState, type ReactNode } from "react";
+import type {
+  GetAiUsageSummaryOutput,
+  GetAiBudgetStatusOutput,
+  GetAiBudgetOutput,
+  AiBudgetStatus,
+} from "@hireops/api-types";
+import { Input } from "@hireops/ui";
 import {
+  Button,
   Card,
   DataBar,
   EmptyState,
@@ -14,7 +21,7 @@ import {
   Tr,
   Td,
 } from "@/components/ui";
-import { trpc } from "@/lib/trpc-client";
+import { trpc, handleTRPCError } from "@/lib/trpc-client";
 
 /**
  * The admin AI-cost dashboard — summary tiles + per-feature / per-model
@@ -34,7 +41,15 @@ import { trpc } from "@/lib/trpc-client";
  * TableShell, the 14-day bars → the shared DataBar (one bar language with the
  * reports funnel).
  */
-export function CostsClient({ initial }: { initial: GetAiUsageSummaryOutput }) {
+export function CostsClient({
+  initial,
+  budgetStatusInitial,
+  budgetInitial,
+}: {
+  initial: GetAiUsageSummaryOutput;
+  budgetStatusInitial: GetAiBudgetStatusOutput;
+  budgetInitial: GetAiBudgetOutput;
+}) {
   const query = trpc.getAiUsageSummary.useQuery(
     {},
     {
@@ -55,6 +70,8 @@ export function CostsClient({ initial }: { initial: GetAiUsageSummaryOutput }) {
         Every Anthropic call logged with tokens and cost — per feature, per model. All time. Amounts
         in USD, computed from the per-call micro-cost ledger.
       </p>
+
+      <BudgetPanel statusInitial={budgetStatusInitial} budgetInitial={budgetInitial} />
 
       {!hasUsage ? (
         <Card padded={false}>
@@ -217,4 +234,156 @@ function DayBars({ days }: { days: GetAiUsageSummaryOutput["byDay"] }) {
 function formatMicrosUsd(micros: string): string {
   const usd = Number(micros) / 1_000_000;
   return `$${usd.toFixed(4)}`;
+}
+
+/** Plain USD from a dollar number (budget amounts are whole/fractional dollars,
+ * not micros). Two decimals — budgets are set in dollars, not sub-cents. */
+function formatUsd(usd: number): string {
+  return `$${usd.toFixed(2)}`;
+}
+
+const STATUS_META: Record<
+  AiBudgetStatus,
+  { label: string; tone: "accent" | "warning" | "neutral" }
+> = {
+  off: { label: "Alerting off", tone: "neutral" },
+  under: { label: "Under budget", tone: "neutral" },
+  on_track: { label: "On track", tone: "accent" },
+  over_projected: { label: "Over projected", tone: "warning" },
+};
+
+/**
+ * T5.1 / G24 — the AI-budget panel: a server-COMPUTED spend-vs-budget status
+ * (over the real ai_usage_logs ledger — flipping the budget flips the status)
+ * plus a lean admin editor. The whole /admin/costs page is requireAdmin-gated,
+ * so the editor renders unconditionally. Saving DRIVES both the status here and
+ * the ai_budget_scan alert worker — the config is never decorative. Alerting
+ * only: no hard cap that blocks AI calls (deferred as T5.1b).
+ */
+function BudgetPanel({
+  statusInitial,
+  budgetInitial,
+}: {
+  statusInitial: GetAiBudgetStatusOutput;
+  budgetInitial: GetAiBudgetOutput;
+}) {
+  const utils = trpc.useUtils();
+  const statusQuery = trpc.getAiBudgetStatus.useQuery(
+    {},
+    { initialData: statusInitial, refetchOnWindowFocus: false, staleTime: 5_000 },
+  );
+  const budgetQuery = trpc.getAiBudget.useQuery(
+    {},
+    { initialData: budgetInitial, refetchOnWindowFocus: false, staleTime: 5_000 },
+  );
+  const status = statusQuery.data ?? statusInitial;
+  const budget = budgetQuery.data ?? budgetInitial;
+
+  const [enabled, setEnabled] = useState(budget.enabled);
+  const [amount, setAmount] = useState(String(budget.monthlyBudgetUsd));
+  const [thresholds, setThresholds] = useState(budget.alertThresholdPercents.join(", "));
+  const [notice, setNotice] = useState<string | null>(null);
+
+  const amountNum = Number(amount);
+  const amountValid = Number.isFinite(amountNum) && amountNum >= 0;
+  const parsedThresholds = thresholds
+    .split(",")
+    .map((s) => s.trim())
+    .filter((s) => s !== "")
+    .map((s) => Number(s));
+  const thresholdsValid =
+    parsedThresholds.length >= 1 &&
+    parsedThresholds.length <= 5 &&
+    parsedThresholds.every((n) => Number.isInteger(n) && n >= 1 && n <= 200);
+
+  const update = trpc.updateAiBudget.useMutation({
+    onSuccess: async () => {
+      setNotice("Saved.");
+      await Promise.all([utils.getAiBudget.invalidate(), utils.getAiBudgetStatus.invalidate()]);
+    },
+    onError: (err) => handleTRPCError(err, { onMessage: setNotice }),
+  });
+
+  function save() {
+    setNotice(null);
+    if (!amountValid || !thresholdsValid) {
+      setNotice("Enter a non-negative budget and 1–5 whole-number percents (1–200).");
+      return;
+    }
+    update.mutate({
+      version: 1,
+      enabled,
+      monthlyBudgetUsd: amountNum,
+      alertThresholdPercents: parsedThresholds,
+    });
+  }
+
+  const statusMeta = STATUS_META[status.status];
+
+  return (
+    <section className="mb-8">
+      <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-neutral-600">
+        Monthly AI budget
+      </h2>
+      <Card className="space-y-5">
+        <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-5">
+          <StatTile
+            label="Monthly budget"
+            value={formatUsd(status.monthlyBudgetUsd)}
+            tone="accent"
+          />
+          <StatTile
+            label="Spent this month"
+            value={formatMicrosUsd(status.monthToDateSpendMicros)}
+          />
+          <StatTile
+            label="Projected month-end"
+            value={formatMicrosUsd(status.projectedMonthEndSpendMicros)}
+          />
+          <StatTile label="% of budget" value={`${status.percentOfBudget}%`} />
+          <StatTile label="Status" value={statusMeta.label} tone={statusMeta.tone} />
+        </div>
+
+        <p className="text-xs text-neutral-500">
+          The projection assumes spend continues at this month&apos;s daily rate. Budget alerts
+          email the recipients configured in Admin → System Setup → Email Alerts (with the “AI
+          budget” alert type enabled) once month-to-date spend crosses a threshold. This is an alert
+          only — AI features are never blocked.
+        </p>
+
+        <div className="grid gap-4 sm:grid-cols-3">
+          <label className="flex items-center gap-2 self-end pb-2 text-sm text-neutral-700">
+            <input
+              type="checkbox"
+              checked={enabled}
+              onChange={(e) => setEnabled(e.target.checked)}
+              className="h-4 w-4"
+            />
+            Enable budget alerting
+          </label>
+          <Input
+            label="Monthly budget (USD)"
+            type="number"
+            value={amount}
+            onChange={(e) => setAmount(e.target.value)}
+            error={amountValid ? undefined : "Enter a non-negative amount."}
+          />
+          <Input
+            label="Alert thresholds (% of budget)"
+            value={thresholds}
+            onChange={(e) => setThresholds(e.target.value)}
+            placeholder="80, 100"
+            error={thresholdsValid ? undefined : "1–5 whole percents (1–200)."}
+          />
+        </div>
+
+        <div className="flex items-center gap-3">
+          <Button onClick={save} disabled={update.isPending} type="button">
+            {update.isPending ? "Saving…" : "Save budget"}
+          </Button>
+          {notice ? <span className="text-sm text-neutral-600">{notice}</span> : null}
+        </div>
+      </Card>
+    </section>
+  );
 }

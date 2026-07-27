@@ -277,6 +277,7 @@ export const SYSTEM_ALERT_TYPES = [
   "sla_breach",
   "integration_error",
   "offer_expiring",
+  "ai_budget",
 ] as const;
 export const systemAlertTypeSchema = z.enum(SYSTEM_ALERT_TYPES);
 export type SystemAlertType = z.infer<typeof systemAlertTypeSchema>;
@@ -304,6 +305,10 @@ export const SYSTEM_ALERT_TYPE_META: Record<
   offer_expiring: {
     label: "Offer expiring",
     description: "An extended offer is approaching its response deadline.",
+  },
+  ai_budget: {
+    label: "AI budget",
+    description: "Monthly AI spend crossed a configured budget threshold.",
   },
 };
 
@@ -424,3 +429,160 @@ export const updateShortlistDefaultsOutputSchema = z.object({
   shortlistDefaults: shortlistDefaultsSchema,
 });
 export type UpdateShortlistDefaultsOutput = z.infer<typeof updateShortlistDefaultsOutputSchema>;
+
+// ─────────────────── T5.1 / G24 — AI budget + spend alerts ───────────────────
+//
+// Per-tenant AI spend budget, persisted to tenants.settings.aiBudget (a SIBLING
+// of systemSetup / shortlistDefaults — no new table, no migration). This block
+// is GENUINELY consumed, not decorative:
+//   (a) getAiBudgetStatus computes a real month-to-date spend + honest linear
+//       month-end projection over the ai_usage_logs cost ledger and returns a
+//       derived status band. Flipping `enabled` / `monthlyBudgetUsd` flips the
+//       status — the honesty flip-test for the costs surface.
+//   (b) the ai_budget_scan worker sums each tenant's month-to-date spend and,
+//       when email alerts are enabled and the `ai_budget` alert type is on,
+//       emails the configured recipients once per crossed threshold per month
+//       (dedupKey `ai_budget:<tenantId>:<YYYY-MM>:<pct>`).
+//
+// SCOPE (T5.1 vs T5.1b): this ticket ships ALERTING only. A hard cap that BLOCKS
+// AI calls at 100% budget is the destructive/irreversible automation (mid-month
+// blocking of business-critical AI) and is DEFERRED as T5.1b — exactly like T4.3
+// deferred the erasure automation. `enabled` here governs alerting, never a
+// mid-run block; the worker never mutates spend or refuses a call.
+
+export const USD_MICROS = 1_000_000 as const;
+
+export const AI_BUDGET_VERSION = 1 as const;
+
+export const aiBudgetSchema = z.object({
+  version: z.literal(AI_BUDGET_VERSION).default(AI_BUDGET_VERSION),
+  /** Master switch for AI-budget ALERTING (never enforcement — see T5.1b above). */
+  enabled: z.boolean().default(false),
+  /** Monthly AI spend budget in whole/fractional USD. 0 disables the status/alerts. */
+  monthlyBudgetUsd: z.number().min(0).default(0),
+  /** Percent-of-budget marks that trigger an alert (e.g. 80, 100). Max 5. */
+  alertThresholdPercents: z.array(z.number().int().min(1).max(200)).max(5).default([80, 100]),
+});
+export type AiBudget = z.infer<typeof aiBudgetSchema>;
+
+export function defaultAiBudget(): AiBudget {
+  return aiBudgetSchema.parse({});
+}
+
+/**
+ * Merge a raw stored `aiBudget` block (partial / unknown / absent) with defaults,
+ * returning a complete validated config. Malformed / future blocks fall back to
+ * defaults rather than throwing — same discipline as `resolveSystemSetup`. The
+ * threshold list is deduped + sorted ascending so downstream crossing checks and
+ * the UI render deterministically (nice-to-have, not load-bearing).
+ */
+export function resolveAiBudget(raw: unknown): AiBudget {
+  const parsed = aiBudgetSchema.safeParse(raw ?? {});
+  const cfg = parsed.success ? parsed.data : defaultAiBudget();
+  const thresholds = Array.from(new Set(cfg.alertThresholdPercents)).sort((a, b) => a - b);
+  return { ...cfg, alertThresholdPercents: thresholds };
+}
+
+/** Monthly budget expressed in USD micros (mirrors ai_usage_logs.cost_micros).
+ * Rounded to whole micros — monthlyBudgetUsd may be fractional dollars. */
+export function monthlyBudgetMicros(monthlyBudgetUsd: number): bigint {
+  return BigInt(Math.max(0, Math.round(monthlyBudgetUsd * USD_MICROS)));
+}
+
+/**
+ * Honest LINEAR month-end projection: assume spend continues at the current
+ * month-to-date daily rate for the rest of the month.
+ *
+ *   projected = MTD ÷ daysElapsed × daysInMonth
+ *
+ * `daysElapsed` is the current UTC day-of-month, floored at 1 so an early-in-the-
+ * month scan never divides by zero. This is a naive straight-line estimate, NOT a
+ * seasonality- or trend-aware forecast — deliberately simple + explainable. All
+ * bigint integer arithmetic; the ×daysInMonth before ÷daysElapsed keeps precision.
+ */
+export function projectMonthEndSpendMicros(mtdMicros: bigint, now: Date): bigint {
+  const year = now.getUTCFullYear();
+  const month = now.getUTCMonth();
+  const daysInMonth = new Date(Date.UTC(year, month + 1, 0)).getUTCDate();
+  const daysElapsed = Math.max(1, now.getUTCDate());
+  return (mtdMicros * BigInt(daysInMonth)) / BigInt(daysElapsed);
+}
+
+export const AI_BUDGET_STATUSES = ["off", "under", "on_track", "over_projected"] as const;
+export const aiBudgetStatusSchema = z.enum(AI_BUDGET_STATUSES);
+export type AiBudgetStatus = z.infer<typeof aiBudgetStatusSchema>;
+
+/**
+ * Deterministic status band from the projection vs the budget:
+ *   off            → alerting disabled or no budget set (nothing to compare).
+ *   over_projected → the linear projection exceeds the monthly budget.
+ *   on_track       → projection within budget but ≥ 80% of it (heading toward the cap).
+ *   under          → projection comfortably below 80% of budget.
+ * Pure — the same input always yields the same band.
+ */
+export function deriveAiBudgetStatus(args: {
+  enabled: boolean;
+  monthlyBudgetUsd: number;
+  projectedMicros: bigint;
+}): AiBudgetStatus {
+  if (!args.enabled || args.monthlyBudgetUsd <= 0) return "off";
+  const budget = monthlyBudgetMicros(args.monthlyBudgetUsd);
+  if (budget <= 0n) return "off";
+  if (args.projectedMicros > budget) return "over_projected";
+  // 80% band — a projection at/over four-fifths of budget reads as "on track to spend it".
+  if (args.projectedMicros * 100n >= budget * 80n) return "on_track";
+  return "under";
+}
+
+/**
+ * Which configured alert-threshold percents the month-to-date spend has reached.
+ * A percent P is "crossed" when MTD ≥ budget × P/100 (in micros). Returns the
+ * crossed percents ascending-unique. Pure — the alert worker uses this to decide
+ * which per-threshold notifications to enqueue. Integer bigint division truncates
+ * the per-threshold micros DOWN, so a mark fires at or a hair before the exact
+ * fraction — never late.
+ */
+export function crossedAiBudgetThresholds(
+  mtdMicros: bigint,
+  monthlyBudgetUsd: number,
+  thresholdPercents: number[],
+): number[] {
+  if (monthlyBudgetUsd <= 0) return [];
+  const budget = monthlyBudgetMicros(monthlyBudgetUsd);
+  const crossed = thresholdPercents.filter((pct) => mtdMicros >= (budget * BigInt(pct)) / 100n);
+  return Array.from(new Set(crossed)).sort((a, b) => a - b);
+}
+
+/** Dedup key for one budget-threshold alert: at most one per (tenant, month, percent).
+ * `yearMonth` is YYYY-MM. Mirrors the sla-imminent scan's dedup-key discipline. */
+export function aiBudgetAlertDedupKey(tenantId: string, yearMonth: string, pct: number): string {
+  return `ai_budget:${tenantId}:${yearMonth}:${pct}`;
+}
+
+export const getAiBudgetInputSchema = z.object({});
+export const getAiBudgetOutputSchema = aiBudgetSchema;
+export type GetAiBudgetOutput = z.infer<typeof getAiBudgetOutputSchema>;
+
+export const updateAiBudgetInputSchema = aiBudgetSchema;
+export type UpdateAiBudgetInput = z.infer<typeof updateAiBudgetInputSchema>;
+export const updateAiBudgetOutputSchema = z.object({
+  ok: z.literal(true),
+  aiBudget: aiBudgetSchema,
+});
+export type UpdateAiBudgetOutput = z.infer<typeof updateAiBudgetOutputSchema>;
+
+export const getAiBudgetStatusInputSchema = z.object({});
+export const getAiBudgetStatusOutputSchema = z.object({
+  enabled: z.boolean(),
+  monthlyBudgetUsd: z.number(),
+  /** SUM(cost_micros) since date_trunc('month', now()). Decimal string (bigint on the wire). */
+  monthToDateSpendMicros: z.string(),
+  /** Linear projection of month-end spend (see projectMonthEndSpendMicros). */
+  projectedMonthEndSpendMicros: z.string(),
+  /** monthlyBudgetUsd expressed in micros; "0" when no budget is set. */
+  budgetMicros: z.string(),
+  /** MTD ÷ budget × 100, rounded to one decimal; 0 when budget is 0. */
+  percentOfBudget: z.number(),
+  status: aiBudgetStatusSchema,
+});
+export type GetAiBudgetStatusOutput = z.infer<typeof getAiBudgetStatusOutputSchema>;

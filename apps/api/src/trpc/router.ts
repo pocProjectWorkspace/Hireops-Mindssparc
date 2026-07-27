@@ -298,6 +298,17 @@ import {
   updateShortlistDefaultsOutputSchema,
   resolveShortlistDefaults,
   type ShortlistDefaults,
+  getAiBudgetInputSchema,
+  getAiBudgetOutputSchema,
+  updateAiBudgetInputSchema,
+  updateAiBudgetOutputSchema,
+  getAiBudgetStatusInputSchema,
+  getAiBudgetStatusOutputSchema,
+  resolveAiBudget,
+  monthlyBudgetMicros,
+  projectMonthEndSpendMicros,
+  deriveAiBudgetStatus,
+  type AiBudget,
   getSlaThresholdsInputSchema,
   getSlaThresholdsOutputSchema,
   updateSlaThresholdsInputSchema,
@@ -8272,6 +8283,146 @@ export const appRouter = router({
 
         return { ok: true as const, shortlistDefaults: nextBlock };
       });
+    }),
+
+  // ─────────────────────── getAiBudget (T5.1 / G24) ───────────────────────
+  //
+  // Read the per-tenant AI-budget block (settings.aiBudget) resolved over the
+  // defaults (disabled / $0 / [80,100]). Admin-gated (USERS_ADMIN_ROLES —
+  // matches the costs surface). Read-only, no withAudit (matches the other
+  // settings reads). An unconfigured tenant resolves to the disabled default,
+  // so alerting stays off until explicitly enabled.
+  getAiBudget: protectedProcedure
+    .input(getAiBudgetInputSchema)
+    .output(getAiBudgetOutputSchema)
+    .query(async ({ ctx }) => {
+      requireAnyRole(ctx, USERS_ADMIN_ROLES, "AI budget is admin-only");
+      const db = requireDb(ctx);
+      if (!ctx.tenantId) {
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: "protected procedure missing tenantId",
+        });
+      }
+      const [row] = await db
+        .select({ settings: tenants.settings })
+        .from(tenants)
+        .where(eq(tenants.id, ctx.tenantId))
+        .limit(1);
+      const settings = (row?.settings ?? {}) as Record<string, unknown>;
+      return resolveAiBudget(settings.aiBudget);
+    }),
+
+  // ─────────────────────── updateAiBudget (T5.1 / G24) ───────────────────────
+  //
+  // Admin write of the AI-budget block. Admin-gated + audited. Merges the
+  // validated block into tenants.settings under `aiBudget` via the same atomic
+  // top-level jsonb `||` merge used by updateSystemSetup — a SIBLING key,
+  // preserving systemSetup / shortlistDefaults / slaThresholds / aiSettings etc.
+  // verbatim. The saved block DRIVES getAiBudgetStatus (server-computed spend
+  // projection) AND the ai_budget_scan worker (threshold alerts) — the honesty
+  // guarantee. This block governs ALERTING only; the hard spend cap that would
+  // BLOCK AI calls is deferred as T5.1b (see admin-ops.ts).
+  updateAiBudget: protectedProcedure
+    .input(updateAiBudgetInputSchema)
+    .output(updateAiBudgetOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      return withAudit("update_ai_budget", ctx, input, async () => {
+        requireAnyRole(ctx, USERS_ADMIN_ROLES, "AI budget is admin-only");
+        if (!ctx.tenantId) {
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: "protected procedure missing tenantId",
+          });
+        }
+        const tenantId = ctx.tenantId;
+        const nextBlock: AiBudget = resolveAiBudget(input);
+
+        const res = await poolDb.execute(dsql`
+          UPDATE public.tenants
+          SET settings = COALESCE(settings, '{}'::jsonb)
+              || jsonb_build_object('aiBudget', ${JSON.stringify(nextBlock)}::jsonb)
+          WHERE id = ${tenantId}::uuid
+          RETURNING id
+        `);
+        const updated = (res as { rows?: unknown[] }).rows ?? (res as unknown[]);
+        if (updated.length !== 1) {
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: "tenant settings update affected an unexpected number of rows",
+          });
+        }
+
+        return { ok: true as const, aiBudget: nextBlock };
+      });
+    }),
+
+  // ─────────────────────── getAiBudgetStatus (T5.1 / G24) ───────────────────────
+  //
+  // The honest, server-COMPUTED spend-vs-budget status the costs surface reads.
+  // Sums the real ai_usage_logs cost ledger for the current calendar month
+  // (month-to-date), projects month-end spend linearly (projectMonthEndSpendMicros),
+  // and derives a status band (deriveAiBudgetStatus). This is genuinely computed
+  // off the ledger — flipping the budget flips the status (the flip-test for this
+  // consumer). Admin-gated, read-only. cost_micros is USD micros; the bigint sums
+  // cross the wire as decimal strings (JSON can't carry bigint), matching
+  // getAiUsageSummary.
+  getAiBudgetStatus: protectedProcedure
+    .input(getAiBudgetStatusInputSchema)
+    .output(getAiBudgetStatusOutputSchema)
+    .query(async ({ ctx }) => {
+      requireAnyRole(ctx, USERS_ADMIN_ROLES, "AI budget is admin-only");
+      const db = requireDb(ctx);
+      if (!ctx.tenantId) {
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: "protected procedure missing tenantId",
+        });
+      }
+      const tenantId = ctx.tenantId;
+
+      const [row] = await db
+        .select({ settings: tenants.settings })
+        .from(tenants)
+        .where(eq(tenants.id, tenantId))
+        .limit(1);
+      const settings = (row?.settings ?? {}) as Record<string, unknown>;
+      const budget = resolveAiBudget(settings.aiBudget);
+
+      // Month-to-date spend: SUM(cost_micros) since the start of the current
+      // calendar month (session tz), off idx_ai_usage_logs_tenant_chrono.
+      const spendRes = await db.execute(dsql`
+        SELECT COALESCE(SUM(cost_micros), 0)::text AS mtd
+        FROM public.ai_usage_logs
+        WHERE tenant_id = ${tenantId}::uuid
+          AND created_at >= date_trunc('month', now())
+      `);
+      const spendRows =
+        (spendRes as unknown as { rows?: { mtd: string }[] }).rows ??
+        (spendRes as unknown as { mtd: string }[]);
+      const mtdMicros = BigInt(spendRows[0]?.mtd ?? "0");
+
+      const now = new Date();
+      const projectedMicros = projectMonthEndSpendMicros(mtdMicros, now);
+      const budgetMicros = monthlyBudgetMicros(budget.monthlyBudgetUsd);
+      const status = deriveAiBudgetStatus({
+        enabled: budget.enabled,
+        monthlyBudgetUsd: budget.monthlyBudgetUsd,
+        projectedMicros,
+      });
+      // MTD ÷ budget × 100, one decimal. Number() is exact at demo scale.
+      const percentOfBudget =
+        budgetMicros > 0n ? Math.round((Number(mtdMicros) / Number(budgetMicros)) * 1000) / 10 : 0;
+
+      return {
+        enabled: budget.enabled,
+        monthlyBudgetUsd: budget.monthlyBudgetUsd,
+        monthToDateSpendMicros: mtdMicros.toString(),
+        projectedMonthEndSpendMicros: projectedMicros.toString(),
+        budgetMicros: budgetMicros.toString(),
+        percentOfBudget,
+        status,
+      };
     }),
 
   // ─────────────────────── getSlaThresholds (T4.1) ───────────────────────
