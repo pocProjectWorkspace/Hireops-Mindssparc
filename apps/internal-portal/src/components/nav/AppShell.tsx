@@ -556,6 +556,123 @@ const ADMIN_NAV: NavItem[] = [
   },
 ];
 
+/**
+ * Sidebar sections — the flat MAIN_NAV / ADMIN_NAV arrays above are the source
+ * of truth for each item's definition + persona gate; these section defs only
+ * GROUP them (by key) under labeled headings so the sidebar reads as tidy
+ * sections instead of one long list. A section is filtered by the same
+ * persona visibility as its items and is hidden entirely when the persona sees
+ * none of them, so every persona gets only its relevant headers (admin, who
+ * sees everything, gets the biggest win). Ordering here is the display order.
+ *
+ * INVARIANT: every MAIN_NAV / ADMIN_NAV item key must appear in exactly one
+ * section below — a key omitted here would never render in the sidebar.
+ */
+interface NavSection {
+  heading?: string;
+  keys: PortalNavKey[];
+}
+
+const MAIN_NAV_SECTIONS: NavSection[] = [
+  { keys: ["home"] },
+  {
+    heading: "Recruiting",
+    keys: ["triage", "candidates", "shortlist", "approvals", "missing-info", "interviews"],
+  },
+  {
+    heading: "Requisitions",
+    keys: [
+      "requisitions",
+      "approval-tracker",
+      "skill-weighting",
+      "requisition-approvals",
+      "jd-library",
+      "panel-setup",
+      "insights",
+    ],
+  },
+  {
+    heading: "HR operations",
+    keys: [
+      "onboarding",
+      "offboarding",
+      "hr-cases",
+      "hr-rounds",
+      "comp-offers",
+      "hr-analytics",
+      "hr-documents",
+      "case-audit",
+      "hr-policies",
+    ],
+  },
+  {
+    heading: "HR leadership",
+    keys: ["metrics", "governance", "exec-audit", "market-intelligence", "feasibility"],
+  },
+  {
+    heading: "Interview panel",
+    keys: ["panel", "panel-board", "panel-feedback", "panel-history"],
+  },
+];
+
+const ADMIN_NAV_SECTIONS: NavSection[] = [
+  {
+    heading: "Admin · Platform",
+    keys: [
+      "workflows",
+      "branding",
+      "audit",
+      "costs",
+      "ai-settings",
+      "users",
+      "reports",
+      "integrations",
+      "messaging",
+      "bias-shield",
+    ],
+  },
+  {
+    heading: "Admin · Configuration",
+    keys: [
+      "system-setup",
+      "sources",
+      "approval-routing",
+      "email-templates",
+      "candidate-fields",
+      "interview-templates",
+      "sla-thresholds",
+      "governance-policy",
+      "retention-policy",
+    ],
+  },
+  {
+    heading: "Admin · Org structure",
+    keys: ["business-units", "comp-bands", "panel-pools"],
+  },
+];
+
+/**
+ * Resolve section defs against the item pool for a session: look each key up,
+ * apply the same persona visibility as the flat nav, and drop any section left
+ * with no visible items. Returns render-ready { heading, items } groups.
+ */
+function buildSections(
+  defs: NavSection[],
+  pool: NavItem[],
+  isAdmin: boolean,
+  roles: string[],
+): { heading?: string; items: NavItem[] }[] {
+  const byKey = new Map(pool.map((item) => [item.key, item] as const));
+  return defs
+    .map((section) => {
+      const items = section.keys
+        .map((key) => byKey.get(key))
+        .filter((item): item is NavItem => Boolean(item));
+      return { heading: section.heading, items: visibleNav(items, isAdmin, roles) };
+    })
+    .filter((section) => section.items.length > 0);
+}
+
 export interface AppShellUser {
   label: string;
   role?: string;
@@ -692,8 +809,24 @@ function Sidebar({
     <aside className="hidden w-60 shrink-0 flex-col border-r border-sidebar-border bg-sidebar text-sidebar-fg lg:flex">
       <Wordmark />
       <div className="flex-1 overflow-y-auto pb-4">
-        <NavGroup items={visibleNav(MAIN_NAV, isAdmin, roles)} active={active} />
-        {isAdmin ? <NavGroup heading="Admin" items={ADMIN_NAV} active={active} /> : null}
+        {buildSections(MAIN_NAV_SECTIONS, MAIN_NAV, isAdmin, roles).map((section, i) => (
+          <NavGroup
+            key={section.heading ?? `main-${i}`}
+            heading={section.heading}
+            items={section.items}
+            active={active}
+          />
+        ))}
+        {isAdmin
+          ? buildSections(ADMIN_NAV_SECTIONS, ADMIN_NAV, isAdmin, roles).map((section, i) => (
+              <NavGroup
+                key={section.heading ?? `admin-${i}`}
+                heading={section.heading}
+                items={section.items}
+                active={active}
+              />
+            ))
+          : null}
       </div>
       <UserChip user={user} />
     </aside>
@@ -721,11 +854,16 @@ export function AppShell({
   fill = false,
   children,
 }: AppShellProps) {
-  // Mobile bottom-bar split: the persona's visible destinations (main +, for
-  // admins, the Admin group), first four in the tab bar, the rest under "More".
-  const mobileItems = isAdmin
-    ? [...visibleNav(MAIN_NAV, isAdmin, roles), ...ADMIN_NAV]
-    : visibleNav(MAIN_NAV, isAdmin, roles);
+  // Mobile bottom-bar split: the persona's visible destinations, flattened from
+  // the same grouped sections as the sidebar (main +, for admins, the Admin
+  // sections) so the order matches. First four in the tab bar, the rest under
+  // "More".
+  const mobileItems = [
+    ...buildSections(MAIN_NAV_SECTIONS, MAIN_NAV, isAdmin, roles).flatMap((s) => s.items),
+    ...(isAdmin
+      ? buildSections(ADMIN_NAV_SECTIONS, ADMIN_NAV, isAdmin, roles).flatMap((s) => s.items)
+      : []),
+  ];
   const mobilePrimary = mobileItems.slice(0, 4);
   const mobileMore = mobileItems.slice(4);
 
