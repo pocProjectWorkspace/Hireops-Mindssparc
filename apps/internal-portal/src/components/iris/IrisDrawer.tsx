@@ -7,7 +7,12 @@ import { Input, Select } from "@hireops/ui";
 import { trpc, handleTRPCError } from "@/lib/trpc-client";
 import { humanize, humanizeSentence } from "@/lib/labels";
 import { applicationStageSchema } from "@hireops/api-types";
-import type { ApplicationStage, IrisActionMenuItem, IrisExecuteOutput } from "@hireops/api-types";
+import type {
+  ApplicationStage,
+  IrisActionMenuItem,
+  IrisExecuteOutput,
+  IrisResolveIntentOutput,
+} from "@hireops/api-types";
 import { suggestedActionForRoute, type IrisPageContext } from "./context-map";
 import { IrisApplicationPicker, type IrisPickedApplication } from "./IrisApplicationPicker";
 
@@ -22,9 +27,16 @@ import { IrisApplicationPicker, type IrisPickedApplication } from "./IrisApplica
  *   review  — the REAL server preview (irisPreview) + an explicit Confirm.
  *   done    — the executed result (irisExecute) + a link to what it created.
  *
- * HONESTY: no natural-language / LLM here (that's A3). The preview and the
- * commit are both the server's — the client never re-implements either. A
- * non-requisition-write role gets a calm "no actions" state, not a crash.
+ * IRIS-A3 adds a natural-language chat input as a THIRD entry mode (alongside
+ * the suggested-default + grouped menu). Free text → irisResolveIntent, which
+ * PROPOSES a whitelisted action + draft params; the drawer opens that action's
+ * existing form, prefilled, and seeds the pickers from the resolver's free-text
+ * hints. Nothing auto-executes — the proposal flows into the SAME preview →
+ * confirm → execute path, and the resolver never resolves a concrete entity id.
+ *
+ * HONESTY: the NL layer only PROPOSES. The preview and the commit are still the
+ * server's — the client never re-implements either. A non-requisition-write role
+ * gets a calm "no actions" state, not a crash.
  */
 
 type Step = "menu" | "form" | "review" | "done";
@@ -83,6 +95,15 @@ export function IrisDrawer({ open, onClose, context }: IrisDrawerProps) {
   const [submittedParams, setSubmittedParams] = useState<Record<string, unknown> | null>(null);
   const [result, setResult] = useState<IrisExecuteOutput | null>(null);
 
+  // IRIS-A3 natural-language entry mode. `nlText` is the chat input; `nlResult`
+  // holds the resolver's response so a no-action clarifyingQuestion / message can
+  // be shown in the chat area. The seeds carry the resolver's free-text picker
+  // hints (never ids) into the opened form's pickers.
+  const [nlText, setNlText] = useState("");
+  const [nlResult, setNlResult] = useState<IrisResolveIntentOutput | null>(null);
+  const [nlCandidateSeed, setNlCandidateSeed] = useState("");
+  const [nlRequisitionSeed, setNlRequisitionSeed] = useState("");
+
   // create_requisition_jd form fields (minimum-info; the schema defaults the
   // rest). title + locationType are the required minimum.
   const [title, setTitle] = useState("");
@@ -123,6 +144,10 @@ export function IrisDrawer({ open, onClose, context }: IrisDrawerProps) {
     setBulkFromStage("");
     setBulkTargetStage("");
     setBulkReason("");
+    setNlText("");
+    setNlResult(null);
+    setNlCandidateSeed("");
+    setNlRequisitionSeed("");
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") onClose();
     };
@@ -165,6 +190,20 @@ export function IrisDrawer({ open, onClose, context }: IrisDrawerProps) {
     },
   );
 
+  // IRIS-A3 — the bulk requisition selector is a dropdown (not a search box), so
+  // best-effort AUTO-SELECT the requisition whose title matches the resolver's
+  // free-text `requisitionQuery` seed once the list loads. The human can still
+  // change it; if nothing matches, the selector just stays on its placeholder.
+  useEffect(() => {
+    if (!nlRequisitionSeed) return;
+    if (!selectedActionId || !BULK_ACTION_IDS.has(selectedActionId)) return;
+    if (bulkRequisitionId) return;
+    if (requisitions.length === 0) return;
+    const seed = nlRequisitionSeed.toLowerCase();
+    const match = requisitions.find((r) => (r.title ?? "").toLowerCase().includes(seed));
+    if (match) setBulkRequisitionId(match.id);
+  }, [nlRequisitionSeed, selectedActionId, bulkRequisitionId, requisitions]);
+
   const execute = trpc.irisExecute.useMutation({
     onSuccess: (data) => {
       setResult(data);
@@ -177,6 +216,23 @@ export function IrisDrawer({ open, onClose, context }: IrisDrawerProps) {
       void utils.listShortlist.invalidate();
     },
     onError: (err) => handleTRPCError(err),
+  });
+
+  // IRIS-A3 — resolve free text to a PROPOSED action + draft params. On a
+  // resolved, eligible action we open its existing form prefilled and seed the
+  // pickers; otherwise we keep the user on the menu with the chat note. The
+  // server degrades gracefully (returns a message, never a 500), so the failure
+  // case is really just a transport error.
+  const resolveIntent = trpc.irisResolveIntent.useMutation({
+    onSuccess: (data) => {
+      setNlResult(data);
+      if (data.actionId && actions.some((a) => a.id === data.actionId)) {
+        openForm(data.actionId);
+        applyResolvedParams(data.actionId, data.params);
+        setNlCandidateSeed(data.hints.candidateQuery ?? "");
+        setNlRequisitionSeed(data.hints.requisitionQuery ?? "");
+      }
+    },
   });
 
   if (!open) return null;
@@ -205,7 +261,62 @@ export function IrisDrawer({ open, onClose, context }: IrisDrawerProps) {
     setBulkFromStage("");
     setBulkTargetStage("");
     setBulkReason("");
+    // Opening a form clears any prior NL picker seeds. A natural-language open
+    // re-sets them AFTER this call, so the resolved seeds still apply.
+    setNlCandidateSeed("");
+    setNlRequisitionSeed("");
     setStep("form");
+  }
+
+  /**
+   * IRIS-A3 — prefill the opened action's form fields from the resolver's DRAFT
+   * params. Only the scalar fields each form actually reads are set (the params
+   * carry no entity id — targets are seeded into the pickers instead). Values
+   * are re-validated against the form's own option sets so a stray value can't
+   * put the form into an impossible state. advance_application's targetStage
+   * depends on the picked candidate's forward stages, so it's chosen after the
+   * human picks — nothing to prefill here.
+   */
+  function applyResolvedParams(actionId: string, params: Record<string, unknown>) {
+    const asString = (v: unknown) => (typeof v === "string" ? v : "");
+    const isStage = (v: unknown): v is ApplicationStage =>
+      typeof v === "string" && (ALL_STAGES as readonly string[]).includes(v);
+    if (actionId === "create_requisition_jd") {
+      setTitle(asString(params.title));
+      setBusinessUnitId("");
+      const loc = params.locationType;
+      setLocationType(
+        typeof loc === "string" && (LOCATION_TYPES as readonly string[]).includes(loc)
+          ? loc
+          : "onsite",
+      );
+      setSeniority(asString(params.seniority));
+      setOpenings(
+        typeof params.numberOfOpenings === "number" ? String(params.numberOfOpenings) : "1",
+      );
+    } else if (actionId === "reject_application") {
+      setRejectReason(asString(params.reason));
+    } else if (actionId === "bulk_advance_applications") {
+      if (isStage(params.fromStage)) setBulkFromStage(params.fromStage);
+      if (isStage(params.targetStage)) setBulkTargetStage(params.targetStage);
+    } else if (actionId === "bulk_reject_applications") {
+      if (isStage(params.fromStage)) setBulkFromStage(params.fromStage);
+      setBulkReason(asString(params.reason));
+    }
+  }
+
+  function onSubmitNl() {
+    const text = nlText.trim();
+    if (!text) return;
+    setNlResult(null);
+    resolveIntent.mutate({
+      text,
+      context: {
+        route: context.route,
+        ...(context.entityType ? { entityType: context.entityType } : {}),
+        ...(context.entityId ? { entityId: context.entityId } : {}),
+      },
+    });
   }
 
   function onSubmitForm() {
@@ -332,6 +443,48 @@ export function IrisDrawer({ open, onClose, context }: IrisDrawerProps) {
               />
             ) : (
               <>
+                {/* ── NL chat input (IRIS-A3) — a third entry mode. ── */}
+                <section>
+                  <SectionHeading>Ask Iris</SectionHeading>
+                  <div className="space-y-2">
+                    <textarea
+                      value={nlText}
+                      rows={2}
+                      onChange={(e) => setNlText(e.target.value)}
+                      onKeyDown={(e) => {
+                        if ((e.metaKey || e.ctrlKey) && e.key === "Enter") onSubmitNl();
+                      }}
+                      maxLength={1000}
+                      placeholder="Describe what you want to do, e.g. “Reject Priya Nair — not enough backend experience”."
+                      className="w-full resize-y rounded-md border border-neutral-300 bg-white px-3 py-2 text-sm text-neutral-900 placeholder:text-neutral-400 transition-colors focus:border-brand-600 focus:outline-none focus:ring-1 focus:ring-brand-600"
+                    />
+                    <div className="flex items-center justify-between gap-3">
+                      <p className="text-[11px] text-neutral-400">
+                        Iris drafts an action for you to review and confirm, it never sends anything
+                        on its own.
+                      </p>
+                      <Button
+                        onClick={onSubmitNl}
+                        disabled={resolveIntent.isPending || nlText.trim().length === 0}
+                      >
+                        {resolveIntent.isPending ? "Thinking…" : "Ask"}
+                      </Button>
+                    </div>
+                    {resolveIntent.isError ? (
+                      <p className="text-sm text-status-error-700">
+                        Couldn&apos;t reach Iris just now, pick an action from the menu below.
+                      </p>
+                    ) : null}
+                    {nlResult && !nlResult.actionId ? (
+                      <div className="rounded-lg border border-neutral-200 bg-white p-3 text-sm text-neutral-700">
+                        {nlResult.clarifyingQuestion ??
+                          nlResult.message ??
+                          "I couldn't map that to an action, try rephrasing or pick one from the menu."}
+                      </div>
+                    ) : null}
+                  </div>
+                </section>
+
                 {suggested ? (
                   <section>
                     <SectionHeading>Suggested here</SectionHeading>
@@ -440,6 +593,7 @@ export function IrisDrawer({ open, onClose, context }: IrisDrawerProps) {
                     }}
                     enabled={step === "form"}
                     preselectApplicationId={contextApplicationId}
+                    initialSearch={nlCandidateSeed || undefined}
                   />
 
                   {selectedActionId === "advance_application" && picked ? (

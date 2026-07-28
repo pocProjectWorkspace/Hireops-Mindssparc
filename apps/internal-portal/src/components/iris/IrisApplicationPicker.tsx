@@ -22,6 +22,11 @@ import type { ApplicationStage } from "@hireops/api-types";
  * If the page context already names an application (entityType "application"),
  * the drawer passes it as `preselectApplicationId` and we select it once on
  * load — the user can still change it.
+ *
+ * IRIS-A3: the natural-language path can pass an `initialSearch` seed (the
+ * resolver's free-text `candidateQuery` hint) so the search box opens pre-filled
+ * with e.g. the candidate's name. It only seeds the query — the human still
+ * picks the concrete application. Existing callers omit it (default "").
  */
 
 export interface IrisPickedApplication {
@@ -36,13 +41,18 @@ export function IrisApplicationPicker({
   onChange,
   enabled,
   preselectApplicationId,
+  initialSearch,
 }: {
   value: IrisPickedApplication | null;
   onChange: (picked: IrisPickedApplication | null) => void;
   enabled: boolean;
   preselectApplicationId?: string;
+  initialSearch?: string;
 }) {
-  const [search, setSearch] = useState("");
+  // Seed the query from the NL resolver's candidateQuery hint on mount (the
+  // drawer mounts a fresh picker when the form opens). Only seeds the search —
+  // the human still selects the concrete application.
+  const [search, setSearch] = useState(initialSearch ?? "");
 
   const query = trpc.irisSearchApplications.useQuery(
     { query: search.trim() || undefined, limit: 40 },

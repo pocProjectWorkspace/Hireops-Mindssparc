@@ -208,3 +208,70 @@ export const bulkRejectApplicationsInputSchema = z.object({
   reason: z.string().max(500).optional(),
 });
 export type BulkRejectApplicationsInput = z.infer<typeof bulkRejectApplicationsInputSchema>;
+
+// ─────────────── irisResolveIntent (IRIS-A3) ───────────────
+
+/**
+ * irisResolveIntent (IRIS-A3) — the natural-language layer over the SAME
+ * menu-driven pipeline. Free text in; a PROPOSED whitelisted action + extracted
+ * DRAFT params out. It is a resolver, never an executor:
+ *
+ *   - It only ever PROPOSES one of the CALLER's role-eligible whitelisted
+ *     actions (the exact same set irisListActions returns for this caller); an
+ *     ineligible / hallucinated actionId is nulled server-side.
+ *   - It NEVER resolves a concrete entity id. For application / requisition
+ *     targets it returns a free-text `candidateQuery` / `requisitionQuery` HINT
+ *     that SEEDS the drawer's picker — the human selects the concrete entity.
+ *     Any uuid-looking value the model tries to smuggle into an id param is
+ *     stripped.
+ *   - The proposal flows into the UNCHANGED irisPreview → confirm → irisExecute
+ *     path. Nothing here writes or auto-executes; the ai_usage_logs cost row
+ *     (feature "iris_intent") is the only side effect, and it degrades to a
+ *     calm "use the menu" message when the tenant's AI is off / erroring.
+ */
+export const irisResolveIntentInputSchema = z.object({
+  /** The user's free-text request. Bounded so a paste can't balloon the prompt. */
+  text: z.string().min(1).max(1000),
+  /** Optional page context so the resolver can disambiguate ("this candidate"). */
+  context: z
+    .object({
+      route: z.string().max(500).optional(),
+      entityType: z.string().max(100).optional(),
+      entityId: z.string().max(200).optional(),
+    })
+    .optional(),
+});
+export type IrisResolveIntentInput = z.infer<typeof irisResolveIntentInputSchema>;
+
+/**
+ * The picker SEEDS the resolver returns — free-text search phrases, NEVER ids.
+ * `candidateQuery` seeds the application picker; `requisitionQuery` seeds the
+ * requisition picker. The human still selects + confirms the concrete entity.
+ */
+export const irisResolveIntentHintsSchema = z.object({
+  candidateQuery: z.string().optional(),
+  requisitionQuery: z.string().optional(),
+});
+export type IrisResolveIntentHints = z.infer<typeof irisResolveIntentHintsSchema>;
+
+export const irisResolveIntentOutputSchema = z.object({
+  /**
+   * The PROPOSED action id — guaranteed to be one of the caller's role-eligible
+   * whitelisted ids, or null when the model proposed nothing eligible. The
+   * client opens this action's existing form; it is never dispatched from here.
+   */
+  actionId: z.string().nullable(),
+  /**
+   * DRAFT scalar params (stages, reasons, title, …) that PREFILL the action's
+   * form. Never any concrete entity id — id-shaped values are stripped server
+   * side. Empty when nothing scalar was extracted.
+   */
+  params: z.record(z.string(), z.unknown()),
+  /** Free-text picker seeds (never ids); see irisResolveIntentHintsSchema. */
+  hints: irisResolveIntentHintsSchema,
+  /** A question shown in the chat area when the model needs the user to refine. */
+  clarifyingQuestion: z.string().nullable().optional(),
+  /** A calm note shown when no action was proposed (incl. the degrade path). */
+  message: z.string().nullable().optional(),
+});
+export type IrisResolveIntentOutput = z.infer<typeof irisResolveIntentOutputSchema>;

@@ -123,6 +123,7 @@ import {
   isBulkActionResult,
   type IrisCaller,
 } from "../lib/iris/registry";
+import { resolveIrisIntent } from "../lib/iris/resolve-intent";
 import {
   submitApplicationInputSchema,
   submitApplicationOutputSchema,
@@ -767,6 +768,8 @@ import {
   type IrisProvenanceRow,
   irisSearchApplicationsInputSchema,
   irisSearchApplicationsOutputSchema,
+  irisResolveIntentInputSchema,
+  irisResolveIntentOutputSchema,
 } from "@hireops/api-types";
 import { createClient } from "@supabase/supabase-js";
 import {
@@ -21537,6 +21540,54 @@ export const appRouter = router({
           currentStage: r.currentStage,
         })),
       };
+    }),
+
+  /**
+   * irisResolveIntent (IRIS-A3) — the natural-language layer. Maps free text to
+   * a PROPOSED whitelisted action + extracted DRAFT params that the client feeds
+   * into the SAME irisPreview → confirm → irisExecute pipeline the menu uses.
+   *
+   * HONESTY. This PROPOSES only — it never executes and it never resolves a
+   * concrete entity id:
+   *   - The prompt is built from ONLY the caller's role-eligible actions (the
+   *     exact irisListActions filter). `resolveIrisIntent` re-validates the
+   *     model's actionId against that eligible set and nulls anything else, so a
+   *     hallucinated / ineligible action can never leak through.
+   *   - `params` are draft scalars; any uuid-looking / id-typed value is
+   *     stripped. Application / requisition targets come back as free-text
+   *     `candidateQuery` / `requisitionQuery` hints that SEED the drawer's
+   *     picker — the human selects + confirms the concrete entity.
+   *   - The ai-client auto-logs cost to ai_usage_logs (feature "iris_intent").
+   *     When the tenant's AI is unconfigured / disabled or the provider errors,
+   *     the resolver DEGRADES to a calm "use the menu" message (never a 500).
+   * It's a mutation because the ai-client writes a usage-log row; there is NO
+   * business write here — the commit stays irisExecute.
+   */
+  irisResolveIntent: protectedProcedure
+    .input(irisResolveIntentInputSchema)
+    .output(irisResolveIntentOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      if (!ctx.tenantId) {
+        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
+      }
+      const tenantId = ctx.tenantId;
+      // The CALLER's role-eligible actions — the EXACT same per-action filter
+      // irisListActions applies. The resolver builds the prompt from only these
+      // and re-validates the model's choice against them.
+      const eligibleActionIds = listIrisActions()
+        .filter((a) => a.roles.some((r) => ctx.roles.includes(r)))
+        .map((a) => a.id);
+      // Actor membership for cost attribution on the ai_usage_logs row.
+      const db = requireDb(ctx);
+      const actorMembershipId = await resolveActorMembership(db, ctx);
+      return resolveIrisIntent({
+        tenantId,
+        text: input.text,
+        eligibleActionIds,
+        context: input.context,
+        requestId: ctx.requestId,
+        actorMembershipId,
+      });
     }),
 
   /**
