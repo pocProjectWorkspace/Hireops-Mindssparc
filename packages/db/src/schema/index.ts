@@ -36,6 +36,7 @@ export * from "./approval-requests";
 export * from "./approval-decisions";
 export * from "./ai-usage-logs";
 export * from "./api-audit-logs";
+export * from "./assistant-actions";
 export * from "./pii-access-log";
 export * from "./partner-tier";
 export * from "./partner-user-role";

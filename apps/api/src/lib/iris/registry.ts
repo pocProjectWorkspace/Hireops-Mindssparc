@@ -1,0 +1,143 @@
+/**
+ * Iris — user-invoked TRANSACTIONAL assistant (IRIS-A1). WHITELIST-ONLY action
+ * registry for the menu-driven path.
+ *
+ * HONESTY. This registry is the ONLY thing `irisExecute` can dispatch through:
+ * a caller can never ask Iris to invoke an arbitrary procedure. Each action's
+ * `execute` runs the SAME gated tRPC procedures a human uses, via the in-process
+ * `appRouter.createCaller(ctx)` caller (exactly what the portal's server-side
+ * caller does — apps/internal-portal/src/lib/trpc-server.ts). Those procedures
+ * keep their own RLS + `withAudit`; Iris only ORCHESTRATES them and records one
+ * provenance row. There is NO side write-path here.
+ *
+ * The registry is stored as type-ERASED entries (`AnyIrisAction`, `unknown` at
+ * the boundary) so the heterogeneous map needs no `any` (a hard lint gate). Each
+ * concrete action keeps its precise `IrisAction<P>` typing; `eraseIrisAction`
+ * closes over the concrete P at registration so params round-trip type-safely
+ * (parse → execute) without leaking P into the registry's public type.
+ */
+
+import type { z } from "zod";
+import type {
+  CreateRequisitionDraftInput,
+  CreateRequisitionDraftOutput,
+  GenerateJdDraftInput,
+  GenerateJdDraftOutput,
+} from "@hireops/api-types";
+import type { HonoTRPCContext } from "../../trpc/trpc-core";
+import { createRequisitionJdAction } from "./actions/create-requisition-jd";
+
+/**
+ * The subset of the in-process tRPC caller (appRouter.createCaller(ctx)) that
+ * the registered actions invoke.
+ *
+ * This is DELIBERATELY a structural subset rather than
+ * `ReturnType<typeof appRouter.createCaller>`: the registry is imported BY the
+ * router, so referencing the router's own inferred type here would make
+ * appRouter circularly reference itself (tsc TS7022). The REAL caller is a
+ * superset and assigns to this interface, so an action still calls the REAL
+ * gated procedure (its RLS + withAudit fire) with fully-typed args. Each method
+ * mirrors a procedure's api-types input/output exactly — add one here when a new
+ * action needs another procedure.
+ */
+export interface IrisCaller {
+  createRequisitionDraft(input: CreateRequisitionDraftInput): Promise<CreateRequisitionDraftOutput>;
+  generateJdDraft(input: GenerateJdDraftInput): Promise<GenerateJdDraftOutput>;
+}
+
+/** The (entityType, entityId, human summary) an action reports after it commits. */
+export interface IrisActionResult {
+  entityType: string;
+  entityId: string | null;
+  resultSummary: string;
+}
+
+/** A resolved preview shown to the user BEFORE they confirm (client-enforced). */
+export interface IrisActionPreview {
+  summary: string;
+  details: string[];
+}
+
+/**
+ * A single whitelisted Iris action. `inputSchema` validates `params` server-side
+ * (the transport hands `params` as `unknown`); `execute` orchestrates the real
+ * gated procedures through `caller` and reports what it created.
+ */
+export interface IrisAction<P> {
+  id: string;
+  label: string;
+  group: string;
+  inputSchema: z.ZodType<P>;
+  destructive: boolean;
+  bulk: boolean;
+  buildPreview(params: P): IrisActionPreview;
+  execute(caller: IrisCaller, ctx: HonoTRPCContext, params: P): Promise<IrisActionResult>;
+}
+
+/**
+ * A type-ERASED action as stored in the registry: the same behaviour with
+ * `unknown` at the boundary. `parse` validates raw transport params against the
+ * action's schema (throws ZodError on invalid) and returns the parsed value,
+ * which callers thread into `buildPreview` / `execute`.
+ */
+export interface AnyIrisAction {
+  id: string;
+  label: string;
+  group: string;
+  destructive: boolean;
+  bulk: boolean;
+  parse(rawParams: unknown): unknown;
+  buildPreview(params: unknown): IrisActionPreview;
+  execute(caller: IrisCaller, ctx: HonoTRPCContext, params: unknown): Promise<IrisActionResult>;
+}
+
+/** Close over a concrete action's P to expose it through the erased boundary. */
+function eraseIrisAction<P>(action: IrisAction<P>): AnyIrisAction {
+  return {
+    id: action.id,
+    label: action.label,
+    group: action.group,
+    destructive: action.destructive,
+    bulk: action.bulk,
+    parse: (rawParams) => action.inputSchema.parse(rawParams),
+    buildPreview: (params) => action.buildPreview(params as P),
+    execute: (caller, ctx, params) => action.execute(caller, ctx, params as P),
+  };
+}
+
+/**
+ * The whitelist. `irisExecute` looks an action up here by id and refuses
+ * anything absent. Add a new action by importing it and registering it below —
+ * nothing else can widen what Iris can do.
+ */
+export const IRIS_ACTIONS: Record<string, AnyIrisAction> = Object.fromEntries(
+  [createRequisitionJdAction].map((a) => [a.id, eraseIrisAction(a)]),
+);
+
+/** One serialisable menu entry — the minimal shape the menu path renders. */
+export interface IrisActionMenuEntry {
+  id: string;
+  label: string;
+  group: string;
+  destructive: boolean;
+  bulk: boolean;
+}
+
+/**
+ * The serialisable, whitelist-only menu: exactly the registry, projected to the
+ * fields a client needs to render the menu. Carries no zod / no server code.
+ */
+export function listIrisActions(): IrisActionMenuEntry[] {
+  return Object.values(IRIS_ACTIONS).map((a) => ({
+    id: a.id,
+    label: a.label,
+    group: a.group,
+    destructive: a.destructive,
+    bulk: a.bulk,
+  }));
+}
+
+/** Look an action up by id. Returns undefined for anything not whitelisted. */
+export function getIrisAction(id: string): AnyIrisAction | undefined {
+  return IRIS_ACTIONS[id];
+}

@@ -110,12 +110,14 @@ import {
   applicationStageEnum,
   missingInfoRequests,
   recruiterBrief,
+  assistantActions,
   type ApplicationStage,
   type TenantBoundDb,
 } from "@hireops/db";
 import { evaluateKnockouts, type KnockoutInput } from "@hireops/ai-scoring";
 import { SLA_THRESHOLDS_HOURS, resolveSlaThresholds } from "../lib/sla-thresholds";
 import { computeGovernanceRiskFlags, computeExecutiveAudit } from "../lib/governance";
+import { getIrisAction, listIrisActions, type IrisCaller } from "../lib/iris/registry";
 import {
   submitApplicationInputSchema,
   submitApplicationOutputSchema,
@@ -749,6 +751,13 @@ import {
   type StrengthsRisksAi,
   type ScreenScriptAi,
   type AvailabilityDraftAi,
+  irisListActionsInputSchema,
+  irisListActionsOutputSchema,
+  irisExecuteInputSchema,
+  irisExecuteOutputSchema,
+  irisGetProvenanceInputSchema,
+  irisGetProvenanceOutputSchema,
+  type IrisProvenanceRow,
 } from "@hireops/api-types";
 import { createClient } from "@supabase/supabase-js";
 import {
@@ -21400,7 +21409,165 @@ export const appRouter = router({
       );
       return { subject: rendered.subject, html: rendered.html };
     }),
+
+  /**
+   * Iris (IRIS-A1) — the user-invoked TRANSACTIONAL assistant, menu path.
+   *
+   * HONESTY. irisExecute NEVER writes through a side path: it dispatches through
+   * the WHITELIST-ONLY action registry (apps/api/src/lib/iris), runs the SAME
+   * gated procedures a human uses via appRouter.createCaller(ctx) (their own RLS
+   * + withAudit fire), and records ONE assistant_actions provenance row.
+   * irisGetProvenance reads those rows back to drive the future "AI-assisted"
+   * pill — a requisition created via Iris carries a provenance row; a
+   * human-created one does not. Confirm-before-commit is enforced by the client
+   * (a later ticket); irisExecute is the post-confirm commit call.
+   */
+  irisListActions: protectedProcedure
+    .input(irisListActionsInputSchema)
+    .output(irisListActionsOutputSchema)
+    .query(({ ctx }) => {
+      // Gate to the roles that can create requisitions — the only action wired
+      // today (create_requisition_jd). Same gate createRequisitionDraft enforces.
+      requireAnyRole(
+        ctx,
+        REQUISITION_WRITE_ROLES,
+        "Iris actions require the hiring_manager or admin role",
+      );
+      return { actions: listIrisActions() };
+    }),
+
+  irisExecute: protectedProcedure
+    .input(irisExecuteInputSchema)
+    .output(irisExecuteOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      return withAudit("iris_execute", ctx, input, async () => {
+        // WHITELIST-ONLY dispatch: an unregistered actionId can never run.
+        const action = getIrisAction(input.actionId);
+        if (!action) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: `Unknown Iris action: ${input.actionId}`,
+          });
+        }
+        if (!ctx.tenantId) {
+          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
+        }
+        // Validate params against the action's OWN input contract.
+        const parsed = action.parse(input.params);
+        // Run the REAL gated procedures through the in-process caller. Each opens
+        // its own withTenantContext tx (protectedProcedure middleware) → its RLS +
+        // withAudit fire exactly as a human's call would. Iris only orchestrates;
+        // the whitelisted action decides which procedures run. createIrisCaller
+        // (declared below appRouter) defers the appRouter reference so its type
+        // never circularly references itself.
+        const caller = createIrisCaller(ctx);
+        const result = await action.execute(caller, ctx, parsed);
+        // Record provenance in THIS request's RLS tx (tenant_isolation_insert:
+        // tenant_id = current_tenant_id()). The underlying entity already
+        // committed above, so provenance is a durable annotation on top — never a
+        // shortcut around the gated write.
+        const db = requireDb(ctx);
+        await db.insert(assistantActions).values({
+          tenantId: ctx.tenantId,
+          assistant: "iris",
+          actionId: action.id,
+          entityType: result.entityType,
+          entityId: result.entityId,
+          confirmedByUserId: ctx.userId,
+          status: "executed",
+          paramsJson: parsed,
+        });
+        return {
+          ok: true as const,
+          entityType: result.entityType,
+          entityId: result.entityId,
+          resultSummary: result.resultSummary,
+        };
+      });
+    }),
+
+  irisGetProvenance: protectedProcedure
+    .input(irisGetProvenanceInputSchema)
+    .output(irisGetProvenanceOutputSchema)
+    .query(async ({ ctx, input }) => {
+      const db = requireDb(ctx);
+      if (!ctx.tenantId) {
+        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
+      }
+      const tenantId = ctx.tenantId;
+      // RLS-scoped read (tenant_isolation_select). Newest-first so the collapse
+      // below keeps the latest provenance row per entity.
+      const rows = await db
+        .select({
+          entityId: assistantActions.entityId,
+          assistant: assistantActions.assistant,
+          actionId: assistantActions.actionId,
+          confirmedByUserId: assistantActions.confirmedByUserId,
+          createdAt: assistantActions.createdAt,
+        })
+        .from(assistantActions)
+        .where(
+          and(
+            eq(assistantActions.tenantId, tenantId),
+            eq(assistantActions.entityType, input.entityType),
+            inArray(assistantActions.entityId, input.entityIds),
+          ),
+        )
+        .orderBy(desc(assistantActions.createdAt));
+
+      // Resolve confirming-user display labels cheaply (service-role, one query —
+      // public.users is self-only under RLS). Falls back display_name →
+      // email-local-part → omitted.
+      const userIds = [
+        ...new Set(rows.map((r) => r.confirmedByUserId).filter((id): id is string => !!id)),
+      ];
+      const labels = new Map<string, string | null>();
+      if (userIds.length > 0) {
+        const nameRows = await ctx.sql<
+          { id: string; display_name: string | null; email: string | null }[]
+        >`
+          SELECT au.id::text AS id, u.display_name AS display_name, au.email AS email
+          FROM auth.users au
+          LEFT JOIN public.users u ON u.id = au.id
+          WHERE au.id::text = ANY(${userIds})
+        `;
+        for (const r of nameRows) {
+          labels.set(r.id, r.display_name ?? (r.email ? (r.email.split("@")[0] ?? null) : null));
+        }
+      }
+
+      // Collapse to one row per entity (the latest), preserving first-seen order.
+      const seen = new Set<string>();
+      const out: IrisProvenanceRow[] = [];
+      for (const r of rows) {
+        if (!r.entityId || seen.has(r.entityId)) continue;
+        seen.add(r.entityId);
+        const label = r.confirmedByUserId ? labels.get(r.confirmedByUserId) : undefined;
+        out.push({
+          entityId: r.entityId,
+          assistant: r.assistant,
+          actionId: r.actionId,
+          confirmedByUserId: r.confirmedByUserId,
+          createdAt: r.createdAt.toISOString(),
+          ...(label != null ? { confirmedByLabel: label } : {}),
+        });
+      }
+      return { rows: out };
+    }),
 });
+
+/**
+ * The in-process caller Iris actions run their gated procedures through — the
+ * SAME `appRouter.createCaller(ctx)` the portal's server-side caller uses
+ * (apps/internal-portal/src/lib/trpc-server.ts). Declared AFTER appRouter with
+ * an explicit IrisCaller return type: that defers the appRouter reference out of
+ * appRouter's own initializer (otherwise appRouter would circularly reference
+ * itself — TS7022) while keeping the honesty guarantee that Iris only ever runs
+ * real gated procedures. The full caller is a superset of IrisCaller.
+ */
+function createIrisCaller(ctx: HonoTRPCContext): IrisCaller {
+  return appRouter.createCaller(ctx);
+}
 
 // ═══════════ RECR-02 — recruiter surface helpers ═══════════
 //
