@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { createPortal } from "react-dom";
 import type { ReactNode } from "react";
 import { Button, Card, EmptyState } from "@/components/ui";
 import { Input, Select } from "@hireops/ui";
@@ -89,6 +90,13 @@ export interface IrisDrawerProps {
 
 export function IrisDrawer({ open, onClose, context }: IrisDrawerProps) {
   const utils = trpc.useUtils();
+
+  // Portal-mount guard: the drawer mounts from the "Ask Iris" launcher inside
+  // the PageHeader, so a plain `fixed` element gets trapped in that subtree's
+  // stacking context and page content bleeds over it. We portal into
+  // document.body (client-only) so it renders above everything.
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => setMounted(true), []);
 
   const [step, setStep] = useState<Step>("menu");
   const [selectedActionId, setSelectedActionId] = useState<string | null>(null);
@@ -235,7 +243,7 @@ export function IrisDrawer({ open, onClose, context }: IrisDrawerProps) {
     },
   });
 
-  if (!open) return null;
+  if (!open || !mounted) return null;
 
   const suggestedId = suggestedActionForRoute(context.route);
   const suggested = suggestedId ? actions.find((a) => a.id === suggestedId) : undefined;
@@ -381,7 +389,7 @@ export function IrisDrawer({ open, onClose, context }: IrisDrawerProps) {
   const affectedCount = affected?.length ?? 0;
   const bulkEmpty = isBulk && previewQuery.data != null && affectedCount === 0;
 
-  return (
+  return createPortal(
     <div
       role="dialog"
       aria-modal="true"
@@ -857,7 +865,8 @@ export function IrisDrawer({ open, onClose, context }: IrisDrawerProps) {
           ) : null}
         </div>
       </aside>
-    </div>
+    </div>,
+    document.body,
   );
 }
 
