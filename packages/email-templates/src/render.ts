@@ -109,7 +109,7 @@ export async function renderTemplate(
         subject: resolveSubject(
           overrides?.subject,
           { positionTitle: props.positionTitle },
-          `Update on your application — ${props.positionTitle}`,
+          `Update on your application: ${props.positionTitle}`,
         ),
         html: await render(element),
         text: await render(element, { plainText: true }),
@@ -122,7 +122,7 @@ export async function renderTemplate(
         subject: resolveSubject(
           overrides?.subject,
           { positionTitle: props.positionTitle, companyName: props.companyName },
-          `Your offer of employment — ${props.positionTitle} at ${props.companyName}`,
+          `Your offer of employment: ${props.positionTitle} at ${props.companyName}`,
         ),
         html: await render(element),
         text: await render(element, { plainText: true }),
@@ -153,7 +153,7 @@ export async function renderTemplate(
         subject: resolveSubject(
           overrides?.subject,
           { roundName: props.roundName, positionTitle: props.positionTitle },
-          `Interview invitation — ${props.roundName} for ${props.positionTitle}`,
+          `Interview invitation: ${props.roundName} for ${props.positionTitle}`,
         ),
         html: await render(element),
         text: await render(element, { plainText: true }),
@@ -202,7 +202,7 @@ export async function renderTemplate(
           : resolveSubject(
               overrides?.subject,
               { positionTitle: props.positionTitle },
-              `Update on your application — ${props.positionTitle}`,
+              `Update on your application: ${props.positionTitle}`,
             );
       return {
         subject: approvedSubject,
@@ -218,7 +218,7 @@ export async function renderTemplate(
         subject: resolveSubject(
           overrides?.subject,
           { applicationCount: String(props.applicationCount), noun },
-          `Heads up — ${props.applicationCount} ${noun} near SLA breach`,
+          `Heads up: ${props.applicationCount} ${noun} near SLA breach`,
         ),
         html: await render(element),
         text: await render(element, { plainText: true }),
@@ -247,7 +247,7 @@ export async function renderTemplate(
         subject: resolveSubject(
           overrides?.subject,
           { candidateName: props.candidateName, positionTitle: props.positionTitle },
-          `Offer accepted — ${props.candidateName} for ${props.positionTitle}`,
+          `Offer accepted: ${props.candidateName} for ${props.positionTitle}`,
         ),
         html: await render(element),
         text: await render(element, { plainText: true }),
@@ -260,7 +260,7 @@ export async function renderTemplate(
         subject: resolveSubject(
           overrides?.subject,
           { candidateName: props.candidateName, positionTitle: props.positionTitle },
-          `Offer declined — ${props.candidateName} for ${props.positionTitle}`,
+          `Offer declined: ${props.candidateName} for ${props.positionTitle}`,
         ),
         html: await render(element),
         text: await render(element, { plainText: true }),

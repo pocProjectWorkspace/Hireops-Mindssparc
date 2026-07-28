@@ -74,7 +74,7 @@ describe("draft_message executor (real)", () => {
     expect(out.position_title).toBe(FAKE_CONTEXT.positionTitle);
     expect(out.prompt_version).toBe("followup-v1");
     // Subject is executor-owned, never model-owned.
-    expect(out.subject).toBe(`Update on your application — ${FAKE_CONTEXT.positionTitle}`);
+    expect(out.subject).toBe(`Update on your application: ${FAKE_CONTEXT.positionTitle}`);
     expect(result.costMicros).toBe(900n);
   });
 

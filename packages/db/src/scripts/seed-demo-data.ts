@@ -2147,7 +2147,7 @@ async function main() {
       `Warm regards,\nThe Talent Team`;
     const gDraftPayload = {
       draft_text: gDraftText,
-      subject: "Update on your application — Senior Backend Engineer",
+      subject: "Update on your application: Senior Backend Engineer",
       application_id: APP_G,
       candidate_id: CAND_G,
       candidate_name: "Rohan Desai",
@@ -2244,7 +2244,7 @@ async function main() {
       `Warm regards,\nThe Talent Team`;
     const hDraftPayload = {
       draft_text: hDraftText,
-      subject: "Update on your application — Senior Backend Engineer",
+      subject: "Update on your application: Senior Backend Engineer",
       application_id: APP_H,
       candidate_id: CAND_H,
       candidate_name: "Meera Nair",

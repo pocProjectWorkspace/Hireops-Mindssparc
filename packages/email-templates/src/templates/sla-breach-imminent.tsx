@@ -44,7 +44,7 @@ export function SlaBreachImminent({
       <Body style={body}>
         <Container style={container}>
           <Heading style={h1}>
-            {resolveSlot(slots?.heading, tok, <>Heads up — SLA breach imminent</>)}
+            {resolveSlot(slots?.heading, tok, <>Heads up: SLA breach imminent</>)}
           </Heading>
           <Section>
             <Text style={text}>{resolveSlot(slots?.greeting, tok, <>Hi {recruiterName},</>)}</Text>

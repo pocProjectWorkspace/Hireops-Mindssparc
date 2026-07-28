@@ -71,7 +71,7 @@ export const draftMessageExecutor: ActionExecutor = async ({
       // are free-form, so the executor owns it here. Kept out of the LLM's
       // hands deliberately — a hallucinated subject is the most likely
       // thing a rushed recruiter approves without reading.
-      subject: `Update on your application — ${ctx.positionTitle}`,
+      subject: `Update on your application: ${ctx.positionTitle}`,
       application_id: ctx.applicationId,
       candidate_id: ctx.candidateId,
       candidate_name: ctx.candidateName,

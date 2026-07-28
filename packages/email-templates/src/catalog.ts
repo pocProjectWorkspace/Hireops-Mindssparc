@@ -128,7 +128,7 @@ export const EMAIL_TEMPLATE_CATALOG: Record<TemplateKey, EmailTemplateCatalogEnt
         slotKey: "footer",
         label: "Footer disclaimer",
         defaultText:
-          "This is an automated message. Please don't reply to this email — replies are not monitored. If you need to reach the team, contact the recruiter who emails you next.",
+          "This is an automated message. Please don't reply to this email. Replies are not monitored. If you need to reach the team, contact the recruiter who emails you next.",
         tokens: [],
       },
     ],
@@ -139,7 +139,7 @@ export const EMAIL_TEMPLATE_CATALOG: Record<TemplateKey, EmailTemplateCatalogEnt
     label: "Application advanced",
     description: "Sent when an application moves to a candidate-visible stage.",
     subject: {
-      defaultText: "Update on your application — {positionTitle}",
+      defaultText: "Update on your application: {positionTitle}",
       tokens: ["positionTitle"],
     },
     slots: [
@@ -182,7 +182,7 @@ export const EMAIL_TEMPLATE_CATALOG: Record<TemplateKey, EmailTemplateCatalogEnt
     label: "Offer extended",
     description: "Sent to a candidate when an offer is extended (carries the review link).",
     subject: {
-      defaultText: "Your offer of employment — {positionTitle} at {companyName}",
+      defaultText: "Your offer of employment: {positionTitle} at {companyName}",
       tokens: ["positionTitle", "companyName"],
     },
     slots: [
@@ -228,7 +228,7 @@ export const EMAIL_TEMPLATE_CATALOG: Record<TemplateKey, EmailTemplateCatalogEnt
     label: "Interview invitation",
     description: "Sent to a candidate when a recruiter schedules an interview round.",
     subject: {
-      defaultText: "Interview invitation — {roundName} for {positionTitle}",
+      defaultText: "Interview invitation: {roundName} for {positionTitle}",
       tokens: ["roundName", "positionTitle"],
     },
     slots: [
@@ -296,7 +296,7 @@ export const EMAIL_TEMPLATE_CATALOG: Record<TemplateKey, EmailTemplateCatalogEnt
         slotKey: "body2",
         label: "Body paragraph 2",
         defaultText:
-          "This does not affect your standing in the process — you remain an active candidate. Our recruiting team will be in touch shortly with next steps, and if a new time is needed you'll receive a fresh invitation to confirm.",
+          "This does not affect your standing in the process. You remain an active candidate. Our recruiting team will be in touch shortly with next steps, and if a new time is needed you'll receive a fresh invitation to confirm.",
         tokens: [],
       },
       {
@@ -361,7 +361,7 @@ export const EMAIL_TEMPLATE_CATALOG: Record<TemplateKey, EmailTemplateCatalogEnt
     description:
       "Wrapper for an agent-drafted, recruiter-approved message. The body is the approved draft (not overridable); only the sign-off and the fallback subject are.",
     subject: {
-      defaultText: "Update on your application — {positionTitle}",
+      defaultText: "Update on your application: {positionTitle}",
       tokens: ["positionTitle"],
       note: "Used only as a fallback when the approved message carries no subject of its own.",
     },
@@ -380,14 +380,14 @@ export const EMAIL_TEMPLATE_CATALOG: Record<TemplateKey, EmailTemplateCatalogEnt
     label: "SLA breach imminent (recruiter)",
     description: "Batched heads-up to a recruiter whose applications are near a stage-SLA breach.",
     subject: {
-      defaultText: "Heads up — {applicationCount} {noun} near SLA breach",
+      defaultText: "Heads up: {applicationCount} {noun} near SLA breach",
       tokens: ["applicationCount", "noun"],
     },
     slots: [
       {
         slotKey: "heading",
         label: "Heading",
-        defaultText: "Heads up — SLA breach imminent",
+        defaultText: "Heads up: SLA breach imminent",
         tokens: [],
       },
       {
@@ -430,7 +430,7 @@ export const EMAIL_TEMPLATE_CATALOG: Record<TemplateKey, EmailTemplateCatalogEnt
     label: "Offer accepted (recruiter)",
     description: "Sent to the recruiter when a candidate accepts an offer.",
     subject: {
-      defaultText: "Offer accepted — {candidateName} for {positionTitle}",
+      defaultText: "Offer accepted: {candidateName} for {positionTitle}",
       tokens: ["candidateName", "positionTitle"],
     },
     slots: [
@@ -464,7 +464,7 @@ export const EMAIL_TEMPLATE_CATALOG: Record<TemplateKey, EmailTemplateCatalogEnt
     label: "Offer declined (recruiter)",
     description: "Sent to the recruiter when a candidate declines an offer.",
     subject: {
-      defaultText: "Offer declined — {candidateName} for {positionTitle}",
+      defaultText: "Offer declined: {candidateName} for {positionTitle}",
       tokens: ["candidateName", "positionTitle"],
     },
     slots: [

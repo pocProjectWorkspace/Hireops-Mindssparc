@@ -71,9 +71,9 @@ export function InterviewCancelled({
                 slots?.body2,
                 tok,
                 <>
-                  This does not affect your standing in the process — you remain an active
-                  candidate. Our recruiting team will be in touch shortly with next steps, and if a
-                  new time is needed you&rsquo;ll receive a fresh invitation to confirm.
+                  This does not affect your standing in the process. You remain an active candidate.
+                  Our recruiting team will be in touch shortly with next steps, and if a new time is
+                  needed you&rsquo;ll receive a fresh invitation to confirm.
                 </>,
               )}
             </Text>

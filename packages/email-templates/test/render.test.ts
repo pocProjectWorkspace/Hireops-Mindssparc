@@ -30,7 +30,7 @@ describe("candidate.agent_message", () => {
   it("falls back to a role-based subject when none is supplied", async () => {
     const { subject: _omit, ...noSubject } = baseData;
     const r = await renderTemplate("candidate.agent_message", noSubject);
-    expect(r.subject).toBe("Update on your application — Senior Backend Engineer");
+    expect(r.subject).toBe("Update on your application: Senior Backend Engineer");
   });
 
   it("renders the approved body and the tenant sign-off", async () => {

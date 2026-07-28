@@ -67,7 +67,7 @@ export function buildInterviewIcs(input: BuildInterviewIcsInput): EmailAttachmen
   const durationMs = Math.max(1, input.durationMinutes) * 60_000;
   const end = new Date(start.getTime() + durationMs);
 
-  const summary = `${input.roundName} — ${input.positionTitle} at ${input.companyName}`;
+  const summary = `${input.roundName}: ${input.positionTitle} at ${input.companyName}`;
   const descriptionParts = [
     `Interview: ${input.roundName} for ${input.positionTitle}`,
     `Candidate: ${input.candidateName}`,

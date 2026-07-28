@@ -84,7 +84,7 @@ export function ApplicationReceived({
                 slots?.footer,
                 tok,
                 <>
-                  This is an automated message. Please don&rsquo;t reply to this email — replies are
+                  This is an automated message. Please don&rsquo;t reply to this email. Replies are
                   not monitored. If you need to reach the team, contact the recruiter who emails you
                   next.
                 </>,
