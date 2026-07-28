@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { applicationStageSchema } from "./enums";
 
 /**
  * Iris — user-invoked TRANSACTIONAL assistant (IRIS-A1). Shared zod + types
@@ -24,7 +25,11 @@ import { z } from "zod";
  * exactly the registry, nothing more. The action's input CONTRACT stays
  * server-side (the registry's zod `inputSchema`); a later client ticket adds
  * whatever form-rendering payload it needs. This wire shape is intentionally
- * the minimal `{id,label,group,destructive,bulk}` the menu path requires.
+ * the minimal `{id,label,group,destructive,bulk}` the menu path requires, plus
+ * the per-action `roles` (IRIS-B1.1) so a client can reflect who may run each
+ * action. The server ALREADY filters this menu to the caller's roles — `roles`
+ * is descriptive metadata, never the enforcement point (that stays server-side
+ * on irisPreview/irisExecute).
  */
 export const irisActionMenuItemSchema = z.object({
   id: z.string(),
@@ -32,6 +37,7 @@ export const irisActionMenuItemSchema = z.object({
   group: z.string(),
   destructive: z.boolean(),
   bulk: z.boolean(),
+  roles: z.array(z.string()),
 });
 export type IrisActionMenuItem = z.infer<typeof irisActionMenuItemSchema>;
 
@@ -40,6 +46,40 @@ export const irisListActionsOutputSchema = z.object({
   actions: z.array(irisActionMenuItemSchema),
 });
 export type IrisListActionsOutput = z.infer<typeof irisListActionsOutputSchema>;
+
+// ─────────────── irisSearchApplications ───────────────
+
+/**
+ * A purpose-built, correctly-gated read for the Iris application picker
+ * (IRIS-B1.1). The pipeline/onboarding actions (advance/reject/open onboarding)
+ * are operated by recruiters + HR-ops, who are NOT in the candidate-triage read
+ * set (listCandidates). Rather than widen that procedure's gate, this lean read
+ * is gated to the UNION of the pipeline action roles and returns just what the
+ * picker renders: the application id + candidate name + position + current
+ * stage, RLS-scoped to the caller's tenant.
+ */
+export const irisSearchApplicationsInputSchema = z.object({
+  query: z.string().max(200).optional(),
+  limit: z.number().int().min(1).max(100).optional(),
+});
+export type IrisSearchApplicationsInput = z.infer<typeof irisSearchApplicationsInputSchema>;
+
+export const irisApplicationSearchRowSchema = z.object({
+  applicationId: z.string().uuid(),
+  // candidateId is carried so the picker's caller can deep-link to the candidate
+  // detail drawer (which opens by candidateId) after an action — the fields the
+  // picker DISPLAYS are candidateName + positionTitle + currentStage.
+  candidateId: z.string().uuid(),
+  candidateName: z.string().nullable(),
+  positionTitle: z.string().nullable(),
+  currentStage: applicationStageSchema,
+});
+export type IrisApplicationSearchRow = z.infer<typeof irisApplicationSearchRowSchema>;
+
+export const irisSearchApplicationsOutputSchema = z.object({
+  rows: z.array(irisApplicationSearchRowSchema),
+});
+export type IrisSearchApplicationsOutput = z.infer<typeof irisSearchApplicationsOutputSchema>;
 
 // ─────────────── irisPreview ───────────────
 

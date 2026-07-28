@@ -81,6 +81,15 @@ export interface IrisAction<P> {
   id: string;
   label: string;
   group: string;
+  /**
+   * The roles a human needs to perform this action in the app — the SAME
+   * app-surface role set, mirrored at the Iris layer (IRIS-B1.1). Iris gates
+   * each action per-action against these (irisListActions filters by them;
+   * irisPreview/irisExecute enforce them), so a persona sees + can run exactly
+   * the actions they could do by hand. This is NOT a new gate on the underlying
+   * write — the dispatched procedures keep their own RLS + audit unchanged.
+   */
+  roles: string[];
   inputSchema: z.ZodType<P>;
   destructive: boolean;
   bulk: boolean;
@@ -98,6 +107,8 @@ export interface AnyIrisAction {
   id: string;
   label: string;
   group: string;
+  /** The app-surface roles that may run this action (IRIS-B1.1). */
+  roles: string[];
   destructive: boolean;
   bulk: boolean;
   parse(rawParams: unknown): unknown;
@@ -111,6 +122,7 @@ function eraseIrisAction<P>(action: IrisAction<P>): AnyIrisAction {
     id: action.id,
     label: action.label,
     group: action.group,
+    roles: action.roles,
     destructive: action.destructive,
     bulk: action.bulk,
     parse: (rawParams) => action.inputSchema.parse(rawParams),
@@ -141,6 +153,8 @@ export interface IrisActionMenuEntry {
   id: string;
   label: string;
   group: string;
+  /** The app-surface roles that may run this action (IRIS-B1.1). */
+  roles: string[];
   destructive: boolean;
   bulk: boolean;
 }
@@ -154,6 +168,7 @@ export function listIrisActions(): IrisActionMenuEntry[] {
     id: a.id,
     label: a.label,
     group: a.group,
+    roles: a.roles,
     destructive: a.destructive,
     bulk: a.bulk,
   }));

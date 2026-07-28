@@ -18,6 +18,8 @@ export const rejectApplicationAction: IrisAction<RejectApplicationInput> = {
   id: "reject_application",
   label: "Reject candidate",
   group: "Pipeline",
+  // The pipeline operators who reject candidates in triage — recruiters + admin.
+  roles: ["admin", "recruiter"],
   // Reuse the triage procedure's real input contract, unchanged.
   inputSchema: rejectApplicationInputSchema,
   // Ends the candidate's application — the client shows destructive framing.

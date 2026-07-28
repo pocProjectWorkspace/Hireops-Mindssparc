@@ -760,6 +760,8 @@ import {
   irisGetProvenanceInputSchema,
   irisGetProvenanceOutputSchema,
   type IrisProvenanceRow,
+  irisSearchApplicationsInputSchema,
+  irisSearchApplicationsOutputSchema,
 } from "@hireops/api-types";
 import { createClient } from "@supabase/supabase-js";
 import {
@@ -1164,6 +1166,18 @@ const OFFBOARD_MANAGE_ROLES = new Set(["admin", "hr_ops", "people_ops"]);
 // RBAC-01 — onboarding is worked by the recruiter (day-0 handoff) and HR ops.
 // Matches the /onboarding nav gate; RLS still scopes rows to the tenant.
 const ONBOARDING_MANAGE_ROLES = new Set(["admin", "recruiter", "hr_ops", "people_ops"]);
+
+// IRIS-B1.1 — the read gate for the Iris application picker (irisSearchApplications).
+// The UNION of the pipeline/onboarding action operators, so every persona that
+// can run one of those actions through Iris can also resolve its target here —
+// without widening any candidate-list procedure's own gate.
+const IRIS_PIPELINE_PICKER_ROLES = new Set([
+  "admin",
+  "recruiter",
+  "hiring_manager",
+  "hr_ops",
+  "people_ops",
+]);
 
 // HRHEAD-02 — Market Intelligence + Feasibility (HR-head persona).
 // Market benchmarks READ is a planning surface for anyone who owns or approves
@@ -21428,14 +21442,96 @@ export const appRouter = router({
     .input(irisListActionsInputSchema)
     .output(irisListActionsOutputSchema)
     .query(({ ctx }) => {
-      // Gate to the roles that can create requisitions — the only action wired
-      // today (create_requisition_jd). Same gate createRequisitionDraft enforces.
+      // IRIS-B1.1 — PER-ACTION gating. Instead of one global role gate, return
+      // only the actions whose `roles` intersect the caller's roles (each
+      // action's roles mirror the app-surface roles a human needs to do it;
+      // admin is in every action's list, so it sees all). A recruiter sees the
+      // pipeline/onboarding actions but not create_requisition_jd; a hiring
+      // manager sees create_requisition_jd but not reject_application. No blanket
+      // FORBIDDEN — an ineligible persona simply gets a role-appropriate (possibly
+      // empty) menu.
+      const actions = listIrisActions().filter((a) => a.roles.some((r) => ctx.roles.includes(r)));
+      return { actions };
+    }),
+
+  /**
+   * irisSearchApplications (IRIS-B1.1) — the correctly-gated read behind the Iris
+   * application picker. The pipeline/onboarding actions are operated by
+   * recruiters + HR-ops, who are NOT in listCandidates' triage read set; rather
+   * than widen that gate, this lean read is gated to the UNION of those action
+   * roles (IRIS_PIPELINE_PICKER_ROLES) and returns just the picker fields —
+   * application id + candidate name + position title + current stage — RLS-scoped
+   * to the caller's tenant. Best-effort inner-joins (an application always has a
+   * candidate/person + requisition/position in the seeded data).
+   */
+  irisSearchApplications: protectedProcedure
+    .input(irisSearchApplicationsInputSchema)
+    .output(irisSearchApplicationsOutputSchema)
+    .query(async ({ ctx, input }) => {
       requireAnyRole(
         ctx,
-        REQUISITION_WRITE_ROLES,
-        "Iris actions require the hiring_manager or admin role",
+        IRIS_PIPELINE_PICKER_ROLES,
+        "Iris candidate search is not available for your role",
       );
-      return { actions: listIrisActions() };
+      const db = requireDb(ctx);
+      const limit = input.limit ?? 25;
+      const q = input.query?.trim();
+      // Case-insensitive name/title match when a query is given; parameterised so
+      // the term can't break out of the fragment.
+      const conds = q
+        ? [
+            or(
+              dsql`${persons.fullName} ILIKE ${`%${q}%`}`,
+              dsql`${positions.title} ILIKE ${`%${q}%`}`,
+            ),
+          ]
+        : [];
+      const rows = await db
+        .select({
+          applicationId: applications.id,
+          candidateId: candidates.id,
+          candidateName: persons.fullName,
+          positionTitle: positions.title,
+          currentStage: applications.currentStage,
+        })
+        .from(applications)
+        .innerJoin(
+          candidates,
+          and(
+            eq(applications.candidateId, candidates.id),
+            eq(applications.tenantId, candidates.tenantId),
+          ),
+        )
+        .innerJoin(
+          persons,
+          and(eq(candidates.personId, persons.id), eq(candidates.tenantId, persons.tenantId)),
+        )
+        .innerJoin(
+          requisitions,
+          and(
+            eq(applications.requisitionId, requisitions.id),
+            eq(applications.tenantId, requisitions.tenantId),
+          ),
+        )
+        .innerJoin(
+          positions,
+          and(
+            eq(requisitions.positionId, positions.id),
+            eq(requisitions.tenantId, positions.tenantId),
+          ),
+        )
+        .where(conds.length ? and(...conds) : undefined)
+        .orderBy(desc(applications.createdAt))
+        .limit(limit);
+      return {
+        rows: rows.map((r) => ({
+          applicationId: r.applicationId,
+          candidateId: r.candidateId,
+          candidateName: r.candidateName,
+          positionTitle: r.positionTitle,
+          currentStage: r.currentStage,
+        })),
+      };
     }),
 
   /**
@@ -21450,13 +21546,6 @@ export const appRouter = router({
     .input(irisPreviewInputSchema)
     .output(irisPreviewOutputSchema)
     .query(({ ctx, input }) => {
-      // Same gate irisListActions enforces — only the roles that can run the one
-      // wired action (create_requisition_jd) reach its preview.
-      requireAnyRole(
-        ctx,
-        REQUISITION_WRITE_ROLES,
-        "Iris actions require the hiring_manager or admin role",
-      );
       // WHITELIST-ONLY: an unregistered actionId can never resolve a preview.
       const action = getIrisAction(input.actionId);
       if (!action) {
@@ -21465,6 +21554,14 @@ export const appRouter = router({
           message: `Unknown Iris action: ${input.actionId}`,
         });
       }
+      // IRIS-B1.1 — PER-ACTION gate: require the app-surface roles for THIS
+      // action (mirrors what a human needs to do it by hand). An ineligible role
+      // gets FORBIDDEN on the specific action, never a blanket lockout.
+      requireAnyRole(
+        ctx,
+        new Set(action.roles),
+        `You don't have the role to run "${action.label}" through Iris.`,
+      );
       // Validate against the action's OWN input contract — invalid params are a
       // BAD_REQUEST, the same contract irisExecute enforces before it commits.
       let parsed: unknown;
@@ -21494,6 +21591,15 @@ export const appRouter = router({
             message: `Unknown Iris action: ${input.actionId}`,
           });
         }
+        // IRIS-B1.1 — PER-ACTION gate before we commit: require the app-surface
+        // roles for THIS action. The dispatched procedure keeps its own RLS +
+        // withAudit; this mirrors the human-surface role at the Iris layer so an
+        // ineligible persona gets FORBIDDEN on the specific action.
+        requireAnyRole(
+          ctx,
+          new Set(action.roles),
+          `You don't have the role to run "${action.label}" through Iris.`,
+        );
         if (!ctx.tenantId) {
           throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
         }

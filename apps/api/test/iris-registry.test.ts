@@ -101,15 +101,19 @@ describe("IRIS-A1 action registry", () => {
     // Whitelist-only: exactly the registry, same ids.
     expect(menu.map((m) => m.id).sort()).toEqual(Object.keys(IRIS_ACTIONS).sort());
     // Every entry carries EXACTLY the wire fields — no zod / server code leaks.
+    // IRIS-B1.1 adds `roles` (the per-action app-surface role set) to the menu.
     for (const entry of menu) {
       expect(Object.keys(entry).sort()).toEqual(
-        ["bulk", "destructive", "group", "id", "label"].sort(),
+        ["bulk", "destructive", "group", "id", "label", "roles"].sort(),
       );
       expect(typeof entry.id).toBe("string");
       expect(typeof entry.label).toBe("string");
       expect(typeof entry.group).toBe("string");
       expect(typeof entry.destructive).toBe("boolean");
       expect(typeof entry.bulk).toBe("boolean");
+      expect(Array.isArray(entry.roles)).toBe(true);
+      expect(entry.roles.length).toBeGreaterThan(0);
+      for (const role of entry.roles) expect(typeof role).toBe("string");
     }
     // JSON round-trips byte-for-byte (genuinely serialisable).
     expect(JSON.parse(JSON.stringify(menu))).toEqual(menu);
@@ -138,6 +142,25 @@ describe("IRIS-B1 pipeline / onboarding actions", () => {
         "reject_application",
       ].sort(),
     );
+  });
+
+  it("each action carries its expected per-action roles (IRIS-B1.1)", () => {
+    // The roles mirror the app-surface roles a human needs to run each action.
+    // admin is the super-role present in every action's set.
+    expect(createRequisitionJdAction.roles.sort()).toEqual(["admin", "hiring_manager"].sort());
+    expect(advanceApplicationAction.roles.sort()).toEqual(["admin", "recruiter"].sort());
+    expect(rejectApplicationAction.roles.sort()).toEqual(["admin", "recruiter"].sort());
+    expect(openOnboardingCaseAction.roles.sort()).toEqual(
+      ["admin", "recruiter", "hr_ops", "people_ops"].sort(),
+    );
+    // The erased registry entries carry the SAME roles the concrete actions do.
+    for (const action of [createRequisitionJdAction, ...B1_ACTIONS]) {
+      expect(getIrisAction(action.id)!.roles).toEqual(action.roles);
+    }
+    // admin is in every action's role set (sees + can run everything).
+    for (const entry of listIrisActions()) {
+      expect(entry.roles).toContain("admin");
+    }
   });
 
   it("groups + destructive flags: reject is destructive, advance / onboarding are not", () => {

@@ -6,16 +6,18 @@ import { humanizeSentence } from "@/lib/labels";
 import type { ApplicationStage } from "@hireops/api-types";
 
 /**
- * IrisApplicationPicker (IRIS-B1) — the shared candidate/application search-select
- * behind the three Pipeline/Onboarding actions. It resolves an APPLICATION id
- * (the target every one of those actions mutates) from a candidate name.
+ * IrisApplicationPicker (IRIS-B1 / B1.1) — the shared candidate/application
+ * search-select behind the three Pipeline/Onboarding actions. It resolves an
+ * APPLICATION id (the target every one of those actions mutates) from a
+ * candidate name or position.
  *
- * Backed by the REAL `listCandidates` read procedure (the triage feed): it
- * returns one row per (candidate, application) with the candidate name, the
- * application id, and the current stage, and is readable by every persona that
- * can open the Iris drawer (admin + hiring_manager). We filter by typed name on
- * the client over the first page — a demo-scale, friction-free picker with no
- * new query.
+ * Backed by the purpose-built `irisSearchApplications` read (IRIS-B1.1): it is
+ * gated to the UNION of the pipeline action roles (admin + recruiter +
+ * hiring_manager + hr_ops + people_ops), so it works for EVERY persona that can
+ * run one of these actions through Iris — unlike the old `listCandidates` feed,
+ * which is admin/hiring_manager triage-scoped and 403'd recruiters/HR-ops. It
+ * returns the application id + candidate name + position title + current stage,
+ * searched server-side by the typed query.
  *
  * If the page context already names an application (entityType "application"),
  * the drawer passes it as `preselectApplicationId` and we select it once on
@@ -42,10 +44,13 @@ export function IrisApplicationPicker({
 }) {
   const [search, setSearch] = useState("");
 
-  const query = trpc.listCandidates.useQuery({ pagination: { limit: 100 } }, { enabled });
+  const query = trpc.irisSearchApplications.useQuery(
+    { query: search.trim() || undefined, limit: 40 },
+    { enabled },
+  );
   const rows = useMemo(() => query.data?.rows ?? [], [query.data]);
 
-  // Pre-select from page context exactly once, when the rows first arrive.
+  // Pre-select from page context exactly once, when matching rows first arrive.
   const preselectApplied = useRef(false);
   useEffect(() => {
     if (preselectApplied.current) return;
@@ -56,17 +61,11 @@ export function IrisApplicationPicker({
       onChange({
         applicationId: match.applicationId,
         candidateId: match.candidateId,
-        fullName: match.fullName,
-        stage: match.stage,
+        fullName: match.candidateName,
+        stage: match.currentStage,
       });
     }
   }, [rows, preselectApplicationId, value, onChange]);
-
-  const filtered = useMemo(() => {
-    const q = search.trim().toLowerCase();
-    const base = q ? rows.filter((r) => (r.fullName ?? "").toLowerCase().includes(q)) : rows;
-    return base.slice(0, 40);
-  }, [rows, search]);
 
   if (value) {
     return (
@@ -100,7 +99,7 @@ export function IrisApplicationPicker({
           type="search"
           value={search}
           onChange={(e) => setSearch(e.target.value)}
-          placeholder="Search by candidate name…"
+          placeholder="Search by candidate name or role…"
           className="mt-1 h-10 w-full rounded-button border border-neutral-300 bg-white px-3 text-sm text-neutral-900 placeholder:text-neutral-400 focus:border-brand-500 focus:outline-none"
         />
       </label>
@@ -109,13 +108,13 @@ export function IrisApplicationPicker({
           <p className="px-3 py-4 text-sm text-neutral-500">Loading candidates…</p>
         ) : query.error ? (
           <p className="px-3 py-4 text-sm text-status-error-700">Couldn&apos;t load candidates.</p>
-        ) : filtered.length === 0 ? (
+        ) : rows.length === 0 ? (
           <p className="px-3 py-4 text-sm text-neutral-500">
-            {rows.length === 0 ? "No candidates found." : "No candidates match your search."}
+            {search.trim() ? "No candidates match your search." : "No candidates found."}
           </p>
         ) : (
           <ul className="divide-y divide-neutral-100">
-            {filtered.map((r) => (
+            {rows.map((r) => (
               <li key={r.applicationId}>
                 <button
                   type="button"
@@ -123,17 +122,24 @@ export function IrisApplicationPicker({
                     onChange({
                       applicationId: r.applicationId,
                       candidateId: r.candidateId,
-                      fullName: r.fullName,
-                      stage: r.stage,
+                      fullName: r.candidateName,
+                      stage: r.currentStage,
                     })
                   }
                   className="flex w-full items-center justify-between gap-3 px-3 py-2.5 text-left transition-colors hover:bg-neutral-50"
                 >
-                  <span className="min-w-0 truncate text-sm font-medium text-neutral-800">
-                    {r.fullName ?? "(no name on file)"}
+                  <span className="min-w-0">
+                    <span className="block truncate text-sm font-medium text-neutral-800">
+                      {r.candidateName ?? "(no name on file)"}
+                    </span>
+                    {r.positionTitle ? (
+                      <span className="block truncate text-xs text-neutral-500">
+                        {r.positionTitle}
+                      </span>
+                    ) : null}
                   </span>
                   <span className="shrink-0 text-xs text-neutral-500">
-                    {humanizeSentence(r.stage)}
+                    {humanizeSentence(r.currentStage)}
                   </span>
                 </button>
               </li>

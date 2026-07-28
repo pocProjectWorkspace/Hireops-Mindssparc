@@ -25,6 +25,9 @@ export const openOnboardingCaseAction: IrisAction<CreateOnboardingCaseForApplica
   id: "open_onboarding_case",
   label: "Open onboarding case",
   group: "Onboarding",
+  // Mirrors ONBOARDING_MANAGE_ROLES — recruiters hand off, HR/people-ops run
+  // onboarding (+ admin).
+  roles: ["admin", "recruiter", "hr_ops", "people_ops"],
   // Reuse the procedure's real input contract — applicationId only.
   inputSchema: createOnboardingCaseForApplicationInputSchema,
   destructive: false,

@@ -26,6 +26,9 @@ export const createRequisitionJdAction: IrisAction<CreateRequisitionDraftInput> 
   id: "create_requisition_jd",
   label: "Create requisition + JD",
   group: "Requisitions",
+  // Mirrors REQUISITION_WRITE_ROLES — the roles that create requisitions in the
+  // app (the createRequisitionDraft / generateJdDraft gate this chains).
+  roles: ["admin", "hiring_manager"],
   // Reuse the wizard's real input contract — the minimum to create a req and
   // generate its JD, unchanged.
   inputSchema: createRequisitionDraftInputSchema,

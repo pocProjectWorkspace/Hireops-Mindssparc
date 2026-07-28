@@ -25,6 +25,8 @@ export const advanceApplicationAction: IrisAction<AdvanceApplicationInput> = {
   id: "advance_application",
   label: "Advance candidate",
   group: "Pipeline",
+  // The pipeline operators who advance candidates in triage — recruiters + admin.
+  roles: ["admin", "recruiter"],
   // Reuse the triage procedure's real input contract, unchanged.
   inputSchema: advanceApplicationInputSchema,
   destructive: false,

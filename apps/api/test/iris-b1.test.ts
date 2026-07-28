@@ -10,13 +10,17 @@
  *     "application") is persisted, AND irisGetProvenance reads it back with
  *     assistant='iris' + the confirming user's id. No side write-path.
  *
- *   Test 2 (HONESTY, the gate fires THROUGH Iris): the Iris menu/preview path is
- *     role-gated. As recruiter1 (not a requisition-write role) irisPreview and
- *     irisListActions are FORBIDDEN — the whitelist path enforces roles server-
- *     side; admin1 can preview reject_application and the menu carries all three
- *     new actions. (NOTE: the underlying advance/reject transition has no role
- *     gate of its own — applications RLS is tenant-isolation FOR ALL — so the
- *     role gate that fires through Iris is this menu/preview gate.)
+ *   Test 2 (HONESTY, PER-ACTION gate fires THROUGH Iris — IRIS-B1.1): the Iris
+ *     menu/preview/execute path is gated PER ACTION to the app-surface roles a
+ *     human needs for that action. As recruiter1 (recruiter) advance/reject are
+ *     ALLOWED (preview + a real execute) and appear in the recruiter's
+ *     irisListActions, but create_requisition_jd is FORBIDDEN and absent from the
+ *     recruiter's menu. As hiringmanager1 (hiring_manager) create_requisition_jd
+ *     is present but reject_application is FORBIDDEN and absent from the menu.
+ *     admin1 (super-role) sees + can preview everything. (NOTE: the underlying
+ *     advance/reject transition has no role gate of its own — applications RLS is
+ *     tenant-isolation FOR ALL — so the role gate that fires through Iris is this
+ *     per-action menu/preview/execute gate, mirroring the app-surface roles.)
  *
  * The advance is a BACKWARD move (shortlisted → recruiter_review) on purpose:
  * backward transitions skip the forward-only gates (HR-round assessment,
@@ -46,6 +50,7 @@ if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
 const PASSWORD = "TestPassword123!";
 const ADMIN = "admin1@kyndryl-poc.test";
 const RECRUITER = "recruiter1@kyndryl-poc.test";
+const HIRING_MANAGER = "hiringmanager1@kyndryl-poc.test";
 const TENANT_SLUG = "kyndryl-poc";
 
 // Unique per run so a shared-DB rerun never collides.
@@ -60,6 +65,7 @@ const APPLICATION = randomUUID();
 
 let adminJwt: string;
 let recruiterJwt: string;
+let hiringManagerJwt: string;
 let adminUserId: string;
 let tenantId: string;
 
@@ -127,7 +133,11 @@ interface IrisProvenanceOutput {
 
 describe("IRIS-B1 pipeline actions through Iris (honesty)", () => {
   beforeAll(async () => {
-    [adminJwt, recruiterJwt] = await Promise.all([signIn(ADMIN), signIn(RECRUITER)]);
+    [adminJwt, recruiterJwt, hiringManagerJwt] = await Promise.all([
+      signIn(ADMIN),
+      signIn(RECRUITER),
+      signIn(HIRING_MANAGER),
+    ]);
     adminUserId = decodeJwt(adminJwt).sub as string;
     const [t] = await poolSql<{ id: string }[]>`
       SELECT id FROM public.tenants WHERE slug = ${TENANT_SLUG} LIMIT 1
@@ -250,11 +260,27 @@ describe("IRIS-B1 pipeline actions through Iris (honesty)", () => {
     assert.equal(p.confirmedByUserId, adminUserId, "confirming user read back");
   });
 
-  it("Test 2 (HONESTY): the Iris menu/preview gate fires THROUGH Iris — recruiter is FORBIDDEN, admin is allowed", async () => {
-    // recruiter is NOT a requisition-write role; the whitelist path refuses the
-    // reject preview and the action list server-side (role gate on the Iris menu
-    // path). This is the role gate that fires through Iris for these actions.
-    const recruiterPreview = await trpcQuery(
+  it("Test 2 (HONESTY): the PER-ACTION gate fires THROUGH Iris — recruiter runs pipeline actions but not requisition creation; hiring_manager is the mirror", async () => {
+    // ── recruiter: advance/reject ALLOWED, create_requisition_jd FORBIDDEN ──
+
+    // The recruiter's menu is role-appropriate: the pipeline/onboarding actions
+    // appear; the requisition-creation action does NOT (per-action filtering, not
+    // a blanket lockout).
+    const recruiterList = await trpcQuery<{
+      actions: { id: string; group: string; destructive: boolean; roles: string[] }[];
+    }>("irisListActions", {}, recruiterJwt);
+    assert.ok(!isErr(recruiterList), `recruiter can list, got ${JSON.stringify(recruiterList)}`);
+    const recruiterIds = new Set(recruiterList.result.data.actions.map((a) => a.id));
+    assert.ok(recruiterIds.has("advance_application"), "recruiter menu has advance_application");
+    assert.ok(recruiterIds.has("reject_application"), "recruiter menu has reject_application");
+    assert.ok(recruiterIds.has("open_onboarding_case"), "recruiter menu has open_onboarding_case");
+    assert.ok(
+      !recruiterIds.has("create_requisition_jd"),
+      "recruiter menu OMITS create_requisition_jd",
+    );
+
+    // recruiter CAN preview reject_application (the gate opens for this action).
+    const recruiterRejectPreview = await trpcQuery<{ summary: string; details: string[] }>(
       "irisPreview",
       {
         actionId: "reject_application",
@@ -263,17 +289,93 @@ describe("IRIS-B1 pipeline actions through Iris (honesty)", () => {
       recruiterJwt,
     );
     assert.ok(
-      isErr(recruiterPreview) && recruiterPreview.error.data.code === "FORBIDDEN",
-      `recruiter reject preview forbidden, got ${JSON.stringify(recruiterPreview)}`,
+      !isErr(recruiterRejectPreview),
+      `recruiter reject preview allowed, got ${JSON.stringify(recruiterRejectPreview)}`,
     );
-
-    const recruiterList = await trpcQuery("irisListActions", {}, recruiterJwt);
     assert.ok(
-      isErr(recruiterList) && recruiterList.error.data.code === "FORBIDDEN",
-      `recruiter cannot list iris actions, got ${JSON.stringify(recruiterList)}`,
+      recruiterRejectPreview.result.data.summary.length > 0,
+      "reject preview has a summary",
     );
 
-    // admin CAN preview the destructive reject action (real server preview).
+    // recruiter CAN preview advance_application too.
+    const recruiterAdvancePreview = await trpcQuery<{ summary: string; details: string[] }>(
+      "irisPreview",
+      {
+        actionId: "advance_application",
+        params: { applicationId: APPLICATION, targetStage: "ai_screening" },
+      },
+      recruiterJwt,
+    );
+    assert.ok(
+      !isErr(recruiterAdvancePreview),
+      `recruiter advance preview allowed, got ${JSON.stringify(recruiterAdvancePreview)}`,
+    );
+
+    // recruiter CAN irisExecute advance_application — a REAL backward move
+    // (recruiter_review → ai_screening; backward skips forward-only gates). This
+    // proves the gate opens for the write path, not just the preview.
+    const recruiterAdvance = await trpcMutation<IrisExecuteOutput>(
+      "irisExecute",
+      {
+        actionId: "advance_application",
+        params: { applicationId: APPLICATION, targetStage: "ai_screening" },
+      },
+      recruiterJwt,
+    );
+    assert.ok(
+      !isErr(recruiterAdvance),
+      `recruiter advance execute allowed, got ${JSON.stringify(recruiterAdvance)}`,
+    );
+    assert.equal(recruiterAdvance.result.data.entityType, "application");
+    const [movedRow] = await poolSql<{ current_stage: string }[]>`
+      SELECT current_stage FROM public.applications WHERE id = ${APPLICATION}
+    `;
+    assert.equal(movedRow?.current_stage, "ai_screening", "recruiter's advance really moved it");
+
+    // recruiter CANNOT preview create_requisition_jd — FORBIDDEN on that action.
+    const recruiterCreatePreview = await trpcQuery(
+      "irisPreview",
+      { actionId: "create_requisition_jd", params: { title: "Staff Eng", locationType: "remote" } },
+      recruiterJwt,
+    );
+    assert.ok(
+      isErr(recruiterCreatePreview) && recruiterCreatePreview.error.data.code === "FORBIDDEN",
+      `recruiter create_requisition_jd preview forbidden, got ${JSON.stringify(recruiterCreatePreview)}`,
+    );
+
+    // recruiter CANNOT execute create_requisition_jd either — FORBIDDEN before commit.
+    const recruiterCreateExec = await trpcMutation(
+      "irisExecute",
+      { actionId: "create_requisition_jd", params: { title: "Staff Eng", locationType: "remote" } },
+      recruiterJwt,
+    );
+    assert.ok(
+      isErr(recruiterCreateExec) && recruiterCreateExec.error.data.code === "FORBIDDEN",
+      `recruiter create_requisition_jd execute forbidden, got ${JSON.stringify(recruiterCreateExec)}`,
+    );
+
+    // ── hiring_manager: the mirror — create_requisition_jd yes, reject no ──
+    const hmList = await trpcQuery<{
+      actions: { id: string }[];
+    }>("irisListActions", {}, hiringManagerJwt);
+    assert.ok(!isErr(hmList), `hiring_manager can list, got ${JSON.stringify(hmList)}`);
+    const hmIds = new Set(hmList.result.data.actions.map((a) => a.id));
+    assert.ok(hmIds.has("create_requisition_jd"), "hiring_manager menu has create_requisition_jd");
+    assert.ok(!hmIds.has("reject_application"), "hiring_manager menu OMITS reject_application");
+    assert.ok(!hmIds.has("advance_application"), "hiring_manager menu OMITS advance_application");
+
+    // hiring_manager CANNOT preview reject_application — FORBIDDEN on that action.
+    const hmRejectPreview = await trpcQuery(
+      "irisPreview",
+      { actionId: "reject_application", params: { applicationId: APPLICATION, reason: "no" } },
+      hiringManagerJwt,
+    );
+    assert.ok(
+      isErr(hmRejectPreview) && hmRejectPreview.error.data.code === "FORBIDDEN",
+      `hiring_manager reject preview forbidden, got ${JSON.stringify(hmRejectPreview)}`,
+    );
+
+    // ── admin (super-role): sees + can preview everything ──
     const adminPreview = await trpcQuery<{ summary: string; details: string[] }>(
       "irisPreview",
       {
@@ -289,7 +391,7 @@ describe("IRIS-B1 pipeline actions through Iris (honesty)", () => {
       "reject preview names the reason",
     );
 
-    // admin's menu carries all three new actions.
+    // admin's menu carries all four actions (super-role).
     const adminList = await trpcQuery<{
       actions: { id: string; group: string; destructive: boolean }[];
     }>("irisListActions", {}, adminJwt);
@@ -298,7 +400,42 @@ describe("IRIS-B1 pipeline actions through Iris (honesty)", () => {
     assert.ok(byId.has("advance_application"), "menu contains advance_application");
     assert.ok(byId.has("reject_application"), "menu contains reject_application");
     assert.ok(byId.has("open_onboarding_case"), "menu contains open_onboarding_case");
+    assert.ok(byId.has("create_requisition_jd"), "menu contains create_requisition_jd");
     assert.equal(byId.get("reject_application")!.destructive, true, "reject flagged destructive");
     assert.equal(byId.get("advance_application")!.destructive, false);
+  });
+
+  it("Test 3 (IRIS-B1.1): irisSearchApplications is gated to the pipeline personas and returns the seeded application", async () => {
+    // recruiter (a pipeline persona) CAN search and finds the seeded candidate.
+    const recruiterSearch = await trpcQuery<{
+      rows: {
+        applicationId: string;
+        candidateId: string;
+        candidateName: string | null;
+        positionTitle: string | null;
+        currentStage: string;
+      }[];
+    }>("irisSearchApplications", { query: `IRIS-B1 Candidate ${RUN}` }, recruiterJwt);
+    assert.ok(
+      !isErr(recruiterSearch),
+      `recruiter search allowed, got ${JSON.stringify(recruiterSearch)}`,
+    );
+    const hit = recruiterSearch.result.data.rows.find((r) => r.applicationId === APPLICATION);
+    assert.ok(hit, "recruiter search returns the seeded application");
+    assert.equal(hit!.candidateId, CANDIDATE, "row carries the candidate id for deep-linking");
+    assert.ok(
+      (hit!.candidateName ?? "").includes(`IRIS-B1 Candidate ${RUN}`),
+      "row carries the candidate name",
+    );
+    assert.ok(
+      (hit!.positionTitle ?? "").includes(`IRIS-B1 Engineer ${RUN}`),
+      "row carries the position title",
+    );
+
+    // hr_ops (an onboarding persona, NOT in listCandidates' triage read set) can
+    // also use the picker read — the whole point of the purpose-built gate.
+    const hrOpsJwt = await signIn("hr_ops1@kyndryl-poc.test");
+    const hrOpsSearch = await trpcQuery("irisSearchApplications", { query: "" }, hrOpsJwt);
+    assert.ok(!isErr(hrOpsSearch), `hr_ops search allowed, got ${JSON.stringify(hrOpsSearch)}`);
   });
 });
