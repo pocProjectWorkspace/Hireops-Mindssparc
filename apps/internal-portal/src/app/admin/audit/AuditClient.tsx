@@ -23,6 +23,7 @@ import {
   type BadgeTone,
 } from "@/components/ui";
 import { trpc } from "@/lib/trpc-client";
+import { humanizeSentence } from "@/lib/labels";
 
 // Derive the row type from the procedure output, relaxing the two jsonb
 // columns to optional — zod infers `unknown` fields as required on the
@@ -538,8 +539,7 @@ function downloadCsv(csv: string, filename: string): void {
 
 /** snake_case → "Sentence case". */
 function humanize(value: string): string {
-  const spaced = value.replace(/_/g, " ");
-  return spaced.charAt(0).toUpperCase() + spaced.slice(1);
+  return humanizeSentence(value);
 }
 
 function absolute(iso: string): string {

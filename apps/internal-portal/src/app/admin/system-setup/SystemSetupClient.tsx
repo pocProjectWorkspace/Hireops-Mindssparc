@@ -12,6 +12,7 @@ import {
 } from "@hireops/api-types";
 import { Button } from "@hireops/ui";
 import { Card, Badge } from "@/components/ui";
+import { humanize } from "@/lib/labels";
 import { trpc } from "@/lib/trpc-client";
 
 /**
@@ -303,7 +304,7 @@ export function SystemSetupClient({ initial }: { initial: SystemSetup }) {
                       >
                         {ESCALATION_SEVERITIES.map((s) => (
                           <option key={s} value={s}>
-                            {s}
+                            {humanize(s)}
                           </option>
                         ))}
                       </select>

@@ -15,6 +15,7 @@ import {
   Td,
 } from "@/components/ui";
 import { trpc } from "@/lib/trpc-client";
+import { humanizeSentence } from "@/lib/labels";
 
 /**
  * The admin recruitment report — totals tiles, the pipeline funnel as
@@ -192,6 +193,5 @@ function formatDays(days: number | null): string {
 
 /** snake_case enum label → "Sentence case" for display. */
 function humanize(value: string): string {
-  const spaced = value.replace(/_/g, " ");
-  return spaced.charAt(0).toUpperCase() + spaced.slice(1);
+  return humanizeSentence(value);
 }

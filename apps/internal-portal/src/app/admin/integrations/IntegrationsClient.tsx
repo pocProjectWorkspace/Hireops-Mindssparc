@@ -17,6 +17,7 @@ import {
   type BadgeTone,
 } from "@/components/ui";
 import { trpc } from "@/lib/trpc-client";
+import { humanizeSentence } from "@/lib/labels";
 
 // Derive the row type from the procedure output, relaxing the two jsonb
 // columns to optional — the tRPC client re-infers `unknown` zod fields as
@@ -389,6 +390,5 @@ function StatusBadge({ status }: { status: string }): ReactNode {
 
 /** snake_case → "Sentence case". */
 function humanize(value: string): string {
-  const spaced = value.replace(/_/g, " ");
-  return spaced.charAt(0).toUpperCase() + spaced.slice(1);
+  return humanizeSentence(value);
 }

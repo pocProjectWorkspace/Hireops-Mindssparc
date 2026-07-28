@@ -10,6 +10,7 @@ import type {
 import { Select, Switch } from "@hireops/ui";
 import { Card, TableShell, Thead, Th, Tbody, Tr, Td } from "@/components/ui";
 import { PageHeader } from "@/components/patterns";
+import { humanizeSentence } from "@/lib/labels";
 import { trpc, handleTRPCError } from "@/lib/trpc-client";
 
 /**
@@ -41,7 +42,7 @@ const GATE_STAGE_OPTIONS: { value: ApplicationStage; label: string }[] = [
 
 function stageLabel(stage: ApplicationStage | null): string {
   if (stage === null) return "Doesn't gate";
-  return GATE_STAGE_OPTIONS.find((o) => o.value === stage)?.label ?? stage.replace(/_/g, " ");
+  return GATE_STAGE_OPTIONS.find((o) => o.value === stage)?.label ?? humanizeSentence(stage);
 }
 
 export function CandidateFieldsClient({ initial }: { initial: GetCandidateFieldPolicyOutput }) {

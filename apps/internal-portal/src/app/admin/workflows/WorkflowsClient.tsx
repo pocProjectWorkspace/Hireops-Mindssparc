@@ -15,6 +15,7 @@ import {
 } from "@/components/ui";
 import { PageHeader } from "@/components/patterns";
 import { trpc, handleTRPCError } from "@/lib/trpc-client";
+import { humanizeSentence } from "@/lib/labels";
 import { AgentDetailDrawer } from "./AgentDetailDrawer";
 import { AgentFormModal } from "./AgentFormModal";
 
@@ -292,8 +293,7 @@ function RunStatusBadge({ status }: { status: string }) {
 
 /** snake_case → "Sentence case". */
 function humanize(value: string): string {
-  const spaced = value.replace(/_/g, " ");
-  return spaced.charAt(0).toUpperCase() + spaced.slice(1);
+  return humanizeSentence(value);
 }
 
 function Toggle({

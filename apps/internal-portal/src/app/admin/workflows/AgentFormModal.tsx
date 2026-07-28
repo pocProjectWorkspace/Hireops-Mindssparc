@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
 import { Badge, Button } from "@/components/ui";
 import { trpc, handleTRPCError } from "@/lib/trpc-client";
+import { humanizeSentence } from "@/lib/labels";
 
 /**
  * T0.1 (G01) — the agent AUTHORING modal. The platform's automation spine
@@ -564,8 +565,7 @@ function ToneSelect({ value, onChange }: { value: ToneValue; onChange: (v: ToneV
 }
 
 function humanizeStage(value: string): string {
-  const spaced = value.replace(/_/g, " ");
-  return spaced.charAt(0).toUpperCase() + spaced.slice(1);
+  return humanizeSentence(value);
 }
 
 function emptyToUndef(v: string): string | undefined {
