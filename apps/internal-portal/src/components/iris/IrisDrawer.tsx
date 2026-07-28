@@ -5,9 +5,10 @@ import type { ReactNode } from "react";
 import { Button, Card, EmptyState } from "@/components/ui";
 import { Input, Select } from "@hireops/ui";
 import { trpc, handleTRPCError } from "@/lib/trpc-client";
-import { humanize } from "@/lib/labels";
-import type { IrisActionMenuItem, IrisExecuteOutput } from "@hireops/api-types";
+import { humanize, humanizeSentence } from "@/lib/labels";
+import type { ApplicationStage, IrisActionMenuItem, IrisExecuteOutput } from "@hireops/api-types";
 import { suggestedActionForRoute, type IrisPageContext } from "./context-map";
+import { IrisApplicationPicker, type IrisPickedApplication } from "./IrisApplicationPicker";
 
 /**
  * IrisDrawer (IRIS-A2) — the menu-path Iris surface. A right-side slide-over
@@ -28,6 +29,36 @@ import { suggestedActionForRoute, type IrisPageContext } from "./context-map";
 type Step = "menu" | "form" | "review" | "done";
 
 const LOCATION_TYPES = ["remote", "hybrid", "onsite", "multi"] as const;
+
+/** The application-targeted Pipeline / Onboarding actions — they all share the
+ * candidate/application picker rather than the requisition form. */
+const APPLICATION_ACTION_IDS = new Set([
+  "advance_application",
+  "reject_application",
+  "open_onboarding_case",
+]);
+
+/** Forward pipeline order — the stages an "advance" can move a candidate TO.
+ * Terminal negatives (reject / withdraw / declined) are NOT advance targets;
+ * reject_application owns ending an application. */
+const PIPELINE_FORWARD: ApplicationStage[] = [
+  "application_received",
+  "ai_screening",
+  "recruiter_review",
+  "shortlisted",
+  "tech_interview",
+  "hr_round",
+  "offer_drafted",
+  "offer_accepted",
+];
+
+/** The forward stages available FROM the candidate's current stage. An
+ * off-pipeline / terminal current stage (not in PIPELINE_FORWARD) falls back to
+ * the full forward list rather than hiding every option. */
+function forwardStagesAfter(current: ApplicationStage): ApplicationStage[] {
+  const idx = PIPELINE_FORWARD.indexOf(current);
+  return idx === -1 ? PIPELINE_FORWARD : PIPELINE_FORWARD.slice(idx + 1);
+}
 
 export interface IrisDrawerProps {
   open: boolean;
@@ -51,6 +82,12 @@ export function IrisDrawer({ open, onClose, context }: IrisDrawerProps) {
   const [seniority, setSeniority] = useState("");
   const [openings, setOpenings] = useState("1");
 
+  // Pipeline / Onboarding action fields (advance_application, reject_application,
+  // open_onboarding_case) — all share the candidate/application picker.
+  const [picked, setPicked] = useState<IrisPickedApplication | null>(null);
+  const [targetStage, setTargetStage] = useState<string>("");
+  const [rejectReason, setRejectReason] = useState("");
+
   // Reset to a clean menu each time the drawer opens; lock body scroll + wire ESC.
   useEffect(() => {
     if (!open) return;
@@ -63,6 +100,9 @@ export function IrisDrawer({ open, onClose, context }: IrisDrawerProps) {
     setLocationType("onsite");
     setSeniority("");
     setOpenings("1");
+    setPicked(null);
+    setTargetStage("");
+    setRejectReason("");
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") onClose();
     };
@@ -102,6 +142,10 @@ export function IrisDrawer({ open, onClose, context }: IrisDrawerProps) {
       setStep("done");
       void utils.listMyRequisitionsV2.invalidate();
       void utils.irisGetProvenance.invalidate();
+      // Pipeline / Onboarding actions change what the candidate surfaces show.
+      void utils.listCandidates.invalidate();
+      void utils.listCandidatesByRequisition.invalidate();
+      void utils.listShortlist.invalidate();
     },
     onError: (err) => handleTRPCError(err),
   });
@@ -113,28 +157,55 @@ export function IrisDrawer({ open, onClose, context }: IrisDrawerProps) {
 
   const grouped = groupActions(actions);
 
+  const selectedAction = actions.find((a) => a.id === selectedActionId);
+  const selectedLabel = selectedAction?.label ?? "Action";
+  const isDestructive = selectedAction?.destructive ?? false;
+  const needsApplication = selectedActionId ? APPLICATION_ACTION_IDS.has(selectedActionId) : false;
+  // Pre-select the picker from page context when the route names an application.
+  const contextApplicationId = context.entityType === "application" ? context.entityId : undefined;
+
   function openForm(actionId: string) {
     setSelectedActionId(actionId);
     setSubmittedParams(null);
     setResult(null);
+    setPicked(null);
+    setTargetStage("");
+    setRejectReason("");
     setStep("form");
   }
 
   function onSubmitForm() {
-    if (selectedActionId !== "create_requisition_jd") return;
-    const params: Record<string, unknown> = {
-      title: title.trim(),
-      locationType,
-      numberOfOpenings: Math.max(1, Number.parseInt(openings, 10) || 1),
-    };
-    if (businessUnitId) params.businessUnitId = businessUnitId;
-    if (seniority.trim()) params.seniority = seniority.trim();
+    let params: Record<string, unknown> | null = null;
+    if (selectedActionId === "create_requisition_jd") {
+      params = {
+        title: title.trim(),
+        locationType,
+        numberOfOpenings: Math.max(1, Number.parseInt(openings, 10) || 1),
+      };
+      if (businessUnitId) params.businessUnitId = businessUnitId;
+      if (seniority.trim()) params.seniority = seniority.trim();
+    } else if (selectedActionId === "advance_application" && picked && targetStage) {
+      params = { applicationId: picked.applicationId, targetStage };
+    } else if (selectedActionId === "reject_application" && picked && rejectReason.trim()) {
+      params = { applicationId: picked.applicationId, reason: rejectReason.trim() };
+    } else if (selectedActionId === "open_onboarding_case" && picked) {
+      params = { applicationId: picked.applicationId };
+    }
+    if (!params) return;
     setSubmittedParams(params);
     setStep("review");
   }
 
-  const canSubmitForm = title.trim().length >= 2;
-  const selectedLabel = actions.find((a) => a.id === selectedActionId)?.label ?? "Action";
+  // Per-action form validity — gates the Preview button.
+  let canSubmitForm = false;
+  if (selectedActionId === "create_requisition_jd") canSubmitForm = title.trim().length >= 2;
+  else if (selectedActionId === "advance_application")
+    canSubmitForm = !!picked && targetStage.length > 0;
+  else if (selectedActionId === "reject_application")
+    canSubmitForm = !!picked && rejectReason.trim().length > 0;
+  else if (selectedActionId === "open_onboarding_case") canSubmitForm = !!picked;
+
+  const stageOptions = picked ? forwardStagesAfter(picked.stage) : [];
 
   return (
     <div
@@ -296,6 +367,57 @@ export function IrisDrawer({ open, onClose, context }: IrisDrawerProps) {
                     onChange={(e) => setOpenings(e.target.value)}
                   />
                 </div>
+              ) : needsApplication ? (
+                <div className="space-y-4">
+                  <IrisApplicationPicker
+                    value={picked}
+                    onChange={(p) => {
+                      setPicked(p);
+                      setTargetStage("");
+                    }}
+                    enabled={step === "form"}
+                    preselectApplicationId={contextApplicationId}
+                  />
+
+                  {selectedActionId === "advance_application" && picked ? (
+                    stageOptions.length > 0 ? (
+                      <Select
+                        label="Advance to stage"
+                        required
+                        placeholder="Select a stage"
+                        value={targetStage}
+                        onValueChange={setTargetStage}
+                        options={stageOptions.map((s) => ({
+                          value: s,
+                          label: humanizeSentence(s),
+                        }))}
+                      />
+                    ) : (
+                      <p className="text-sm text-neutral-500">
+                        This candidate is already at the final pipeline stage, there is no forward
+                        stage to advance to.
+                      </p>
+                    )
+                  ) : null}
+
+                  {selectedActionId === "reject_application" && picked ? (
+                    <label className="block text-sm font-medium text-neutral-800">
+                      Reason
+                      <span aria-hidden className="text-status-error-600">
+                        {" "}
+                        *
+                      </span>
+                      <textarea
+                        value={rejectReason}
+                        rows={3}
+                        onChange={(e) => setRejectReason(e.target.value)}
+                        maxLength={500}
+                        placeholder="Why is this candidate being rejected? This is recorded on the audit trail."
+                        className="mt-1 w-full resize-y rounded-md border border-neutral-300 bg-white px-3 py-2 text-sm text-neutral-900 transition-colors focus:border-brand-600 focus:outline-none focus:ring-1 focus:ring-brand-600"
+                      />
+                    </label>
+                  ) : null}
+                </div>
               ) : (
                 <p className="text-sm text-neutral-500">This action has no input form wired yet.</p>
               )}
@@ -303,10 +425,7 @@ export function IrisDrawer({ open, onClose, context }: IrisDrawerProps) {
                 <Button variant="secondary" onClick={() => setStep("menu")}>
                   Back
                 </Button>
-                <Button
-                  onClick={onSubmitForm}
-                  disabled={selectedActionId !== "create_requisition_jd" || !canSubmitForm}
-                >
+                <Button onClick={onSubmitForm} disabled={!canSubmitForm}>
                   Preview
                 </Button>
               </div>
@@ -317,6 +436,17 @@ export function IrisDrawer({ open, onClose, context }: IrisDrawerProps) {
           {step === "review" ? (
             <Card>
               <h3 className="mb-3 text-sm font-semibold text-neutral-900">Review &amp; confirm</h3>
+              {isDestructive ? (
+                <div className="mb-3 rounded-lg border border-status-error-200 bg-status-error-50 px-3 py-2.5">
+                  <p className="text-sm font-medium text-status-error-800">
+                    This ends the candidate&apos;s application.
+                  </p>
+                  <p className="mt-0.5 text-xs text-status-error-700">
+                    It&apos;s recorded on the audit trail and can be undone from triage within a
+                    short window.
+                  </p>
+                </div>
+              ) : null}
               {previewQuery.isLoading ? (
                 <p className="text-sm text-neutral-500">Building preview…</p>
               ) : previewQuery.error ? (
@@ -362,6 +492,7 @@ export function IrisDrawer({ open, onClose, context }: IrisDrawerProps) {
                   Back
                 </Button>
                 <Button
+                  variant={isDestructive ? "danger" : "primary"}
                   onClick={() =>
                     selectedActionId && submittedParams
                       ? execute.mutate({ actionId: selectedActionId, params: submittedParams })
@@ -371,7 +502,7 @@ export function IrisDrawer({ open, onClose, context }: IrisDrawerProps) {
                     execute.isPending || previewQuery.isLoading || Boolean(previewQuery.error)
                   }
                 >
-                  {execute.isPending ? "Working…" : "Confirm"}
+                  {execute.isPending ? "Working…" : isDestructive ? "Confirm reject" : "Confirm"}
                 </Button>
               </div>
             </Card>
@@ -397,6 +528,14 @@ export function IrisDrawer({ open, onClose, context }: IrisDrawerProps) {
                     className="text-sm font-medium text-brand-700 hover:underline"
                   >
                     Open requisition →
+                  </a>
+                ) : null}
+                {result.entityType === "application" && result.entityId && picked ? (
+                  <a
+                    href={`/candidates?candidateId=${picked.candidateId}&applicationId=${result.entityId}`}
+                    className="text-sm font-medium text-brand-700 hover:underline"
+                  >
+                    Open candidate →
                   </a>
                 ) : null}
                 <Button variant="secondary" onClick={() => setStep("menu")}>

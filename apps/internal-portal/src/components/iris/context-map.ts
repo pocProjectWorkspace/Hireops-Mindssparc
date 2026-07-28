@@ -25,6 +25,11 @@ export interface IrisPageContext {
 const SUGGESTED_ACTION_BY_PREFIX: readonly { prefix: string; actionId: string }[] = [
   { prefix: "/requisitions", actionId: "create_requisition_jd" },
   { prefix: "/dashboard", actionId: "create_requisition_jd" },
+  // Candidate/application surfaces — advancing a candidate is the obvious next
+  // step; reject + open-onboarding stay one tap away in the menu's Pipeline /
+  // Onboarding groups.
+  { prefix: "/candidates", actionId: "advance_application" },
+  { prefix: "/triage", actionId: "advance_application" },
 ];
 
 /** Strip a trailing slash (except the root) so "/x/" and "/x" match alike. */

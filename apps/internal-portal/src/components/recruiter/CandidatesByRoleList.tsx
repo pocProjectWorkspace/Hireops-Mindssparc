@@ -5,8 +5,10 @@ import type {
   ListCandidatesByRequisitionOutput,
   ApplicationStage,
   ApplicationSource,
+  IrisProvenanceRow,
 } from "@hireops/api-types";
 import { trpc } from "@/lib/trpc-client";
+import { AiAssistedPill, useProvenanceMap } from "@/components/iris/AiAssistedPill";
 import { useDrawerRouting } from "@/lib/use-drawer-routing";
 import { useUndoToast } from "@/components/triage/UndoToastProvider";
 import {
@@ -170,6 +172,7 @@ function GroupAccordion({
   onOpenRow,
   selectedCandidateId,
   sourceLabels,
+  provenanceByApplicationId,
 }: {
   group: Group;
   open: boolean;
@@ -177,6 +180,7 @@ function GroupAccordion({
   onOpenRow: (ids: { candidateId: string; applicationId: string }) => void;
   selectedCandidateId: string | null;
   sourceLabels?: Record<string, string>;
+  provenanceByApplicationId: Map<string, IrisProvenanceRow>;
 }) {
   return (
     <div className="overflow-hidden rounded-card border border-neutral-200 bg-white shadow-card">
@@ -219,7 +223,10 @@ function GroupAccordion({
                     <div className="flex items-center gap-2.5">
                       <Avatar name={name} seed={row.candidateId} size="sm" />
                       <div className="min-w-0">
-                        <p className="truncate font-medium text-neutral-900">{name}</p>
+                        <div className="flex min-w-0 items-center gap-1.5">
+                          <p className="truncate font-medium text-neutral-900">{name}</p>
+                          <AiAssistedPill row={provenanceByApplicationId.get(row.applicationId)} />
+                        </div>
                         <p className="truncate text-xs text-neutral-500 tabular-nums">
                           {row.refCode}
                           {row.yearsOfExperience != null ? ` · ${row.yearsOfExperience} yrs` : ""}
@@ -303,6 +310,16 @@ export function CandidatesByRoleList({
   const data = query.data ?? initial;
   const groups = data.groups;
 
+  // AI-assisted pill: batch-fetch Iris provenance for every application on the
+  // page (one query), so a row advanced/rejected/onboarded THROUGH Iris shows
+  // the pill. Rows changed via the inline row actions (the human path) carry no
+  // provenance and stay unmarked — the honest persisted-and-consumed flip.
+  const applicationIds = useMemo(
+    () => groups.flatMap((g) => g.rows.map((r) => r.applicationId)),
+    [groups],
+  );
+  const provenanceByApplicationId = useProvenanceMap("application", applicationIds);
+
   // First group open by default; user toggles override.
   const isOpen = useMemo(
     () => (id: string, index: number) => openGroups[id] ?? index === 0,
@@ -385,6 +402,7 @@ export function CandidatesByRoleList({
               onOpenRow={open}
               selectedCandidateId={candidateId}
               sourceLabels={sourceLabels}
+              provenanceByApplicationId={provenanceByApplicationId}
             />
           ))}
         </div>

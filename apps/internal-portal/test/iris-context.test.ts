@@ -17,12 +17,19 @@ describe("suggestedActionForRoute", () => {
     expect(suggestedActionForRoute("/dashboard")).toBe("create_requisition_jd");
   });
 
+  it("suggests advance_application on the candidate + triage surfaces (and children)", () => {
+    expect(suggestedActionForRoute("/candidates")).toBe("advance_application");
+    expect(suggestedActionForRoute("/candidates/")).toBe("advance_application");
+    expect(suggestedActionForRoute("/triage")).toBe("advance_application");
+    expect(suggestedActionForRoute("/triage/anything")).toBe("advance_application");
+  });
+
   it("suggests nothing on an unmapped route (the default)", () => {
-    expect(suggestedActionForRoute("/candidates")).toBeNull();
     expect(suggestedActionForRoute("/admin/costs")).toBeNull();
     expect(suggestedActionForRoute("/")).toBeNull();
-    // A route that only shares a name PREFIX must not match.
+    // Routes that only share a name PREFIX must not match.
     expect(suggestedActionForRoute("/requisitions-archive")).toBeNull();
+    expect(suggestedActionForRoute("/candidates-export")).toBeNull();
   });
 });
 

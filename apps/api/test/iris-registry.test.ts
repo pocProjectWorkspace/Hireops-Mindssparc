@@ -20,6 +20,9 @@
 import { describe, it, expect } from "vitest";
 import { IRIS_ACTIONS, getIrisAction, listIrisActions } from "../src/lib/iris/registry";
 import { createRequisitionJdAction } from "../src/lib/iris/actions/create-requisition-jd";
+import { advanceApplicationAction } from "../src/lib/iris/actions/advance-application";
+import { rejectApplicationAction } from "../src/lib/iris/actions/reject-application";
+import { openOnboardingCaseAction } from "../src/lib/iris/actions/open-onboarding-case";
 
 describe("IRIS-A1 action registry", () => {
   it("registers create_requisition_jd and exposes it by id", () => {
@@ -110,5 +113,115 @@ describe("IRIS-A1 action registry", () => {
     }
     // JSON round-trips byte-for-byte (genuinely serialisable).
     expect(JSON.parse(JSON.stringify(menu))).toEqual(menu);
+  });
+});
+
+describe("IRIS-B1 pipeline / onboarding actions", () => {
+  const B1_ACTIONS = [advanceApplicationAction, rejectApplicationAction, openOnboardingCaseAction];
+
+  it("registers advance_application, reject_application, open_onboarding_case (whitelist-only)", () => {
+    for (const action of B1_ACTIONS) {
+      const entry = getIrisAction(action.id);
+      expect(entry, `${action.id} is registered`).toBeDefined();
+      expect(entry!.id).toBe(action.id);
+      expect(entry!.label).toBe(action.label);
+      expect(entry!.group).toBe(action.group);
+      expect(entry!.destructive).toBe(action.destructive);
+      expect(IRIS_ACTIONS[action.id]).toBeDefined();
+    }
+    // The one requisition action is untouched; the whitelist is exactly these four.
+    expect(Object.keys(IRIS_ACTIONS).sort()).toEqual(
+      [
+        "advance_application",
+        "create_requisition_jd",
+        "open_onboarding_case",
+        "reject_application",
+      ].sort(),
+    );
+  });
+
+  it("groups + destructive flags: reject is destructive, advance / onboarding are not", () => {
+    expect(advanceApplicationAction.group).toBe("Pipeline");
+    expect(advanceApplicationAction.destructive).toBe(false);
+    expect(rejectApplicationAction.group).toBe("Pipeline");
+    // The one destructive action in this ticket — the drawer shows destructive framing.
+    expect(rejectApplicationAction.destructive).toBe(true);
+    expect(openOnboardingCaseAction.group).toBe("Onboarding");
+    expect(openOnboardingCaseAction.destructive).toBe(false);
+  });
+
+  it("inputSchemas reject invalid payloads and accept the real minimum", () => {
+    // advance_application — needs a uuid applicationId + a valid stage.
+    expect(advanceApplicationAction.inputSchema.safeParse({}).success).toBe(false);
+    expect(
+      advanceApplicationAction.inputSchema.safeParse({ applicationId: "not-a-uuid" }).success,
+    ).toBe(false);
+    expect(
+      advanceApplicationAction.inputSchema.safeParse({
+        applicationId: "11111111-1111-4111-8111-111111111111",
+        targetStage: "moon",
+      }).success,
+    ).toBe(false);
+    expect(
+      advanceApplicationAction.inputSchema.safeParse({
+        applicationId: "11111111-1111-4111-8111-111111111111",
+        targetStage: "shortlisted",
+      }).success,
+    ).toBe(true);
+
+    // reject_application — needs a uuid applicationId (reason optional at the
+    // schema; the drawer requires it client-side).
+    expect(rejectApplicationAction.inputSchema.safeParse({}).success).toBe(false);
+    expect(rejectApplicationAction.inputSchema.safeParse({ applicationId: "nope" }).success).toBe(
+      false,
+    );
+    expect(
+      rejectApplicationAction.inputSchema.safeParse({
+        applicationId: "11111111-1111-4111-8111-111111111111",
+        reason: "Not a fit for the role",
+      }).success,
+    ).toBe(true);
+
+    // open_onboarding_case — applicationId only.
+    expect(openOnboardingCaseAction.inputSchema.safeParse({}).success).toBe(false);
+    expect(
+      openOnboardingCaseAction.inputSchema.safeParse({
+        applicationId: "11111111-1111-4111-8111-111111111111",
+      }).success,
+    ).toBe(true);
+  });
+
+  it("buildPreview returns a non-empty summary for each action, naming the reason on reject", () => {
+    const advance = advanceApplicationAction.buildPreview({
+      applicationId: "11111111-1111-4111-8111-111111111111",
+      targetStage: "tech_interview",
+    });
+    expect(advance.summary.length).toBeGreaterThan(0);
+    expect(advance.summary.toLowerCase()).toContain("tech interview");
+
+    const reject = rejectApplicationAction.buildPreview({
+      applicationId: "11111111-1111-4111-8111-111111111111",
+      reason: "Salary expectations too high",
+    });
+    expect(reject.summary.length).toBeGreaterThan(0);
+    // The preview names the reason so the destructive review card shows it.
+    expect(reject.details.join(" ")).toContain("Salary expectations too high");
+
+    const onboarding = openOnboardingCaseAction.buildPreview({
+      applicationId: "11111111-1111-4111-8111-111111111111",
+    });
+    expect(onboarding.summary.length).toBeGreaterThan(0);
+  });
+
+  it("the erased entries enforce the same input contract irisExecute runs", () => {
+    for (const action of B1_ACTIONS) {
+      const entry = getIrisAction(action.id)!;
+      expect(() => entry.parse({})).toThrow();
+    }
+    const advanceParsed = getIrisAction("advance_application")!.parse({
+      applicationId: "11111111-1111-4111-8111-111111111111",
+      targetStage: "shortlisted",
+    }) as { targetStage: string };
+    expect(advanceParsed.targetStage).toBe("shortlisted");
   });
 });

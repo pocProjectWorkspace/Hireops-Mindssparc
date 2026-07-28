@@ -23,9 +23,18 @@ import type {
   CreateRequisitionDraftOutput,
   GenerateJdDraftInput,
   GenerateJdDraftOutput,
+  AdvanceApplicationInput,
+  AdvanceApplicationOutput,
+  RejectApplicationInput,
+  RejectApplicationOutput,
+  CreateOnboardingCaseForApplicationInput,
+  CreateOnboardingCaseForApplicationOutput,
 } from "@hireops/api-types";
 import type { HonoTRPCContext } from "../../trpc/trpc-core";
 import { createRequisitionJdAction } from "./actions/create-requisition-jd";
+import { advanceApplicationAction } from "./actions/advance-application";
+import { rejectApplicationAction } from "./actions/reject-application";
+import { openOnboardingCaseAction } from "./actions/open-onboarding-case";
 
 /**
  * The subset of the in-process tRPC caller (appRouter.createCaller(ctx)) that
@@ -43,6 +52,11 @@ import { createRequisitionJdAction } from "./actions/create-requisition-jd";
 export interface IrisCaller {
   createRequisitionDraft(input: CreateRequisitionDraftInput): Promise<CreateRequisitionDraftOutput>;
   generateJdDraft(input: GenerateJdDraftInput): Promise<GenerateJdDraftOutput>;
+  advanceApplication(input: AdvanceApplicationInput): Promise<AdvanceApplicationOutput>;
+  rejectApplication(input: RejectApplicationInput): Promise<RejectApplicationOutput>;
+  createOnboardingCaseForApplication(
+    input: CreateOnboardingCaseForApplicationInput,
+  ): Promise<CreateOnboardingCaseForApplicationOutput>;
 }
 
 /** The (entityType, entityId, human summary) an action reports after it commits. */
@@ -111,7 +125,15 @@ function eraseIrisAction<P>(action: IrisAction<P>): AnyIrisAction {
  * nothing else can widen what Iris can do.
  */
 export const IRIS_ACTIONS: Record<string, AnyIrisAction> = Object.fromEntries(
-  [createRequisitionJdAction].map((a) => [a.id, eraseIrisAction(a)]),
+  // Erase each action at its OWN concrete P (a heterogeneous array of
+  // IrisAction<P> would defeat eraseIrisAction's single-P inference), then key
+  // the resulting AnyIrisAction entries by id.
+  [
+    eraseIrisAction(createRequisitionJdAction),
+    eraseIrisAction(advanceApplicationAction),
+    eraseIrisAction(rejectApplicationAction),
+    eraseIrisAction(openOnboardingCaseAction),
+  ].map((a) => [a.id, a]),
 );
 
 /** One serialisable menu entry — the minimal shape the menu path renders. */
