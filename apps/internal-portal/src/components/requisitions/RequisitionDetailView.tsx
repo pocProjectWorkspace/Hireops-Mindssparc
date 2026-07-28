@@ -8,6 +8,7 @@ import { Badge, Button, Card } from "@/components/ui";
 import type { BadgeTone } from "@/components/ui";
 import { InterviewPlanSection } from "@/components/interviews/InterviewPlanSection";
 import { RevisionSuggestionsCard } from "@/components/requirements/RevisionSuggestionsCard";
+import { AiAssistedPill, useProvenanceMap } from "@/components/iris/AiAssistedPill";
 import { humanize } from "@/lib/labels";
 
 /**
@@ -70,6 +71,9 @@ export function RequisitionDetailView({
   const decide = trpc.decideRequisitionApproval.useMutation();
   const post = trpc.postRequisition.useMutation();
   const r = detail.data ?? initial;
+  // IRIS-A2: the AI-assisted pill — shown only if this requisition carries an
+  // Iris provenance row (created via Iris), never for a human-created one.
+  const provenance = useProvenanceMap("requisition", [requisitionId]);
 
   async function onSubmit() {
     setError(null);
@@ -196,6 +200,7 @@ export function RequisitionDetailView({
             <div className="flex items-center gap-2">
               <h2 className="text-lg font-semibold text-neutral-900">{r.title}</h2>
               <Badge tone={REQ_STATUS_TONE[r.status] ?? "neutral"}>{statusLabel(r.status)}</Badge>
+              <AiAssistedPill row={provenance.get(requisitionId)} />
             </div>
             <p className="mt-1 text-sm text-neutral-600">
               {r.department ?? "—"} · {r.primaryLocation ?? "—"} ({r.locationType})

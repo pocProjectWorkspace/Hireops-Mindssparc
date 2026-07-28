@@ -753,6 +753,8 @@ import {
   type AvailabilityDraftAi,
   irisListActionsInputSchema,
   irisListActionsOutputSchema,
+  irisPreviewInputSchema,
+  irisPreviewOutputSchema,
   irisExecuteInputSchema,
   irisExecuteOutputSchema,
   irisGetProvenanceInputSchema,
@@ -21434,6 +21436,49 @@ export const appRouter = router({
         "Iris actions require the hiring_manager or admin role",
       );
       return { actions: listIrisActions() };
+    }),
+
+  /**
+   * Resolve the REAL server-side preview for a menu-path confirm card. Read-only
+   * (no withAudit, no write): the client submits the action's params, this
+   * validates them against the action's OWN input contract and returns the
+   * registry's `buildPreview` — so the "review" step shows exactly what the
+   * server would act on, never a client re-implementation. The commit stays
+   * irisExecute (confirm-before-commit).
+   */
+  irisPreview: protectedProcedure
+    .input(irisPreviewInputSchema)
+    .output(irisPreviewOutputSchema)
+    .query(({ ctx, input }) => {
+      // Same gate irisListActions enforces — only the roles that can run the one
+      // wired action (create_requisition_jd) reach its preview.
+      requireAnyRole(
+        ctx,
+        REQUISITION_WRITE_ROLES,
+        "Iris actions require the hiring_manager or admin role",
+      );
+      // WHITELIST-ONLY: an unregistered actionId can never resolve a preview.
+      const action = getIrisAction(input.actionId);
+      if (!action) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: `Unknown Iris action: ${input.actionId}`,
+        });
+      }
+      // Validate against the action's OWN input contract — invalid params are a
+      // BAD_REQUEST, the same contract irisExecute enforces before it commits.
+      let parsed: unknown;
+      try {
+        parsed = action.parse(input.params);
+      } catch (err) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "Invalid parameters for this Iris action.",
+          cause: err,
+        });
+      }
+      // Reuse the registry's buildPreview — no duplicate preview logic here.
+      return action.buildPreview(parsed);
     }),
 
   irisExecute: protectedProcedure

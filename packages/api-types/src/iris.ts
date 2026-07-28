@@ -41,6 +41,29 @@ export const irisListActionsOutputSchema = z.object({
 });
 export type IrisListActionsOutput = z.infer<typeof irisListActionsOutputSchema>;
 
+// ─────────────── irisPreview ───────────────
+
+/**
+ * Resolve the REAL server-side preview the user reviews BEFORE they confirm.
+ * Read-only: it looks the whitelisted action up, validates `params` against the
+ * action's OWN input contract, and returns the registry's `buildPreview`
+ * result — the SAME preview logic irisExecute's action would show, never a
+ * client-side re-implementation. `params` is `unknown` at the transport
+ * boundary (the action's schema validates it server-side, exactly like
+ * irisExecute). No write, no withAudit; the commit stays irisExecute.
+ */
+export const irisPreviewInputSchema = z.object({
+  actionId: z.string().min(1),
+  params: z.unknown(),
+});
+export type IrisPreviewInput = z.infer<typeof irisPreviewInputSchema>;
+
+export const irisPreviewOutputSchema = z.object({
+  summary: z.string(),
+  details: z.array(z.string()),
+});
+export type IrisPreviewOutput = z.infer<typeof irisPreviewOutputSchema>;
+
 // ─────────────── irisExecute ───────────────
 
 /**

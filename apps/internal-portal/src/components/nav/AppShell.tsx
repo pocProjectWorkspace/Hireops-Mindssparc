@@ -69,6 +69,8 @@ import {
   IconSignOut,
 } from "./nav-icons";
 import { MobileNav } from "./MobileNav";
+import { IrisProvider } from "@/components/iris/IrisProvider";
+import { IrisLauncher } from "@/components/iris/IrisLauncher";
 
 export type PortalNavKey =
   | "home"
@@ -867,20 +869,34 @@ export function AppShell({
   const mobilePrimary = mobileItems.slice(0, 4);
   const mobileMore = mobileItems.slice(4);
 
+  // IRIS-A2: the "Ask Iris" launcher is composed into the page-header actions
+  // (page-level `actions` are preserved alongside it), and IrisProvider wraps
+  // the whole shell so the drawer can read the current page context. The
+  // launcher/drawer are a client island — AppShell stays a server component.
   return (
-    <div className="flex h-screen overflow-hidden bg-neutral-50 text-neutral-900">
-      <Sidebar isAdmin={isAdmin} roles={roles} active={active} user={user} />
-      <div className="flex min-w-0 flex-1 flex-col">
-        <PageHeader title={title} actions={actions} />
-        {/* pb-16 clears the fixed mobile bottom bar; removed at lg where the bar is hidden. */}
-        {fill ? (
-          <div className="flex min-h-0 flex-1 flex-col pb-16 lg:pb-0">{children}</div>
-        ) : (
-          <main className="min-h-0 flex-1 overflow-y-auto pb-16 lg:pb-0">{children}</main>
-        )}
+    <IrisProvider>
+      <div className="flex h-screen overflow-hidden bg-neutral-50 text-neutral-900">
+        <Sidebar isAdmin={isAdmin} roles={roles} active={active} user={user} />
+        <div className="flex min-w-0 flex-1 flex-col">
+          <PageHeader
+            title={title}
+            actions={
+              <>
+                {actions}
+                <IrisLauncher />
+              </>
+            }
+          />
+          {/* pb-16 clears the fixed mobile bottom bar; removed at lg where the bar is hidden. */}
+          {fill ? (
+            <div className="flex min-h-0 flex-1 flex-col pb-16 lg:pb-0">{children}</div>
+          ) : (
+            <main className="min-h-0 flex-1 overflow-y-auto pb-16 lg:pb-0">{children}</main>
+          )}
+        </div>
+        <MobileNav primary={mobilePrimary} more={mobileMore} active={active} user={user} />
       </div>
-      <MobileNav primary={mobilePrimary} more={mobileMore} active={active} user={user} />
-    </div>
+    </IrisProvider>
   );
 }
 

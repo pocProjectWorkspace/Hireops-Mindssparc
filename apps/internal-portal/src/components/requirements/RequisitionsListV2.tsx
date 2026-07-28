@@ -6,6 +6,7 @@ import { trpc, handleTRPCError } from "@/lib/trpc-client";
 import { Card, EmptyState, TableShell, Thead, Th, Tbody, Tr, Td } from "@/components/ui";
 import type { ListMyRequisitionsV2Output } from "@hireops/api-types";
 import { HealthBar, DifficultyChip, ReqStatusChip, formatReqDate } from "./shared";
+import { AiAssistedPill, useProvenanceMap } from "@/components/iris/AiAssistedPill";
 
 /**
  * RequisitionsListV2 (RO-01) — My Requisitions v2. Search + status filter over
@@ -43,6 +44,11 @@ export function RequisitionsListV2({
   const [busyId, setBusyId] = useState<string | null>(null);
 
   const rows = query.data?.rows ?? initial.rows;
+
+  // IRIS-A2: batch Iris provenance for the visible rows → the AI-assisted pill
+  // shows only on requisitions Iris created.
+  const reqIds = useMemo(() => rows.map((r) => r.id), [rows]);
+  const provenance = useProvenanceMap("requisition", reqIds);
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -132,9 +138,12 @@ export function RequisitionsListV2({
                   {r.id.slice(0, 8)}
                 </Td>
                 <Td label="Role" className="font-medium text-neutral-900">
-                  <a href={`/requisitions/${r.id}`} className="text-brand-700 hover:underline">
-                    {r.title ?? "Untitled role"}
-                  </a>
+                  <span className="flex items-center gap-2">
+                    <a href={`/requisitions/${r.id}`} className="text-brand-700 hover:underline">
+                      {r.title ?? "Untitled role"}
+                    </a>
+                    <AiAssistedPill row={provenance.get(r.id)} />
+                  </span>
                 </Td>
                 <Td label="Dept">{r.department ?? "—"}</Td>
                 <Td label="Status">

@@ -5,6 +5,7 @@ import { Card, EmptyState } from "@/components/ui";
 import { cn } from "@/components/ui/cn";
 import type { ListMyRequisitionsV2Output, RequisitionSkillChip } from "@hireops/api-types";
 import { ReqStatusChip, DifficultyChip } from "./shared";
+import { AiAssistedPill, useProvenanceMap } from "@/components/iris/AiAssistedPill";
 
 /**
  * RequisitionsCardGrid (RECR-01) — the recruiter card-grid view of the
@@ -109,6 +110,11 @@ export function RequisitionsCardGrid({ initial }: { initial: ListMyRequisitionsV
   const [search, setSearch] = useState("");
   const [status, setStatus] = useState("all");
 
+  // IRIS-A2: batch-fetch Iris provenance for the visible requisitions so an
+  // Iris-created req shows the AI-assisted pill (human-created ones don't).
+  const reqIds = useMemo(() => initial.rows.map((r) => r.id), [initial.rows]);
+  const provenance = useProvenanceMap("requisition", reqIds);
+
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
     return initial.rows.filter((r) => {
@@ -169,8 +175,9 @@ export function RequisitionsCardGrid({ initial }: { initial: ListMyRequisitionsV
             >
               <div className="flex items-start justify-between gap-3">
                 <div className="min-w-0">
-                  <p className="truncate text-base font-semibold text-neutral-900">
-                    {r.title ?? "Untitled role"}
+                  <p className="flex items-center gap-2 truncate text-base font-semibold text-neutral-900">
+                    <span className="truncate">{r.title ?? "Untitled role"}</span>
+                    <AiAssistedPill row={provenance.get(r.id)} />
                   </p>
                   <p className="mt-0.5 truncate text-xs text-neutral-500">
                     {[r.department ?? null, `REQ-${r.id.slice(0, 6)}`].filter(Boolean).join(" · ")}
