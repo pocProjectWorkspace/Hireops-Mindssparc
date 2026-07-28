@@ -189,7 +189,7 @@ export function SourcesClient({ initial }: { initial: ListTenantSourcesOutput })
 
       {/* Honesty banner — config vs ingestion. */}
       <div className="mt-6 rounded-lg border border-brand-200 bg-brand-50 px-4 py-3 text-sm text-brand-800">
-        Configuring a channel here declares and labels it — it does not connect an automated pull.
+        Configuring a channel here declares and labels it, it does not connect an automated pull.
         Candidates arrive today via the existing portal and manual flows. Channels marked{" "}
         <span className="font-medium">Connector (work package)</span> are configured; their
         automated ingestion is a separate connector work package.
@@ -317,7 +317,7 @@ export function SourcesClient({ initial }: { initial: ListTenantSourcesOutput })
               />
               <p className="mt-1 text-xs text-neutral-500">
                 {form.ingestionMode === "connector_pending"
-                  ? "Configured only — the automated pull is a deferred connector work package."
+                  ? "Configured only, the automated pull is a deferred connector work package."
                   : "Candidates enter via the existing portal / manual flows."}
               </p>
             </div>

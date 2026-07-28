@@ -68,7 +68,7 @@ export function CompDeskView({ initial }: { initial: ListCompDeskOutput }) {
             Every late-stage candidate with its rule-computed comp verdict, offer status, and
             approval posture.{" "}
             <span className="font-medium text-neutral-600">
-              Verdicts are deterministic — the AI writes only the rationale prose.
+              Verdicts are deterministic, the AI writes only the rationale prose.
             </span>
           </>
         }

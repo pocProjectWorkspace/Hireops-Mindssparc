@@ -66,7 +66,7 @@ export function HotZone({ initial }: { initial: ListCandidatesOutput }) {
           role="status"
           className="flex items-center gap-2 px-6 pb-4 pt-2.5 text-sm font-medium text-status-positive-700"
         >
-          <span aria-hidden>✓</span> No SLA breaches — you&apos;re on top of it.
+          <span aria-hidden>✓</span> No SLA breaches, you&apos;re on top of it.
         </div>
       ) : (
         <ul className="divide-y divide-neutral-200/70">

@@ -59,7 +59,7 @@ export function CaseAuditView({ initial }: { initial: ListCaseAuditCasesOutput }
     <div className="mx-auto w-full max-w-5xl px-8 py-6">
       <PageHeader
         title="Case audit trail"
-        subtitle="The complete, append-only audit history for every active case — stage moves, offer events, document verification, and HR notes."
+        subtitle="The complete, append-only audit history for every active case, stage moves, offer events, document verification, and HR notes."
         className="mb-5"
       />
 
@@ -163,7 +163,7 @@ function CaseTimeline({ applicationId }: { applicationId: string }) {
           value={note}
           onChange={(e) => setNote(e.target.value)}
           rows={2}
-          placeholder="Add an audit note — recorded permanently in this case's trail…"
+          placeholder="Add an audit note, recorded permanently in this case's trail…"
           aria-label="Audit note"
           className="min-h-[2.25rem] flex-1 rounded-md border border-neutral-300 bg-white px-2.5 py-1.5 text-sm text-neutral-800 focus:border-brand-600 focus:outline-none focus:ring-1 focus:ring-brand-600"
         />

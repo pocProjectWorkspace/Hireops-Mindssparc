@@ -251,7 +251,7 @@ export function ApprovalDetailPanel({ approvalId, onResolved }: ApprovalDetailPa
               {JSON.stringify(d.proposedActionPayload, null, 2)}
             </pre>
             <p className="mt-2 text-xs text-neutral-400">
-              This action type has no tailored review UI yet — approve, reject, or snooze below.
+              This action type has no tailored review UI yet, approve, reject, or snooze below.
             </p>
           </div>
         )}
@@ -272,7 +272,7 @@ export function ApprovalDetailPanel({ approvalId, onResolved }: ApprovalDetailPa
               onChange={(e) => setRejectReason(e.target.value)}
               disabled={busy}
               rows={2}
-              placeholder="Why are you rejecting this? (required — recorded in the audit log)"
+              placeholder="Why are you rejecting this? (required, recorded in the audit log)"
               className={`${FIELD} resize-y`}
             />
             <div className="flex gap-2">

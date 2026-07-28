@@ -141,7 +141,7 @@ export function ReportsClient({ initial }: { initial: GetRecruitmentReportOutput
             </div>
             {timeToHire.hires_count === 0 ? (
               <p className="mt-2 text-xs text-neutral-500">
-                No completed hires yet — medians appear once applications reach offer accepted.
+                No completed hires yet, medians appear once applications reach offer accepted.
               </p>
             ) : null}
           </Section>

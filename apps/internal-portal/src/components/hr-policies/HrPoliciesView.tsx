@@ -143,7 +143,7 @@ export function HrPoliciesView({ initial }: { initial: ListHrPoliciesOutput }) {
     <div className="mx-auto w-full max-w-6xl px-8 py-6">
       <PageHeader
         title="Templates & policies"
-        subtitle="Your HR reference library — offer templates, benefits, and people policies. Edit a policy to save a new version; every change is kept in its history."
+        subtitle="Your HR reference library, offer templates, benefits, and people policies. Edit a policy to save a new version; every change is kept in its history."
         right={
           <Button variant="primary" size="sm" onClick={() => setCreating(true)}>
             New policy
@@ -416,7 +416,7 @@ function PolicyEditor({
       <div className="flex max-h-[90vh] w-full max-w-4xl flex-col overflow-hidden rounded-card border border-neutral-200 bg-white shadow-card">
         <div className="flex items-center justify-between border-b border-neutral-100 px-6 py-4">
           <h2 className="text-base font-semibold text-neutral-900">
-            {mode === "create" ? "New policy" : `Edit — ${doc?.title}`}
+            {mode === "create" ? "New policy" : `Edit, ${doc?.title}`}
           </h2>
           <Button variant="ghost" size="sm" onClick={onClose} disabled={busy}>
             Close
@@ -458,7 +458,7 @@ function PolicyEditor({
 
           <div className="mt-4 grid grid-cols-1 gap-4 lg:grid-cols-2">
             <label className="flex flex-col gap-1 text-xs text-neutral-600">
-              Body (Markdown — ## headings, - lists, **bold**)
+              Body (Markdown, ## headings, - lists, **bold**)
               <textarea
                 className={cn(inputCls, "min-h-[300px] font-mono text-xs")}
                 value={bodyMd}
@@ -478,7 +478,7 @@ function PolicyEditor({
           </div>
 
           <label className="mt-4 flex flex-col gap-1 text-xs text-neutral-600">
-            Change note (optional — why this edit; stored in the version history)
+            Change note (optional, why this edit; stored in the version history)
             <input
               className={inputCls}
               value={changeNote}
@@ -524,7 +524,7 @@ function VersionHistoryModal({ doc, onClose }: { doc: HrPolicyDocumentRow; onClo
       className="fixed inset-0 z-50 flex items-center justify-center bg-neutral-900/40 p-4"
       role="dialog"
       aria-modal="true"
-      aria-label={`Version history — ${doc.title}`}
+      aria-label={`Version history, ${doc.title}`}
     >
       <div className="flex max-h-[85vh] w-full max-w-2xl flex-col overflow-hidden rounded-card border border-neutral-200 bg-white shadow-card">
         <div className="flex items-center justify-between border-b border-neutral-100 px-6 py-4">
@@ -543,7 +543,7 @@ function VersionHistoryModal({ doc, onClose }: { doc: HrPolicyDocumentRow; onClo
             <p className="py-2 text-sm text-status-error-600">Couldn&rsquo;t load versions.</p>
           ) : versions.length === 0 ? (
             <p className="py-2 text-sm text-neutral-500">
-              No saved versions yet — this policy hasn&rsquo;t been edited since versioning began.
+              No saved versions yet, this policy hasn&rsquo;t been edited since versioning began.
             </p>
           ) : (
             <ol className="space-y-2">

@@ -177,7 +177,7 @@ export function AiSettingsClient({
           <p className="text-xs text-neutral-600">
             When on, candidate emails, phone numbers and URLs are replaced with [redacted-&hellip;]
             tokens in scoring and agent-draft prompts before the text is sent to the model. JD
-            generation is unaffected — its prompts contain no candidate data.
+            generation is unaffected, its prompts contain no candidate data.
           </p>
         </Card>
       </div>

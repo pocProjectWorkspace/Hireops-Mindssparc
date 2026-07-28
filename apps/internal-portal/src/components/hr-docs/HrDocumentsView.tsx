@@ -104,7 +104,7 @@ export function HrDocumentsView({ initial }: { initial: ListApplicationDocumentC
           <EmptyState
             className="py-14"
             title="No document requests yet"
-            hint="Documents appear here once you request them from a candidate in the pre-offer window. Candidates in stages Tech interview through Offer accepted are eligible — request document types and they upload from their candidate portal."
+            hint="Documents appear here once you request them from a candidate in the pre-offer window. Candidates in stages Tech interview through Offer accepted are eligible, request document types and they upload from their candidate portal."
           />
         </div>
       ) : (

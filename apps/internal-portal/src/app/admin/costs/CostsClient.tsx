@@ -67,7 +67,7 @@ export function CostsClient({
   return (
     <div className="mx-auto w-full max-w-5xl px-6 py-8">
       <p className="mb-6 text-sm text-neutral-600">
-        Every Anthropic call logged with tokens and cost — per feature, per model. All time. Amounts
+        Every Anthropic call logged with tokens and cost, per feature, per model. All time. Amounts
         in USD, computed from the per-call micro-cost ledger.
       </p>
 
@@ -348,7 +348,7 @@ function BudgetPanel({
           The projection assumes spend continues at this month&apos;s daily rate. Budget alerts
           email the recipients configured in Admin → System Setup → Email Alerts (with the “AI
           budget” alert type enabled) once month-to-date spend crosses a threshold. This is an alert
-          only — AI features are never blocked.
+          only, AI features are never blocked.
         </p>
 
         <div className="grid gap-4 sm:grid-cols-3">

@@ -127,7 +127,7 @@ export function SlaThresholdsClient({ initial }: { initial: GetSlaThresholdsOutp
     <div className="mx-auto w-full max-w-3xl px-6 py-8">
       <PageHeader
         title="SLA thresholds"
-        subtitle="Set the per-stage SLA hours for this tenant. These hours drive breach detection, recruiter urgency, governance/compliance scoring, and the imminent-breach alert emails — not just display."
+        subtitle="Set the per-stage SLA hours for this tenant. These hours drive breach detection, recruiter urgency, governance/compliance scoring, and the imminent-breach alert emails, not just display."
       />
 
       {notice ? (
@@ -146,7 +146,7 @@ export function SlaThresholdsClient({ initial }: { initial: GetSlaThresholdsOutp
       <div className="mt-6 rounded-lg border border-brand-200 bg-brand-50 px-4 py-3 text-sm text-brand-800">
         Each threshold is the number of hours an application may sit in a stage before it counts as{" "}
         <span className="font-medium">breaching</span>. Lowering a stage&apos;s hours makes it
-        breach sooner everywhere — the triage breach filter/sort, recruiter urgency, the governance
+        breach sooner everywhere, the triage breach filter/sort, recruiter urgency, the governance
         and executive-audit numbers, and the imminent-breach alert emails. Terminal stages
         (accepted, declined, withdrawn, rejected) have no SLA and are not shown.
       </div>

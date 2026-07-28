@@ -264,7 +264,7 @@ function FeedbackTab({ feedback }: { feedback: HrCaseFeedbackCard[] }) {
     <div className="space-y-3">
       <p className="text-xs text-neutral-500">
         Panel recommendations and written summaries. Numeric scores are withheld here by design
-        (anti-anchoring) — the HR round is a fresh assessment.
+        (anti-anchoring), the HR round is a fresh assessment.
       </p>
       {feedback.map((f) => (
         <Card key={f.interviewId + f.roundNumber} className="space-y-3 p-5">
@@ -329,7 +329,7 @@ function HrRoundTab({
           }`}
         >
           {gateSatisfied
-            ? "HR round complete — this candidate can be advanced to the offer stage."
+            ? "HR round complete, this candidate can be advanced to the offer stage."
             : "This candidate is in the HR round. Advancing to the offer stage is blocked until a saved assessment recommends Proceed."}
         </div>
       ) : null}

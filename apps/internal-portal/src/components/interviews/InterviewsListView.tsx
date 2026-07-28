@@ -98,7 +98,7 @@ function DecisionSummary({ interviewId }: { interviewId: string }) {
         ))}
       </div>
       <p className="mt-2 text-[11px] text-neutral-400">
-        Complete and advance from the candidate board — human decision, machine bookkeeping.
+        Complete and advance from the candidate board, human decision, machine bookkeeping.
       </p>
     </div>
   );
@@ -149,7 +149,7 @@ function InterviewCardRow({
               {iv.invitationSentAt ? (
                 <span
                   className="inline-flex items-center rounded-full bg-neutral-100 px-2 py-0.5 text-[11px] font-medium text-neutral-600"
-                  title="A real .ics calendar file was attached to the invitation email. No two-way calendar sync — that is deferred connector work."
+                  title="A real .ics calendar file was attached to the invitation email. No two-way calendar sync, that is deferred connector work."
                 >
                   📎 invite sent (.ics)
                 </span>

@@ -103,7 +103,7 @@ export function InterviewConfirmClient({ token }: { token: string }) {
       <StatusScreen>
         <EmptyState
           title="Attendance confirmed"
-          hint="Thanks — we've let your recruiter know. You'll receive any joining details separately."
+          hint="Thanks, we've let your recruiter know. You'll receive any joining details separately."
         />
       </StatusScreen>
     );

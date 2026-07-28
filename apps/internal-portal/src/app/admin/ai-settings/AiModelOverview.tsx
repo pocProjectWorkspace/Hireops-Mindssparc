@@ -32,7 +32,7 @@ export function AiModelOverview({ usage }: { usage: GetAiUsageSummaryOutput }) {
         </div>
         <p className="mb-4 text-xs text-neutral-600">
           The AI provider is fixed to Anthropic (Claude). OpenAI / GPT models are deliberately not
-          offered — we only surface models we actually run, and an Anthropic-only posture is part of
+          offered, we only surface models we actually run, and an Anthropic-only posture is part of
           the EU AI Act compliance story. Each feature below picks its model from this allowlist.
         </p>
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">

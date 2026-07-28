@@ -106,7 +106,7 @@ export function BiasLexiconClient({ initialLexicon }: { initialLexicon: BiasLexi
         <h2 className="text-base font-semibold text-neutral-900">JD bias gate</h2>
         <p className="mt-1 text-sm text-neutral-600">
           A deterministic inclusive-language scan over the requisition JD, run in the wizard (live)
-          and again at submit. This is a language-hygiene aid — it flags coded wording from the
+          and again at submit. This is a language-hygiene aid, it flags coded wording from the
           lexicon below. It makes no demographic or fairness inference about any candidate.
         </p>
       </div>
@@ -235,7 +235,7 @@ export function BiasLexiconClient({ initialLexicon }: { initialLexicon: BiasLexi
           ))}
           {rows.length === 0 ? (
             <p className="text-xs text-neutral-500">
-              No terms — the gate will flag nothing. Add terms or reset to the default lexicon.
+              No terms, the gate will flag nothing. Add terms or reset to the default lexicon.
             </p>
           ) : null}
         </div>

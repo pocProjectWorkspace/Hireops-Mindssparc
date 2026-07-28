@@ -70,7 +70,7 @@ export function ApprovalTracker({
 
       {/* Pending SLA card. */}
       <section>
-        <h2 className="mb-2 text-sm font-semibold text-neutral-900">Pending — waiting time</h2>
+        <h2 className="mb-2 text-sm font-semibold text-neutral-900">Pending, waiting time</h2>
         {data.pending.length === 0 ? (
           <Card>
             <p className="text-sm text-neutral-500">Nothing is awaiting an HR-head decision.</p>
@@ -170,7 +170,7 @@ export function ApprovalTracker({
       {rejectedReqIds.length > 0 ? (
         <section>
           <h2 className="mb-2 text-sm font-semibold text-neutral-900">
-            Rejected requisitions — revision help
+            Rejected requisitions, revision help
           </h2>
           <div className="flex flex-col gap-4">
             {rejectedReqIds.map((id) => (

@@ -83,7 +83,7 @@ export function MissingInfoClient({ initial }: { initial: ListMissingInfoOutput 
         <Badge tone="neutral">{data.rows.length} items</Badge>
       </div>
       <p className="mb-5 text-sm text-neutral-500">
-        Missing info is flagged honestly. Hard gates are deterministic stage-gates — never a
+        Missing info is flagged honestly. Hard gates are deterministic stage-gates, never a
         fabricated score cap.
       </p>
 

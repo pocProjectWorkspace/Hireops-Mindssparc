@@ -96,7 +96,7 @@ export default async function PublicApplySubmittedPage({
           <p className="mb-1 font-medium text-neutral-800">What happens next</p>
           <p>
             A confirmation email is on its way. We&rsquo;ll be in touch within the next few business
-            days if there&rsquo;s a fit — you don&rsquo;t need to do anything right now.
+            days if there&rsquo;s a fit, you don&rsquo;t need to do anything right now.
           </p>
         </div>
       </Card>

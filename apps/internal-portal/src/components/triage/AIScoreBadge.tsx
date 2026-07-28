@@ -147,7 +147,7 @@ export function AIScoreBadge({
             .filter((e) => typeof e.weight === "number")
             .map((e) => `${e.label ?? e.key} ${e.weight}%`)
             .join(" · ")}
-          . This is the emphasis the AI was instructed to apply — guidance, not a computed sum.
+          . This is the emphasis the AI was instructed to apply, guidance, not a computed sum.
         </p>
       ) : null}
     </section>

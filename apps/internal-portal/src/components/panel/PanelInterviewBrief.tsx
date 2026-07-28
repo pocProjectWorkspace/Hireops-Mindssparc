@@ -239,7 +239,7 @@ export function PanelInterviewBrief({
                           onClick={() => setScores((prev) => ({ ...prev, [c.key]: n }))}
                           className={scoreButtonClass(active, submitted)}
                           aria-pressed={active}
-                          aria-label={`${c.label}: ${n} — ${SCORE_ANCHORS[n]}`}
+                          aria-label={`${c.label}: ${n}, ${SCORE_ANCHORS[n]}`}
                         >
                           {n}
                         </button>
@@ -307,7 +307,7 @@ export function PanelInterviewBrief({
               <span className="text-[11px] text-neutral-400">
                 {aiUnavailable
                   ? "Note summarising is turned off for this tenant."
-                  : "Tidies your own words back into these fields. You review and submit — nothing is auto-submitted."}
+                  : "Tidies your own words back into these fields. You review and submit, nothing is auto-submitted."}
               </span>
             </div>
           ) : null}

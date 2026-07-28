@@ -111,7 +111,7 @@ export function ActionTriad({
             onChange={(e) => setReason(e.target.value)}
             placeholder={
               arming === "reject"
-                ? "Why is this being rejected? (required — closes the requisition)"
+                ? "Why is this being rejected? (required, closes the requisition)"
                 : "What needs changing before resubmission? (required)"
             }
             disabled={pending}

@@ -129,7 +129,7 @@ function JdDescriptionsTab({ initial }: { initial: ListJdLibraryOutput }) {
     <div className="mx-auto w-full max-w-6xl px-8 py-6">
       <p className="mb-4 text-sm text-neutral-600">
         Every job description across your requisitions. Keyword chips come from the JD&rsquo;s
-        skills (or its AI-extracted keywords) — real data, never invented. Expand a row for its
+        skills (or its AI-extracted keywords), real data, never invented. Expand a row for its
         version history.
       </p>
 

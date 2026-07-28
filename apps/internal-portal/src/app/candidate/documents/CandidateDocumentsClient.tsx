@@ -232,7 +232,7 @@ function PreOfferRow({ slot }: { slot: CandidateApplicationDocumentSlot }) {
 
   const meta =
     slot.status === "requested"
-      ? "Requested — not uploaded yet"
+      ? "Requested, not uploaded yet"
       : `${slot.fileName ?? "Uploaded"}${slot.uploadedAt ? ` · ${slot.uploadedAt.slice(0, 10)}` : ""}`;
 
   return (
@@ -296,7 +296,7 @@ function OnboardingRow({ caseId, slot }: { caseId: string; slot: CandidateDocume
 
   const meta = doc
     ? `${doc.fileName ?? "Uploaded"}${doc.uploadedAt ? ` · ${doc.uploadedAt.slice(0, 10)}` : ""}`
-    : "Requested — not uploaded yet";
+    : "Requested, not uploaded yet";
 
   return (
     <DocRow

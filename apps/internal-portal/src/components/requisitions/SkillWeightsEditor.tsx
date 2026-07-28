@@ -261,12 +261,12 @@ function ScoringImpactPanel({
           <span className="font-medium text-neutral-800">How these weights are used:</span> when a
           candidate applies, the AI evaluator receives every skill with its weight and its must-have
           flag, and is asked to lean its overall judgement toward the higher-weighted and must-have
-          skills. This is guidance to the model — <span className="font-medium">not</span> a
+          skills. This is guidance to the model, <span className="font-medium">not</span> a
           weighted-sum calculation, and there is no automatic cap or cutoff.
         </p>
         <p>
           <span className="font-medium text-neutral-800">Must-have</span> marks a skill required (vs
-          nice-to-have) in the prompt. It is emphasis, not an automatic filter — the real hard gates
+          nice-to-have) in the prompt. It is emphasis, not an automatic filter, the real hard gates
           are the knockouts below.
         </p>
         <p>

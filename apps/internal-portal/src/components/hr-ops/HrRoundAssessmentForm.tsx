@@ -40,9 +40,9 @@ type ChecklistKey =
   | "relocationWillingness";
 
 const RECOMMENDATION_OPTIONS: { value: HrRoundRecommendation; label: string }[] = [
-  { value: "proceed", label: "Proceed — advance to offer" },
-  { value: "hold", label: "Hold — needs review" },
-  { value: "reject", label: "Reject — do not proceed" },
+  { value: "proceed", label: "Proceed, advance to offer" },
+  { value: "hold", label: "Hold, needs review" },
+  { value: "reject", label: "Reject, do not proceed" },
 ];
 
 type ChecklistState = Record<ChecklistKey, boolean>;
@@ -132,7 +132,7 @@ export function HrRoundAssessmentForm({
           value={notes}
           onChange={(e) => setNotes(e.target.value)}
           rows={4}
-          placeholder="Summary of the HR conversation — motivation, compensation expectations, availability, any flags."
+          placeholder="Summary of the HR conversation, motivation, compensation expectations, availability, any flags."
           className="w-full rounded-md border border-neutral-300 p-3 text-sm text-neutral-900 focus:outline focus:outline-2 focus:outline-offset-2 focus:outline-brand-500"
         />
       </div>

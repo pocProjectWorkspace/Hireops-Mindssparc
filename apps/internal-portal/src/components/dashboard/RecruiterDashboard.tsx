@@ -110,7 +110,7 @@ function FollowUpRow({ item }: { item: RecruiterFollowUp }) {
       </div>
       <a
         href={item.href}
-        title="Draft a follow-up for approval (human-in-loop — never auto-sent)"
+        title="Draft a follow-up for approval (human-in-loop, never auto-sent)"
         className="shrink-0 rounded-button border border-brand-200 bg-brand-50 px-3 py-1 text-xs font-medium text-brand-700 transition-colors hover:bg-brand-100"
       >
         Ping
@@ -394,7 +394,7 @@ export function RecruiterDashboard({
               </Card>
             )}
             <p className="mt-2 px-1 text-[11px] leading-relaxed text-neutral-400">
-              Ping drafts a follow-up for your approval — nothing is sent without a human sign-off.
+              Ping drafts a follow-up for your approval, nothing is sent without a human sign-off.
             </p>
           </section>
         </aside>

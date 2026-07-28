@@ -138,7 +138,7 @@ export function PanelPoolsClient({
     <div className="mx-auto w-full max-w-5xl px-6 py-8">
       <PageHeader
         title="Panel pools"
-        subtitle="Manage this tenant's interview-panel pools. The plan-setup pool picker reads this list — picking a pool on a round copies its members into the round's default panel, which INT-02 seeds the real panel from."
+        subtitle="Manage this tenant's interview-panel pools. The plan-setup pool picker reads this list, picking a pool on a round copies its members into the round's default panel, which INT-02 seeds the real panel from."
       />
 
       {notice ? (
@@ -156,8 +156,8 @@ export function PanelPoolsClient({
       {/* Honesty banner. */}
       <div className="mt-6 rounded-lg border border-brand-200 bg-brand-50 px-4 py-3 text-sm text-brand-800">
         Picking a pool on an interview-plan round copies the pool&apos;s members into that
-        round&apos;s default panel — the same list that seeds the real interview panelists. The
-        panel stays editable on the round: an edit is kept as an override, with the pool retained as
+        round&apos;s default panel, the same list that seeds the real interview panelists. The panel
+        stays editable on the round: an edit is kept as an override, with the pool retained as
         provenance. Archiving a pool hides it from the picker but leaves rounds already on it valid.
       </div>
 

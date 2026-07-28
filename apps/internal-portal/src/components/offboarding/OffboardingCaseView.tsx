@@ -490,7 +490,7 @@ function TaskRow({ task }: { task: TaskItem }) {
             onChange={(e) => setReason(e.target.value)}
             disabled={busy}
             rows={2}
-            placeholder="Why is this blocked? (required — recorded in the audit log)"
+            placeholder="Why is this blocked? (required, recorded in the audit log)"
             className="w-full resize-y rounded-md border border-neutral-300 bg-white px-3 py-2 text-sm text-neutral-900 transition-colors focus:border-brand-600 focus:outline-none focus:ring-1 focus:ring-brand-600 disabled:bg-neutral-100"
           />
           <div className="flex gap-2">

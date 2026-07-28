@@ -102,7 +102,7 @@ export function OffboardingList({ initial }: { initial: ListOffboardingCasesOutp
             <EmptyState
               className="py-14"
               title="No offboarding cases yet"
-              hint="A departure case starts when HR initiates offboarding for a hired employee — resignation, termination or end of contract. It opens a clearance checklist (knowledge transfer, asset return, access revocation, final settlement, exit interview) that HR and the manager work through to a clean exit. Initiate offboarding for a hired employee to open the first case."
+              hint="A departure case starts when HR initiates offboarding for a hired employee, resignation, termination or end of contract. It opens a clearance checklist (knowledge transfer, asset return, access revocation, final settlement, exit interview) that HR and the manager work through to a clean exit. Initiate offboarding for a hired employee to open the first case."
             />
           )}
         </div>

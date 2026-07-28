@@ -151,8 +151,8 @@ function SelectedReqEditor({ req, onBack }: { req: SkillWeightingReq; onBack: ()
 
       {!editable ? (
         <div className="mb-4 rounded-lg border border-status-warning-200 bg-status-warning-50 px-4 py-3 text-sm text-status-warning-700">
-          This requisition is {statusLabel(req.status).toLowerCase()} — its skill weights are
-          locked. Weights can only be edited while a requisition is a draft.
+          This requisition is {statusLabel(req.status).toLowerCase()}, its skill weights are locked.
+          Weights can only be edited while a requisition is a draft.
         </div>
       ) : null}
 

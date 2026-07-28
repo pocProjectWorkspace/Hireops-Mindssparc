@@ -30,7 +30,7 @@ export function HrAnalyticsClient({ initial }: { initial: GetHrAnalyticsOutput }
     <div className="mx-auto w-full max-w-6xl px-6 py-8">
       <p className="mb-6 text-sm text-neutral-600">
         Real hiring analytics over the live pipeline, offers and comp band data. Every panel is a
-        current snapshot; there are no fabricated numbers — thin data shows an honest empty state.
+        current snapshot; there are no fabricated numbers, thin data shows an honest empty state.
       </p>
 
       <section className="mb-8 grid grid-cols-2 gap-4 sm:grid-cols-4">

@@ -98,7 +98,7 @@ export function OnboardingList({ initial }: { initial: ListOnboardingCasesOutput
             <EmptyState
               className="py-14"
               title="No onboarding cases yet"
-              hint="An onboarding case opens itself the moment a candidate accepts their offer — with a pre-boarding checklist ready to go. Extend and land an offer from Triage, and every accepted hire will show up here to be onboarded."
+              hint="An onboarding case opens itself the moment a candidate accepts their offer, with a pre-boarding checklist ready to go. Extend and land an offer from Triage, and every accepted hire will show up here to be onboarded."
             />
           )}
         </div>

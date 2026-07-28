@@ -175,7 +175,7 @@ export function ExecAuditClient({ audit }: { audit: GetExecutiveAuditOutput }) {
         <h2 className="text-base font-semibold text-neutral-900">Per-stage SLA compliance</h2>
         <p className="mt-1 max-w-prose text-sm text-neutral-600">
           Real median turnaround vs a declared target for each governed stage. Targets are constants
-          for the POC — configurable per tenant post-POC.
+          for the POC, configurable per tenant post-POC.
         </p>
         <Card className="mt-4 p-0">
           <TableShell className="border-0">

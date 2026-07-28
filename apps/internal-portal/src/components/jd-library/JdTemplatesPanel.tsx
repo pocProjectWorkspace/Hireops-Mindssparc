@@ -317,7 +317,7 @@ function TemplateEditor({
       <div className="flex max-h-[90vh] w-full max-w-4xl flex-col overflow-hidden rounded-card border border-neutral-200 bg-white shadow-card">
         <div className="flex items-center justify-between border-b border-neutral-100 px-6 py-4">
           <h2 className="text-base font-semibold text-neutral-900">
-            {mode === "create" ? "New JD template" : `Edit — ${row?.label}`}
+            {mode === "create" ? "New JD template" : `Edit, ${row?.label}`}
           </h2>
           <Button variant="ghost" size="sm" onClick={onClose} disabled={busy}>
             Close
@@ -412,7 +412,7 @@ function TemplateEditor({
             />
           </Label>
 
-          <Label text="Legal / EEO clause block (curated — not legally reviewed)">
+          <Label text="Legal / EEO clause block (curated, not legally reviewed)">
             <textarea
               className={`${inputCls} min-h-[80px] font-mono text-xs`}
               value={f.legalClauses}
@@ -429,7 +429,7 @@ function TemplateEditor({
             </div>
             {f.skills.length === 0 ? (
               <p className="text-xs text-neutral-400">
-                No skills yet — applying this template will land an empty weighting table.
+                No skills yet, applying this template will land an empty weighting table.
               </p>
             ) : (
               <div className="space-y-2">

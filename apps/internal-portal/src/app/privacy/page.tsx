@@ -11,7 +11,7 @@
 import { CandidateShell } from "@/components/candidate/CandidateShell";
 
 export const metadata = {
-  title: "Privacy policy — HireOps",
+  title: "Privacy policy · HireOps",
 };
 
 export default function PrivacyStubPage() {

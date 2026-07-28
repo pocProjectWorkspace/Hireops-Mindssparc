@@ -136,7 +136,7 @@ export function CandidateOfferCard() {
 
       {accepted ? (
         <p className="text-sm text-status-success-700">
-          You accepted this offer. We&rsquo;ll be in touch about onboarding — any documents to share
+          You accepted this offer. We&rsquo;ll be in touch about onboarding, any documents to share
           appear under Documents.
         </p>
       ) : confirming ? (

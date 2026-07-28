@@ -200,7 +200,7 @@ export function GovernancePolicyClient({ initial }: { initial: GetGovernancePoli
     <div className="mx-auto w-full max-w-3xl px-6 py-8">
       <PageHeader
         title="Governance policy"
-        subtitle="Configure the compliance-score weights and the governance SLA policy that drive the HR-head governance surface. These values are real config — not just display."
+        subtitle="Configure the compliance-score weights and the governance SLA policy that drive the HR-head governance surface. These values are real config, not just display."
       />
 
       {notice ? (
@@ -218,7 +218,7 @@ export function GovernancePolicyClient({ initial }: { initial: GetGovernancePoli
       {/* Honesty banner. */}
       <div className="mt-6 rounded-lg border border-brand-200 bg-brand-50 px-4 py-3 text-sm text-brand-800">
         The four compliance weights are a stated <span className="font-medium">judgement call</span>{" "}
-        (not a regulated formula) and must total 100 — they weight the executive-audit compliance
+        (not a regulated formula) and must total 100, they weight the executive-audit compliance
         score, so changing one moves the score. The governance SLA thresholds drive the
         deterministic risk flags: lowering the approval-SLA days flags more overdue approvals,
         lowering the feedback-SLA hours flags more overdue feedback, and the must-have threshold

@@ -59,7 +59,7 @@ export function ScoringWeightsClient({ initialWeights }: { initialWeights: Scori
           </Badge>
         </div>
         <p className="mb-1 text-xs text-neutral-600">
-          These weights guide the AI&apos;s grading emphasis — they are instruction, not arithmetic.
+          These weights guide the AI&apos;s grading emphasis, they are instruction, not arithmetic.
           The model is asked to lean its overall judgement toward the higher-weighted categories; it
           does not compute a weighted sum of sub-scores. Weights must total exactly{" "}
           {SCORING_WEIGHTS_TOTAL}.

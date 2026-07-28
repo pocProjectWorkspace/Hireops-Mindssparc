@@ -113,7 +113,7 @@ export function BrandingClient({ initial }: { initial: GetTenantBrandingOutput }
             Company info
           </h2>
           <p className="mb-5 text-xs text-neutral-500">
-            The display name is the real tenant identity — candidate-facing pages and portal chrome
+            The display name is the real tenant identity, candidate-facing pages and portal chrome
             read it. This is the field that rebrands the product.
           </p>
           <div className="space-y-4">

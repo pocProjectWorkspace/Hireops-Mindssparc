@@ -338,7 +338,7 @@ function BiasFlagsPanel({ scan }: { scan: JdBiasScan | null }) {
   return (
     <div className="rounded-lg border border-neutral-200 bg-neutral-50 p-4">
       <p className="mb-2 text-xs font-medium text-neutral-700">
-        Inclusive-language check — {flags.length} {flags.length === 1 ? "flag" : "flags"}
+        Inclusive-language check, {flags.length} {flags.length === 1 ? "flag" : "flags"}
         {scan.enforcement === "block" && scan.blockingCount > 0
           ? ` (${scan.blockingCount} must be revised before submit)`
           : ""}

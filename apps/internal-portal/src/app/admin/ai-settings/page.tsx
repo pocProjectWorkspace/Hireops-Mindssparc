@@ -37,7 +37,7 @@ export default async function AiSettingsPage() {
       <div className="mx-auto w-full max-w-3xl px-6 pt-8">
         <PageHeader
           title="AI settings"
-          subtitle="Model, scoring emphasis, bias gate and compliance — every control here is consumed by the real AI call path."
+          subtitle="Model, scoring emphasis, bias gate and compliance: every control here is consumed by the real AI call path."
         />
       </div>
       <AiModelOverview usage={usage} />

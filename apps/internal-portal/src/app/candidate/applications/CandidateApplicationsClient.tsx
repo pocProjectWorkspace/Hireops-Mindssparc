@@ -91,9 +91,9 @@ function ApplicationCard({ application }: { application: CandidateApplicationRow
               i === 0
                 ? `Application received · ${formatDate(application.appliedAt)}`
                 : isCurrent
-                  ? `${STAGE_TIMELINE_NOTE[s] ?? stageLabel(s)} — in progress`
+                  ? `${STAGE_TIMELINE_NOTE[s] ?? stageLabel(s)}, in progress`
                   : reached
-                    ? `${STAGE_TIMELINE_NOTE[s] ?? stageLabel(s)} — complete`
+                    ? `${STAGE_TIMELINE_NOTE[s] ?? stageLabel(s)}, complete`
                     : (STAGE_TIMELINE_NOTE[s] ?? stageLabel(s));
             return (
               <li key={s} className="flex gap-3">

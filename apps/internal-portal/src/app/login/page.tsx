@@ -45,7 +45,7 @@ export default function LoginPage() {
             Hiring operations, run end to end.
           </h2>
           <p className="mt-4 text-base leading-relaxed text-sidebar-fg-muted">
-            Sourcing, triage, interviews, approvals, offers, and onboarding — one governed platform,
+            Sourcing, triage, interviews, approvals, offers, and onboarding, one governed platform,
             with every decision audited.
           </p>
           <ul className="mt-8 space-y-3 text-sm text-sidebar-fg">
@@ -67,7 +67,7 @@ export default function LoginPage() {
 
         {/* footer */}
         <p className="relative text-xs text-sidebar-fg-muted">
-          HireOps — hiring operations platform
+          HireOps, hiring operations platform
         </p>
       </aside>
 

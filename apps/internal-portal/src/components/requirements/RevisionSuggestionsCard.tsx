@@ -72,7 +72,7 @@ export function RevisionSuggestionsCard({
           <h3 className="text-sm font-semibold text-neutral-900">AI revision suggestions</h3>
           <p className="mt-0.5 text-xs text-neutral-500">
             Grounded in the rejection reason, this requisition&apos;s fields, and curated
-            benchmarks. Nothing is applied automatically — you review and resubmit.
+            benchmarks. Nothing is applied automatically, you review and resubmit.
           </p>
         </div>
         {data.featureEnabled ? (

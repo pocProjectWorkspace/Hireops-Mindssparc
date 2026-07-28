@@ -303,7 +303,7 @@ export function OfferAcceptClient({ token }: { token: string }) {
           <div className="relative w-full max-w-md rounded-t-lg border border-neutral-200 bg-white p-5 shadow-2 sm:rounded-lg">
             <h2 className="mb-2 text-lg font-semibold text-neutral-900">Decline this offer?</h2>
             <p className="mb-3 text-sm text-neutral-600">
-              Optionally let us know why — your recruiter will see this.
+              Optionally let us know why, your recruiter will see this.
             </p>
             <textarea
               value={declineReason}

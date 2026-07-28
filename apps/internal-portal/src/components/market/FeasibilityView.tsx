@@ -65,7 +65,7 @@ export function FeasibilityView({ initial }: { initial: ListRequisitionFeasibili
           <>
             How fillable each requisition is, assessed against your curated market benchmarks.{" "}
             <span className="font-medium text-neutral-600">
-              Each assessment is a real, cost-logged AI call — run on demand, never fabricated.
+              Each assessment is a real, cost-logged AI call, run on demand, never fabricated.
             </span>
           </>
         }
@@ -178,7 +178,7 @@ function FeasibilityCardView({
           </>
         ) : (
           <>
-            No market benchmark matched this title — assessments run in honest benchmark-free mode.
+            No market benchmark matched this title, assessments run in honest benchmark-free mode.
             {budgetLabel ? (
               <>
                 {" Budget "}

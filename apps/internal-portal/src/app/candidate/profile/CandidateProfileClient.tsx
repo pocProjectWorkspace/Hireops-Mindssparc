@@ -97,7 +97,7 @@ function ProfileForm({ initial }: { initial: CandidateProfile }) {
       setStatus("error");
       setErrorMsg(
         e instanceof TRPCClientError && e.data?.code === "BAD_REQUEST"
-          ? "Some details look off — please check and try again."
+          ? "Some details look off, please check and try again."
           : "Couldn't save just now. Please try again.",
       );
     },
@@ -156,7 +156,7 @@ function ProfileForm({ initial }: { initial: CandidateProfile }) {
         <div>
           <h1 className="text-2xl font-semibold tracking-tight text-neutral-900">My Profile</h1>
           <p className="mt-1 text-sm text-neutral-500">
-            Keep these up to date — recruiters use them to move your application forward.
+            Keep these up to date, recruiters use them to move your application forward.
           </p>
         </div>
         <div className="flex items-center gap-3">

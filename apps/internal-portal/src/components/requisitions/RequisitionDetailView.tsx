@@ -105,7 +105,7 @@ export function RequisitionDetailView({
     }
     if (decision === "reject") {
       const ok = window.confirm(
-        "Reject this requisition? This closes it — the hiring manager cannot resubmit it. Send it back instead if revisions could fix it.",
+        "Reject this requisition? This closes it, the hiring manager cannot resubmit it. Send it back instead if revisions could fix it.",
       );
       if (!ok) return;
     }

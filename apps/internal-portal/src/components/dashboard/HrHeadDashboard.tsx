@@ -40,17 +40,17 @@ const ENFORCEMENT_META: Record<
   off: {
     severity: "critical",
     chip: "off",
-    line: "Bias gate is OFF — JD wording is not screened before approval.",
+    line: "Bias gate is OFF, JD wording is not screened before approval.",
   },
   warn: {
     severity: "warning",
     chip: "warn",
-    line: "Bias gate is in warn mode — flags recorded, submits proceed.",
+    line: "Bias gate is in warn mode, flags recorded, submits proceed.",
   },
   block: {
     severity: "info",
     chip: "block",
-    line: "Bias gate is enforcing — flagged submits are blocked.",
+    line: "Bias gate is enforcing, flagged submits are blocked.",
   },
 };
 

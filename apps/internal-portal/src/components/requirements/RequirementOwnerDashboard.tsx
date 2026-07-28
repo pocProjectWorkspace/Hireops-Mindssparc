@@ -44,7 +44,7 @@ export function RequirementOwnerDashboard({
     <div className="mx-auto flex max-w-6xl flex-col gap-6 px-8 py-6">
       <PageHeader
         title={`Welcome back, ${displayName}`}
-        subtitle="Your requisitions, their health, and where they're stuck — at a glance."
+        subtitle="Your requisitions, their health, and where they're stuck, at a glance."
       />
 
       {/* Hero + sibling stat strip. */}
@@ -186,7 +186,7 @@ export function RequirementOwnerDashboard({
 
         {/* Right rail: approval SLA. */}
         <aside className="flex flex-col gap-3">
-          <h2 className="text-sm font-semibold text-neutral-900">Approvals — waiting</h2>
+          <h2 className="text-sm font-semibold text-neutral-900">Approvals, waiting</h2>
           {data.approvalSla.length === 0 ? (
             <Card>
               <p className="text-sm text-neutral-500">No requisitions are awaiting approval.</p>

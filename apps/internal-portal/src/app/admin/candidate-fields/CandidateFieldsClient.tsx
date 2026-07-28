@@ -123,12 +123,11 @@ export function CandidateFieldsClient({ initial }: { initial: GetCandidateFieldP
 
       {/* Honesty banner — catalog vs invention, tracked vs gated. */}
       <div className="mt-6 rounded-lg border border-brand-200 bg-brand-50 px-4 py-3 text-sm text-brand-800">
-        Only these seven data-backed fields are trackable — each reads from a real
-        application/resume source, so the catalog is fixed (you configure it, you can&apos;t invent
-        new fields). <span className="font-medium">Blocks advancement</span> is a real gate: a
-        required field that is still missing refuses the candidate&apos;s forward move to that
-        stage. An optional field is tracked in the recruiter&apos;s Missing Info view but never
-        blocks.
+        Only these seven data-backed fields are trackable, each reads from a real application/resume
+        source, so the catalog is fixed (you configure it, you can&apos;t invent new fields).{" "}
+        <span className="font-medium">Blocks advancement</span> is a real gate: a required field
+        that is still missing refuses the candidate&apos;s forward move to that stage. An optional
+        field is tracked in the recruiter&apos;s Missing Info view but never blocks.
       </div>
 
       <Card className="mt-6 p-0">
@@ -191,7 +190,7 @@ export function CandidateFieldsClient({ initial }: { initial: GetCandidateFieldP
                       />
                     ) : (
                       <span className="text-xs text-neutral-400">
-                        Optional — tracked, never gates
+                        Optional, tracked, never gates
                       </span>
                     )}
                   </Td>

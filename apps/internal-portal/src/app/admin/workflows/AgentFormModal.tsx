@@ -66,7 +66,7 @@ export const RECIPES: RecipeMeta[] = [
     blurb:
       "Watches a pipeline stage and drafts a short check-in email when an application has been sitting there past a threshold.",
     approvalLine:
-      "Drafts the email and waits for the owning recruiter to approve it — nothing sends until a person signs off.",
+      "Drafts the email and waits for the owning recruiter to approve it, nothing sends until a person signs off.",
   },
   {
     key: "scheduling",
@@ -80,9 +80,9 @@ export const RECIPES: RecipeMeta[] = [
     key: "candidate_qa",
     label: "Candidate Q&A reply",
     blurb:
-      "When a candidate emails a question, drafts a reply grounded only in their real application status — never invented facts.",
+      "When a candidate emails a question, drafts a reply grounded only in their real application status, never invented facts.",
     approvalLine:
-      "Every reply waits for the owning recruiter to approve it — nothing reaches the candidate automatically.",
+      "Every reply waits for the owning recruiter to approve it, nothing reaches the candidate automatically.",
   },
 ];
 
@@ -300,7 +300,7 @@ export function AgentFormModal({
             </h2>
             <p className="mt-1 text-xs text-neutral-500">
               {mode === "create"
-                ? "Pick a recipe, then set its knobs. Every agent drafts or proposes and stops for a human — HireOps never sends on its own."
+                ? "Pick a recipe, then set its knobs. Every agent drafts or proposes and stops for a human, HireOps never sends on its own."
                 : "Editing creates a new version; the previous version is retired and kept for history. The name is fixed across versions."}
             </p>
           </div>

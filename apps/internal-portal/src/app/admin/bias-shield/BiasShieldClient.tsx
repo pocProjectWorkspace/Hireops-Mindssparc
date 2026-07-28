@@ -87,14 +87,14 @@ export function BiasShieldClient({ lexicon }: { lexicon: BiasLexicon }) {
           </h2>
           <p className="mt-3 max-w-2xl text-sm leading-relaxed text-neutral-700">
             We deliberately collect and infer{" "}
-            <span className="font-semibold">no protected attributes</span> — no gender, ethnicity,
-            age, or demographic signal — and we build{" "}
+            <span className="font-semibold">no protected attributes</span>, no gender, ethnicity,
+            age, or demographic signal, and we build{" "}
             <span className="font-semibold">no demographic scoring or monitoring</span> anywhere in
             the platform. There is nothing to switch off here, because it was never built. A hiring
             system that measured people by protected class would be exactly the high-risk profiling
             the EU AI Act restricts. Our bias controls act on the{" "}
             <span className="font-semibold">text of a job description</span> and on{" "}
-            <span className="font-semibold">what a reviewer can see</span> — never on the person.
+            <span className="font-semibold">what a reviewer can see</span>, never on the person.
           </p>
         </div>
 
@@ -120,7 +120,7 @@ export function BiasShieldClient({ lexicon }: { lexicon: BiasLexicon }) {
         What the shield actually does
       </h3>
       <p className="mb-4 max-w-2xl text-sm text-neutral-600">
-        Two real, deterministic controls — no inference about any candidate.
+        Two real, deterministic controls, no inference about any candidate.
       </p>
 
       <div className="mb-6 grid grid-cols-1 gap-4 md:grid-cols-2">
@@ -166,7 +166,7 @@ export function BiasShieldClient({ lexicon }: { lexicon: BiasLexicon }) {
             <Badge tone="info">Text-based</Badge>
           </div>
           <p className="text-xs leading-relaxed text-neutral-600">
-            AI screening reads the CV and the requisition’s skills and knockouts — it scores against
+            AI screening reads the CV and the requisition’s skills and knockouts, it scores against
             the job, not the person. There is no photo analysis, no name-based inference, and no
             demographic signal in the pipeline. PII masking is an admin switch, and every candidate
             PII access is itself logged to the audit trail.

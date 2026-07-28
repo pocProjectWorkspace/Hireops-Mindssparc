@@ -159,7 +159,7 @@ export function IrisDrawer({ open, onClose, context }: IrisDrawerProps) {
               Iris
             </h2>
             <p className="mt-0.5 text-xs text-neutral-500">
-              Runs real actions you confirm — every step is audited.
+              Runs real actions you confirm, every step is audited.
             </p>
           </div>
           <button
@@ -252,7 +252,7 @@ export function IrisDrawer({ open, onClose, context }: IrisDrawerProps) {
             <Card>
               <h3 className="mb-1 text-sm font-semibold text-neutral-900">{selectedLabel}</h3>
               <p className="mb-4 text-xs text-neutral-500">
-                Provide the essentials — Iris fills sensible defaults for the rest. You&apos;ll
+                Provide the essentials, Iris fills sensible defaults for the rest. You&apos;ll
                 confirm a preview before anything is created.
               </p>
               {selectedActionId === "create_requisition_jd" ? (
@@ -273,7 +273,7 @@ export function IrisDrawer({ open, onClose, context }: IrisDrawerProps) {
                     onValueChange={setBusinessUnitId}
                     disabled={businessUnitsQuery.isLoading}
                     options={businessUnits.map((u) => ({ value: u.id, label: u.name }))}
-                    hint="Optional — leave unset to file it under the default unit."
+                    hint="Optional, leave unset to file it under the default unit."
                   />
                   <Select
                     label="Location type"
@@ -350,7 +350,7 @@ export function IrisDrawer({ open, onClose, context }: IrisDrawerProps) {
               ) : null}
 
               <p className="mt-3 text-[11px] text-neutral-400">
-                Confirming runs the same gated action a person would — it&apos;s recorded in the
+                Confirming runs the same gated action a person would, it&apos;s recorded in the
                 audit trail and tagged as Iris-assisted.
               </p>
               <div className="mt-4 flex items-center justify-between gap-2">

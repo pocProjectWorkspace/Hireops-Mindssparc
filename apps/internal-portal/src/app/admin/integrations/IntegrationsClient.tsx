@@ -72,7 +72,7 @@ export function IntegrationsClient() {
           </svg>
         </span>
         <p>
-          <strong className="font-semibold">Integration mode: Simulated</strong> — awaiting Workday
+          <strong className="font-semibold">Integration mode: Simulated</strong>, awaiting Workday
           tenant credentials. All sync events below are mock dispatches; each simulated_response
           carries an explicit notes field saying so.
         </p>
@@ -186,10 +186,10 @@ const CONNECTORS: Connector[] = [
     name: "Email",
     detail: "Resend",
     status: "live",
-    note: "Real transactional email — candidate confirmations, agent follow-ups, notifications. (Test mode caps delivery to the demo inbox.)",
+    note: "Real transactional email, candidate confirmations, agent follow-ups, notifications. (Test mode caps delivery to the demo inbox.)",
   },
   {
-    name: "Workday — Hire",
+    name: "Workday, Hire",
     detail: "HR system of record",
     status: "simulated",
     note: "Outbound hire events are built and queued below in simulated mode. Flips to live dispatch the moment tenant Workday credentials are provisioned.",
@@ -198,19 +198,19 @@ const CONNECTORS: Connector[] = [
     name: "Microsoft Teams",
     detail: "Interview video",
     status: "deferred",
-    note: "Live interview links + join telemetry. Post-deal connector work package — not built; scheduling today records the meeting details manually.",
+    note: "Live interview links + join telemetry. Post-deal connector work package, not built; scheduling today records the meeting details manually.",
   },
   {
     name: "Zoom",
     detail: "Interview video",
     status: "deferred",
-    note: "Alternative video provider. Post-deal connector work package — not built.",
+    note: "Alternative video provider. Post-deal connector work package, not built.",
   },
   {
     name: "Calendar",
     detail: "Google / Outlook",
     status: "deferred",
-    note: "Two-way availability + invite sync for panel scheduling. Post-deal connector work package — not built.",
+    note: "Two-way availability + invite sync for panel scheduling. Post-deal connector work package, not built.",
   },
 ];
 

@@ -59,7 +59,7 @@ export default async function RequisitionApprovalsPage() {
       <div className="mx-auto w-full max-w-6xl space-y-6 px-8 py-6">
         <PageHeader
           title="Requisition approvals"
-          subtitle="Review submitted requisitions and decide — approve, send back, or reject. Open a row for the full requisition and decision panel."
+          subtitle="Review submitted requisitions and decide: approve, send back, or reject. Open a row for the full requisition and decision panel."
         />
         <RequisitionApprovalsTable rows={rows} />
       </div>

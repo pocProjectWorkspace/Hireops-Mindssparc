@@ -87,7 +87,7 @@ export function WorkflowsClient({ initial }: { initial: ListAgentsOutput }) {
     <div className="mx-auto w-full max-w-5xl px-6 py-8">
       <PageHeader
         title="Workflows"
-        subtitle="Automation agents for this tenant — what the platform does automatically, always with a human-in-the-loop gate. Pause an agent to stop it firing without deleting its history."
+        subtitle="Automation agents for this tenant, what the platform does automatically, always with a human-in-the-loop gate. Pause an agent to stop it firing without deleting its history."
         right={
           <div className="flex items-center gap-3">
             <Badge tone={activeCount > 0 ? "success" : "neutral"}>
@@ -101,7 +101,7 @@ export function WorkflowsClient({ initial }: { initial: ListAgentsOutput }) {
       />
 
       <p className="mt-3 text-xs text-neutral-500">
-        Run metrics below are real — trigger type, last-run status and outcome counts come straight
+        Run metrics below are real, trigger type, last-run status and outcome counts come straight
         from this tenant&apos;s run history. Success rates are not estimated.
       </p>
 
@@ -112,7 +112,7 @@ export function WorkflowsClient({ initial }: { initial: ListAgentsOutput }) {
           <Card padded={false}>
             <EmptyState
               title="No agents configured"
-              hint="Create a workflow to have the platform draft follow-ups, propose interview slots, or reply to candidate questions — always waiting for a human to approve."
+              hint="Create a workflow to have the platform draft follow-ups, propose interview slots, or reply to candidate questions, always waiting for a human to approve."
               action={
                 <Button size="sm" onClick={() => setCreating(true)}>
                   Create workflow

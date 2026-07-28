@@ -67,7 +67,7 @@ export function MarketIntelligenceView({
 
   // The honesty line — every row shares the same curated source in the demo,
   // so surface the most recent one prominently and note it applies to all.
-  const sourceNote = rows[0]?.sourceNote ?? "Curated benchmark — update quarterly";
+  const sourceNote = rows[0]?.sourceNote ?? "Curated benchmark, update quarterly";
 
   return (
     <>
@@ -77,7 +77,7 @@ export function MarketIntelligenceView({
           <>
             Curated salary + hiring benchmarks by role.{" "}
             <span className="font-medium text-neutral-600">{sourceNote}.</span> These are reference
-            figures maintained by your team — not a live market feed.
+            figures maintained by your team, not a live market feed.
           </>
         }
       />
@@ -221,7 +221,7 @@ function BenchmarkEditForm({ row, onDone }: { row: MarketBenchmarkRow; onDone: (
           .map((s) => s.trim())
           .filter(Boolean)
           .slice(0, 20),
-        sourceNote: sourceNote.trim() || "Curated benchmark — update quarterly",
+        sourceNote: sourceNote.trim() || "Curated benchmark, update quarterly",
       });
       onDone();
     } catch (err) {
@@ -235,7 +235,7 @@ function BenchmarkEditForm({ row, onDone }: { row: MarketBenchmarkRow; onDone: (
 
   return (
     <Card padded={false} className="p-4">
-      <h3 className="mb-3 text-sm font-semibold text-neutral-900">Edit — {row.roleTitle}</h3>
+      <h3 className="mb-3 text-sm font-semibold text-neutral-900">Edit, {row.roleTitle}</h3>
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
         <label className="flex flex-col gap-1 text-xs text-neutral-600">
           Market median (₹ LPA)

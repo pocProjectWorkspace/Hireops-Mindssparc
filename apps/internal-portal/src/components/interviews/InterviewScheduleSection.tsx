@@ -207,7 +207,7 @@ function ScheduleForm({
 
   const roundOptions = planRounds.map((r) => ({
     value: String(r.roundNumber),
-    label: `Round ${r.roundNumber} — ${r.roundName}`,
+    label: `Round ${r.roundNumber}, ${r.roundName}`,
     disabled: forcedRound === undefined && disabledRounds.has(r.roundNumber),
   }));
 

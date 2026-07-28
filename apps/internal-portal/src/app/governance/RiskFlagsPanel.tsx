@@ -27,7 +27,7 @@ export function RiskFlagsPanel({ risk }: { risk: GetGovernanceRiskFlagsOutput })
         )}
       </div>
       <p className="mt-1 max-w-prose text-sm text-neutral-600">
-        Rule-based checks over live data — budgets, approvals, must-have lists, offer bands and
+        Rule-based checks over live data, budgets, approvals, must-have lists, offer bands and
         feedback SLAs. Deterministic, no AI. Each flag links to where it can be resolved.
       </p>
 

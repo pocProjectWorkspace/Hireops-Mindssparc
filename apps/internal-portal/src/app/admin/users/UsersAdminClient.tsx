@@ -185,9 +185,9 @@ function InvitePanel({
   const invite = trpc.inviteTenantUser.useMutation({
     onSuccess: (res) => {
       const note = res.membershipReused
-        ? "This email already had a membership here — its roles were updated and it was reactivated."
+        ? "This email already had a membership here, its roles were updated and it was reactivated."
         : res.alreadyExisted
-          ? "This email already had a login — its password was reset to the one below."
+          ? "This email already had a login, its password was reset to the one below."
           : "New member created.";
       setResult({ email: res.email, tempPassword: res.tempPassword, note });
       setError(null);
@@ -258,7 +258,7 @@ function InvitePanel({
             </Button>
           </div>
           <p className="mt-3 text-xs text-neutral-500">
-            This temporary password is shown once — copy it now and share it securely. No email is
+            This temporary password is shown once, copy it now and share it securely. No email is
             sent yet; email invitations arrive with the notifications work package.
           </p>
           <div className="mt-3">

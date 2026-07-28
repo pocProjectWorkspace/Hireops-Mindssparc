@@ -127,7 +127,7 @@ export function SystemSetupClient({ initial }: { initial: SystemSetup }) {
           delivery today is <strong>SLA-breach</strong> alerts to the recipients below, plus the
           escalation rules; the other alert types are saved but not yet delivered (their event
           sources are still being wired). SLA <em>thresholds</em> stay fixed in the platform
-          defaults — this screen configures who gets notified, not the hours.
+          defaults, this screen configures who gets notified, not the hours.
         </p>
       </div>
 
@@ -168,7 +168,7 @@ export function SystemSetupClient({ initial }: { initial: SystemSetup }) {
                   Send operational email alerts
                 </span>
                 <span className="block text-xs text-neutral-500">
-                  Master switch. When off, nothing is sent — no alert recipients and no escalation
+                  Master switch. When off, nothing is sent, no alert recipients and no escalation
                   rules fire, regardless of the settings on either tab.
                 </span>
               </span>
@@ -241,7 +241,7 @@ export function SystemSetupClient({ initial }: { initial: SystemSetup }) {
                 <h3 className="text-sm font-semibold text-neutral-900">Escalation rules</h3>
                 <p className="text-xs text-neutral-500">
                   When an application has sat in an active stage for at least N days, the SLA worker
-                  notifies this recipient at the chosen severity (once per day). Deterministic — it
+                  notifies this recipient at the chosen severity (once per day). Deterministic, it
                   changes no SLA threshold, and it requires the master Email Alerts switch above.
                 </p>
               </div>

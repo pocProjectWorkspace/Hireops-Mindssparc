@@ -136,7 +136,7 @@ function AnalysisBody({
           </p>
         )}
         <p className="text-[11px] text-neutral-400">
-          Verdict is computed by a deterministic rule engine — the AI never changes it.
+          Verdict is computed by a deterministic rule engine, the AI never changes it.
         </p>
       </Card>
 
@@ -176,7 +176,7 @@ function AnalysisBody({
           </ul>
         )}
         <p className="border-t border-neutral-100 pt-2 text-[11px] text-neutral-500">
-          Curated reference data — not a live market feed. Source notes on each row in Market intel.
+          Curated reference data, not a live market feed. Source notes on each row in Market intel.
         </p>
       </Card>
 
@@ -202,7 +202,7 @@ function AnalysisBody({
                 {rationale.model ? ` · ${rationale.model}` : ""}
                 {rationale.promptVersion ? ` · ${rationale.promptVersion}` : ""}
                 {rationale.verdictSnapshot !== row.verdict
-                  ? " · verdict changed since — regenerate"
+                  ? " · verdict changed since, regenerate"
                   : ""}
               </p>
             ) : null}
@@ -212,7 +212,7 @@ function AnalysisBody({
             <p className="text-sm font-medium text-neutral-700">No rationale yet</p>
             <p className="mt-1 text-xs text-neutral-500">
               {row.verdict == null
-                ? "Add an expected salary + comp band first — there's no verdict to explain."
+                ? "Add an expected salary + comp band first, there's no verdict to explain."
                 : "Generate a short, cost-logged rationale grounded only in these numbers. If AI is switched off for this tenant, this button reports that honestly."}
             </p>
           </div>

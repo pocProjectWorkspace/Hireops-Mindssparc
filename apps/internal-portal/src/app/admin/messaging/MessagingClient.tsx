@@ -187,7 +187,7 @@ export function MessagingClient({ initial }: { initial: ListNotificationLogOutpu
       {/* The REAL template registry. */}
       <h2 className="mb-1 mt-10 text-base font-semibold text-neutral-900">Email templates</h2>
       <p className="mb-4 max-w-2xl text-sm text-neutral-600">
-        These are the actual templates the delivery worker renders — code-owned in
+        These are the actual templates the delivery worker renders, code-owned in
         <span className="mx-1 font-mono text-xs text-neutral-500">@hireops/email-templates</span>
         and version-controlled. Copy is edited in code review, not from a settings screen, so a
         wrong-template send can never ship silently.

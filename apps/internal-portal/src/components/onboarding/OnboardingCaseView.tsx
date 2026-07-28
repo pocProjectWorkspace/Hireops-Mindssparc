@@ -427,7 +427,7 @@ function DocumentSlotRow({ caseId, slot }: { caseId: string; slot: DocumentSlot 
             onChange={(e) => setReason(e.target.value)}
             disabled={pending}
             rows={2}
-            placeholder="Why is this document rejected? (required — recorded in the audit log)"
+            placeholder="Why is this document rejected? (required, recorded in the audit log)"
             className="w-full resize-y rounded-md border border-neutral-300 bg-white px-3 py-2 text-sm text-neutral-900 transition-colors focus:border-brand-600 focus:outline-none focus:ring-1 focus:ring-brand-600 disabled:bg-neutral-100"
           />
           <div className="flex gap-2">
@@ -498,7 +498,7 @@ function CaseDetailsEditor({ caseId, c }: { caseId: string; c: OnboardingCaseDet
       queryClient.invalidateQueries({ queryKey: [["listOnboardingCases"]] });
       if (res.documentTasksAdded > 0) {
         setNote(
-          `Geography set to ${formatGeography(res.geographyCode)} — added ${res.documentTasksAdded} document task${
+          `Geography set to ${formatGeography(res.geographyCode)}, added ${res.documentTasksAdded} document task${
             res.documentTasksAdded === 1 ? "" : "s"
           }.`,
         );
@@ -870,7 +870,7 @@ function TaskRow({ task }: { task: TaskItem }) {
             onChange={(e) => setReason(e.target.value)}
             disabled={busy}
             rows={2}
-            placeholder="Why is this blocked? (required — recorded in the audit log)"
+            placeholder="Why is this blocked? (required, recorded in the audit log)"
             className="w-full resize-y rounded-md border border-neutral-300 bg-white px-3 py-2 text-sm text-neutral-900 transition-colors focus:border-brand-600 focus:outline-none focus:ring-1 focus:ring-brand-600 disabled:bg-neutral-100"
           />
           <div className="flex gap-2">

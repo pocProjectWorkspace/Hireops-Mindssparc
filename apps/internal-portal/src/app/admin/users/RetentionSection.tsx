@@ -23,7 +23,7 @@ export function RetentionSection({ items }: { items: DocumentRetentionRow[] }) {
     <section className="mt-10">
       <h2 className="text-base font-semibold text-neutral-900">Data retention</h2>
       <p className="mt-1 max-w-prose text-sm text-neutral-600">
-        Statutory retention periods per document type, by geography — the reference data that will
+        Statutory retention periods per document type, by geography, the reference data that will
         drive DPDPA-aligned retention. This view is read-only: automated enforcement (deleting or
         anonymising documents past their retention window) is a future work package, not yet wired.
       </p>

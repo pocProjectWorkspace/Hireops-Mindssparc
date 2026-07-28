@@ -140,7 +140,7 @@ export function ApprovalRoutingClient({ initial }: { initial: ApprovalMatrixRow[
       <div className="mb-6 rounded-xl border border-neutral-200 bg-neutral-50 px-5 py-4">
         <p className="text-sm text-neutral-700">
           Choose who approves each chain and when the policy takes effect. Policies are{" "}
-          <strong>effective-dated</strong> — the newest policy in force right now wins, and a
+          <strong>effective-dated</strong>, the newest policy in force right now wins, and a
           future-dated policy schedules a change without touching today&apos;s routing. Each policy
           names a <strong>single approver</strong> today; multi-step routing (a sequence of
           approvers) is planned. Changing the approver here reroutes the next approval the platform
@@ -275,7 +275,7 @@ export function ApprovalRoutingClient({ initial }: { initial: ApprovalMatrixRow[
             <input
               className={inputCls}
               value={form.name}
-              placeholder="e.g. Requisition approval — HR Head"
+              placeholder="e.g. Requisition approval, HR Head"
               onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
             />
           </label>

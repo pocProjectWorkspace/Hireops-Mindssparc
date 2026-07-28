@@ -322,7 +322,7 @@ export function ApplyForm({
               </p>
               <p className="text-xs text-neutral-500">
                 {resume
-                  ? `${formatBytes(resume.size)} — choose another to replace`
+                  ? `${formatBytes(resume.size)}, choose another to replace`
                   : "PDF or DOCX, up to 10 MB"}
               </p>
             </div>

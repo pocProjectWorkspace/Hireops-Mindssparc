@@ -149,7 +149,7 @@ export function EmailTemplatesClient({ initial }: { initial: GetEmailTemplateCat
     <div className="mx-auto w-full max-w-6xl px-6 py-8">
       <PageHeader
         title="Email templates"
-        subtitle="Override the subject and the named text of each transactional email. Layout, styling, and data (names, dates, links) stay fixed — there is no raw-HTML editor. Leave a field blank to keep the shipped default."
+        subtitle="Override the subject and the named text of each transactional email. Layout, styling, and data (names, dates, links) stay fixed, there is no raw-HTML editor. Leave a field blank to keep the shipped default."
       />
 
       {notice ? (
@@ -354,7 +354,7 @@ function SlotField({
             ))}
           </>
         ) : (
-          "No data tokens — plain text only."
+          "No data tokens, plain text only."
         )}
         {note ? <span className="ml-1 italic text-neutral-400">— {note}</span> : null}
       </p>

@@ -500,7 +500,7 @@ export function RequisitionWizard({
       ok: jdFilled && !biasBlocked,
       step: 2,
       reason: biasBlocked
-        ? "The JD contains blocked language — revise it in the JD step."
+        ? "The JD contains blocked language, revise it in the JD step."
         : undefined,
     },
     { label: "At least one skill weighted", ok: skillsFilled, step: 3 },
@@ -532,7 +532,7 @@ export function RequisitionWizard({
 
           <div className="mb-5">
             <p className="mb-2 text-xs font-medium text-neutral-700">
-              Quick start — role templates{" "}
+              Quick start, role templates{" "}
               <span className="font-normal text-neutral-400">
                 (curated presets, fully editable)
               </span>
@@ -662,7 +662,7 @@ export function RequisitionWizard({
                         to pick from a managed library, or enter the budget manually below.
                       </>
                     ) : (
-                      "No comp bands are defined yet — enter the budget manually below, or ask an administrator to add a comp-band library."
+                      "No comp bands are defined yet, enter the budget manually below, or ask an administrator to add a comp-band library."
                     )}
                   </div>
                 ) : (
@@ -700,7 +700,7 @@ export function RequisitionWizard({
                 )}
               </Field>
             </div>
-            <Field label="Budget band — min (INR / year)">
+            <Field label="Budget band, min (INR / year)">
               <input
                 type="number"
                 min={0}
@@ -710,7 +710,7 @@ export function RequisitionWizard({
                 placeholder="2800000"
               />
             </Field>
-            <Field label="Budget band — max (INR / year)">
+            <Field label="Budget band, max (INR / year)">
               <input
                 type="number"
                 min={0}
@@ -806,12 +806,12 @@ export function RequisitionWizard({
               </Button>
             </div>
             <p className="mb-3 text-xs text-neutral-500">
-              Hard gates evaluated deterministically against the parsed CV at apply time — a
+              Hard gates evaluated deterministically against the parsed CV at apply time, a
               candidate who fails is filtered out. No AI involved.
             </p>
             {knockouts.length === 0 ? (
               <p className="text-xs text-neutral-500">
-                Optional — e.g. &ldquo;≥ 5 years experience&rdquo;.
+                Optional, e.g. &ldquo;≥ 5 years experience&rdquo;.
               </p>
             ) : (
               <div className="space-y-3">
@@ -888,7 +888,7 @@ export function RequisitionWizard({
                         </label>
                         {!fieldIsKnown ? (
                           <label className="col-span-2 flex flex-col gap-1 text-xs text-neutral-600">
-                            Advanced — parsed-CV field path
+                            Advanced, parsed-CV field path
                             <input
                               className={inputCls}
                               value={k.fieldPath}
@@ -956,7 +956,7 @@ export function RequisitionWizard({
             Interview rounds & panel
           </h2>
           <p className="mb-4 text-sm text-neutral-600">
-            Define the interview loop for this role — rounds, mode, scorecard, competency focus, and
+            Define the interview loop for this role, rounds, mode, scorecard, competency focus, and
             a default panel. Panelists are confirmed at scheduling; this is the blueprint.
           </p>
           {rid ? (
@@ -1234,7 +1234,7 @@ function GateStatus({ scan }: { scan: JdBiasScan | null }) {
   if (blocked) {
     return (
       <div className="mt-4 rounded-lg border border-status-error-200 bg-status-error-50 px-4 py-3 text-sm text-status-error-700">
-        Bias gate: blocked — the JD contains coded language that must be revised before you can
+        Bias gate: blocked, the JD contains coded language that must be revised before you can
         submit (see the Job description step).
       </div>
     );
@@ -1243,13 +1243,13 @@ function GateStatus({ scan }: { scan: JdBiasScan | null }) {
     return (
       <div className="mt-4 rounded-lg border border-status-warning-200 bg-status-warning-50 px-4 py-3 text-sm text-status-warning-700">
         Bias gate: {scan.matches.length} flagged {scan.matches.length === 1 ? "phrase" : "phrases"}{" "}
-        — submission is allowed; the HR head will see the flags in the approval queue.
+        , submission is allowed; the HR head will see the flags in the approval queue.
       </div>
     );
   }
   return (
     <div className="mt-4 rounded-lg border border-status-success-200 bg-status-success-50 px-4 py-3 text-sm text-status-success-700">
-      Bias gate: clean — no coded language found.
+      Bias gate: clean, no coded language found.
     </div>
   );
 }

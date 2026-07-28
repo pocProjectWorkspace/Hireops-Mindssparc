@@ -157,7 +157,7 @@ export function BriefContent({
         <Card>
           <SectionTitle>Previous round feedback</SectionTitle>
           <p className="mb-3 text-xs text-neutral-400">
-            Recommendations + notes only — per-round scores are hidden until you submit
+            Recommendations + notes only, per-round scores are hidden until you submit
             (anti-anchoring).
           </p>
           <div className="space-y-3">
@@ -203,7 +203,7 @@ function SkillsMatchCard({ match }: { match: GetPanelInterviewBriefOutput["skill
   return (
     <Card>
       <div className="mb-1 flex items-center justify-between gap-2">
-        <SectionTitle className="mb-0">Resume vs JD skills — parsed match</SectionTitle>
+        <SectionTitle className="mb-0">Resume vs JD skills, parsed match</SectionTitle>
         {match.totalCount > 0 ? (
           <span
             className={
@@ -218,13 +218,13 @@ function SkillsMatchCard({ match }: { match: GetPanelInterviewBriefOutput["skill
       </div>
       {match.totalCount === 0 ? (
         <p className="mt-2 text-sm text-neutral-400">
-          No JD skills recorded for this requisition — nothing to match against.
+          No JD skills recorded for this requisition, nothing to match against.
         </p>
       ) : (
         <>
           <p className="mb-3 text-xs text-neutral-400">
             {match.matchedCount} of {match.totalCount} JD skills present in the parsed resume
-            (deterministic overlap — not an AI judgement).
+            (deterministic overlap, not an AI judgement).
           </p>
           <ul className="space-y-2">
             {match.items.map((item) => (
@@ -302,7 +302,7 @@ function InterviewPrepSection({ interviewId }: { interviewId: string }) {
       </div>
       <p className="mb-4 text-xs text-neutral-400">
         AI-suggested focus areas + questions, grounded in the JD, the parsed resume, and prior-round
-        notes (never scores). Suggestions only — you decide what to ask.
+        notes (never scores). Suggestions only, you decide what to ask.
       </p>
 
       {query.isLoading ? (

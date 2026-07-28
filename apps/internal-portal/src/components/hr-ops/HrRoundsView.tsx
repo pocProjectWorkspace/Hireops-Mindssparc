@@ -88,7 +88,7 @@ export function HrRoundsView({ initial }: { initial: ListHrRoundsOutput }) {
     <div className="mx-auto w-full max-w-6xl space-y-6 px-8 py-6">
       <PageHeader
         title="HR rounds"
-        subtitle="The HR behavioural round across active cases — schedule, complete the assessment, and record the outcome."
+        subtitle="The HR behavioural round across active cases, schedule, complete the assessment, and record the outcome."
       />
 
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">

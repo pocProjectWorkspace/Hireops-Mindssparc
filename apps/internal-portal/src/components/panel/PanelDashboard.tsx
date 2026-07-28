@@ -167,7 +167,7 @@ export function PanelDashboard({
           entity={`${pendingCount} interview${pendingCount === 1 ? "" : "s"} awaiting your score`}
           consequence={
             bannerNames.length > 0
-              ? `${bannerNames.join(", ")}${board.pending.length > 3 ? " and more" : ""} — score them before the loop closes.`
+              ? `${bannerNames.join(", ")}${board.pending.length > 3 ? " and more" : ""}, score them before the loop closes.`
               : "Score them before the loop closes."
           }
           href="/panel/feedback"
@@ -205,7 +205,7 @@ export function PanelDashboard({
                 ? "No interviews scheduled for today."
                 : tab === "upcoming"
                   ? "No upcoming interviews on your panel."
-                  : "No scorecards waiting — you're all caught up."}
+                  : "No scorecards waiting, you're all caught up."}
             </p>
           </Card>
         ) : (

@@ -40,7 +40,7 @@ function ApprovalNote() {
   return (
     <div className="rounded-lg border border-status-info-200 bg-status-info-50 px-4 py-3 text-xs text-status-info-700">
       In production these changes route through an administrator for approval. For this POC an HR
-      head edit takes effect immediately — the approval step is not yet wired.
+      head edit takes effect immediately, the approval step is not yet wired.
     </div>
   );
 }
@@ -81,9 +81,7 @@ function ScreeningPrivacyCard({ initial }: { initial: ScreeningPrivacy }) {
   return (
     <section>
       <div className="mb-1 flex items-center gap-2">
-        <h2 className="text-base font-semibold text-neutral-900">
-          Bias Shield — screening privacy
-        </h2>
+        <h2 className="text-base font-semibold text-neutral-900">Bias Shield, screening privacy</h2>
         {anyOn ? <Badge tone="info">Active</Badge> : null}
       </div>
       <p className="mb-4 max-w-prose text-sm text-neutral-600">
@@ -111,7 +109,7 @@ function ScreeningPrivacyCard({ initial }: { initial: ScreeningPrivacy }) {
 
       <p className="mt-3 max-w-prose text-xs text-neutral-500">
         Photo, gender, age and university anonymisation are not offered because HireOps does not
-        collect those fields — there is nothing to hide. This is a deliberate design choice, not a
+        collect those fields, there is nothing to hide. This is a deliberate design choice, not a
         gap: no demographic data is captured or inferred anywhere in the product.
       </p>
 

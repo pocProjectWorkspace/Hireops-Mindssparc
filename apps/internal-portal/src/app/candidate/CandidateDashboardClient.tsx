@@ -114,9 +114,7 @@ function DashboardBody() {
           <Card className="flex flex-col gap-3 p-5">
             <h2 className="text-sm font-semibold text-neutral-900">Tasks checklist</h2>
             {tasks.length === 0 ? (
-              <p className="text-sm text-neutral-500">
-                You&rsquo;re all caught up — nothing to do.
-              </p>
+              <p className="text-sm text-neutral-500">You&rsquo;re all caught up, nothing to do.</p>
             ) : (
               <ul className="flex flex-col gap-2.5">
                 {tasks.map((t) => (

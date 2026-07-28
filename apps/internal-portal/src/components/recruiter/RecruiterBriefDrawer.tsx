@@ -44,7 +44,7 @@ const AI_ACTIONS: { kind: RecruiterBriefKind; label: string; why: string }[] = [
   {
     kind: "availability_draft",
     label: "Draft a notice-period / availability message",
-    why: "Draft only — you review + send",
+    why: "Draft only, you review + send",
   },
 ];
 
@@ -227,7 +227,7 @@ export function RecruiterBriefDrawer({ applicationId, onClose }: RecruiterBriefD
                 <p className="mt-3 text-[11px] text-neutral-400">
                   Weighted coverage {data.skillsMatch.coveragePct}% ·{" "}
                   {data.skillsMatch.matchedCount}/{data.skillsMatch.totalCount} JD skills matched.
-                  Deterministic parse match — no AI, no score cap.
+                  Deterministic parse match, no AI, no score cap.
                 </p>
               </section>
 
@@ -323,7 +323,7 @@ export function RecruiterBriefDrawer({ applicationId, onClose }: RecruiterBriefD
                     })}
                     <p className="text-[11px] text-neutral-400">
                       Every generation is grounded in the JD + résumé, cost-logged (Admin → Costs),
-                      and kill-switchable. The availability message is a DRAFT — it is never
+                      and kill-switchable. The availability message is a DRAFT, it is never
                       auto-sent.
                     </p>
                   </div>
@@ -418,7 +418,7 @@ function BriefResult({ card }: { card: RecruiterBriefCard }) {
       <p className="mb-1 font-semibold text-neutral-800">Subject: {c.subject}</p>
       <p className="whitespace-pre-wrap text-neutral-700">{c.body}</p>
       <p className="mt-2 text-[11px] italic text-neutral-400">
-        Draft only — review and send through the normal approval path.
+        Draft only, review and send through the normal approval path.
       </p>
     </div>
   );

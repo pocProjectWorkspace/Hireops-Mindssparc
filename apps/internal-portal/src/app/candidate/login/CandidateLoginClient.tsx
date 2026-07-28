@@ -100,7 +100,7 @@ export function CandidateLoginClient() {
         <p className="text-sm text-neutral-600">
           {mode === "signin"
             ? "Track your applications and confirm interviews."
-            : "Enter the email you applied with — we'll send a link to set a password."}
+            : "Enter the email you applied with, we'll send a link to set a password."}
         </p>
       </header>
 

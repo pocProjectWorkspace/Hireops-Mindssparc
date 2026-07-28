@@ -37,7 +37,7 @@ export function PanelSetupClient({ initial }: { initial: ListPanelSetupRequisiti
       <div className="mx-auto w-full max-w-6xl px-8 py-6">
         <EmptyState
           title="No requisitions yet"
-          hint="Create a requisition first — its interview loop is set up here."
+          hint="Create a requisition first, its interview loop is set up here."
         />
       </div>
     );

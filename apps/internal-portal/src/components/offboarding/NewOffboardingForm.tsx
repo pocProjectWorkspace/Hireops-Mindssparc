@@ -83,7 +83,7 @@ export function NewOffboardingForm() {
           <div className="mt-6">
             <EmptyState
               title="No hired employees yet"
-              hint="Offboarding opens for someone who was actually hired — a candidate with an accepted offer or an onboarding case. Land an offer or start onboarding first, and they'll show up here."
+              hint="Offboarding opens for someone who was actually hired, a candidate with an accepted offer or an onboarding case. Land an offer or start onboarding first, and they'll show up here."
             />
           </div>
         ) : (
@@ -101,7 +101,7 @@ export function NewOffboardingForm() {
                   <option key={h.candidateId} value={h.candidateId}>
                     {h.personName ?? h.email ?? h.candidateId.slice(0, 8)}
                     {h.onboardingStatus
-                      ? ` — onboarding ${h.onboardingStatus.replace(/_/g, " ")}`
+                      ? `, onboarding ${h.onboardingStatus.replace(/_/g, " ")}`
                       : ""}
                   </option>
                 ))}

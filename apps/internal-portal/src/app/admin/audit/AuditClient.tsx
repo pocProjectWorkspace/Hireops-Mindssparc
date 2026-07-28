@@ -167,7 +167,7 @@ export function AuditClient({ initial }: { initial: ListAuditEventsOutput }) {
       );
       setExportNote(
         `Exported ${filtered.length.toLocaleString()} event${filtered.length === 1 ? "" : "s"}` +
-          (res.truncated ? " (capped at 5,000 — narrow the filters for a complete export)" : "") +
+          (res.truncated ? " (capped at 5,000, narrow the filters for a complete export)" : "") +
           ".",
       );
     } catch (err) {
@@ -181,7 +181,7 @@ export function AuditClient({ initial }: { initial: ListAuditEventsOutput }) {
     <div className="mx-auto w-full max-w-6xl px-6 py-8">
       <div className="mb-6 flex flex-wrap items-start justify-between gap-4">
         <p className="max-w-2xl text-sm text-neutral-600">
-          Every tenant-scoped data change — proposed, approved, sent — with the before/after diff.
+          Every tenant-scoped data change, proposed, approved, sent — with the before/after diff.
           Newest first. Severity is derived from the change itself (the action and whether the
           record is security- or governed-state-sensitive); nothing here infers anything about
           people. This is the audit log itself; reads here are never themselves audited.

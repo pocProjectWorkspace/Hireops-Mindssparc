@@ -52,7 +52,7 @@ export function CandidateActivateClient({ token }: { token: string }) {
         <Card className="my-auto">
           <EmptyState
             title="Account activated"
-            hint="Taking you to sign in — use the password you just set."
+            hint="Taking you to sign in, use the password you just set."
           />
         </Card>
       </CandidateShell>

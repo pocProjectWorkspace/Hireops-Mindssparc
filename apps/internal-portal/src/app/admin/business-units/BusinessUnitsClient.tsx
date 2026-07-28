@@ -152,7 +152,7 @@ export function BusinessUnitsClient({ initial }: { initial: ListBusinessUnitsOut
     <div className="mx-auto w-full max-w-5xl px-6 py-8">
       <PageHeader
         title="Business units"
-        subtitle="Manage this tenant's org hierarchy. The requisition wizard's picker reads this list — so what you define here drives requisition creation."
+        subtitle="Manage this tenant's org hierarchy. The requisition wizard's picker reads this list, so what you define here drives requisition creation."
       />
 
       {notice ? (
@@ -169,7 +169,7 @@ export function BusinessUnitsClient({ initial }: { initial: ListBusinessUnitsOut
 
       {/* Honesty banner. */}
       <div className="mt-6 rounded-lg border border-brand-200 bg-brand-50 px-4 py-3 text-sm text-brand-800">
-        Renaming a unit changes its display name only — its identity is stable, so requisitions and
+        Renaming a unit changes its display name only, its identity is stable, so requisitions and
         positions already attached keep working and reflect the new name. Archiving a unit hides it
         from the requisition picker but leaves existing requisitions on it valid.
       </div>
@@ -184,7 +184,7 @@ export function BusinessUnitsClient({ initial }: { initial: ListBusinessUnitsOut
             onChange={(e) => setNewName(e.target.value)}
             maxLength={120}
             required
-            placeholder="GCC — Bengaluru"
+            placeholder="GCC, Bengaluru"
           />
           <div>
             <span className="mb-1 block text-sm font-medium text-neutral-700">

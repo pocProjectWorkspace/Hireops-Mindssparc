@@ -145,7 +145,7 @@ export function RetentionPolicyClient({
     <div className="mx-auto w-full max-w-3xl px-6 py-8">
       <PageHeader
         title="Document retention policy"
-        subtitle="Set how long each document type is retained. These retention periods are real config — they drive the overdue register below, not just display."
+        subtitle="Set how long each document type is retained. These retention periods are real config, they drive the overdue register below, not just display."
       />
 
       {notice ? (
@@ -166,7 +166,7 @@ export function RetentionPolicyClient({
         has neither, the tenant default applies (blank = never overdue). Lowering a retention
         surfaces more documents in the overdue register; raising it removes them.{" "}
         <span className="font-medium">
-          Erasure is a manual process — automated deletion is not enabled.
+          Erasure is a manual process, automated deletion is not enabled.
         </span>{" "}
         Nothing on this page deletes or anonymises a document.
       </div>
@@ -274,7 +274,7 @@ export function RetentionPolicyClient({
         </div>
         <p className="mb-4 text-sm text-neutral-600">
           These documents have passed their retention period under your policy. Erasure is a manual
-          process; automated deletion is not enabled — this is a register, not an action queue.
+          process; automated deletion is not enabled, this is a register, not an action queue.
         </p>
 
         {overdue.length === 0 ? (

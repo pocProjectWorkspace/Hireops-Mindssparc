@@ -127,7 +127,7 @@ export function CompBandsClient({ initial }: { initial: ListCompBandsOutput }) {
     <div className="mx-auto w-full max-w-5xl px-6 py-8">
       <PageHeader
         title="Comp bands"
-        subtitle="Manage this tenant's compensation-band library. The requisition wizard's picker reads this list — picking a band populates the position's comp min/max, which the comp verdict engine reads."
+        subtitle="Manage this tenant's compensation-band library. The requisition wizard's picker reads this list, picking a band populates the position's comp min/max, which the comp verdict engine reads."
       />
 
       {notice ? (
@@ -146,7 +146,7 @@ export function CompBandsClient({ initial }: { initial: ListCompBandsOutput }) {
       <div className="mt-6 rounded-lg border border-brand-200 bg-brand-50 px-4 py-3 text-sm text-brand-800">
         Picking a band in the requisition wizard populates the position&apos;s comp
         min/max/currency, which the deterministic comp-rules verdict engine and the feasibility view
-        read. The values stay editable — an edit is kept as an override, with the band retained as
+        read. The values stay editable, an edit is kept as an override, with the band retained as
         provenance. Archiving a band hides it from the picker but leaves positions already on it
         valid.
       </div>
@@ -161,7 +161,7 @@ export function CompBandsClient({ initial }: { initial: ListCompBandsOutput }) {
             onChange={(e) => setDraft({ ...draft, name: e.target.value })}
             maxLength={120}
             required
-            placeholder="Senior Backend — Bengaluru"
+            placeholder="Senior Backend, Bengaluru"
           />
           <Input
             label="Level (optional)"

@@ -308,7 +308,7 @@ export function InterviewPlanSection({
                     <a href="/admin/panel-pools" className="text-brand-600 hover:underline">
                       Panel pools
                     </a>{" "}
-                    — or staff this round manually below.
+                    , or staff this round manually below.
                   </p>
                 ) : r.panelPoolId ? (
                   <p className="mt-1 text-xs text-neutral-500">

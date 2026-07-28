@@ -96,7 +96,7 @@ export function OfferComposerPanel({
     if (res) {
       setNotice(
         res.needsApproval
-          ? "Draft saved. This offer is out-of-band — request HR-head approval before sending."
+          ? "Draft saved. This offer is out-of-band, request HR-head approval before sending."
           : "Draft saved.",
       );
       onSaved?.();
@@ -122,7 +122,7 @@ export function OfferComposerPanel({
     }
     try {
       await extend.mutateAsync({ offerId: res.offerId });
-      setNotice("Offer sent — the candidate has an email with a signed accept link.");
+      setNotice("Offer sent, the candidate has an email with a signed accept link.");
       onSaved?.();
     } catch (err) {
       handleTRPCError(err, { onMessage: (m) => setError(m) });

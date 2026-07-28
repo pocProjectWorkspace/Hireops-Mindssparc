@@ -68,7 +68,7 @@ export function HrCasesWorkspace({ initial }: { initial: ListHrCasesOutput }) {
     <div className="mx-auto w-full max-w-6xl space-y-6 px-8 py-6">
       <PageHeader
         title="HR cases"
-        subtitle="Candidates in the offer-desk window — technical rounds through to an accepted offer. Open a case to review interview feedback and run the HR round."
+        subtitle="Candidates in the offer-desk window, technical rounds through to an accepted offer. Open a case to review interview feedback and run the HR round."
       />
 
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">

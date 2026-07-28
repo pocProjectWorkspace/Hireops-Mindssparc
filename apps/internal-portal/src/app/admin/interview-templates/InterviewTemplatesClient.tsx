@@ -156,7 +156,7 @@ export function InterviewTemplatesClient({
         The <span className="font-medium">default loop</span> is genuinely consumed: a new
         requisition can apply it to seed its interview plan (a tenant with no loop builds the plan
         from scratch, exactly as before). A round&apos;s scorecard must be a built-in
-        (technical/manager/hr/general) or a saved custom rubric below — unknown keys are rejected.
+        (technical/manager/hr/general) or a saved custom rubric below, unknown keys are rejected.
         Custom rubric criteria drive the real panel scorecard.
       </div>
 
@@ -187,7 +187,7 @@ export function InterviewTemplatesClient({
 
         {rounds.length === 0 ? (
           <p className="mt-4 text-sm text-neutral-500">
-            No default loop. Add rounds and save, or leave empty — new requisitions build their plan
+            No default loop. Add rounds and save, or leave empty, new requisitions build their plan
             from scratch.
           </p>
         ) : (
@@ -433,7 +433,7 @@ function ScorecardSection({
         </div>
         <div className="col-span-2">
           <span className="mb-1 block text-[11px] font-medium text-neutral-500">
-            Criteria — one per line, &quot;Label | key&quot; (key optional, derived from label)
+            Criteria, one per line, &quot;Label | key&quot; (key optional, derived from label)
           </span>
           <textarea
             value={criteriaText}
