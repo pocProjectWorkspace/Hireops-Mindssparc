@@ -23,6 +23,8 @@ import { createRequisitionJdAction } from "../src/lib/iris/actions/create-requis
 import { advanceApplicationAction } from "../src/lib/iris/actions/advance-application";
 import { rejectApplicationAction } from "../src/lib/iris/actions/reject-application";
 import { openOnboardingCaseAction } from "../src/lib/iris/actions/open-onboarding-case";
+import { bulkAdvanceApplicationsAction } from "../src/lib/iris/actions/bulk-advance-applications";
+import { bulkRejectApplicationsAction } from "../src/lib/iris/actions/bulk-reject-applications";
 
 describe("IRIS-A1 action registry", () => {
   it("registers create_requisition_jd and exposes it by id", () => {
@@ -133,13 +135,16 @@ describe("IRIS-B1 pipeline / onboarding actions", () => {
       expect(entry!.destructive).toBe(action.destructive);
       expect(IRIS_ACTIONS[action.id]).toBeDefined();
     }
-    // The one requisition action is untouched; the whitelist is exactly these four.
+    // The one requisition action is untouched; the whitelist is exactly these
+    // six (four single + the two IRIS-B2 bulk pipeline actions).
     expect(Object.keys(IRIS_ACTIONS).sort()).toEqual(
       [
         "advance_application",
         "create_requisition_jd",
         "open_onboarding_case",
         "reject_application",
+        "bulk_advance_applications",
+        "bulk_reject_applications",
       ].sort(),
     );
   });
@@ -246,5 +251,109 @@ describe("IRIS-B1 pipeline / onboarding actions", () => {
       targetStage: "shortlisted",
     }) as { targetStage: string };
     expect(advanceParsed.targetStage).toBe("shortlisted");
+  });
+});
+
+describe("IRIS-B2 bulk pipeline actions", () => {
+  const B2_ACTIONS = [bulkAdvanceApplicationsAction, bulkRejectApplicationsAction];
+  const REQ_UUID = "11111111-1111-4111-8111-111111111111";
+
+  it("registers bulk_advance_applications + bulk_reject_applications (whitelist-only), each bulk:true with a resolve", () => {
+    for (const action of B2_ACTIONS) {
+      const entry = getIrisAction(action.id);
+      expect(entry, `${action.id} is registered`).toBeDefined();
+      expect(entry!.id).toBe(action.id);
+      expect(entry!.label).toBe(action.label);
+      expect(entry!.group).toBe("Pipeline");
+      expect(entry!.bulk).toBe(true);
+      // FILTER-based actions carry a resolver (single actions do not).
+      expect(typeof entry!.resolve).toBe("function");
+      expect(typeof action.resolve).toBe("function");
+    }
+    // A non-bulk single action carries NO resolver.
+    expect(getIrisAction("advance_application")!.resolve).toBeUndefined();
+  });
+
+  it("carries the pipeline roles (admin + recruiter) and the right destructive flags", () => {
+    expect(bulkAdvanceApplicationsAction.roles.sort()).toEqual(["admin", "recruiter"].sort());
+    expect(bulkRejectApplicationsAction.roles.sort()).toEqual(["admin", "recruiter"].sort());
+    // Advance is non-destructive; bulk reject ends applications → destructive.
+    expect(bulkAdvanceApplicationsAction.destructive).toBe(false);
+    expect(bulkRejectApplicationsAction.destructive).toBe(true);
+    // The erased registry entries mirror the concrete roles.
+    for (const action of B2_ACTIONS) {
+      expect(getIrisAction(action.id)!.roles).toEqual(action.roles);
+      expect(getIrisAction(action.id)!.destructive).toBe(action.destructive);
+    }
+  });
+
+  it("inputSchemas reject invalid filters and accept the real minimum", () => {
+    // bulk_advance — needs a uuid requisitionId + valid from/target stages.
+    const adv = bulkAdvanceApplicationsAction.inputSchema;
+    expect(adv.safeParse({}).success).toBe(false);
+    expect(adv.safeParse({ requisitionId: "not-a-uuid" }).success).toBe(false);
+    expect(adv.safeParse({ requisitionId: REQ_UUID, fromStage: "recruiter_review" }).success).toBe(
+      false,
+    );
+    expect(
+      adv.safeParse({ requisitionId: REQ_UUID, fromStage: "moon", targetStage: "shortlisted" })
+        .success,
+    ).toBe(false);
+    expect(
+      adv.safeParse({
+        requisitionId: REQ_UUID,
+        fromStage: "recruiter_review",
+        targetStage: "shortlisted",
+      }).success,
+    ).toBe(true);
+
+    // bulk_reject — needs a uuid requisitionId + a valid fromStage (reason optional).
+    const rej = bulkRejectApplicationsAction.inputSchema;
+    expect(rej.safeParse({}).success).toBe(false);
+    expect(rej.safeParse({ requisitionId: REQ_UUID }).success).toBe(false);
+    expect(rej.safeParse({ requisitionId: REQ_UUID, fromStage: "recruiter_review" }).success).toBe(
+      true,
+    );
+    expect(
+      rej.safeParse({
+        requisitionId: REQ_UUID,
+        fromStage: "recruiter_review",
+        reason: "Not a fit",
+      }).success,
+    ).toBe(true);
+  });
+
+  it("buildPreview summarises the FILTER (scope + stages), reject making the destructive scope explicit", () => {
+    const advance = bulkAdvanceApplicationsAction.buildPreview({
+      requisitionId: REQ_UUID,
+      fromStage: "recruiter_review",
+      targetStage: "tech_interview",
+    });
+    expect(advance.summary.length).toBeGreaterThan(0);
+    expect(advance.summary.toLowerCase()).toContain("recruiter review");
+    expect(advance.summary.toLowerCase()).toContain("tech interview");
+
+    const reject = bulkRejectApplicationsAction.buildPreview({
+      requisitionId: REQ_UUID,
+      fromStage: "recruiter_review",
+      reason: "Requisition cancelled",
+    });
+    expect(reject.summary.length).toBeGreaterThan(0);
+    // The reject preview makes the destructive scope + reason explicit.
+    expect(reject.details.join(" ").toLowerCase()).toContain("ends");
+    expect(reject.details.join(" ")).toContain("Requisition cancelled");
+  });
+
+  it("the erased entries enforce the same input contract irisExecute runs", () => {
+    for (const action of B2_ACTIONS) {
+      const entry = getIrisAction(action.id)!;
+      expect(() => entry.parse({})).toThrow();
+    }
+    const parsed = getIrisAction("bulk_advance_applications")!.parse({
+      requisitionId: REQ_UUID,
+      fromStage: "recruiter_review",
+      targetStage: "shortlisted",
+    }) as { targetStage: string };
+    expect(parsed.targetStage).toBe("shortlisted");
   });
 });

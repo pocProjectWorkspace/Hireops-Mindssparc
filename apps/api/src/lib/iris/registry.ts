@@ -29,12 +29,16 @@ import type {
   RejectApplicationOutput,
   CreateOnboardingCaseForApplicationInput,
   CreateOnboardingCaseForApplicationOutput,
+  ListCandidatesByRequisitionInput,
+  ListCandidatesByRequisitionOutput,
 } from "@hireops/api-types";
 import type { HonoTRPCContext } from "../../trpc/trpc-core";
 import { createRequisitionJdAction } from "./actions/create-requisition-jd";
 import { advanceApplicationAction } from "./actions/advance-application";
 import { rejectApplicationAction } from "./actions/reject-application";
 import { openOnboardingCaseAction } from "./actions/open-onboarding-case";
+import { bulkAdvanceApplicationsAction } from "./actions/bulk-advance-applications";
+import { bulkRejectApplicationsAction } from "./actions/bulk-reject-applications";
 
 /**
  * The subset of the in-process tRPC caller (appRouter.createCaller(ctx)) that
@@ -57,13 +61,54 @@ export interface IrisCaller {
   createOnboardingCaseForApplication(
     input: CreateOnboardingCaseForApplicationInput,
   ): Promise<CreateOnboardingCaseForApplicationOutput>;
+  listCandidatesByRequisition(
+    input: ListCandidatesByRequisitionInput,
+  ): Promise<ListCandidatesByRequisitionOutput>;
 }
 
-/** The (entityType, entityId, human summary) an action reports after it commits. */
-export interface IrisActionResult {
+/** The (entityType, entityId, human summary) a SINGLE-entity action reports after
+ * it commits. */
+export interface IrisSingleActionResult {
   entityType: string;
   entityId: string | null;
   resultSummary: string;
+}
+
+/**
+ * What a FILTER-based BULK action (IRIS-B2) reports after it loops the real
+ * per-entity gated procedure over the resolved set. `entityIds` are the entities
+ * that COMMITTED (one provenance row is recorded per id upstream); `total /
+ * succeeded / failed` report the batch outcome so partial failure is surfaced
+ * honestly rather than swallowed.
+ */
+export interface IrisBulkActionResult {
+  entityType: string;
+  entityIds: string[];
+  resultSummary: string;
+  total: number;
+  succeeded: number;
+  failed: number;
+}
+
+/** A single OR bulk action's committed result. `irisExecute` discriminates on
+ * the presence of `entityIds` (bulk) vs `entityId` (single). */
+export type IrisActionResult = IrisSingleActionResult | IrisBulkActionResult;
+
+/** Narrow an action result to the bulk shape (has `entityIds`). */
+export function isBulkActionResult(result: IrisActionResult): result is IrisBulkActionResult {
+  return "entityIds" in result;
+}
+
+/** One concrete entity a filter-based bulk action resolves to (id + human label). */
+export interface IrisResolvedEntity {
+  entityId: string;
+  label: string;
+}
+
+/** The affected set a bulk action's `resolve` reports for the pre-confirm preview. */
+export interface IrisResolveResult {
+  entityType: string;
+  entities: IrisResolvedEntity[];
 }
 
 /** A resolved preview shown to the user BEFORE they confirm (client-enforced). */
@@ -94,6 +139,12 @@ export interface IrisAction<P> {
   destructive: boolean;
   bulk: boolean;
   buildPreview(params: P): IrisActionPreview;
+  /**
+   * FILTER-based bulk actions (IRIS-B2) resolve their filter `params` to the
+   * concrete affected entities (id + human label) BEFORE confirm, so the preview
+   * shows the exact set + count. Single-entity actions leave this undefined.
+   */
+  resolve?(caller: IrisCaller, ctx: HonoTRPCContext, params: P): Promise<IrisResolveResult>;
   execute(caller: IrisCaller, ctx: HonoTRPCContext, params: P): Promise<IrisActionResult>;
 }
 
@@ -113,11 +164,16 @@ export interface AnyIrisAction {
   bulk: boolean;
   parse(rawParams: unknown): unknown;
   buildPreview(params: unknown): IrisActionPreview;
+  /** Present only for filter-based bulk actions (IRIS-B2); see IrisAction.resolve. */
+  resolve?(caller: IrisCaller, ctx: HonoTRPCContext, params: unknown): Promise<IrisResolveResult>;
   execute(caller: IrisCaller, ctx: HonoTRPCContext, params: unknown): Promise<IrisActionResult>;
 }
 
 /** Close over a concrete action's P to expose it through the erased boundary. */
 function eraseIrisAction<P>(action: IrisAction<P>): AnyIrisAction {
+  // Capture the optional resolver once so the erased closure needs no non-null
+  // assertion (the concrete P is closed over at registration).
+  const resolve = action.resolve;
   return {
     id: action.id,
     label: action.label,
@@ -127,6 +183,10 @@ function eraseIrisAction<P>(action: IrisAction<P>): AnyIrisAction {
     bulk: action.bulk,
     parse: (rawParams) => action.inputSchema.parse(rawParams),
     buildPreview: (params) => action.buildPreview(params as P),
+    // Preserve `resolve` only when the concrete action defines it (bulk actions),
+    // closing over the same concrete P (and the captured fn) so the erased
+    // boundary stays type-safe without a non-null assertion.
+    ...(resolve ? { resolve: (caller, ctx, params) => resolve(caller, ctx, params as P) } : {}),
     execute: (caller, ctx, params) => action.execute(caller, ctx, params as P),
   };
 }
@@ -145,6 +205,8 @@ export const IRIS_ACTIONS: Record<string, AnyIrisAction> = Object.fromEntries(
     eraseIrisAction(advanceApplicationAction),
     eraseIrisAction(rejectApplicationAction),
     eraseIrisAction(openOnboardingCaseAction),
+    eraseIrisAction(bulkAdvanceApplicationsAction),
+    eraseIrisAction(bulkRejectApplicationsAction),
   ].map((a) => [a.id, a]),
 );
 

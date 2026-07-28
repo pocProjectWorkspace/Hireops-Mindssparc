@@ -117,7 +117,12 @@ import {
 import { evaluateKnockouts, type KnockoutInput } from "@hireops/ai-scoring";
 import { SLA_THRESHOLDS_HOURS, resolveSlaThresholds } from "../lib/sla-thresholds";
 import { computeGovernanceRiskFlags, computeExecutiveAudit } from "../lib/governance";
-import { getIrisAction, listIrisActions, type IrisCaller } from "../lib/iris/registry";
+import {
+  getIrisAction,
+  listIrisActions,
+  isBulkActionResult,
+  type IrisCaller,
+} from "../lib/iris/registry";
 import {
   submitApplicationInputSchema,
   submitApplicationOutputSchema,
@@ -21545,7 +21550,7 @@ export const appRouter = router({
   irisPreview: protectedProcedure
     .input(irisPreviewInputSchema)
     .output(irisPreviewOutputSchema)
-    .query(({ ctx, input }) => {
+    .query(async ({ ctx, input }) => {
       // WHITELIST-ONLY: an unregistered actionId can never resolve a preview.
       const action = getIrisAction(input.actionId);
       if (!action) {
@@ -21575,7 +21580,22 @@ export const appRouter = router({
         });
       }
       // Reuse the registry's buildPreview — no duplicate preview logic here.
-      return action.buildPreview(parsed);
+      const preview = action.buildPreview(parsed);
+      // IRIS-B2 — for a FILTER-based bulk action, resolve the filter to the
+      // concrete affected set and return it with the preview, so the client shows
+      // the EXACT N + list before the confirm-N gate. This is a read (the same
+      // gated read the resolver runs); no write, no withAudit — the commit stays
+      // irisExecute. Single actions have no `resolve` and omit `affected`.
+      if (action.resolve) {
+        const caller = createIrisCaller(ctx);
+        const resolved = await action.resolve(caller, ctx, parsed);
+        return {
+          ...preview,
+          affected: resolved.entities,
+          affectedCount: resolved.entities.length,
+        };
+      }
+      return preview;
     }),
 
   irisExecute: protectedProcedure
@@ -21618,13 +21638,47 @@ export const appRouter = router({
         // committed above, so provenance is a durable annotation on top — never a
         // shortcut around the gated write.
         const db = requireDb(ctx);
+        const tenantId = ctx.tenantId;
+        const confirmedByUserId = ctx.userId;
+        // IRIS-B2 — a BULK action loops the real per-entity gated procedure and
+        // reports every SUCCEEDED entity id. Record ONE provenance row PER
+        // succeeded id (so each candidate carries the AI-assisted pill), and
+        // return the batch outcome (total/succeeded/failed).
+        if (isBulkActionResult(result)) {
+          if (result.entityIds.length > 0) {
+            await db.insert(assistantActions).values(
+              result.entityIds.map((entityId) => ({
+                tenantId,
+                assistant: "iris",
+                actionId: action.id,
+                entityType: result.entityType,
+                entityId,
+                confirmedByUserId,
+                status: "executed" as const,
+                paramsJson: parsed,
+              })),
+            );
+          }
+          return {
+            ok: true as const,
+            entityType: result.entityType,
+            // First succeeded id (or null) keeps the drawer's single done-link valid.
+            entityId: result.entityIds[0] ?? null,
+            resultSummary: result.resultSummary,
+            entityIds: result.entityIds,
+            total: result.total,
+            succeeded: result.succeeded,
+            failed: result.failed,
+          };
+        }
+        // Single action — one provenance row, unchanged.
         await db.insert(assistantActions).values({
-          tenantId: ctx.tenantId,
+          tenantId,
           assistant: "iris",
           actionId: action.id,
           entityType: result.entityType,
           entityId: result.entityId,
-          confirmedByUserId: ctx.userId,
+          confirmedByUserId,
           status: "executed",
           paramsJson: parsed,
         });

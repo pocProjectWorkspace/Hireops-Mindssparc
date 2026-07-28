@@ -98,9 +98,28 @@ export const irisPreviewInputSchema = z.object({
 });
 export type IrisPreviewInput = z.infer<typeof irisPreviewInputSchema>;
 
+/**
+ * One concrete entity a FILTER-based bulk action (IRIS-B2) resolves to, shown to
+ * the user in the review step BEFORE they confirm the batch. `label` is a
+ * human-readable line (e.g. "Asha Rao — Recruiter review"). Single-entity actions
+ * never populate this.
+ */
+export const irisAffectedEntitySchema = z.object({
+  entityId: z.string().uuid(),
+  label: z.string(),
+});
+export type IrisAffectedEntity = z.infer<typeof irisAffectedEntitySchema>;
+
 export const irisPreviewOutputSchema = z.object({
   summary: z.string(),
   details: z.array(z.string()),
+  /**
+   * The EXACT set a bulk action would act on, resolved server-side from the
+   * filter (IRIS-B2). The client renders this list + count so the user confirms
+   * an explicit N. Omitted/empty for single-entity actions.
+   */
+  affected: z.array(irisAffectedEntitySchema).optional(),
+  affectedCount: z.number().int().min(0).optional(),
 });
 export type IrisPreviewOutput = z.infer<typeof irisPreviewOutputSchema>;
 
@@ -120,8 +139,20 @@ export type IrisExecuteInput = z.infer<typeof irisExecuteInputSchema>;
 export const irisExecuteOutputSchema = z.object({
   ok: z.literal(true),
   entityType: z.string(),
+  // For a single action this is the affected entity; for a bulk action it is the
+  // FIRST succeeded entity (or null) so the drawer's single done-link still works.
   entityId: z.string().uuid().nullable(),
   resultSummary: z.string(),
+  // ─── bulk-action (IRIS-B2) fields — omitted for single-entity actions ───
+  /** Every succeeded entity id — one assistant_actions provenance row was
+   * recorded per id, so each candidate carries the AI-assisted pill. */
+  entityIds: z.array(z.string().uuid()).optional(),
+  /** The resolved batch size the action attempted. */
+  total: z.number().int().min(0).optional(),
+  /** How many of `total` committed successfully. */
+  succeeded: z.number().int().min(0).optional(),
+  /** How many of `total` failed (partial failure is tolerated + reported). */
+  failed: z.number().int().min(0).optional(),
 });
 export type IrisExecuteOutput = z.infer<typeof irisExecuteOutputSchema>;
 
@@ -148,3 +179,32 @@ export const irisGetProvenanceOutputSchema = z.object({
   rows: z.array(irisProvenanceRowSchema),
 });
 export type IrisGetProvenanceOutput = z.infer<typeof irisGetProvenanceOutputSchema>;
+
+// ─────────────── bulk pipeline actions (IRIS-B2) ───────────────
+
+/**
+ * Filter-based BULK advance (IRIS-B2). The user names a requisition + the
+ * CURRENT stage to act on; the action resolves that filter to the concrete set
+ * of matching applications and, after confirm, LOOPS the real per-entity gated
+ * `advanceApplication` procedure over each (its own RLS + withAudit fires per
+ * row). This schema is the FILTER contract, not a bulk write path.
+ */
+export const bulkAdvanceApplicationsInputSchema = z.object({
+  requisitionId: z.string().uuid(),
+  fromStage: applicationStageSchema,
+  targetStage: applicationStageSchema,
+  reason: z.string().max(500).optional(),
+});
+export type BulkAdvanceApplicationsInput = z.infer<typeof bulkAdvanceApplicationsInputSchema>;
+
+/**
+ * Filter-based BULK reject (IRIS-B2). DESTRUCTIVE: ends every matching
+ * application. Same filter → resolve → loop `rejectApplication` (per-row RLS +
+ * withAudit) shape as the bulk advance.
+ */
+export const bulkRejectApplicationsInputSchema = z.object({
+  requisitionId: z.string().uuid(),
+  fromStage: applicationStageSchema,
+  reason: z.string().max(500).optional(),
+});
+export type BulkRejectApplicationsInput = z.infer<typeof bulkRejectApplicationsInputSchema>;

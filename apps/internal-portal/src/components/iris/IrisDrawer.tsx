@@ -6,6 +6,7 @@ import { Button, Card, EmptyState } from "@/components/ui";
 import { Input, Select } from "@hireops/ui";
 import { trpc, handleTRPCError } from "@/lib/trpc-client";
 import { humanize, humanizeSentence } from "@/lib/labels";
+import { applicationStageSchema } from "@hireops/api-types";
 import type { ApplicationStage, IrisActionMenuItem, IrisExecuteOutput } from "@hireops/api-types";
 import { suggestedActionForRoute, type IrisPageContext } from "./context-map";
 import { IrisApplicationPicker, type IrisPickedApplication } from "./IrisApplicationPicker";
@@ -37,6 +38,14 @@ const APPLICATION_ACTION_IDS = new Set([
   "reject_application",
   "open_onboarding_case",
 ]);
+
+/** The IRIS-B2 FILTER-based bulk actions — they share a requisition + stage
+ * filter form (not the single-application picker) and a confirm-N review. */
+const BULK_ACTION_IDS = new Set(["bulk_advance_applications", "bulk_reject_applications"]);
+
+/** Every pipeline stage — the from/target selects offer the full set (a bulk
+ * filter can act on any current stage). */
+const ALL_STAGES = applicationStageSchema.options as readonly ApplicationStage[];
 
 /** Forward pipeline order — the stages an "advance" can move a candidate TO.
  * Terminal negatives (reject / withdraw / declined) are NOT advance targets;
@@ -88,6 +97,13 @@ export function IrisDrawer({ open, onClose, context }: IrisDrawerProps) {
   const [targetStage, setTargetStage] = useState<string>("");
   const [rejectReason, setRejectReason] = useState("");
 
+  // IRIS-B2 bulk pipeline action fields — a requisition + current-stage FILTER
+  // (plus a target stage for advance / a reason for reject).
+  const [bulkRequisitionId, setBulkRequisitionId] = useState("");
+  const [bulkFromStage, setBulkFromStage] = useState<string>("");
+  const [bulkTargetStage, setBulkTargetStage] = useState<string>("");
+  const [bulkReason, setBulkReason] = useState("");
+
   // Reset to a clean menu each time the drawer opens; lock body scroll + wire ESC.
   useEffect(() => {
     if (!open) return;
@@ -103,6 +119,10 @@ export function IrisDrawer({ open, onClose, context }: IrisDrawerProps) {
     setPicked(null);
     setTargetStage("");
     setRejectReason("");
+    setBulkRequisitionId("");
+    setBulkFromStage("");
+    setBulkTargetStage("");
+    setBulkReason("");
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") onClose();
     };
@@ -127,6 +147,15 @@ export function IrisDrawer({ open, onClose, context }: IrisDrawerProps) {
     () => (businessUnitsQuery.data?.rows ?? []).filter((u) => !u.isArchived),
     [businessUnitsQuery.data],
   );
+
+  // IRIS-B2 — the requisition picker for the bulk actions. listMyRequisitionsV2
+  // is the same read gate (hiring_manager / recruiter / admin) and carries the
+  // requisition id + title the filter form needs.
+  const requisitionsQuery = trpc.listMyRequisitionsV2.useQuery(
+    { limit: 200 },
+    { enabled: open && !!selectedActionId && BULK_ACTION_IDS.has(selectedActionId) },
+  );
+  const requisitions = useMemo(() => requisitionsQuery.data?.rows ?? [], [requisitionsQuery.data]);
 
   const previewQuery = trpc.irisPreview.useQuery(
     { actionId: selectedActionId ?? "", params: submittedParams },
@@ -161,6 +190,7 @@ export function IrisDrawer({ open, onClose, context }: IrisDrawerProps) {
   const selectedLabel = selectedAction?.label ?? "Action";
   const isDestructive = selectedAction?.destructive ?? false;
   const needsApplication = selectedActionId ? APPLICATION_ACTION_IDS.has(selectedActionId) : false;
+  const isBulk = selectedActionId ? BULK_ACTION_IDS.has(selectedActionId) : false;
   // Pre-select the picker from page context when the route names an application.
   const contextApplicationId = context.entityType === "application" ? context.entityId : undefined;
 
@@ -171,6 +201,10 @@ export function IrisDrawer({ open, onClose, context }: IrisDrawerProps) {
     setPicked(null);
     setTargetStage("");
     setRejectReason("");
+    setBulkRequisitionId("");
+    setBulkFromStage("");
+    setBulkTargetStage("");
+    setBulkReason("");
     setStep("form");
   }
 
@@ -190,6 +224,24 @@ export function IrisDrawer({ open, onClose, context }: IrisDrawerProps) {
       params = { applicationId: picked.applicationId, reason: rejectReason.trim() };
     } else if (selectedActionId === "open_onboarding_case" && picked) {
       params = { applicationId: picked.applicationId };
+    } else if (
+      selectedActionId === "bulk_advance_applications" &&
+      bulkRequisitionId &&
+      bulkFromStage &&
+      bulkTargetStage
+    ) {
+      params = {
+        requisitionId: bulkRequisitionId,
+        fromStage: bulkFromStage,
+        targetStage: bulkTargetStage,
+      };
+    } else if (
+      selectedActionId === "bulk_reject_applications" &&
+      bulkRequisitionId &&
+      bulkFromStage
+    ) {
+      params = { requisitionId: bulkRequisitionId, fromStage: bulkFromStage };
+      if (bulkReason.trim()) params.reason = bulkReason.trim();
     }
     if (!params) return;
     setSubmittedParams(params);
@@ -204,8 +256,19 @@ export function IrisDrawer({ open, onClose, context }: IrisDrawerProps) {
   else if (selectedActionId === "reject_application")
     canSubmitForm = !!picked && rejectReason.trim().length > 0;
   else if (selectedActionId === "open_onboarding_case") canSubmitForm = !!picked;
+  else if (selectedActionId === "bulk_advance_applications")
+    canSubmitForm = !!bulkRequisitionId && !!bulkFromStage && !!bulkTargetStage;
+  else if (selectedActionId === "bulk_reject_applications")
+    canSubmitForm = !!bulkRequisitionId && !!bulkFromStage;
 
   const stageOptions = picked ? forwardStagesAfter(picked.stage) : [];
+
+  // IRIS-B2 confirm-N gate — the resolved affected set the server returns for a
+  // bulk preview; the client confirms an explicit N (and offers no confirm when
+  // nothing matches the filter).
+  const affected = previewQuery.data?.affected;
+  const affectedCount = affected?.length ?? 0;
+  const bulkEmpty = isBulk && previewQuery.data != null && affectedCount === 0;
 
   return (
     <div
@@ -418,6 +481,60 @@ export function IrisDrawer({ open, onClose, context }: IrisDrawerProps) {
                     </label>
                   ) : null}
                 </div>
+              ) : isBulk ? (
+                <div className="space-y-4">
+                  <Select
+                    label="Requisition"
+                    required
+                    placeholder={
+                      requisitionsQuery.isLoading ? "Loading requisitions…" : "Select a requisition"
+                    }
+                    value={bulkRequisitionId}
+                    onValueChange={setBulkRequisitionId}
+                    disabled={requisitionsQuery.isLoading}
+                    options={requisitions.map((r) => ({
+                      value: r.id,
+                      label: r.title ?? "Untitled requisition",
+                    }))}
+                  />
+                  <Select
+                    label="Current stage"
+                    required
+                    placeholder="Select the stage to act on"
+                    value={bulkFromStage}
+                    onValueChange={(v) => {
+                      setBulkFromStage(v);
+                      setBulkTargetStage("");
+                    }}
+                    options={ALL_STAGES.map((s) => ({ value: s, label: humanizeSentence(s) }))}
+                    hint="Iris acts on every candidate on this requisition currently at this stage."
+                  />
+                  {selectedActionId === "bulk_advance_applications" ? (
+                    <Select
+                      label="Advance to stage"
+                      required
+                      placeholder="Select the target stage"
+                      value={bulkTargetStage}
+                      onValueChange={setBulkTargetStage}
+                      options={ALL_STAGES.filter((s) => s !== bulkFromStage).map((s) => ({
+                        value: s,
+                        label: humanizeSentence(s),
+                      }))}
+                    />
+                  ) : (
+                    <label className="block text-sm font-medium text-neutral-800">
+                      Reason
+                      <textarea
+                        value={bulkReason}
+                        rows={3}
+                        onChange={(e) => setBulkReason(e.target.value)}
+                        maxLength={500}
+                        placeholder="Why are these candidates being rejected? Recorded on each candidate's audit trail. Optional."
+                        className="mt-1 w-full resize-y rounded-md border border-neutral-300 bg-white px-3 py-2 text-sm text-neutral-900 transition-colors focus:border-brand-600 focus:outline-none focus:ring-1 focus:ring-brand-600"
+                      />
+                    </label>
+                  )}
+                </div>
               ) : (
                 <p className="text-sm text-neutral-500">This action has no input form wired yet.</p>
               )}
@@ -473,6 +590,33 @@ export function IrisDrawer({ open, onClose, context }: IrisDrawerProps) {
                 </div>
               ) : null}
 
+              {/* IRIS-B2 — the EXACT resolved set + confirm-N gate for bulk actions. */}
+              {isBulk && previewQuery.data && !previewQuery.isLoading && !previewQuery.error ? (
+                affectedCount === 0 ? (
+                  <div className="mt-3 rounded-lg border border-neutral-200 bg-neutral-50 px-3 py-2.5">
+                    <p className="text-sm text-neutral-600">
+                      No candidates match this filter — there is nothing to confirm.
+                    </p>
+                  </div>
+                ) : (
+                  <div className="mt-3">
+                    <p className="text-xs font-semibold uppercase tracking-wide text-neutral-500">
+                      {affectedCount} candidate{affectedCount === 1 ? "" : "s"} affected
+                    </p>
+                    <ul className="mt-2 max-h-48 space-y-1 overflow-y-auto rounded-lg border border-neutral-200 bg-white p-3 text-sm text-neutral-700">
+                      {(affected ?? []).map((a) => (
+                        <li key={a.entityId} className="flex gap-2">
+                          <span aria-hidden className="text-neutral-300">
+                            •
+                          </span>
+                          {a.label}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )
+              ) : null}
+
               {execute.error ? (
                 <p className="mt-3 text-sm text-status-error-700">
                   {execute.error.message || "Couldn't complete the action."}
@@ -499,10 +643,17 @@ export function IrisDrawer({ open, onClose, context }: IrisDrawerProps) {
                       : undefined
                   }
                   disabled={
-                    execute.isPending || previewQuery.isLoading || Boolean(previewQuery.error)
+                    execute.isPending ||
+                    previewQuery.isLoading ||
+                    Boolean(previewQuery.error) ||
+                    bulkEmpty
                   }
                 >
-                  {execute.isPending ? "Working…" : isDestructive ? "Confirm reject" : "Confirm"}
+                  {execute.isPending
+                    ? "Working…"
+                    : `${isDestructive ? "Confirm reject" : "Confirm"}${
+                        isBulk ? ` (${affectedCount})` : ""
+                      }`}
                 </Button>
               </div>
             </Card>
@@ -521,6 +672,12 @@ export function IrisDrawer({ open, onClose, context }: IrisDrawerProps) {
                 <h3 className="text-sm font-semibold text-neutral-900">Done</h3>
               </div>
               <p className="text-sm text-neutral-700">{result.resultSummary}</p>
+              {result.total != null ? (
+                <p className="mt-1 text-xs text-neutral-500">
+                  {result.succeeded ?? 0} of {result.total} succeeded
+                  {result.failed ? `, ${result.failed} could not be completed` : ""}.
+                </p>
+              ) : null}
               <div className="mt-4 flex items-center gap-3">
                 {result.entityType === "requisition" && result.entityId ? (
                   <a
