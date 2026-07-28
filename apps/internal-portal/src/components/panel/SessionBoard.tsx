@@ -4,6 +4,7 @@ import { useMemo, useState } from "react";
 import { Badge, Card, EmptyState } from "@/components/ui";
 import type { BadgeTone } from "@/components/ui";
 import { trpc } from "@/lib/trpc-client";
+import { humanizeSentence } from "@/lib/labels";
 import type { PanelInterviewRow } from "@hireops/api-types";
 
 /**
@@ -131,7 +132,7 @@ function BoardRow({ iv }: { iv: PanelInterviewRow }) {
             <h3 className="text-sm font-semibold text-neutral-900">
               {iv.candidateName ?? "Candidate"}
             </h3>
-            <Badge tone={statusTone(iv.status)}>{iv.status.replace(/_/g, " ")}</Badge>
+            <Badge tone={statusTone(iv.status)}>{humanizeSentence(iv.status)}</Badge>
             {iv.candidateConfirmedAt && iv.status === "scheduled" ? (
               <Badge tone="success">Confirmed</Badge>
             ) : null}

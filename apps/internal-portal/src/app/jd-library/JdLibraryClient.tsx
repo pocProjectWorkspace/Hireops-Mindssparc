@@ -9,6 +9,7 @@ import type {
 import { Badge, EmptyState, TableShell, Thead, Th, Tbody, Tr, Td } from "@/components/ui";
 import type { BadgeTone } from "@/components/ui";
 import { trpc } from "@/lib/trpc-client";
+import { humanize } from "@/lib/labels";
 import { JdTemplatesPanel } from "@/components/jd-library/JdTemplatesPanel";
 import { cn } from "@/components/ui/cn";
 
@@ -36,7 +37,7 @@ const REQ_STATUS_TONE: Record<string, BadgeTone> = {
 };
 
 function label(v: string): string {
-  return v.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+  return humanize(v);
 }
 function formatDate(iso: string): string {
   return new Date(iso).toLocaleDateString("en-GB", {

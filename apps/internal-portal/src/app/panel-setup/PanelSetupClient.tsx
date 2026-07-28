@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import type { ListPanelSetupRequisitionsOutput, GetPanelSetupOutput } from "@hireops/api-types";
 import { Badge, Card, EmptyState } from "@/components/ui";
 import { InterviewPlanSection } from "@/components/interviews/InterviewPlanSection";
+import { humanize } from "@/lib/labels";
 import { trpc } from "@/lib/trpc-client";
 
 /**
@@ -15,7 +16,7 @@ import { trpc } from "@/lib/trpc-client";
 type ReqRow = ListPanelSetupRequisitionsOutput["rows"][number];
 
 function label(v: string): string {
-  return v.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+  return humanize(v);
 }
 
 export function PanelSetupClient({ initial }: { initial: ListPanelSetupRequisitionsOutput }) {

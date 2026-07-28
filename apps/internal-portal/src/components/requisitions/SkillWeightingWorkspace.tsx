@@ -5,6 +5,7 @@ import type { SkillWeightingReq } from "@hireops/api-types";
 import { trpc, handleTRPCError } from "@/lib/trpc-client";
 import { Button, Card, Badge } from "@/components/ui";
 import type { BadgeTone } from "@/components/ui";
+import { humanize } from "@/lib/labels";
 import { SkillWeightsEditor, newSkillRow, type SkillWeightRow } from "./SkillWeightsEditor";
 
 /**
@@ -26,7 +27,7 @@ const STATUS_TONE: Record<string, BadgeTone> = {
 };
 
 function statusLabel(status: string): string {
-  return status.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+  return humanize(status);
 }
 
 export function SkillWeightingWorkspace({ rows }: { rows: SkillWeightingReq[] }) {

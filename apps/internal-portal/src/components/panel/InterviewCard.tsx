@@ -1,6 +1,7 @@
 import { Badge, Card } from "@/components/ui";
 import type { BadgeTone } from "@/components/ui";
 import { cn } from "@/components/ui/cn";
+import { humanizeSentence } from "@/lib/labels";
 import type { PanelInterviewRow, FeedbackState } from "@hireops/api-types";
 
 /** Anchor styled as a house button (valid link markup — no button-in-anchor). */
@@ -118,7 +119,7 @@ export function InterviewCard({
           </div>
           <p className="mt-0.5 truncate text-sm text-neutral-600">{iv.positionTitle}</p>
         </div>
-        <Badge tone={statusTone(iv.status)}>{iv.status.replace(/_/g, " ")}</Badge>
+        <Badge tone={statusTone(iv.status)}>{humanizeSentence(iv.status)}</Badge>
       </div>
 
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-neutral-500">

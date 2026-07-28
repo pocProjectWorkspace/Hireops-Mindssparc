@@ -5,6 +5,7 @@ import type { ReactNode } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { Badge, Button, DataBar } from "@/components/ui";
 import { trpc } from "@/lib/trpc-client";
+import { humanizeSentence } from "@/lib/labels";
 import type {
   RecruiterBriefKind,
   RecruiterBriefCard,
@@ -164,7 +165,7 @@ export function RecruiterBriefDrawer({ applicationId, onClose }: RecruiterBriefD
                     </p>
                   </div>
                   {data.snapshot.source ? (
-                    <Badge tone="neutral">{data.snapshot.source.replace(/_/g, " ")}</Badge>
+                    <Badge tone="neutral">{humanizeSentence(data.snapshot.source)}</Badge>
                   ) : null}
                 </div>
                 <div className="mt-3 flex flex-wrap gap-4 text-sm">

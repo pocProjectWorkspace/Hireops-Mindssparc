@@ -8,6 +8,7 @@ import { Badge, Button, Card } from "@/components/ui";
 import type { BadgeTone } from "@/components/ui";
 import { InterviewPlanSection } from "@/components/interviews/InterviewPlanSection";
 import { RevisionSuggestionsCard } from "@/components/requirements/RevisionSuggestionsCard";
+import { humanize } from "@/lib/labels";
 
 /**
  * REQ-02 — requisition detail view. Renders the requisition summary, JD,
@@ -37,7 +38,7 @@ const APPROVAL_STATUS_TONE: Record<string, BadgeTone> = {
 };
 
 function statusLabel(status: string): string {
-  return status.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+  return humanize(status);
 }
 
 const reasonCls =

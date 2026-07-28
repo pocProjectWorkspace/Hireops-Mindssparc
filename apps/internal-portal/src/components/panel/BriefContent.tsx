@@ -9,6 +9,7 @@ import { RecommendationChip } from "@/components/patterns";
 import { trpc, handleTRPCError } from "@/lib/trpc-client";
 import type { GetPanelInterviewBriefOutput, GetInterviewPrepOutput } from "@hireops/api-types";
 import { SKILLS_MATCH_AMBER_THRESHOLD } from "@hireops/api-types";
+import { humanize, humanizeSentence } from "@/lib/labels";
 
 /**
  * PANEL-02 — the candidate BRIEF content for one interview (the read-only
@@ -59,7 +60,7 @@ export function BriefContent({
           </div>
           <div className="flex flex-col items-end gap-2 text-sm">
             <div className="flex items-center gap-2">
-              <Badge tone={statusTone(iv.status)}>{iv.status.replace(/_/g, " ")}</Badge>
+              <Badge tone={statusTone(iv.status)}>{humanizeSentence(iv.status)}</Badge>
               {iv.candidateConfirmedAt ? (
                 <Badge tone="success">Candidate confirmed</Badge>
               ) : iv.status === "scheduled" ? (
@@ -395,7 +396,7 @@ function statusTone(status: string): BadgeTone {
 }
 
 function humanStage(stage: string): string {
-  return stage.replace(/_/g, " ").replace(/\b\w/g, (m) => m.toUpperCase());
+  return humanize(stage);
 }
 
 function formatWhen(iso: string | null): string {
