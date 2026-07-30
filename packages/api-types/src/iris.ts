@@ -254,6 +254,57 @@ export const irisResolveIntentHintsSchema = z.object({
 });
 export type IrisResolveIntentHints = z.infer<typeof irisResolveIntentHintsSchema>;
 
+// ─────────────── message_candidate (Iris Communication action) ───────────────
+
+/**
+ * messageCandidate — the REAL, human-confirmed candidate message send. A general
+ * gated procedure introduced for the Iris `message_candidate` action but callable
+ * by any recruiter surface: the caller supplies the FINAL subject + body (Iris may
+ * DRAFT them via irisDraftCandidateMessage, but a human edits + confirms — AI never
+ * sends). The procedure loads the real application context and enqueues ONE
+ * candidate notification (candidate.agent_message), the SAME rails
+ * `requestMissingInfo` uses. This is the effectful CONFIRM step; the draft below
+ * only proposes.
+ */
+export const messageCandidateInputSchema = z.object({
+  applicationId: z.string().uuid(),
+  subject: z.string().min(1).max(200),
+  body: z.string().min(1).max(4000),
+});
+export type MessageCandidateInput = z.infer<typeof messageCandidateInputSchema>;
+
+export const messageCandidateOutputSchema = z.object({
+  ok: z.literal(true),
+  applicationId: z.string().uuid(),
+  /** The enqueued notification_outbox row id (the real send the worker delivers). */
+  notificationOutboxId: z.string().uuid(),
+});
+export type MessageCandidateOutput = z.infer<typeof messageCandidateOutputSchema>;
+
+/**
+ * irisDraftCandidateMessage — AI DRAFTS a candidate message; PROPOSES only. Given
+ * an application + the recruiter's free-text intent, the tenant's LLM composes a
+ * short, professional email grounded ONLY in the real application context (name,
+ * role, company) + that intent. It returns `{ subject, body }` to PREFILL the
+ * drawer's EDITABLE fields — nothing is sent here. Cost auto-logs to ai_usage_logs
+ * (feature "iris_message_draft"); it DEGRADES to a deterministic templated draft
+ * when the tenant's AI is off / erroring, so the flow always works.
+ */
+export const irisDraftCandidateMessageInputSchema = z.object({
+  applicationId: z.string().uuid(),
+  /** The recruiter's free-text steer for the message (what to say). */
+  intent: z.string().min(1).max(500),
+});
+export type IrisDraftCandidateMessageInput = z.infer<typeof irisDraftCandidateMessageInputSchema>;
+
+export const irisDraftCandidateMessageOutputSchema = z.object({
+  /** The drafted subject (bounded to the send contract's 200-char limit). */
+  subject: z.string().min(1).max(200),
+  /** The drafted body (bounded to the send contract's 4000-char limit). */
+  body: z.string().min(1).max(4000),
+});
+export type IrisDraftCandidateMessageOutput = z.infer<typeof irisDraftCandidateMessageOutputSchema>;
+
 export const irisResolveIntentOutputSchema = z.object({
   /**
    * The PROPOSED action id — guaranteed to be one of the caller's role-eligible

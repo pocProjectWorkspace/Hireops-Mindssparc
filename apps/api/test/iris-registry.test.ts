@@ -25,6 +25,7 @@ import { rejectApplicationAction } from "../src/lib/iris/actions/reject-applicat
 import { openOnboardingCaseAction } from "../src/lib/iris/actions/open-onboarding-case";
 import { bulkAdvanceApplicationsAction } from "../src/lib/iris/actions/bulk-advance-applications";
 import { bulkRejectApplicationsAction } from "../src/lib/iris/actions/bulk-reject-applications";
+import { messageCandidateAction } from "../src/lib/iris/actions/message-candidate";
 
 describe("IRIS-A1 action registry", () => {
   it("registers create_requisition_jd and exposes it by id", () => {
@@ -136,7 +137,8 @@ describe("IRIS-B1 pipeline / onboarding actions", () => {
       expect(IRIS_ACTIONS[action.id]).toBeDefined();
     }
     // The one requisition action is untouched; the whitelist is exactly these
-    // six (four single + the two IRIS-B2 bulk pipeline actions).
+    // seven (four single + the two IRIS-B2 bulk pipeline actions + the
+    // Communication message_candidate action).
     expect(Object.keys(IRIS_ACTIONS).sort()).toEqual(
       [
         "advance_application",
@@ -145,6 +147,7 @@ describe("IRIS-B1 pipeline / onboarding actions", () => {
         "reject_application",
         "bulk_advance_applications",
         "bulk_reject_applications",
+        "message_candidate",
       ].sort(),
     );
   });
@@ -355,5 +358,91 @@ describe("IRIS-B2 bulk pipeline actions", () => {
       targetStage: "shortlisted",
     }) as { targetStage: string };
     expect(parsed.targetStage).toBe("shortlisted");
+  });
+});
+
+describe("Iris Communication — message_candidate", () => {
+  const APP_UUID = "22222222-2222-4222-8222-222222222222";
+
+  it("registers message_candidate (whitelist-only): Communication group, non-destructive, single", () => {
+    const entry = getIrisAction("message_candidate");
+    expect(entry, "message_candidate is registered").toBeDefined();
+    expect(entry!.id).toBe("message_candidate");
+    expect(entry!.label).toBe(messageCandidateAction.label);
+    expect(entry!.group).toBe("Communication");
+    expect(entry!.destructive).toBe(false);
+    expect(entry!.bulk).toBe(false);
+    // A single (non-filter) action carries no resolver.
+    expect(entry!.resolve).toBeUndefined();
+    // The erased entry mirrors the concrete descriptor.
+    expect(entry!.roles).toEqual(messageCandidateAction.roles);
+  });
+
+  it("carries the recruiter-surface roles (admin + recruiter)", () => {
+    expect(messageCandidateAction.roles.sort()).toEqual(["admin", "recruiter"].sort());
+    // admin is in the set (the super-role sees + can run it).
+    expect(messageCandidateAction.roles).toContain("admin");
+  });
+
+  it("inputSchema validates the final human-confirmed message + rejects malformed payloads", () => {
+    const schema = messageCandidateAction.inputSchema;
+    // Empty — needs a uuid applicationId + non-empty subject + non-empty body.
+    expect(schema.safeParse({}).success).toBe(false);
+    // Bad applicationId.
+    expect(
+      schema.safeParse({ applicationId: "not-a-uuid", subject: "Hi", body: "Hello" }).success,
+    ).toBe(false);
+    // Missing body.
+    expect(schema.safeParse({ applicationId: APP_UUID, subject: "Hi" }).success).toBe(false);
+    // Empty subject / body are rejected (min 1).
+    expect(schema.safeParse({ applicationId: APP_UUID, subject: "", body: "Hello" }).success).toBe(
+      false,
+    );
+    expect(schema.safeParse({ applicationId: APP_UUID, subject: "Hi", body: "" }).success).toBe(
+      false,
+    );
+    // Subject over 200 / body over 4000 are rejected (bounds match the send contract).
+    expect(
+      schema.safeParse({ applicationId: APP_UUID, subject: "x".repeat(201), body: "Hello" })
+        .success,
+    ).toBe(false);
+    expect(
+      schema.safeParse({ applicationId: APP_UUID, subject: "Hi", body: "x".repeat(4001) }).success,
+    ).toBe(false);
+    // A valid message parses.
+    expect(
+      schema.safeParse({
+        applicationId: APP_UUID,
+        subject: "Update on your application",
+        body: "Hi there, we'd love to move you to the next round.",
+      }).success,
+    ).toBe(true);
+  });
+
+  it("the erased entry enforces the same input contract irisExecute runs", () => {
+    const entry = getIrisAction("message_candidate")!;
+    expect(() => entry.parse({})).toThrow();
+    const parsed = entry.parse({
+      applicationId: APP_UUID,
+      subject: "Update on your application",
+      body: "Hi there, we're moving you forward.",
+    }) as { subject: string; body: string };
+    expect(parsed.subject).toBe("Update on your application");
+    expect(parsed.body).toContain("moving you forward");
+  });
+
+  it("buildPreview returns a non-empty summary + details naming the subject and body snippet", () => {
+    const preview = messageCandidateAction.buildPreview({
+      applicationId: APP_UUID,
+      subject: "Update on your Backend Engineer application",
+      body: "Hi Priya, we'd love to invite you to a final interview next week.",
+    });
+    expect(preview.summary.length).toBeGreaterThan(0);
+    expect(Array.isArray(preview.details)).toBe(true);
+    expect(preview.details.length).toBeGreaterThan(0);
+    // The preview surfaces the subject so the review card shows what will be sent.
+    expect(preview.details.join(" ")).toContain("Update on your Backend Engineer application");
+    // And a snippet of the body.
+    expect(preview.details.join(" ")).toContain("final interview");
   });
 });

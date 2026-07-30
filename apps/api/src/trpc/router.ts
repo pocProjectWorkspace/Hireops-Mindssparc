@@ -124,6 +124,7 @@ import {
   type IrisCaller,
 } from "../lib/iris/registry";
 import { resolveIrisIntent } from "../lib/iris/resolve-intent";
+import { draftCandidateMessage } from "../lib/iris/draft-candidate-message";
 import {
   submitApplicationInputSchema,
   submitApplicationOutputSchema,
@@ -770,6 +771,10 @@ import {
   irisSearchApplicationsOutputSchema,
   irisResolveIntentInputSchema,
   irisResolveIntentOutputSchema,
+  messageCandidateInputSchema,
+  messageCandidateOutputSchema,
+  irisDraftCandidateMessageInputSchema,
+  irisDraftCandidateMessageOutputSchema,
 } from "@hireops/api-types";
 import { createClient } from "@supabase/supabase-js";
 import {
@@ -21540,6 +21545,115 @@ export const appRouter = router({
           currentStage: r.currentStage,
         })),
       };
+    }),
+
+  /**
+   * messageCandidate — send ONE real, human-confirmed message to a candidate.
+   *
+   * A GENERAL gated procedure (introduced for the Iris `message_candidate` action
+   * but callable by any recruiter surface). The caller supplies the FINAL subject
+   * + body: Iris may DRAFT them via irisDraftCandidateMessage, but a human edits +
+   * Confirms — AI never sends. It loads the real application context and enqueues
+   * ONE candidate notification (candidate.agent_message) EXACTLY as
+   * requestMissingInfo does (same RLS + withAudit rails). Recruiter + admin.
+   *
+   * The notification is the deliverable, so a failed enqueue is surfaced (throws),
+   * not swallowed — unlike requestMissingInfo, where the notify is a best-effort
+   * side effect on top of recording the chase.
+   */
+  messageCandidate: protectedProcedure
+    .input(messageCandidateInputSchema)
+    .output(messageCandidateOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      return withAudit("message_candidate", ctx, input, async () => {
+        requireAnyRole(
+          ctx,
+          RECRUITER_SURFACE_ROLES,
+          "Messaging a candidate is a recruiter surface.",
+        );
+        const db = requireDb(ctx);
+        if (!ctx.tenantId) {
+          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
+        }
+        const tenantId = ctx.tenantId;
+
+        const meta = await fetchTransitionEmailContext(db, input.applicationId);
+        if (!meta) {
+          throw new TRPCError({ code: "NOT_FOUND", message: "Application not found" });
+        }
+
+        // ONE real candidate notification — the human-confirmed message. Same
+        // candidate.agent_message path + shape requestMissingInfo enqueues.
+        const { outboxId } = await enqueueNotification(db, {
+          tenantId,
+          recipientType: "candidate",
+          recipientEmail: meta.candidateEmail,
+          recipientCandidateId: meta.candidateId,
+          templateKey: "candidate.agent_message",
+          templateData: {
+            candidateName: meta.candidateName,
+            companyName: meta.companyName,
+            positionTitle: meta.positionTitle,
+            body: input.body,
+            subject: input.subject,
+          },
+          subject: input.subject,
+          dedupKey: `iris_message:${input.applicationId}:${Date.now()}`,
+        });
+
+        return {
+          ok: true as const,
+          applicationId: input.applicationId,
+          notificationOutboxId: outboxId,
+        };
+      });
+    }),
+
+  /**
+   * irisDraftCandidateMessage — AI DRAFTS a candidate message; it PROPOSES only.
+   *
+   * Loads the real application context and asks the tenant's LLM (feature
+   * "iris_message_draft", cost auto-logged to ai_usage_logs) to compose a short,
+   * professional email grounded ONLY in that context (name, role, company) + the
+   * recruiter's intent. Returns `{ subject, body }` to PREFILL the drawer's
+   * EDITABLE fields — nothing is sent here; the human edits + Confirms, then
+   * messageCandidate does the real send. DEGRADES to a deterministic templated
+   * draft when the tenant's AI is off / erroring (never a 500), so the flow always
+   * works. Recruiter + admin.
+   *
+   * It's a mutation because the ai-client writes a usage-log row; there is NO
+   * business write here — the commit stays messageCandidate (behind Confirm).
+   */
+  irisDraftCandidateMessage: protectedProcedure
+    .input(irisDraftCandidateMessageInputSchema)
+    .output(irisDraftCandidateMessageOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      requireAnyRole(ctx, RECRUITER_SURFACE_ROLES, "Messaging a candidate is a recruiter surface.");
+      const db = requireDb(ctx);
+      if (!ctx.tenantId) {
+        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
+      }
+      const tenantId = ctx.tenantId;
+
+      const meta = await fetchTransitionEmailContext(db, input.applicationId);
+      if (!meta) {
+        throw new TRPCError({ code: "NOT_FOUND", message: "Application not found" });
+      }
+      const actorMembershipId = await resolveActorMembership(db, ctx);
+
+      return draftCandidateMessage({
+        tenantId,
+        // Grounded ONLY in the real context — the candidate's email is NOT passed
+        // to the drafter (it's a routing field, never body content).
+        context: {
+          candidateName: meta.candidateName,
+          positionTitle: meta.positionTitle,
+          companyName: meta.companyName,
+        },
+        intent: input.intent,
+        requestId: ctx.requestId,
+        actorMembershipId,
+      });
     }),
 
   /**

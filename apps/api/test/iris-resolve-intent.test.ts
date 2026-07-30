@@ -49,9 +49,15 @@ describe("IRIS-A3 prompt builder — only eligible actions appear", () => {
       eligibleActionIds: eligible,
       text: "advance Priya to tech interview",
     });
-    // Every eligible action id is described; ineligible ones never leak in.
-    for (const id of eligible) expect(user).toContain(id);
+    // Every NL-proposable eligible action id is described; ineligible ones never
+    // leak in. The prompt filters to the hinted set, so message_candidate (a
+    // menu-only action) is deliberately absent even though the recruiter is
+    // role-eligible for it.
+    for (const id of eligible.filter((i) => IRIS_ACTION_PROMPT_HINTS[i])) {
+      expect(user).toContain(id);
+    }
     expect(user).not.toContain("create_requisition_jd");
+    expect(user).not.toContain("message_candidate");
     // The system prompt states the proposer-not-executor contract.
     expect(system.toLowerCase()).toContain("proposer");
   });
@@ -193,11 +199,20 @@ describe("IRIS-A3 hints + degrade", () => {
   });
 });
 
-describe("IRIS-A3 hint map covers exactly the whitelisted actions", () => {
-  it("has a prompt hint + draft-field list for every registry action id, and nothing extra", () => {
-    const registryIds = listIrisActions()
-      .map((a) => a.id)
-      .sort();
-    expect(ALL_ACTION_IDS.sort()).toEqual(registryIds);
+describe("IRIS-A3 hint map covers the NL-proposable actions", () => {
+  it("every prompt-hint id is a real registry action, and message_candidate is intentionally menu-only", () => {
+    const registryIds = new Set(listIrisActions().map((a) => a.id));
+    // No STRAY hint that isn't a whitelisted action — the NL resolver can never
+    // propose something outside the registry.
+    for (const id of ALL_ACTION_IDS) {
+      expect(registryIds.has(id), `${id} is a registry action`).toBe(true);
+    }
+    // Every registry action EXCEPT message_candidate is NL-proposable.
+    // message_candidate is a MENU-ONLY action: it drafts + sends a real candidate
+    // email behind an explicit human Confirm, so it is deliberately excluded from
+    // the natural-language resolver (buildIrisIntentPrompt filters to hinted ids,
+    // so the model never sees it and validateResolvedActionId would null it).
+    const registryWithoutHint = [...registryIds].filter((id) => !ALL_ACTION_IDS.includes(id));
+    expect(registryWithoutHint).toEqual(["message_candidate"]);
   });
 });

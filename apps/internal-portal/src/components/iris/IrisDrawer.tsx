@@ -133,6 +133,14 @@ export function IrisDrawer({ open, onClose, context }: IrisDrawerProps) {
   const [bulkTargetStage, setBulkTargetStage] = useState<string>("");
   const [bulkReason, setBulkReason] = useState("");
 
+  // message_candidate fields — shares the application picker. `messageIntent` is
+  // the recruiter's free-text steer for the "Draft with Iris" call; the returned
+  // draft prefills the EDITABLE `messageSubject` + `messageBody`, which the human
+  // may change freely before Confirm. Nothing sends until the review's Confirm.
+  const [messageIntent, setMessageIntent] = useState("");
+  const [messageSubject, setMessageSubject] = useState("");
+  const [messageBody, setMessageBody] = useState("");
+
   // Reset to a clean menu each time the drawer opens; lock body scroll + wire ESC.
   useEffect(() => {
     if (!open) return;
@@ -152,6 +160,9 @@ export function IrisDrawer({ open, onClose, context }: IrisDrawerProps) {
     setBulkFromStage("");
     setBulkTargetStage("");
     setBulkReason("");
+    setMessageIntent("");
+    setMessageSubject("");
+    setMessageBody("");
     setNlText("");
     setNlResult(null);
     setNlCandidateSeed("");
@@ -243,6 +254,16 @@ export function IrisDrawer({ open, onClose, context }: IrisDrawerProps) {
     },
   });
 
+  // message_candidate — AI DRAFTS the email (proposes only); the returned subject
+  // + body prefill the EDITABLE fields. Nothing sends here — the human edits, then
+  // Confirms on the review step, which runs the real gated messageCandidate send.
+  const draftMessage = trpc.irisDraftCandidateMessage.useMutation({
+    onSuccess: (data) => {
+      setMessageSubject(data.subject);
+      setMessageBody(data.body);
+    },
+  });
+
   if (!open || !mounted) return null;
 
   const suggestedId = suggestedActionForRoute(context.route);
@@ -255,6 +276,7 @@ export function IrisDrawer({ open, onClose, context }: IrisDrawerProps) {
   const isDestructive = selectedAction?.destructive ?? false;
   const needsApplication = selectedActionId ? APPLICATION_ACTION_IDS.has(selectedActionId) : false;
   const isBulk = selectedActionId ? BULK_ACTION_IDS.has(selectedActionId) : false;
+  const isMessage = selectedActionId === "message_candidate";
   // Pre-select the picker from page context when the route names an application.
   const contextApplicationId = context.entityType === "application" ? context.entityId : undefined;
 
@@ -269,6 +291,9 @@ export function IrisDrawer({ open, onClose, context }: IrisDrawerProps) {
     setBulkFromStage("");
     setBulkTargetStage("");
     setBulkReason("");
+    setMessageIntent("");
+    setMessageSubject("");
+    setMessageBody("");
     // Opening a form clears any prior NL picker seeds. A natural-language open
     // re-sets them AFTER this call, so the resolved seeds still apply.
     setNlCandidateSeed("");
@@ -361,6 +386,17 @@ export function IrisDrawer({ open, onClose, context }: IrisDrawerProps) {
     ) {
       params = { requisitionId: bulkRequisitionId, fromStage: bulkFromStage };
       if (bulkReason.trim()) params.reason = bulkReason.trim();
+    } else if (
+      selectedActionId === "message_candidate" &&
+      picked &&
+      messageSubject.trim() &&
+      messageBody.trim()
+    ) {
+      params = {
+        applicationId: picked.applicationId,
+        subject: messageSubject.trim(),
+        body: messageBody.trim(),
+      };
     }
     if (!params) return;
     setSubmittedParams(params);
@@ -379,6 +415,8 @@ export function IrisDrawer({ open, onClose, context }: IrisDrawerProps) {
     canSubmitForm = !!bulkRequisitionId && !!bulkFromStage && !!bulkTargetStage;
   else if (selectedActionId === "bulk_reject_applications")
     canSubmitForm = !!bulkRequisitionId && !!bulkFromStage;
+  else if (selectedActionId === "message_candidate")
+    canSubmitForm = !!picked && messageSubject.trim().length > 0 && messageBody.trim().length > 0;
 
   const stageOptions = picked ? forwardStagesAfter(picked.stage) : [];
 
@@ -641,6 +679,92 @@ export function IrisDrawer({ open, onClose, context }: IrisDrawerProps) {
                         className="mt-1 w-full resize-y rounded-md border border-neutral-300 bg-white px-3 py-2 text-sm text-neutral-900 transition-colors focus:border-brand-600 focus:outline-none focus:ring-1 focus:ring-brand-600"
                       />
                     </label>
+                  ) : null}
+                </div>
+              ) : isMessage ? (
+                <div className="space-y-4">
+                  <IrisApplicationPicker
+                    value={picked}
+                    onChange={(p) => {
+                      setPicked(p);
+                      // A different candidate invalidates a draft written for the
+                      // previous one — clear it so nothing stale carries over.
+                      setMessageSubject("");
+                      setMessageBody("");
+                    }}
+                    enabled={step === "form"}
+                    preselectApplicationId={contextApplicationId}
+                    initialSearch={nlCandidateSeed || undefined}
+                  />
+
+                  <label className="block text-sm font-medium text-neutral-800">
+                    What should the message say?
+                    <textarea
+                      value={messageIntent}
+                      rows={2}
+                      onChange={(e) => setMessageIntent(e.target.value)}
+                      maxLength={500}
+                      placeholder="e.g. Let them know we're moving them to the final interview round and will follow up with times."
+                      className="mt-1 w-full resize-y rounded-md border border-neutral-300 bg-white px-3 py-2 text-sm text-neutral-900 placeholder:text-neutral-400 transition-colors focus:border-brand-600 focus:outline-none focus:ring-1 focus:ring-brand-600"
+                    />
+                  </label>
+                  <div className="flex items-center justify-between gap-3">
+                    <p className="text-[11px] text-neutral-400">
+                      Iris drafts a message from this candidate&apos;s real application context, you
+                      edit it, then confirm before anything is sent.
+                    </p>
+                    <Button
+                      variant="secondary"
+                      onClick={() =>
+                        picked && messageIntent.trim()
+                          ? draftMessage.mutate({
+                              applicationId: picked.applicationId,
+                              intent: messageIntent.trim(),
+                            })
+                          : undefined
+                      }
+                      disabled={
+                        !picked || messageIntent.trim().length === 0 || draftMessage.isPending
+                      }
+                    >
+                      {draftMessage.isPending ? "Drafting…" : "Draft with Iris"}
+                    </Button>
+                  </div>
+                  {draftMessage.isError ? (
+                    <p className="text-sm text-status-error-700">
+                      Couldn&apos;t draft a message just now, you can write one below and send it.
+                    </p>
+                  ) : null}
+
+                  <Input
+                    label="Subject"
+                    required
+                    value={messageSubject}
+                    onChange={(e) => setMessageSubject(e.target.value)}
+                    maxLength={200}
+                    placeholder="Subject line"
+                  />
+                  <label className="block text-sm font-medium text-neutral-800">
+                    Message
+                    <span aria-hidden className="text-status-error-600">
+                      {" "}
+                      *
+                    </span>
+                    <textarea
+                      value={messageBody}
+                      rows={8}
+                      onChange={(e) => setMessageBody(e.target.value)}
+                      maxLength={4000}
+                      placeholder="Write your message, or draft one with Iris above."
+                      className="mt-1 w-full resize-y rounded-md border border-neutral-300 bg-white px-3 py-2 text-sm text-neutral-900 placeholder:text-neutral-400 transition-colors focus:border-brand-600 focus:outline-none focus:ring-1 focus:ring-brand-600"
+                    />
+                  </label>
+                  {draftMessage.isSuccess &&
+                  messageSubject.trim().length > 0 &&
+                  messageBody.trim().length > 0 ? (
+                    <p className="text-[11px] text-brand-700/80">
+                      ✨ Drafted by Iris, edit it before sending.
+                    </p>
                   ) : null}
                 </div>
               ) : isBulk ? (
