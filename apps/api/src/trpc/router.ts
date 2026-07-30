@@ -123,8 +123,11 @@ import {
   isBulkActionResult,
   type IrisCaller,
 } from "../lib/iris/registry";
-import { resolveIrisIntent } from "../lib/iris/resolve-intent";
-import { draftCandidateMessage } from "../lib/iris/draft-candidate-message";
+import { resolveIrisIntent, degradedResolution } from "../lib/iris/resolve-intent";
+import {
+  draftCandidateMessage,
+  deterministicCandidateMessageDraft,
+} from "../lib/iris/draft-candidate-message";
 import {
   submitApplicationInputSchema,
   submitApplicationOutputSchema,
@@ -21753,6 +21756,20 @@ export const appRouter = router({
       }
       const actorMembershipId = await resolveActorMembership(db, ctx);
 
+      // IRIS kill-switch: honour the per-tenant iris_assistant switch. Disabled →
+      // return the drafter's OWN deterministic templated draft up front (no model
+      // call, no ai_usage_logs row). Reuses the lib's degrade path so the fallback
+      // text has a single source. Re-enable in Admin → AI settings.
+      const aiSettings = await resolveTenantAiSettingsDb(tenantId);
+      if (!aiSettings.iris_assistant.enabled) {
+        return deterministicCandidateMessageDraft({
+          candidateName: meta.candidateName,
+          positionTitle: meta.positionTitle,
+          companyName: meta.companyName,
+          intent: input.intent,
+        });
+      }
+
       return draftCandidateMessage({
         tenantId,
         // Grounded ONLY in the real context — the candidate's email is NOT passed
@@ -21797,6 +21814,14 @@ export const appRouter = router({
         throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
       }
       const tenantId = ctx.tenantId;
+      // IRIS kill-switch: honour the per-tenant iris_assistant switch. Disabled →
+      // return the resolver's OWN graceful-degrade shape ("use the menu") up front
+      // (no model call, no ai_usage_logs row). Reuses the lib's degrade path so the
+      // fallback text has a single source. Re-enable in Admin → AI settings.
+      const aiSettings = await resolveTenantAiSettingsDb(tenantId);
+      if (!aiSettings.iris_assistant.enabled) {
+        return degradedResolution();
+      }
       // The CALLER's role-eligible actions — the EXACT same per-action filter
       // irisListActions applies. The resolver builds the prompt from only these
       // and re-validates the model's choice against them.

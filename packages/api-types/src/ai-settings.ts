@@ -85,7 +85,8 @@ function featureDefault(): AiFeatureSettings {
 /** The real consumers this surface governs (jd_bias_review added in CONF-02,
  * req_feasibility in HRHEAD-02, comp_recommendation in HROPS-02,
  * feedback_summary in PANEL-01, interview_prep in PANEL-02, req_revision in
- * RO-01). */
+ * RO-01, iris_assistant in IRIS — one key governs BOTH Iris AI calls
+ * (iris_intent + iris_message_draft)). */
 export const AI_FEATURE_KEYS = [
   "ai_scoring",
   "jd_generation",
@@ -97,6 +98,7 @@ export const AI_FEATURE_KEYS = [
   "interview_prep",
   "req_revision",
   "recruiter_brief",
+  "iris_assistant",
 ] as const;
 export type AiFeatureKey = (typeof AI_FEATURE_KEYS)[number];
 
@@ -165,6 +167,12 @@ export const AI_FEATURE_META: Record<
     description:
       "On the recruiter's candidate brief, drafts three grounded aids on demand — top 3 strengths + 2 risks vs the JD, a ~10-minute structured phone-screen script, and a DRAFT notice-period / availability confirmation message. Grounded ONLY in the JD + skills, the deterministic resume-vs-JD skills match, the parsed resume, and the application's own data — never invented facts, demographic inference, or sentiment claims. The availability draft is a DRAFT ONLY: it is never auto-sent; the recruiter reviews and sends it through the normal approval path. The deterministic skills-match and missing-info parts of the brief are unaffected. Runs only on an explicit 'Generate' click per aid. Disabling makes those buttons refuse with a clear message instead of calling the model.",
   },
+  iris_assistant: {
+    label: "Iris assistant (AI drafting)",
+    usageFeatures: ["iris_intent", "iris_message_draft"],
+    description:
+      "Iris uses AI in two places — turning a natural-language request into a drafted action, and drafting a candidate message from your intent. Both are DRAFTS you review and confirm; Iris never sends or executes on its own. Disabling makes Iris fall back to the menu (no natural-language) and to a plain templated message draft — the model is not called. The menu actions themselves are unaffected.",
+  },
 };
 
 export const aiSettingsSchema = z.object({
@@ -179,6 +187,7 @@ export const aiSettingsSchema = z.object({
   interview_prep: aiFeatureSettingsSchema.default(featureDefault),
   req_revision: aiFeatureSettingsSchema.default(featureDefault),
   recruiter_brief: aiFeatureSettingsSchema.default(featureDefault),
+  iris_assistant: aiFeatureSettingsSchema.default(featureDefault),
   /**
    * Global deterministic PII redaction. When on, candidate-derived prompt
    * text going into scoring + agent-draft calls has emails / phone numbers /
