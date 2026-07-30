@@ -218,6 +218,7 @@ export type DraftCompOfferOutput = z.infer<typeof draftCompOfferOutputSchema>;
 // ─────────────────────────── offer approval (governance) ───────────────────────────
 
 export const requestOfferApprovalInputSchema = z.object({ offerId: z.string().uuid() });
+export type RequestOfferApprovalInput = z.infer<typeof requestOfferApprovalInputSchema>;
 export const requestOfferApprovalOutputSchema = z.object({
   approvalRequestId: z.string().uuid(),
   status: z.enum(["pending", "approved", "rejected"]),

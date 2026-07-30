@@ -35,6 +35,12 @@ import type {
   MessageCandidateOutput,
   SetRequisitionHoldInput,
   SetRequisitionHoldOutput,
+  RequestApplicationDocumentsInput,
+  RequestApplicationDocumentsOutput,
+  RequestOfferApprovalInput,
+  RequestOfferApprovalOutput,
+  CancelInterviewInput,
+  CancelInterviewOutput,
 } from "@hireops/api-types";
 import type { HonoTRPCContext } from "../../trpc/trpc-core";
 import { createRequisitionJdAction } from "./actions/create-requisition-jd";
@@ -46,6 +52,9 @@ import { bulkRejectApplicationsAction } from "./actions/bulk-reject-applications
 import { messageCandidateAction } from "./actions/message-candidate";
 import { holdRequisitionAction } from "./actions/hold-requisition";
 import { resumeRequisitionAction } from "./actions/resume-requisition";
+import { requestDocumentsAction } from "./actions/request-documents";
+import { requestOfferApprovalAction } from "./actions/request-offer-approval";
+import { cancelInterviewAction } from "./actions/cancel-interview";
 
 /**
  * The subset of the in-process tRPC caller (appRouter.createCaller(ctx)) that
@@ -73,6 +82,11 @@ export interface IrisCaller {
   ): Promise<ListCandidatesByRequisitionOutput>;
   messageCandidate(input: MessageCandidateInput): Promise<MessageCandidateOutput>;
   setRequisitionHold(input: SetRequisitionHoldInput): Promise<SetRequisitionHoldOutput>;
+  requestApplicationDocuments(
+    input: RequestApplicationDocumentsInput,
+  ): Promise<RequestApplicationDocumentsOutput>;
+  requestOfferApproval(input: RequestOfferApprovalInput): Promise<RequestOfferApprovalOutput>;
+  cancelInterview(input: CancelInterviewInput): Promise<CancelInterviewOutput>;
 }
 
 /** The (entityType, entityId, human summary) a SINGLE-entity action reports after
@@ -219,6 +233,9 @@ export const IRIS_ACTIONS: Record<string, AnyIrisAction> = Object.fromEntries(
     eraseIrisAction(messageCandidateAction),
     eraseIrisAction(holdRequisitionAction),
     eraseIrisAction(resumeRequisitionAction),
+    eraseIrisAction(requestDocumentsAction),
+    eraseIrisAction(requestOfferApprovalAction),
+    eraseIrisAction(cancelInterviewAction),
   ].map((a) => [a.id, a]),
 );
 

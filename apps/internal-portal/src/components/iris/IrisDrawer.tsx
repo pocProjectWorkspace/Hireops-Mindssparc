@@ -16,6 +16,9 @@ import type {
 } from "@hireops/api-types";
 import { suggestedActionForRoute, type IrisPageContext } from "./context-map";
 import { IrisApplicationPicker, type IrisPickedApplication } from "./IrisApplicationPicker";
+import { IrisDocumentTypeMultiSelect } from "./IrisDocumentTypeMultiSelect";
+import { IrisOfferPicker, type IrisPickedOffer } from "./IrisOfferPicker";
+import { IrisInterviewPicker, type IrisPickedInterview } from "./IrisInterviewPicker";
 
 /**
  * IrisDrawer (IRIS-A2) — the menu-path Iris surface. A right-side slide-over
@@ -59,6 +62,13 @@ const BULK_ACTION_IDS = new Set(["bulk_advance_applications", "bulk_reject_appli
 /** The requisition HOLD / RESUME lifecycle actions — they share a single
  * requisition picker (hold also collects a required reason). */
 const REQUISITION_HOLD_ACTION_IDS = new Set(["hold_requisition", "resume_requisition"]);
+
+/** request_documents — the application picker + a document-type multi-select. */
+const DOCUMENTS_ACTION_ID = "request_documents";
+/** request_offer_approval — a single offer picker (comp desk read). */
+const OFFER_APPROVAL_ACTION_ID = "request_offer_approval";
+/** cancel_interview — an interview picker + a required reason (destructive). */
+const CANCEL_INTERVIEW_ACTION_ID = "cancel_interview";
 
 /** Every pipeline stage — the from/target selects offer the full set (a bulk
  * filter can act on any current stage). */
@@ -150,6 +160,16 @@ export function IrisDrawer({ open, onClose, context }: IrisDrawerProps) {
   const [holdRequisitionId, setHoldRequisitionId] = useState("");
   const [holdReason, setHoldReason] = useState("");
 
+  // Tier-A contextual action fields.
+  // request_documents — shares the application picker; `docTypeIds` are the
+  // checked document types (at least one required).
+  const [docTypeIds, setDocTypeIds] = useState<string[]>([]);
+  // request_offer_approval — a single offer picker (the comp desk read).
+  const [pickedOffer, setPickedOffer] = useState<IrisPickedOffer | null>(null);
+  // cancel_interview — an interview picker + a required, human-entered reason.
+  const [pickedInterview, setPickedInterview] = useState<IrisPickedInterview | null>(null);
+  const [cancelReason, setCancelReason] = useState("");
+
   // Reset to a clean menu each time the drawer opens; lock body scroll + wire ESC.
   useEffect(() => {
     if (!open) return;
@@ -174,6 +194,10 @@ export function IrisDrawer({ open, onClose, context }: IrisDrawerProps) {
     setMessageBody("");
     setHoldRequisitionId("");
     setHoldReason("");
+    setDocTypeIds([]);
+    setPickedOffer(null);
+    setPickedInterview(null);
+    setCancelReason("");
     setNlText("");
     setNlResult(null);
     setNlCandidateSeed("");
@@ -251,6 +275,9 @@ export function IrisDrawer({ open, onClose, context }: IrisDrawerProps) {
       void utils.listCandidates.invalidate();
       void utils.listCandidatesByRequisition.invalidate();
       void utils.listShortlist.invalidate();
+      // Tier-A contextual actions change the comp desk / interviews surfaces.
+      void utils.listCompDesk.invalidate();
+      void utils.listUpcomingInterviews.invalidate();
     },
     onError: (err) => handleTRPCError(err),
   });
@@ -298,6 +325,9 @@ export function IrisDrawer({ open, onClose, context }: IrisDrawerProps) {
   const isRequisitionHold = selectedActionId
     ? REQUISITION_HOLD_ACTION_IDS.has(selectedActionId)
     : false;
+  const isDocuments = selectedActionId === DOCUMENTS_ACTION_ID;
+  const isOfferApproval = selectedActionId === OFFER_APPROVAL_ACTION_ID;
+  const isCancelInterview = selectedActionId === CANCEL_INTERVIEW_ACTION_ID;
   // Pre-select the picker from page context when the route names an application.
   const contextApplicationId = context.entityType === "application" ? context.entityId : undefined;
 
@@ -317,6 +347,10 @@ export function IrisDrawer({ open, onClose, context }: IrisDrawerProps) {
     setMessageBody("");
     setHoldRequisitionId("");
     setHoldReason("");
+    setDocTypeIds([]);
+    setPickedOffer(null);
+    setPickedInterview(null);
+    setCancelReason("");
     // Opening a form clears any prior NL picker seeds. A natural-language open
     // re-sets them AFTER this call, so the resolved seeds still apply.
     setNlCandidateSeed("");
@@ -424,6 +458,16 @@ export function IrisDrawer({ open, onClose, context }: IrisDrawerProps) {
       params = { requisitionId: holdRequisitionId, reason: holdReason.trim() };
     } else if (selectedActionId === "resume_requisition" && holdRequisitionId) {
       params = { requisitionId: holdRequisitionId };
+    } else if (selectedActionId === DOCUMENTS_ACTION_ID && picked && docTypeIds.length > 0) {
+      params = { applicationId: picked.applicationId, documentTypeIds: docTypeIds };
+    } else if (selectedActionId === OFFER_APPROVAL_ACTION_ID && pickedOffer) {
+      params = { offerId: pickedOffer.offerId };
+    } else if (
+      selectedActionId === CANCEL_INTERVIEW_ACTION_ID &&
+      pickedInterview &&
+      cancelReason.trim()
+    ) {
+      params = { interviewId: pickedInterview.interviewId, reason: cancelReason.trim() };
     }
     if (!params) return;
     setSubmittedParams(params);
@@ -447,6 +491,11 @@ export function IrisDrawer({ open, onClose, context }: IrisDrawerProps) {
   else if (selectedActionId === "hold_requisition")
     canSubmitForm = !!holdRequisitionId && holdReason.trim().length > 0;
   else if (selectedActionId === "resume_requisition") canSubmitForm = !!holdRequisitionId;
+  else if (selectedActionId === DOCUMENTS_ACTION_ID)
+    canSubmitForm = !!picked && docTypeIds.length > 0;
+  else if (selectedActionId === OFFER_APPROVAL_ACTION_ID) canSubmitForm = !!pickedOffer;
+  else if (selectedActionId === CANCEL_INTERVIEW_ACTION_ID)
+    canSubmitForm = !!pickedInterview && cancelReason.trim().length > 0;
 
   const stageOptions = picked ? forwardStagesAfter(picked.stage) : [];
 
@@ -902,6 +951,66 @@ export function IrisDrawer({ open, onClose, context }: IrisDrawerProps) {
                     </label>
                   )}
                 </div>
+              ) : isDocuments ? (
+                <div className="space-y-4">
+                  <IrisApplicationPicker
+                    value={picked}
+                    onChange={(p) => {
+                      setPicked(p);
+                      // A different candidate clears any doc types picked for the
+                      // previous one.
+                      setDocTypeIds([]);
+                    }}
+                    enabled={step === "form"}
+                    preselectApplicationId={contextApplicationId}
+                    initialSearch={nlCandidateSeed || undefined}
+                  />
+                  {picked ? (
+                    <IrisDocumentTypeMultiSelect
+                      value={docTypeIds}
+                      onChange={setDocTypeIds}
+                      enabled={step === "form"}
+                    />
+                  ) : null}
+                </div>
+              ) : isOfferApproval ? (
+                <div className="space-y-4">
+                  <IrisOfferPicker
+                    value={pickedOffer}
+                    onChange={setPickedOffer}
+                    enabled={step === "form"}
+                  />
+                </div>
+              ) : isCancelInterview ? (
+                <div className="space-y-4">
+                  <IrisInterviewPicker
+                    value={pickedInterview}
+                    onChange={(p) => {
+                      setPickedInterview(p);
+                      // A different interview invalidates a reason typed for the
+                      // previous one.
+                      setCancelReason("");
+                    }}
+                    enabled={step === "form"}
+                  />
+                  {pickedInterview ? (
+                    <label className="block text-sm font-medium text-neutral-800">
+                      Reason
+                      <span aria-hidden className="text-status-error-600">
+                        {" "}
+                        *
+                      </span>
+                      <textarea
+                        value={cancelReason}
+                        rows={3}
+                        onChange={(e) => setCancelReason(e.target.value)}
+                        maxLength={500}
+                        placeholder="Why is this interview being cancelled? The candidate is notified and it's recorded on the audit trail."
+                        className="mt-1 w-full resize-y rounded-md border border-neutral-300 bg-white px-3 py-2 text-sm text-neutral-900 transition-colors focus:border-brand-600 focus:outline-none focus:ring-1 focus:ring-brand-600"
+                      />
+                    </label>
+                  ) : null}
+                </div>
               ) : (
                 <p className="text-sm text-neutral-500">This action has no input form wired yet.</p>
               )}
@@ -923,11 +1032,14 @@ export function IrisDrawer({ open, onClose, context }: IrisDrawerProps) {
               {isDestructive ? (
                 <div className="mb-3 rounded-lg border border-status-error-200 bg-status-error-50 px-3 py-2.5">
                   <p className="text-sm font-medium text-status-error-800">
-                    This ends the candidate&apos;s application.
+                    {isCancelInterview
+                      ? "This cancels the interview and notifies the candidate."
+                      : "This ends the candidate's application."}
                   </p>
                   <p className="mt-0.5 text-xs text-status-error-700">
-                    It&apos;s recorded on the audit trail and can be undone from triage within a
-                    short window.
+                    {isCancelInterview
+                      ? "It's recorded on the audit trail. Scheduling a new round is a separate step."
+                      : "It's recorded on the audit trail and can be undone from triage within a short window."}
                   </p>
                 </div>
               ) : null}
@@ -1018,9 +1130,13 @@ export function IrisDrawer({ open, onClose, context }: IrisDrawerProps) {
                 >
                   {execute.isPending
                     ? "Working…"
-                    : `${isDestructive ? "Confirm reject" : "Confirm"}${
-                        isBulk ? ` (${affectedCount})` : ""
-                      }`}
+                    : `${
+                        isDestructive
+                          ? isCancelInterview
+                            ? "Confirm cancel"
+                            : "Confirm reject"
+                          : "Confirm"
+                      }${isBulk ? ` (${affectedCount})` : ""}`}
                 </Button>
               </div>
             </Card>

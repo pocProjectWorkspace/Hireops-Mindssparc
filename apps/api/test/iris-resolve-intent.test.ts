@@ -215,9 +215,19 @@ describe("IRIS-A3 hint map covers the NL-proposable actions", () => {
     //     explicit human Confirm;
     //   - hold_requisition / resume_requisition are reversible lifecycle changes
     //     driven from the menu's requisition picker, not free text.
+    //   - the Tier-A contextual actions (request_documents / request_offer_approval
+    //     / cancel_interview) are driven from menu pickers (doc-type multi-select,
+    //     offer picker, interview picker), not natural language.
     const registryWithoutHint = [...registryIds].filter((id) => !ALL_ACTION_IDS.includes(id));
     expect(registryWithoutHint.sort()).toEqual(
-      ["message_candidate", "hold_requisition", "resume_requisition"].sort(),
+      [
+        "message_candidate",
+        "hold_requisition",
+        "resume_requisition",
+        "request_documents",
+        "request_offer_approval",
+        "cancel_interview",
+      ].sort(),
     );
   });
 });

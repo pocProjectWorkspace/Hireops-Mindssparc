@@ -28,6 +28,9 @@ import { bulkRejectApplicationsAction } from "../src/lib/iris/actions/bulk-rejec
 import { messageCandidateAction } from "../src/lib/iris/actions/message-candidate";
 import { holdRequisitionAction } from "../src/lib/iris/actions/hold-requisition";
 import { resumeRequisitionAction } from "../src/lib/iris/actions/resume-requisition";
+import { requestDocumentsAction } from "../src/lib/iris/actions/request-documents";
+import { requestOfferApprovalAction } from "../src/lib/iris/actions/request-offer-approval";
+import { cancelInterviewAction } from "../src/lib/iris/actions/cancel-interview";
 
 describe("IRIS-A1 action registry", () => {
   it("registers create_requisition_jd and exposes it by id", () => {
@@ -139,9 +142,10 @@ describe("IRIS-B1 pipeline / onboarding actions", () => {
       expect(IRIS_ACTIONS[action.id]).toBeDefined();
     }
     // The one requisition action is untouched; the whitelist is exactly these
-    // nine (four single + the two IRIS-B2 bulk pipeline actions + the
+    // twelve (four single + the two IRIS-B2 bulk pipeline actions + the
     // Communication message_candidate action + the two requisition hold/resume
-    // lifecycle actions).
+    // lifecycle actions + the three Tier-A contextual actions:
+    // request_documents / request_offer_approval / cancel_interview).
     expect(Object.keys(IRIS_ACTIONS).sort()).toEqual(
       [
         "advance_application",
@@ -153,6 +157,9 @@ describe("IRIS-B1 pipeline / onboarding actions", () => {
         "message_candidate",
         "hold_requisition",
         "resume_requisition",
+        "request_documents",
+        "request_offer_approval",
+        "cancel_interview",
       ].sort(),
     );
   });
@@ -542,5 +549,121 @@ describe("Iris Requisitions — hold_requisition / resume_requisition", () => {
       requisitionId: string;
     };
     expect(resumeParsed.requisitionId).toBe(REQ_UUID);
+  });
+});
+
+describe("Iris Tier-A contextual actions — request_documents / request_offer_approval / cancel_interview", () => {
+  const APP_UUID = "44444444-4444-4444-8444-444444444444";
+  const DOC_UUID = "55555555-5555-4555-8555-555555555555";
+  const OFFER_UUID = "66666666-6666-4666-8666-666666666666";
+  const INTERVIEW_UUID = "77777777-7777-4777-8777-777777777777";
+  // The exact string membership of the app-surface role sets each action mirrors.
+  const HR_OPS_DOC_ROLES = ["admin", "hr_ops"];
+  const COMP_DESK_ROLES = ["admin", "hr_ops"];
+  const INTERVIEW_MANAGE_ROLES = ["admin", "hiring_manager", "recruiter"];
+  const TIER_A = [requestDocumentsAction, requestOfferApprovalAction, cancelInterviewAction];
+
+  it("registers all three (whitelist-only), each single with no resolver", () => {
+    for (const action of TIER_A) {
+      const entry = getIrisAction(action.id);
+      expect(entry, `${action.id} is registered`).toBeDefined();
+      expect(entry!.id).toBe(action.id);
+      expect(entry!.label).toBe(action.label);
+      expect(entry!.group).toBe(action.group);
+      expect(entry!.bulk).toBe(false);
+      // Single (non-filter) actions carry no resolver.
+      expect(entry!.resolve).toBeUndefined();
+      expect(IRIS_ACTIONS[action.id]).toBeDefined();
+    }
+    expect(requestDocumentsAction.group).toBe("Documents");
+    expect(requestOfferApprovalAction.group).toBe("Offers");
+    expect(cancelInterviewAction.group).toBe("Interviews");
+  });
+
+  it("each carries EXACTLY its app-surface role set, mirrored at the erased boundary", () => {
+    expect(requestDocumentsAction.roles.sort()).toEqual([...HR_OPS_DOC_ROLES].sort());
+    expect(requestOfferApprovalAction.roles.sort()).toEqual([...COMP_DESK_ROLES].sort());
+    expect(cancelInterviewAction.roles.sort()).toEqual([...INTERVIEW_MANAGE_ROLES].sort());
+    for (const action of TIER_A) {
+      expect(getIrisAction(action.id)!.roles).toEqual(action.roles);
+      expect(action.roles).toContain("admin");
+    }
+  });
+
+  it("cancel_interview is destructive; request_documents / request_offer_approval are not", () => {
+    expect(cancelInterviewAction.destructive).toBe(true);
+    expect(requestDocumentsAction.destructive).toBe(false);
+    expect(requestOfferApprovalAction.destructive).toBe(false);
+    // The erased registry entries mirror the concrete destructive flags.
+    for (const action of TIER_A) {
+      expect(getIrisAction(action.id)!.destructive).toBe(action.destructive);
+    }
+  });
+
+  it("inputSchemas reject invalid payloads and accept the real minimum", () => {
+    // request_documents — uuid applicationId + 1..20 uuid documentTypeIds.
+    const docs = requestDocumentsAction.inputSchema;
+    expect(docs.safeParse({}).success).toBe(false);
+    expect(docs.safeParse({ applicationId: "nope", documentTypeIds: [DOC_UUID] }).success).toBe(
+      false,
+    );
+    // At least one document type is required.
+    expect(docs.safeParse({ applicationId: APP_UUID, documentTypeIds: [] }).success).toBe(false);
+    expect(
+      docs.safeParse({ applicationId: APP_UUID, documentTypeIds: ["not-a-uuid"] }).success,
+    ).toBe(false);
+    expect(docs.safeParse({ applicationId: APP_UUID, documentTypeIds: [DOC_UUID] }).success).toBe(
+      true,
+    );
+
+    // request_offer_approval — just a uuid offerId.
+    const offer = requestOfferApprovalAction.inputSchema;
+    expect(offer.safeParse({}).success).toBe(false);
+    expect(offer.safeParse({ offerId: "nope" }).success).toBe(false);
+    expect(offer.safeParse({ offerId: OFFER_UUID }).success).toBe(true);
+
+    // cancel_interview — uuid interviewId + a non-empty reason (1..500).
+    const cancel = cancelInterviewAction.inputSchema;
+    expect(cancel.safeParse({}).success).toBe(false);
+    expect(cancel.safeParse({ interviewId: INTERVIEW_UUID }).success).toBe(false);
+    expect(cancel.safeParse({ interviewId: INTERVIEW_UUID, reason: "" }).success).toBe(false);
+    expect(cancel.safeParse({ interviewId: INTERVIEW_UUID, reason: "x".repeat(501) }).success).toBe(
+      false,
+    );
+    expect(
+      cancel.safeParse({ interviewId: INTERVIEW_UUID, reason: "Panel unavailable" }).success,
+    ).toBe(true);
+  });
+
+  it("buildPreview summarises each action, naming the count / reason where relevant", () => {
+    const docs = requestDocumentsAction.buildPreview({
+      applicationId: APP_UUID,
+      documentTypeIds: [DOC_UUID, OFFER_UUID],
+    });
+    expect(docs.summary.length).toBeGreaterThan(0);
+    // The preview names how many document types will be requested.
+    expect(docs.details.join(" ")).toContain("2");
+
+    const offer = requestOfferApprovalAction.buildPreview({ offerId: OFFER_UUID });
+    expect(offer.summary.toLowerCase()).toContain("approval");
+
+    const cancel = cancelInterviewAction.buildPreview({
+      interviewId: INTERVIEW_UUID,
+      reason: "Panel unavailable this week",
+    });
+    expect(cancel.summary.length).toBeGreaterThan(0);
+    // The destructive preview names the reason so the review card shows it.
+    expect(cancel.details.join(" ")).toContain("Panel unavailable this week");
+  });
+
+  it("the erased entries enforce the same input contract irisExecute runs", () => {
+    for (const action of TIER_A) {
+      expect(() => getIrisAction(action.id)!.parse({})).toThrow();
+    }
+    const cancelParsed = getIrisAction("cancel_interview")!.parse({
+      interviewId: INTERVIEW_UUID,
+      reason: "Panel unavailable",
+    }) as { reason: string };
+    expect(cancelParsed.reason).toBe("Panel unavailable");
   });
 });
