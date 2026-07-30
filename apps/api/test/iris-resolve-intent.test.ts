@@ -207,12 +207,17 @@ describe("IRIS-A3 hint map covers the NL-proposable actions", () => {
     for (const id of ALL_ACTION_IDS) {
       expect(registryIds.has(id), `${id} is a registry action`).toBe(true);
     }
-    // Every registry action EXCEPT message_candidate is NL-proposable.
-    // message_candidate is a MENU-ONLY action: it drafts + sends a real candidate
-    // email behind an explicit human Confirm, so it is deliberately excluded from
-    // the natural-language resolver (buildIrisIntentPrompt filters to hinted ids,
-    // so the model never sees it and validateResolvedActionId would null it).
+    // Every registry action EXCEPT the MENU-ONLY ones is NL-proposable. Those
+    // menu-only actions are deliberately excluded from the natural-language
+    // resolver (buildIrisIntentPrompt filters to hinted ids, so the model never
+    // sees them and validateResolvedActionId would null them):
+    //   - message_candidate drafts + sends a real candidate email behind an
+    //     explicit human Confirm;
+    //   - hold_requisition / resume_requisition are reversible lifecycle changes
+    //     driven from the menu's requisition picker, not free text.
     const registryWithoutHint = [...registryIds].filter((id) => !ALL_ACTION_IDS.includes(id));
-    expect(registryWithoutHint).toEqual(["message_candidate"]);
+    expect(registryWithoutHint.sort()).toEqual(
+      ["message_candidate", "hold_requisition", "resume_requisition"].sort(),
+    );
   });
 });

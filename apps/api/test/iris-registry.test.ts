@@ -26,6 +26,8 @@ import { openOnboardingCaseAction } from "../src/lib/iris/actions/open-onboardin
 import { bulkAdvanceApplicationsAction } from "../src/lib/iris/actions/bulk-advance-applications";
 import { bulkRejectApplicationsAction } from "../src/lib/iris/actions/bulk-reject-applications";
 import { messageCandidateAction } from "../src/lib/iris/actions/message-candidate";
+import { holdRequisitionAction } from "../src/lib/iris/actions/hold-requisition";
+import { resumeRequisitionAction } from "../src/lib/iris/actions/resume-requisition";
 
 describe("IRIS-A1 action registry", () => {
   it("registers create_requisition_jd and exposes it by id", () => {
@@ -137,8 +139,9 @@ describe("IRIS-B1 pipeline / onboarding actions", () => {
       expect(IRIS_ACTIONS[action.id]).toBeDefined();
     }
     // The one requisition action is untouched; the whitelist is exactly these
-    // seven (four single + the two IRIS-B2 bulk pipeline actions + the
-    // Communication message_candidate action).
+    // nine (four single + the two IRIS-B2 bulk pipeline actions + the
+    // Communication message_candidate action + the two requisition hold/resume
+    // lifecycle actions).
     expect(Object.keys(IRIS_ACTIONS).sort()).toEqual(
       [
         "advance_application",
@@ -148,6 +151,8 @@ describe("IRIS-B1 pipeline / onboarding actions", () => {
         "bulk_advance_applications",
         "bulk_reject_applications",
         "message_candidate",
+        "hold_requisition",
+        "resume_requisition",
       ].sort(),
     );
   });
@@ -444,5 +449,98 @@ describe("Iris Communication — message_candidate", () => {
     expect(preview.details.join(" ")).toContain("Update on your Backend Engineer application");
     // And a snippet of the body.
     expect(preview.details.join(" ")).toContain("final interview");
+  });
+});
+
+describe("Iris Requisitions — hold_requisition / resume_requisition", () => {
+  const REQ_UUID = "33333333-3333-4333-8333-333333333333";
+  // The exact string membership of REQUISITION_POST_ROLES (the set postRequisition
+  // and setRequisitionHold gate on) — the actions mirror it.
+  const POST_ROLES = ["admin", "hiring_manager", "recruiter"];
+  const HOLD_ACTIONS = [holdRequisitionAction, resumeRequisitionAction];
+
+  it("registers both (whitelist-only): Requisitions group, non-destructive, single, no resolver", () => {
+    for (const action of HOLD_ACTIONS) {
+      const entry = getIrisAction(action.id);
+      expect(entry, `${action.id} is registered`).toBeDefined();
+      expect(entry!.id).toBe(action.id);
+      expect(entry!.label).toBe(action.label);
+      expect(entry!.group).toBe("Requisitions");
+      // Reversible lifecycle changes — NOT flagged destructive (close/cancel,
+      // which are, are deliberately out of scope).
+      expect(entry!.destructive).toBe(false);
+      expect(entry!.bulk).toBe(false);
+      // Single (non-filter) actions carry no resolver.
+      expect(entry!.resolve).toBeUndefined();
+      expect(IRIS_ACTIONS[action.id]).toBeDefined();
+    }
+    expect(getIrisAction("hold_requisition")!.id).toBe("hold_requisition");
+    expect(getIrisAction("resume_requisition")!.id).toBe("resume_requisition");
+  });
+
+  it("each carries EXACTLY the REQUISITION_POST_ROLES membership", () => {
+    expect(holdRequisitionAction.roles.sort()).toEqual([...POST_ROLES].sort());
+    expect(resumeRequisitionAction.roles.sort()).toEqual([...POST_ROLES].sort());
+    // The erased registry entries mirror the concrete roles, and admin is present.
+    for (const action of HOLD_ACTIONS) {
+      expect(getIrisAction(action.id)!.roles).toEqual(action.roles);
+      expect(action.roles).toContain("admin");
+    }
+  });
+
+  it("hold_requisition inputSchema requires a uuid + a non-empty reason; resume needs only the uuid", () => {
+    const hold = holdRequisitionAction.inputSchema;
+    // Empty / bad id.
+    expect(hold.safeParse({}).success).toBe(false);
+    expect(hold.safeParse({ requisitionId: "not-a-uuid", reason: "budget freeze" }).success).toBe(
+      false,
+    );
+    // Missing reason — hold REQUIRES a human-entered reason.
+    expect(hold.safeParse({ requisitionId: REQ_UUID }).success).toBe(false);
+    // Empty reason is rejected (min 1); over 500 is rejected too.
+    expect(hold.safeParse({ requisitionId: REQ_UUID, reason: "" }).success).toBe(false);
+    expect(hold.safeParse({ requisitionId: REQ_UUID, reason: "x".repeat(501) }).success).toBe(
+      false,
+    );
+    // A valid hold payload parses.
+    expect(
+      hold.safeParse({ requisitionId: REQ_UUID, reason: "Budget freeze this quarter" }).success,
+    ).toBe(true);
+
+    const resume = resumeRequisitionAction.inputSchema;
+    expect(resume.safeParse({}).success).toBe(false);
+    expect(resume.safeParse({ requisitionId: "nope" }).success).toBe(false);
+    // resume takes NO reason — a stray reason is simply ignored by the schema.
+    expect(resume.safeParse({ requisitionId: REQ_UUID }).success).toBe(true);
+  });
+
+  it("buildPreview names the reason on hold and describes the resume", () => {
+    const hold = holdRequisitionAction.buildPreview({
+      requisitionId: REQ_UUID,
+      reason: "Awaiting revised headcount sign-off",
+    });
+    expect(hold.summary.length).toBeGreaterThan(0);
+    expect(hold.details.join(" ")).toContain("Awaiting revised headcount sign-off");
+
+    const resume = resumeRequisitionAction.buildPreview({ requisitionId: REQ_UUID });
+    expect(resume.summary.length).toBeGreaterThan(0);
+    expect(resume.summary.toLowerCase()).toContain("resume");
+  });
+
+  it("the erased entries enforce the same input contract irisExecute runs", () => {
+    const holdEntry = getIrisAction("hold_requisition")!;
+    // A hold with no reason is rejected at the erased boundary too.
+    expect(() => holdEntry.parse({ requisitionId: REQ_UUID })).toThrow();
+    const holdParsed = holdEntry.parse({ requisitionId: REQ_UUID, reason: "Budget freeze" }) as {
+      reason: string;
+    };
+    expect(holdParsed.reason).toBe("Budget freeze");
+
+    const resumeEntry = getIrisAction("resume_requisition")!;
+    expect(() => resumeEntry.parse({})).toThrow();
+    const resumeParsed = resumeEntry.parse({ requisitionId: REQ_UUID }) as {
+      requisitionId: string;
+    };
+    expect(resumeParsed.requisitionId).toBe(REQ_UUID);
   });
 });

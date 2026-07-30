@@ -56,6 +56,10 @@ const APPLICATION_ACTION_IDS = new Set([
  * filter form (not the single-application picker) and a confirm-N review. */
 const BULK_ACTION_IDS = new Set(["bulk_advance_applications", "bulk_reject_applications"]);
 
+/** The requisition HOLD / RESUME lifecycle actions — they share a single
+ * requisition picker (hold also collects a required reason). */
+const REQUISITION_HOLD_ACTION_IDS = new Set(["hold_requisition", "resume_requisition"]);
+
 /** Every pipeline stage — the from/target selects offer the full set (a bulk
  * filter can act on any current stage). */
 const ALL_STAGES = applicationStageSchema.options as readonly ApplicationStage[];
@@ -141,6 +145,11 @@ export function IrisDrawer({ open, onClose, context }: IrisDrawerProps) {
   const [messageSubject, setMessageSubject] = useState("");
   const [messageBody, setMessageBody] = useState("");
 
+  // Requisition hold / resume fields — a single requisition picker; hold also
+  // collects a required, human-entered reason.
+  const [holdRequisitionId, setHoldRequisitionId] = useState("");
+  const [holdReason, setHoldReason] = useState("");
+
   // Reset to a clean menu each time the drawer opens; lock body scroll + wire ESC.
   useEffect(() => {
     if (!open) return;
@@ -163,6 +172,8 @@ export function IrisDrawer({ open, onClose, context }: IrisDrawerProps) {
     setMessageIntent("");
     setMessageSubject("");
     setMessageBody("");
+    setHoldRequisitionId("");
+    setHoldReason("");
     setNlText("");
     setNlResult(null);
     setNlCandidateSeed("");
@@ -192,12 +203,19 @@ export function IrisDrawer({ open, onClose, context }: IrisDrawerProps) {
     [businessUnitsQuery.data],
   );
 
-  // IRIS-B2 — the requisition picker for the bulk actions. listMyRequisitionsV2
-  // is the same read gate (hiring_manager / recruiter / admin) and carries the
-  // requisition id + title the filter form needs.
+  // The requisition picker read, shared by the IRIS-B2 bulk actions AND the
+  // hold / resume lifecycle actions. listMyRequisitionsV2 is the same read gate
+  // (hiring_manager / recruiter / admin) and carries the requisition id + title +
+  // current status these forms need.
   const requisitionsQuery = trpc.listMyRequisitionsV2.useQuery(
     { limit: 200 },
-    { enabled: open && !!selectedActionId && BULK_ACTION_IDS.has(selectedActionId) },
+    {
+      enabled:
+        open &&
+        !!selectedActionId &&
+        (BULK_ACTION_IDS.has(selectedActionId) ||
+          REQUISITION_HOLD_ACTION_IDS.has(selectedActionId)),
+    },
   );
   const requisitions = useMemo(() => requisitionsQuery.data?.rows ?? [], [requisitionsQuery.data]);
 
@@ -277,6 +295,9 @@ export function IrisDrawer({ open, onClose, context }: IrisDrawerProps) {
   const needsApplication = selectedActionId ? APPLICATION_ACTION_IDS.has(selectedActionId) : false;
   const isBulk = selectedActionId ? BULK_ACTION_IDS.has(selectedActionId) : false;
   const isMessage = selectedActionId === "message_candidate";
+  const isRequisitionHold = selectedActionId
+    ? REQUISITION_HOLD_ACTION_IDS.has(selectedActionId)
+    : false;
   // Pre-select the picker from page context when the route names an application.
   const contextApplicationId = context.entityType === "application" ? context.entityId : undefined;
 
@@ -294,6 +315,8 @@ export function IrisDrawer({ open, onClose, context }: IrisDrawerProps) {
     setMessageIntent("");
     setMessageSubject("");
     setMessageBody("");
+    setHoldRequisitionId("");
+    setHoldReason("");
     // Opening a form clears any prior NL picker seeds. A natural-language open
     // re-sets them AFTER this call, so the resolved seeds still apply.
     setNlCandidateSeed("");
@@ -397,6 +420,10 @@ export function IrisDrawer({ open, onClose, context }: IrisDrawerProps) {
         subject: messageSubject.trim(),
         body: messageBody.trim(),
       };
+    } else if (selectedActionId === "hold_requisition" && holdRequisitionId && holdReason.trim()) {
+      params = { requisitionId: holdRequisitionId, reason: holdReason.trim() };
+    } else if (selectedActionId === "resume_requisition" && holdRequisitionId) {
+      params = { requisitionId: holdRequisitionId };
     }
     if (!params) return;
     setSubmittedParams(params);
@@ -417,6 +444,9 @@ export function IrisDrawer({ open, onClose, context }: IrisDrawerProps) {
     canSubmitForm = !!bulkRequisitionId && !!bulkFromStage;
   else if (selectedActionId === "message_candidate")
     canSubmitForm = !!picked && messageSubject.trim().length > 0 && messageBody.trim().length > 0;
+  else if (selectedActionId === "hold_requisition")
+    canSubmitForm = !!holdRequisitionId && holdReason.trim().length > 0;
+  else if (selectedActionId === "resume_requisition") canSubmitForm = !!holdRequisitionId;
 
   const stageOptions = picked ? forwardStagesAfter(picked.stage) : [];
 
@@ -766,6 +796,57 @@ export function IrisDrawer({ open, onClose, context }: IrisDrawerProps) {
                       ✨ Drafted by Iris, edit it before sending.
                     </p>
                   ) : null}
+                </div>
+              ) : isRequisitionHold ? (
+                <div className="space-y-4">
+                  <Select
+                    label="Requisition"
+                    required
+                    placeholder={
+                      requisitionsQuery.isLoading
+                        ? "Loading requisitions…"
+                        : selectedActionId === "resume_requisition"
+                          ? "Select a requisition on hold"
+                          : "Select a requisition"
+                    }
+                    value={holdRequisitionId}
+                    onValueChange={setHoldRequisitionId}
+                    disabled={requisitionsQuery.isLoading}
+                    options={requisitions
+                      .filter((r) =>
+                        selectedActionId === "resume_requisition" ? r.status === "on_hold" : true,
+                      )
+                      .map((r) => ({
+                        value: r.id,
+                        label: `${r.title ?? "Untitled requisition"} — ${humanizeSentence(r.status)}`,
+                      }))}
+                    hint={
+                      selectedActionId === "resume_requisition"
+                        ? "Only requisitions currently on hold can be resumed."
+                        : "Only an approved or posted requisition can be put on hold."
+                    }
+                  />
+                  {selectedActionId === "hold_requisition" ? (
+                    <label className="block text-sm font-medium text-neutral-800">
+                      Reason for hold
+                      <span aria-hidden className="text-status-error-600">
+                        {" "}
+                        *
+                      </span>
+                      <textarea
+                        value={holdReason}
+                        rows={3}
+                        onChange={(e) => setHoldReason(e.target.value)}
+                        maxLength={500}
+                        placeholder="Why is this requisition being put on hold? Recorded on the audit trail."
+                        className="mt-1 w-full resize-y rounded-md border border-neutral-300 bg-white px-3 py-2 text-sm text-neutral-900 transition-colors focus:border-brand-600 focus:outline-none focus:ring-1 focus:ring-brand-600"
+                      />
+                    </label>
+                  ) : (
+                    <p className="text-sm text-neutral-500">
+                      Resuming clears the hold and returns the requisition to its active status.
+                    </p>
+                  )}
                 </div>
               ) : isBulk ? (
                 <div className="space-y-4">

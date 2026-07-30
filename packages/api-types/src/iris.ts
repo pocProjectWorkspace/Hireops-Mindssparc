@@ -305,6 +305,60 @@ export const irisDraftCandidateMessageOutputSchema = z.object({
 });
 export type IrisDraftCandidateMessageOutput = z.infer<typeof irisDraftCandidateMessageOutputSchema>;
 
+// ─────────────── setRequisitionHold (Iris hold / resume) ───────────────
+
+/**
+ * setRequisitionHold — the REAL, gated requisition HOLD / RESUME state change.
+ * A general human-callable procedure (introduced for the Iris `hold_requisition`
+ * / `resume_requisition` actions, but a plain recruiter surface too): it flips a
+ * requisition's lifecycle status and stores/clears the human-entered hold reason,
+ * nothing else (no effect on applications / offers). It is the effectful CONFIRM
+ * step behind the two Iris actions; the transition rules are enforced SERVER-side:
+ *
+ *   - hold   — allowed ONLY from `approved` or `posted`; requires a `reason`;
+ *              sets status `on_hold` + stores `reason_for_hold`.
+ *   - resume — allowed ONLY from `on_hold`; sets status back to `posted` when the
+ *              requisition has a public slug (it was live) else `approved`; clears
+ *              `reason_for_hold`.
+ *
+ * Close / cancel are deliberately OUT of scope here (destructive, deferred).
+ */
+export const setRequisitionHoldInputSchema = z.object({
+  requisitionId: z.string().uuid(),
+  action: z.enum(["hold", "resume"]),
+  /** Required (1..500) for `hold`; ignored/omitted for `resume`. */
+  reason: z.string().min(1).max(500).optional(),
+});
+export type SetRequisitionHoldInput = z.infer<typeof setRequisitionHoldInputSchema>;
+
+export const setRequisitionHoldOutputSchema = z.object({
+  ok: z.literal(true),
+  requisitionId: z.string().uuid(),
+  /** The requisition's status AFTER the transition. */
+  status: z.enum(["on_hold", "posted", "approved"]),
+});
+export type SetRequisitionHoldOutput = z.infer<typeof setRequisitionHoldOutputSchema>;
+
+/**
+ * The Iris `hold_requisition` action's OWN input contract — a subset of
+ * setRequisitionHoldInputSchema (the action supplies `action: "hold"` itself).
+ * `reason` is REQUIRED here (the drawer collects it), matching the server rule.
+ */
+export const holdRequisitionActionInputSchema = z.object({
+  requisitionId: z.string().uuid(),
+  reason: z.string().min(1).max(500),
+});
+export type HoldRequisitionActionInput = z.infer<typeof holdRequisitionActionInputSchema>;
+
+/**
+ * The Iris `resume_requisition` action's OWN input contract — the requisition to
+ * resume (the action supplies `action: "resume"` itself; no reason on resume).
+ */
+export const resumeRequisitionActionInputSchema = z.object({
+  requisitionId: z.string().uuid(),
+});
+export type ResumeRequisitionActionInput = z.infer<typeof resumeRequisitionActionInputSchema>;
+
 export const irisResolveIntentOutputSchema = z.object({
   /**
    * The PROPOSED action id — guaranteed to be one of the caller's role-eligible

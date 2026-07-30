@@ -33,6 +33,8 @@ import type {
   ListCandidatesByRequisitionOutput,
   MessageCandidateInput,
   MessageCandidateOutput,
+  SetRequisitionHoldInput,
+  SetRequisitionHoldOutput,
 } from "@hireops/api-types";
 import type { HonoTRPCContext } from "../../trpc/trpc-core";
 import { createRequisitionJdAction } from "./actions/create-requisition-jd";
@@ -42,6 +44,8 @@ import { openOnboardingCaseAction } from "./actions/open-onboarding-case";
 import { bulkAdvanceApplicationsAction } from "./actions/bulk-advance-applications";
 import { bulkRejectApplicationsAction } from "./actions/bulk-reject-applications";
 import { messageCandidateAction } from "./actions/message-candidate";
+import { holdRequisitionAction } from "./actions/hold-requisition";
+import { resumeRequisitionAction } from "./actions/resume-requisition";
 
 /**
  * The subset of the in-process tRPC caller (appRouter.createCaller(ctx)) that
@@ -68,6 +72,7 @@ export interface IrisCaller {
     input: ListCandidatesByRequisitionInput,
   ): Promise<ListCandidatesByRequisitionOutput>;
   messageCandidate(input: MessageCandidateInput): Promise<MessageCandidateOutput>;
+  setRequisitionHold(input: SetRequisitionHoldInput): Promise<SetRequisitionHoldOutput>;
 }
 
 /** The (entityType, entityId, human summary) a SINGLE-entity action reports after
@@ -212,6 +217,8 @@ export const IRIS_ACTIONS: Record<string, AnyIrisAction> = Object.fromEntries(
     eraseIrisAction(bulkAdvanceApplicationsAction),
     eraseIrisAction(bulkRejectApplicationsAction),
     eraseIrisAction(messageCandidateAction),
+    eraseIrisAction(holdRequisitionAction),
+    eraseIrisAction(resumeRequisitionAction),
   ].map((a) => [a.id, a]),
 );
 

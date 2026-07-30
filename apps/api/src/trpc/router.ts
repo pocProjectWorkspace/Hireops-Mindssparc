@@ -775,6 +775,8 @@ import {
   messageCandidateOutputSchema,
   irisDraftCandidateMessageInputSchema,
   irisDraftCandidateMessageOutputSchema,
+  setRequisitionHoldInputSchema,
+  setRequisitionHoldOutputSchema,
 } from "@hireops/api-types";
 import { createClient } from "@supabase/supabase-js";
 import {
@@ -5578,6 +5580,116 @@ export const appRouter = router({
         });
 
         return { requisitionId: input.requisitionId, status: "posted", publicSlug };
+      });
+    }),
+
+  /**
+   * setRequisitionHold — put an approved / posted requisition ON HOLD, or RESUME
+   * one that is on hold (a REVERSIBLE lifecycle change). A general, human-callable
+   * gated procedure introduced for the Iris hold_requisition / resume_requisition
+   * actions but usable by any recruiter surface. Same gate + audit shape as
+   * postRequisition (REQUISITION_POST_ROLES, withAudit). The transitions are the
+   * ONLY two supported here — close / cancel are destructive and out of scope:
+   *
+   *   hold   — allowed ONLY from `approved` or `posted`; requires `reason`; sets
+   *            status `on_hold` and stores `reason_for_hold`.
+   *   resume — allowed ONLY from `on_hold`; sets status back to `posted` when the
+   *            requisition has a public slug (it was live) else `approved`; clears
+   *            `reason_for_hold`.
+   *
+   * No effect on applications / offers — it is a status flip (+ hold reason) only.
+   */
+  setRequisitionHold: protectedProcedure
+    .input(setRequisitionHoldInputSchema)
+    .output(setRequisitionHoldOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      return withAudit("set_requisition_hold", ctx, input, async () => {
+        requireAnyRole(
+          ctx,
+          REQUISITION_POST_ROLES,
+          "Holding or resuming a requisition requires the recruiter, hiring_manager, or admin role",
+        );
+        const db = requireDb(ctx);
+        if (!ctx.tenantId) {
+          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
+        }
+        const tenantId = ctx.tenantId;
+
+        const [row] = await db
+          .select({ status: requisitions.status, postedAt: requisitions.postedAt })
+          .from(requisitions)
+          .where(and(eq(requisitions.tenantId, tenantId), eq(requisitions.id, input.requisitionId)))
+          .limit(1);
+        if (!row) {
+          throw new TRPCError({ code: "NOT_FOUND", message: "Requisition not found" });
+        }
+
+        if (input.action === "hold") {
+          const reason = input.reason?.trim();
+          if (!reason) {
+            throw new TRPCError({
+              code: "BAD_REQUEST",
+              message: "A reason is required to put a requisition on hold.",
+            });
+          }
+          if (row.status !== "approved" && row.status !== "posted") {
+            throw new TRPCError({
+              code: "BAD_REQUEST",
+              message: "Only an approved or posted requisition can be put on hold.",
+            });
+          }
+          // Guard the transition against a concurrent status change: the UPDATE
+          // only fires while the row is still approved/posted (rows-affected guard).
+          const updated = await db
+            .update(requisitions)
+            .set({ status: "on_hold", reasonForHold: reason, updatedAt: new Date() })
+            .where(
+              and(
+                eq(requisitions.tenantId, tenantId),
+                eq(requisitions.id, input.requisitionId),
+                inArray(requisitions.status, ["approved", "posted"]),
+              ),
+            )
+            .returning({ id: requisitions.id });
+          if (!updated[0]) {
+            throw new TRPCError({
+              code: "CONFLICT",
+              message: "Requisition is no longer approved or posted.",
+            });
+          }
+          return {
+            ok: true as const,
+            requisitionId: input.requisitionId,
+            status: "on_hold" as const,
+          };
+        }
+
+        // resume
+        if (row.status !== "on_hold") {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: "Only a requisition on hold can be resumed.",
+          });
+        }
+        // It was actually posted (posted_at set) → back to `posted`; a req held
+        // from `approved` (never posted) resumes to `approved`. public_slug is
+        // NOT NULL for every req, so posted_at is the real "was it live" signal.
+        const nextStatus = row.postedAt != null ? ("posted" as const) : ("approved" as const);
+        const updated = await db
+          .update(requisitions)
+          .set({ status: nextStatus, reasonForHold: null, updatedAt: new Date() })
+          .where(
+            and(
+              eq(requisitions.tenantId, tenantId),
+              eq(requisitions.id, input.requisitionId),
+              eq(requisitions.status, "on_hold"),
+            ),
+          )
+          .returning({ id: requisitions.id });
+        if (!updated[0]) {
+          throw new TRPCError({ code: "CONFLICT", message: "Requisition is no longer on hold." });
+        }
+        return { ok: true as const, requisitionId: input.requisitionId, status: nextStatus };
       });
     }),
 
