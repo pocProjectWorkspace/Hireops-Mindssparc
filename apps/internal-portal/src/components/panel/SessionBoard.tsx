@@ -6,6 +6,7 @@ import type { BadgeTone } from "@/components/ui";
 import { trpc } from "@/lib/trpc-client";
 import { humanizeSentence } from "@/lib/labels";
 import type { PanelInterviewRow } from "@hireops/api-types";
+import { PageContainer } from "@/components/nav/PageContainer";
 
 /**
  * PANEL-02 — the session board ("All interviews"): the panellist's honest
@@ -60,14 +61,14 @@ export function SessionBoard() {
 
   if (list.isLoading) {
     return (
-      <div className="mx-auto w-full max-w-5xl px-8 py-6">
+      <PageContainer>
         <p className="text-sm text-neutral-500">Loading…</p>
-      </div>
+      </PageContainer>
     );
   }
 
   return (
-    <div className="mx-auto w-full max-w-5xl px-8 py-6">
+    <PageContainer>
       <div className="mb-5 flex flex-wrap items-center justify-between gap-3">
         <div className="inline-flex rounded-lg border border-neutral-200 bg-white p-0.5">
           {FILTERS.map((f) => (
@@ -111,7 +112,7 @@ export function SessionBoard() {
           ))}
         </div>
       )}
-    </div>
+    </PageContainer>
   );
 }
 

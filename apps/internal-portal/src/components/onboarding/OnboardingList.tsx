@@ -10,6 +10,7 @@ import {
 import { trpc } from "@/lib/trpc-client";
 import { Badge, DataBar, EmptyState } from "@/components/ui";
 import { CASE_STATUS_META, formatDate, formatGeography } from "./onboarding-format";
+import { PageContainer } from "@/components/nav/PageContainer";
 
 /**
  * The onboarding case list — one row per accepted hire, filterable by case
@@ -48,7 +49,7 @@ export function OnboardingList({ initial }: { initial: ListOnboardingCasesOutput
   const hasMore = query.data?.nextCursor != null;
 
   return (
-    <div className="mx-auto w-full max-w-5xl px-8 py-6">
+    <PageContainer>
       {/* Filter bar */}
       <div className="mb-4 flex flex-wrap items-center gap-2">
         <span className="text-xs font-medium uppercase tracking-wider text-neutral-500">
@@ -117,7 +118,7 @@ export function OnboardingList({ initial }: { initial: ListOnboardingCasesOutput
           Showing the first {items.length}. Filter by status to narrow the list.
         </p>
       ) : null}
-    </div>
+    </PageContainer>
   );
 }
 

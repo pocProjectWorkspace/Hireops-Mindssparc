@@ -21,6 +21,7 @@ import {
   Tr,
   Td,
 } from "@/components/ui";
+import { PageContainer } from "@/components/nav/PageContainer";
 import { trpc, handleTRPCError } from "@/lib/trpc-client";
 
 /**
@@ -65,7 +66,7 @@ export function CostsClient({
   const hasUsage = totals.calls > 0;
 
   return (
-    <div className="mx-auto w-full max-w-5xl px-6 py-8">
+    <PageContainer>
       <p className="mb-6 text-sm text-neutral-600">
         Every Anthropic call logged with tokens and cost, per feature, per model. All time. Amounts
         in USD, computed from the per-call micro-cost ledger.
@@ -181,7 +182,7 @@ export function CostsClient({
           </Section>
         </>
       )}
-    </div>
+    </PageContainer>
   );
 }
 

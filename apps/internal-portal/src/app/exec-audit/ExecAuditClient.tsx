@@ -4,6 +4,7 @@ import { useMemo, useState } from "react";
 import type { GetExecutiveAuditOutput, RiskSeverity } from "@hireops/api-types";
 import { StatTile, Card, Badge, TableShell, Thead, Th, Tbody, Tr, Td } from "@/components/ui";
 import type { BadgeTone, StatTileTone } from "@/components/ui";
+import { PageContainer } from "@/components/nav/PageContainer";
 
 /**
  * HRHEAD-03 — Executive Audit dashboard (client). Compliance score composite,
@@ -36,7 +37,7 @@ export function ExecAuditClient({ audit }: { audit: GetExecutiveAuditOutput }) {
         : "error";
 
   return (
-    <div className="mx-auto w-full max-w-5xl px-6 py-8">
+    <PageContainer>
       {/* KPI row */}
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
         <StatTile
@@ -252,6 +253,6 @@ export function ExecAuditClient({ audit }: { audit: GetExecutiveAuditOutput }) {
           )}
         </Card>
       </section>
-    </div>
+    </PageContainer>
   );
 }

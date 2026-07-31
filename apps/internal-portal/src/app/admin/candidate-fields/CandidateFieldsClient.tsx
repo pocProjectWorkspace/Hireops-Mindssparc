@@ -10,6 +10,7 @@ import type {
 import { Select, Switch } from "@hireops/ui";
 import { Card, TableShell, Thead, Th, Tbody, Tr, Td } from "@/components/ui";
 import { PageHeader } from "@/components/patterns";
+import { PageContainer } from "@/components/nav/PageContainer";
 import { humanizeSentence } from "@/lib/labels";
 import { trpc, handleTRPCError } from "@/lib/trpc-client";
 
@@ -103,7 +104,7 @@ export function CandidateFieldsClient({ initial }: { initial: GetCandidateFieldP
   }
 
   return (
-    <div className="mx-auto w-full max-w-5xl px-6 py-8">
+    <PageContainer>
       <PageHeader
         title="Candidate fields"
         subtitle="Choose which of the seven tracked candidate-data fields this tenant requires, and what a missing required field blocks. Drives the recruiter's Missing Info tracker and the advancement gate."
@@ -218,6 +219,6 @@ export function CandidateFieldsClient({ initial }: { initial: GetCandidateFieldP
           </Tbody>
         </TableShell>
       </Card>
-    </div>
+    </PageContainer>
   );
 }

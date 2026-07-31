@@ -20,6 +20,7 @@ import {
   cn,
 } from "@/components/ui";
 import { MatchTierChip, RiskCell, StageBadge, UrgencyChip, sourceLabel } from "./recruiter-chips";
+import { PageContainer } from "@/components/nav/PageContainer";
 
 type Output = ListShortlistOutput;
 type RawRow = Output["rows"][number];
@@ -158,7 +159,7 @@ export function ShortlistView({
   }
 
   return (
-    <div className="mx-auto w-full max-w-6xl px-8 py-6">
+    <PageContainer>
       <div className="mb-5 flex flex-wrap items-center justify-between gap-3">
         <h2 className="flex items-center gap-2 text-lg font-semibold text-neutral-900">
           AI Shortlist
@@ -268,6 +269,6 @@ export function ShortlistView({
           </p>
         </>
       )}
-    </div>
+    </PageContainer>
   );
 }

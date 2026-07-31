@@ -6,6 +6,7 @@ import { cn } from "@/components/ui/cn";
 import type { ListMyRequisitionsV2Output, RequisitionSkillChip } from "@hireops/api-types";
 import { ReqStatusChip, DifficultyChip } from "./shared";
 import { AiAssistedPill, useProvenanceMap } from "@/components/iris/AiAssistedPill";
+import { PageContainer } from "@/components/nav/PageContainer";
 
 /**
  * RequisitionsCardGrid (RECR-01) — the recruiter card-grid view of the
@@ -129,7 +130,7 @@ export function RequisitionsCardGrid({ initial }: { initial: ListMyRequisitionsV
   }, [initial.rows, search, status]);
 
   return (
-    <div className="mx-auto w-full max-w-6xl px-8 py-6">
+    <PageContainer>
       <div className="mb-5 flex flex-wrap items-center gap-3">
         <input
           type="search"
@@ -219,6 +220,6 @@ export function RequisitionsCardGrid({ initial }: { initial: ListMyRequisitionsV
           ))}
         </div>
       )}
-    </div>
+    </PageContainer>
   );
 }

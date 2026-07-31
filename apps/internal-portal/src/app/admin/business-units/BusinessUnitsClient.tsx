@@ -5,6 +5,7 @@ import type { BusinessUnitRow, ListBusinessUnitsOutput } from "@hireops/api-type
 import { Input, Select, Button } from "@hireops/ui";
 import { Card } from "@/components/ui";
 import { PageHeader } from "@/components/patterns";
+import { PageContainer } from "@/components/nav/PageContainer";
 import { trpc, handleTRPCError } from "@/lib/trpc-client";
 
 /**
@@ -149,7 +150,7 @@ export function BusinessUnitsClient({ initial }: { initial: ListBusinessUnitsOut
   }
 
   return (
-    <div className="mx-auto w-full max-w-5xl px-6 py-8">
+    <PageContainer>
       <PageHeader
         title="Business units"
         subtitle="Manage this tenant's org hierarchy. The requisition wizard's picker reads this list, so what you define here drives requisition creation."
@@ -342,6 +343,6 @@ export function BusinessUnitsClient({ initial }: { initial: ListBusinessUnitsOut
           </ul>
         )}
       </Card>
-    </div>
+    </PageContainer>
   );
 }

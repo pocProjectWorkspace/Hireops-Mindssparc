@@ -3,6 +3,7 @@
 import { trpc } from "@/lib/trpc-client";
 import { Card, StatTile, TableShell, Thead, Th, Tbody, Tr, Td, EmptyState } from "@/components/ui";
 import { PageHeader } from "@/components/patterns";
+import { PageContainer } from "@/components/nav/PageContainer";
 import type { GetApprovalTrackerOutput } from "@hireops/api-types";
 import { WaitingChip, formatReqDate } from "./shared";
 import { RevisionSuggestionsCard } from "./RevisionSuggestionsCard";
@@ -55,7 +56,7 @@ export function ApprovalTracker({
     .map((h) => h.requisitionId);
 
   return (
-    <div className="mx-auto flex max-w-6xl flex-col gap-6 px-8 py-6">
+    <PageContainer className="flex flex-col gap-6">
       <PageHeader
         title="Approval tracker"
         subtitle={`Where ${displayName === "there" ? "your" : `${displayName}'s`} requisitions stand in the approval spine.`}
@@ -179,6 +180,6 @@ export function ApprovalTracker({
           </div>
         </section>
       ) : null}
-    </div>
+    </PageContainer>
   );
 }

@@ -10,6 +10,7 @@ import type {
 import { Input, Select, Switch, Button } from "@hireops/ui";
 import { Card, TableShell, Thead, Th, Tbody, Tr, Td } from "@/components/ui";
 import { PageHeader } from "@/components/patterns";
+import { PageContainer } from "@/components/nav/PageContainer";
 import { trpc, handleTRPCError } from "@/lib/trpc-client";
 
 /**
@@ -166,7 +167,7 @@ export function SourcesClient({ initial }: { initial: ListTenantSourcesOutput })
   const formOpen = isEditing || form.label !== "" || query.data?.rows.length === 0;
 
   return (
-    <div className="mx-auto w-full max-w-5xl px-6 py-8">
+    <PageContainer>
       <PageHeader
         title="Sourcing channels"
         subtitle="Declare which channels feed this tenant's pipeline, what to call them, and whether they're on. Labels flow through to the recruiter source views."
@@ -370,6 +371,6 @@ export function SourcesClient({ initial }: { initial: ListTenantSourcesOutput })
           </div>
         </Card>
       ) : null}
-    </div>
+    </PageContainer>
   );
 }

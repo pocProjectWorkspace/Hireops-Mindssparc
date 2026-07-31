@@ -2,6 +2,7 @@
 
 import { useMemo, useState } from "react";
 import type { ReactNode } from "react";
+import { PageContainer } from "@/components/nav/PageContainer";
 import {
   type ListAuditEventsOutput,
   type AuditSeverity,
@@ -178,7 +179,7 @@ export function AuditClient({ initial }: { initial: ListAuditEventsOutput }) {
   }
 
   return (
-    <div className="mx-auto w-full max-w-6xl px-6 py-8">
+    <PageContainer>
       <div className="mb-6 flex flex-wrap items-start justify-between gap-4">
         <p className="max-w-2xl text-sm text-neutral-600">
           Every tenant-scoped data change, proposed, approved, sent — with the before/after diff.
@@ -320,7 +321,7 @@ export function AuditClient({ initial }: { initial: ListAuditEventsOutput }) {
           </Button>
         </div>
       ) : null}
-    </div>
+    </PageContainer>
   );
 }
 

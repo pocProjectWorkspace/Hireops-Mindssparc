@@ -5,6 +5,7 @@ import type { ListCompDeskOutput, CompDeskRow } from "@hireops/api-types";
 import { trpc, handleTRPCError } from "@/lib/trpc-client";
 import { Button, EmptyState, TableShell, Thead, Th, Tbody, Tr, Td } from "@/components/ui";
 import { HeroStatCard, PageHeader } from "@/components/patterns";
+import { PageContainer } from "@/components/nav/PageContainer";
 import { StatTile } from "@/components/ui";
 import { VerdictChip, OfferStatusChip, ApprovalStatusChip } from "./chips";
 import { paiseToLpa } from "./format";
@@ -60,7 +61,7 @@ export function CompDeskView({ initial }: { initial: ListCompDeskOutput }) {
   }
 
   return (
-    <div className="mx-auto w-full max-w-6xl px-8 py-6">
+    <PageContainer>
       <PageHeader
         title="Comp & offer desk"
         subtitle={
@@ -155,7 +156,7 @@ export function CompDeskView({ initial }: { initial: ListCompDeskOutput }) {
           onChanged={() => void query.refetch()}
         />
       ) : null}
-    </div>
+    </PageContainer>
   );
 }
 

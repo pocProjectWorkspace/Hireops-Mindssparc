@@ -3,6 +3,7 @@ import { createServerTRPCCaller } from "@/lib/trpc-server";
 import { AppShell } from "@/components/nav/AppShell";
 import { RoleNotice } from "@/components/nav/RoleNotice";
 import { PageHeader } from "@/components/patterns";
+import { PageContainer } from "@/components/nav/PageContainer";
 import { RequisitionApprovalsTable } from "@/components/requisitions/RequisitionApprovalsTable";
 
 export const dynamic = "force-dynamic"; // Auth-gated + reads live approval state.
@@ -56,13 +57,13 @@ export default async function RequisitionApprovalsPage() {
       active="requisition-approvals"
       user={sessionUserChip(session)}
     >
-      <div className="mx-auto w-full max-w-6xl space-y-6 px-8 py-6">
+      <PageContainer className="space-y-6">
         <PageHeader
           title="Requisition approvals"
           subtitle="Review submitted requisitions and decide: approve, send back, or reject. Open a row for the full requisition and decision panel."
         />
         <RequisitionApprovalsTable rows={rows} />
-      </div>
+      </PageContainer>
     </AppShell>
   );
 }

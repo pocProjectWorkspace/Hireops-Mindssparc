@@ -4,6 +4,7 @@ import dynamic from "next/dynamic";
 import { useState } from "react";
 import type { GetRequisitionInsightsOutput } from "@hireops/api-types";
 import { StatTile } from "@/components/ui";
+import { PageContainer } from "@/components/nav/PageContainer";
 import { trpc } from "@/lib/trpc-client";
 
 /**
@@ -45,7 +46,7 @@ export function InsightsClient({ initial }: { initial: GetRequisitionInsightsOut
       : null;
 
   return (
-    <div className="mx-auto w-full max-w-6xl px-6 py-8">
+    <PageContainer>
       <div className="mb-6 flex flex-wrap items-center justify-between gap-3">
         <p className="text-sm text-neutral-600">
           Analytics across your requisitions. Pick one for its funnel, skill gaps, salary band and
@@ -89,7 +90,7 @@ export function InsightsClient({ initial }: { initial: GetRequisitionInsightsOut
       </section>
 
       <InsightsCharts data={data} />
-    </div>
+    </PageContainer>
   );
 }
 

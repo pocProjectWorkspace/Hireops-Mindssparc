@@ -9,6 +9,7 @@ import type {
 import { Input, Button } from "@hireops/ui";
 import { Card } from "@/components/ui";
 import { PageHeader } from "@/components/patterns";
+import { PageContainer } from "@/components/nav/PageContainer";
 import { trpc, handleTRPCError } from "@/lib/trpc-client";
 
 /**
@@ -135,7 +136,7 @@ export function PanelPoolsClient({
   }
 
   return (
-    <div className="mx-auto w-full max-w-5xl px-6 py-8">
+    <PageContainer>
       <PageHeader
         title="Panel pools"
         subtitle="Manage this tenant's interview-panel pools. The plan-setup pool picker reads this list, picking a pool on a round copies its members into the round's default panel, which INT-02 seeds the real panel from."
@@ -355,6 +356,6 @@ export function PanelPoolsClient({
           </ul>
         )}
       </Card>
-    </div>
+    </PageContainer>
   );
 }

@@ -11,6 +11,7 @@ import type {
 import { Button, Input, Select } from "@hireops/ui";
 import { Card } from "@/components/ui";
 import { PageHeader } from "@/components/patterns";
+import { PageContainer } from "@/components/nav/PageContainer";
 import { trpc, handleTRPCError } from "@/lib/trpc-client";
 
 /**
@@ -134,7 +135,7 @@ export function InterviewTemplatesClient({
   const roundsBusy = upsertRounds.isPending || clearRounds.isPending;
 
   return (
-    <div className="mx-auto w-full max-w-5xl px-6 py-8">
+    <PageContainer>
       <PageHeader
         title="Interview templates"
         subtitle="Author the org's default interview loop (seeds a new requisition's plan) and any custom scorecard rubrics beyond the four built-ins."
@@ -280,7 +281,7 @@ export function InterviewTemplatesClient({
         }}
         setNotice={setNotice}
       />
-    </div>
+    </PageContainer>
   );
 }
 

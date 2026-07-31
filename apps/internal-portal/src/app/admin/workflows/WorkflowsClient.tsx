@@ -14,6 +14,7 @@ import {
   type BadgeTone,
 } from "@/components/ui";
 import { PageHeader } from "@/components/patterns";
+import { PageContainer } from "@/components/nav/PageContainer";
 import { trpc, handleTRPCError } from "@/lib/trpc-client";
 import { humanizeSentence } from "@/lib/labels";
 import { AgentDetailDrawer } from "./AgentDetailDrawer";
@@ -84,7 +85,7 @@ export function WorkflowsClient({ initial }: { initial: ListAgentsOutput }) {
   }
 
   return (
-    <div className="mx-auto w-full max-w-5xl px-6 py-8">
+    <PageContainer>
       <PageHeader
         title="Workflows"
         subtitle="Automation agents for this tenant, what the platform does automatically, always with a human-in-the-loop gate. Pause an agent to stop it firing without deleting its history."
@@ -151,7 +152,7 @@ export function WorkflowsClient({ initial }: { initial: ListAgentsOutput }) {
       {creating ? (
         <AgentFormModal mode="create" onClose={() => setCreating(false)} onSaved={invalidate} />
       ) : null}
-    </div>
+    </PageContainer>
   );
 }
 

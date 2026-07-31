@@ -20,6 +20,7 @@ import {
   Td,
   type BadgeTone,
 } from "@/components/ui";
+import { PageContainer } from "@/components/nav/PageContainer";
 import { trpc } from "@/lib/trpc-client";
 
 /**
@@ -60,7 +61,7 @@ export function MessagingClient({ initial }: { initial: ListNotificationLogOutpu
   }, []);
 
   return (
-    <div className="mx-auto w-full max-w-6xl px-6 py-8">
+    <PageContainer>
       <div className="mb-6 rounded-xl border border-brand-100 bg-brand-50/60 px-5 py-4">
         <p className="text-sm text-neutral-700">
           <span className="font-semibold text-neutral-900">Email is the only channel.</span> HireOps
@@ -216,7 +217,7 @@ export function MessagingClient({ initial }: { initial: ListNotificationLogOutpu
           </Card>
         ))}
       </div>
-    </div>
+    </PageContainer>
   );
 }
 

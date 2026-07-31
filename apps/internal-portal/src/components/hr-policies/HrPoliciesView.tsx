@@ -10,6 +10,7 @@ import type {
 import { trpc, handleTRPCError } from "@/lib/trpc-client";
 import { Button, EmptyState } from "@/components/ui";
 import { PageHeader } from "@/components/patterns";
+import { PageContainer } from "@/components/nav/PageContainer";
 import { cn } from "@/components/ui/cn";
 
 /**
@@ -140,7 +141,7 @@ export function HrPoliciesView({ initial }: { initial: ListHrPoliciesOutput }) {
   }
 
   return (
-    <div className="mx-auto w-full max-w-6xl px-8 py-6">
+    <PageContainer>
       <PageHeader
         title="Templates & policies"
         subtitle="Your HR reference library, offer templates, benefits, and people policies. Edit a policy to save a new version; every change is kept in its history."
@@ -240,7 +241,7 @@ export function HrPoliciesView({ initial }: { initial: ListHrPoliciesOutput }) {
       {historyFor ? (
         <VersionHistoryModal doc={historyFor} onClose={() => setHistoryFor(null)} />
       ) : null}
-    </div>
+    </PageContainer>
   );
 }
 

@@ -16,6 +16,7 @@ import {
   Button,
 } from "@/components/ui";
 import { PageHeader, HeroStatCard, HrRecChip, InboxIcon } from "@/components/patterns";
+import { PageContainer } from "@/components/nav/PageContainer";
 import { HrRoundAssessmentForm } from "./HrRoundAssessmentForm";
 
 /**
@@ -85,7 +86,7 @@ export function HrRoundsView({ initial }: { initial: ListHrRoundsOutput }) {
   }, [data.rows, tab]);
 
   return (
-    <div className="mx-auto w-full max-w-6xl space-y-6 px-8 py-6">
+    <PageContainer className="space-y-6">
       <PageHeader
         title="HR rounds"
         subtitle="The HR behavioural round across active cases, schedule, complete the assessment, and record the outcome."
@@ -154,7 +155,7 @@ export function HrRoundsView({ initial }: { initial: ListHrRoundsOutput }) {
       {assessingAppId ? (
         <AssessmentModal applicationId={assessingAppId} onClose={() => setAssessingAppId(null)} />
       ) : null}
-    </div>
+    </PageContainer>
   );
 }
 

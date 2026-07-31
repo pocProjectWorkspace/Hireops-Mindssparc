@@ -5,6 +5,7 @@ import { Card, EmptyState } from "@/components/ui";
 import { trpc } from "@/lib/trpc-client";
 import type { PanelInterviewRow } from "@hireops/api-types";
 import { InterviewCard } from "./InterviewCard";
+import { PageContainer } from "@/components/nav/PageContainer";
 
 /**
  * INT-03 / PANEL-01 — "My interviews". The interviews the signed-in panellist is
@@ -41,29 +42,29 @@ export function PanelInterviewsListView() {
 
   if (list.isLoading) {
     return (
-      <div className="mx-auto w-full max-w-5xl px-8 py-6">
+      <PageContainer>
         <p className="text-sm text-neutral-500">Loading…</p>
-      </div>
+      </PageContainer>
     );
   }
 
   if (rows.length === 0) {
     return (
-      <div className="mx-auto w-full max-w-5xl px-8 py-6">
+      <PageContainer>
         <EmptyState
           title="No interviews assigned"
           hint="When a recruiter puts you on an interview panel, it appears here with a link to the candidate brief and your scorecard."
         />
-      </div>
+      </PageContainer>
     );
   }
 
   return (
-    <div className="mx-auto w-full max-w-5xl px-8 py-6">
+    <PageContainer>
       <PanelSection title="Upcoming" rows={upcoming} emptyHint="No upcoming interviews." />
       <div className="h-8" />
       <PanelSection title="Past" rows={past} emptyHint="No past interviews yet." />
-    </div>
+    </PageContainer>
   );
 }
 

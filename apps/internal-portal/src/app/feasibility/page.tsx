@@ -1,6 +1,7 @@
 import { requireAuth, sessionUserChip } from "@/lib/auth";
 import { createServerTRPCCaller } from "@/lib/trpc-server";
 import { AppShell } from "@/components/nav/AppShell";
+import { PageContainer } from "@/components/nav/PageContainer";
 import { RoleNotice } from "@/components/nav/RoleNotice";
 import { FeasibilityView } from "@/components/market/FeasibilityView";
 
@@ -50,9 +51,9 @@ export default async function FeasibilityPage() {
       active="feasibility"
       user={sessionUserChip(session)}
     >
-      <div className="mx-auto w-full max-w-6xl px-8 py-6">
+      <PageContainer>
         <FeasibilityView initial={initial} />
-      </div>
+      </PageContainer>
     </AppShell>
   );
 }

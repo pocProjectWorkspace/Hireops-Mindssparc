@@ -9,6 +9,7 @@ import type {
 import { trpc } from "@/lib/trpc-client";
 import { Button, EmptyState, StatTile } from "@/components/ui";
 import { HeroStatCard, PageHeader } from "@/components/patterns";
+import { PageContainer } from "@/components/nav/PageContainer";
 import { cn } from "@/components/ui/cn";
 
 /**
@@ -56,7 +57,7 @@ export function CaseAuditView({ initial }: { initial: ListCaseAuditCasesOutput }
   const stats = query.data?.stats ?? initial.stats;
 
   return (
-    <div className="mx-auto w-full max-w-5xl px-8 py-6">
+    <PageContainer>
       <PageHeader
         title="Case audit trail"
         subtitle="The complete, append-only audit history for every active case, stage moves, offer events, document verification, and HR notes."
@@ -100,7 +101,7 @@ export function CaseAuditView({ initial }: { initial: ListCaseAuditCasesOutput }
           ))}
         </ul>
       )}
-    </div>
+    </PageContainer>
   );
 }
 

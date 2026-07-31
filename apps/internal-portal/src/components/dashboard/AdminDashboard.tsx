@@ -5,6 +5,7 @@ import { trpc } from "@/lib/trpc-client";
 import { Card, StatTile, type StatTileTone } from "@/components/ui";
 import { cn } from "@/components/ui/cn";
 import { PageHeader } from "@/components/patterns";
+import { PageContainer } from "@/components/nav/PageContainer";
 
 /**
  * AdminDashboard (AD-01) — the bespoke admin landing surface, mirroring the
@@ -89,7 +90,7 @@ export function AdminDashboard({
   const tiles = (extrasQuery.data ?? initialExtras).tiles;
 
   return (
-    <div className="mx-auto flex max-w-6xl flex-col gap-6 px-8 py-6">
+    <PageContainer className="flex flex-col gap-6">
       <PageHeader
         title={`Welcome, ${displayName}`}
         subtitle="Admin console · settings, integrations & governance."
@@ -188,6 +189,6 @@ export function AdminDashboard({
           </div>
         </aside>
       </div>
-    </div>
+    </PageContainer>
   );
 }

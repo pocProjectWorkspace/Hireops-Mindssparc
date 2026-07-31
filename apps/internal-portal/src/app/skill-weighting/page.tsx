@@ -1,6 +1,7 @@
 import { requireAuth, sessionUserChip } from "@/lib/auth";
 import { createServerTRPCCaller } from "@/lib/trpc-server";
 import { AppShell } from "@/components/nav/AppShell";
+import { PageContainer } from "@/components/nav/PageContainer";
 import { RoleNotice } from "@/components/nav/RoleNotice";
 import { SkillWeightingWorkspace } from "@/components/requisitions/SkillWeightingWorkspace";
 
@@ -49,9 +50,9 @@ export default async function SkillWeightingPage() {
       active="skill-weighting"
       user={sessionUserChip(session)}
     >
-      <div className="mx-auto w-full max-w-4xl px-8 py-6">
+      <PageContainer>
         <SkillWeightingWorkspace rows={rows} />
-      </div>
+      </PageContainer>
     </AppShell>
   );
 }

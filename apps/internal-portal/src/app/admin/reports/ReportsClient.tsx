@@ -14,6 +14,7 @@ import {
   Tr,
   Td,
 } from "@/components/ui";
+import { PageContainer } from "@/components/nav/PageContainer";
 import { trpc } from "@/lib/trpc-client";
 import { humanizeSentence } from "@/lib/labels";
 
@@ -48,7 +49,7 @@ export function ReportsClient({ initial }: { initial: GetRecruitmentReportOutput
   const maxFunnel = funnel.reduce((m, f) => Math.max(m, f.current_count), 0);
 
   return (
-    <div className="mx-auto w-full max-w-5xl px-6 py-8">
+    <PageContainer>
       <p className="mb-6 text-sm text-neutral-600">
         Recruitment funnel, source mix, and time in pipeline across all applications. All time.
         Medians use exact stage-transition history.
@@ -170,7 +171,7 @@ export function ReportsClient({ initial }: { initial: GetRecruitmentReportOutput
           </Section>
         </>
       )}
-    </div>
+    </PageContainer>
   );
 }
 

@@ -23,6 +23,7 @@ import {
   ArrowDownIcon,
   ArrowUpIcon,
 } from "@/components/patterns";
+import { PageContainer } from "@/components/nav/PageContainer";
 
 /**
  * HrHeadDashboard (HRHEAD-01) — the bespoke HR-head landing surface. Two
@@ -186,7 +187,7 @@ export function HrHeadDashboard({
   const enforcement = ENFORCEMENT_META[risk.biasGateEnforcement];
 
   return (
-    <div className="mx-auto flex max-w-6xl flex-col gap-6 px-8 py-6">
+    <PageContainer className="flex flex-col gap-6">
       <PageHeader
         title={`Welcome back, ${displayName}`}
         subtitle="Your approvals, hiring health, and compliance at a glance."
@@ -354,7 +355,7 @@ export function HrHeadDashboard({
           ) : null}
         </aside>
       </div>
-    </div>
+    </PageContainer>
   );
 }
 

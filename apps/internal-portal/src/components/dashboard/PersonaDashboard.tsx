@@ -7,6 +7,7 @@ import type {
 } from "@hireops/api-types";
 import { Card, StatTile, EmptyState, type StatTileTone } from "@/components/ui";
 import { cn } from "@/components/ui/cn";
+import { PageContainer } from "@/components/nav/PageContainer";
 
 /**
  * PersonaDashboard — the DASH-01 landing surface (DESIGN primitives only).
@@ -115,7 +116,7 @@ function ActivityRow({ item }: { item: DashboardActivity }) {
 export function PersonaDashboard({ data }: { data: GetMyDashboardOutput }) {
   const { kpis, actions, activity } = data;
   return (
-    <div className="mx-auto flex max-w-6xl flex-col gap-8 px-8 py-8">
+    <PageContainer className="flex flex-col gap-8">
       {/* KPI grid */}
       <section className="flex flex-col gap-3">
         <h2 className="text-sm font-semibold uppercase tracking-wide text-neutral-500">
@@ -175,6 +176,6 @@ export function PersonaDashboard({ data }: { data: GetMyDashboardOutput }) {
           </Card>
         </section>
       ) : null}
-    </div>
+    </PageContainer>
   );
 }

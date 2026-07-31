@@ -9,6 +9,7 @@ import type {
 import { Input, Switch, Button } from "@hireops/ui";
 import { Card } from "@/components/ui";
 import { PageHeader } from "@/components/patterns";
+import { PageContainer } from "@/components/nav/PageContainer";
 import { trpc, handleTRPCError } from "@/lib/trpc-client";
 
 /**
@@ -146,7 +147,7 @@ export function EmailTemplatesClient({ initial }: { initial: GetEmailTemplateCat
   const nothingEditable = selected && !selected.subject && selected.slots.length === 0;
 
   return (
-    <div className="mx-auto w-full max-w-6xl px-6 py-8">
+    <PageContainer>
       <PageHeader
         title="Email templates"
         subtitle="Override the subject and the named text of each transactional email. Layout, styling, and data (names, dates, links) stay fixed, there is no raw-HTML editor. Leave a field blank to keep the shipped default."
@@ -301,7 +302,7 @@ export function EmailTemplatesClient({ initial }: { initial: GetEmailTemplateCat
           </div>
         ) : null}
       </div>
-    </div>
+    </PageContainer>
   );
 }
 

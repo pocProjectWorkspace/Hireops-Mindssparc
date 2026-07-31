@@ -6,6 +6,7 @@ import { cn } from "@/components/ui/cn";
 import { trpc } from "@/lib/trpc-client";
 import type { GetPanelDashboardOutput, PanelInterviewRow } from "@hireops/api-types";
 import { PageHeader, HeroStatCard, AlertCard, InboxIcon } from "@/components/patterns";
+import { PageContainer } from "@/components/nav/PageContainer";
 import { InterviewCard } from "./InterviewCard";
 
 /**
@@ -110,7 +111,7 @@ export function PanelDashboard({
         : buckets.needsScorecard;
 
   return (
-    <div className="mx-auto flex max-w-6xl flex-col gap-6 px-8 py-6">
+    <PageContainer className="flex flex-col gap-6">
       <PageHeader
         title={`Welcome back, ${displayName}`}
         subtitle="Your interviews, pending scorecards, and feedback at a glance."
@@ -262,7 +263,7 @@ export function PanelDashboard({
           </Card>
         </div>
       ) : null}
-    </div>
+    </PageContainer>
   );
 }
 

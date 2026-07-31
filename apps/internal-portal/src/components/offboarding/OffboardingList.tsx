@@ -10,6 +10,7 @@ import {
 import { trpc } from "@/lib/trpc-client";
 import { Badge, DataBar, EmptyState } from "@/components/ui";
 import { CASE_STATUS_META, INITIATION_TYPE_META, formatDate } from "./offboarding-format";
+import { PageContainer } from "@/components/nav/PageContainer";
 
 /**
  * The offboarding case list — one row per departure, filterable by case
@@ -46,7 +47,7 @@ export function OffboardingList({ initial }: { initial: ListOffboardingCasesOutp
   const hasMore = query.data?.nextCursor != null;
 
   return (
-    <div className="mx-auto w-full max-w-5xl px-8 py-6">
+    <PageContainer>
       {/* Action + filter bar */}
       <div className="mb-4 flex flex-wrap items-center gap-2">
         <a
@@ -121,7 +122,7 @@ export function OffboardingList({ initial }: { initial: ListOffboardingCasesOutp
           Showing the first {items.length}. Filter by status to narrow the list.
         </p>
       ) : null}
-    </div>
+    </PageContainer>
   );
 }
 

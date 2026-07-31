@@ -3,6 +3,7 @@
 import dynamic from "next/dynamic";
 import type { GetHrAnalyticsOutput } from "@hireops/api-types";
 import { StatTile } from "@/components/ui";
+import { PageContainer } from "@/components/nav/PageContainer";
 import { trpc } from "@/lib/trpc-client";
 
 /**
@@ -27,7 +28,7 @@ export function HrAnalyticsClient({ initial }: { initial: GetHrAnalyticsOutput }
   const { kpis } = data;
 
   return (
-    <div className="mx-auto w-full max-w-6xl px-6 py-8">
+    <PageContainer>
       <p className="mb-6 text-sm text-neutral-600">
         Real hiring analytics over the live pipeline, offers and comp band data. Every panel is a
         current snapshot; there are no fabricated numbers, thin data shows an honest empty state.
@@ -44,7 +45,7 @@ export function HrAnalyticsClient({ initial }: { initial: GetHrAnalyticsOutput }
       </section>
 
       <AnalyticsCharts data={data} />
-    </div>
+    </PageContainer>
   );
 }
 

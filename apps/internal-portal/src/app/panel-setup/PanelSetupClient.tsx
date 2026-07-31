@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import type { ListPanelSetupRequisitionsOutput, GetPanelSetupOutput } from "@hireops/api-types";
 import { Badge, Card, EmptyState } from "@/components/ui";
+import { PageContainer } from "@/components/nav/PageContainer";
 import { InterviewPlanSection } from "@/components/interviews/InterviewPlanSection";
 import { humanize } from "@/lib/labels";
 import { trpc } from "@/lib/trpc-client";
@@ -34,17 +35,17 @@ export function PanelSetupClient({ initial }: { initial: ListPanelSetupRequisiti
 
   if (rows.length === 0) {
     return (
-      <div className="mx-auto w-full max-w-6xl px-8 py-6">
+      <PageContainer>
         <EmptyState
           title="No requisitions yet"
           hint="Create a requisition first, its interview loop is set up here."
         />
-      </div>
+      </PageContainer>
     );
   }
 
   return (
-    <div className="mx-auto grid w-full max-w-6xl grid-cols-1 gap-6 px-8 py-6 lg:grid-cols-[280px_1fr]">
+    <PageContainer className="grid grid-cols-1 gap-6 lg:grid-cols-[280px_1fr]">
       <aside className="space-y-2">
         <p className="px-1 text-[11px] font-semibold uppercase tracking-wider text-neutral-500">
           Your requisitions
@@ -61,7 +62,7 @@ export function PanelSetupClient({ initial }: { initial: ListPanelSetupRequisiti
       <section className="min-w-0">
         {selected ? <PanelDetail requisitionId={selected} /> : null}
       </section>
-    </div>
+    </PageContainer>
   );
 }
 

@@ -1,6 +1,7 @@
 import { requireAdmin, sessionUserChip } from "@/lib/auth";
 import { createServerTRPCCaller } from "@/lib/trpc-server";
 import { AppShell } from "@/components/nav/AppShell";
+import { PageContainer } from "@/components/nav/PageContainer";
 import { UsersAdminClient } from "./UsersAdminClient";
 import { RetentionSection } from "./RetentionSection";
 
@@ -27,10 +28,10 @@ export default async function UsersAdminPage() {
 
   return (
     <AppShell title="Users & roles" isAdmin active="users" user={sessionUserChip(session)}>
-      <div className="mx-auto w-full max-w-4xl px-6 py-8">
+      <PageContainer>
         <UsersAdminClient initialUsers={users.items} />
         <RetentionSection items={retention.items} />
-      </div>
+      </PageContainer>
     </AppShell>
   );
 }

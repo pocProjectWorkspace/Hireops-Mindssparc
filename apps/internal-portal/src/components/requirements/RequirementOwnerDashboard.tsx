@@ -4,6 +4,7 @@ import { trpc } from "@/lib/trpc-client";
 import { Card, StatTile } from "@/components/ui";
 import { cn } from "@/components/ui/cn";
 import { PageHeader, HeroStatCard, InboxIcon } from "@/components/patterns";
+import { PageContainer } from "@/components/nav/PageContainer";
 import type { GetRequirementOwnerDashboardOutput } from "@hireops/api-types";
 import { HealthBar, DifficultyChip, ReqStatusChip, WaitingChip } from "./shared";
 
@@ -41,7 +42,7 @@ export function RequirementOwnerDashboard({
   const rest = data.stats.filter((s) => s.key !== "total");
 
   return (
-    <div className="mx-auto flex max-w-6xl flex-col gap-6 px-8 py-6">
+    <PageContainer className="flex flex-col gap-6">
       <PageHeader
         title={`Welcome back, ${displayName}`}
         subtitle="Your requisitions, their health, and where they're stuck, at a glance."
@@ -216,6 +217,6 @@ export function RequirementOwnerDashboard({
           )}
         </aside>
       </div>
-    </div>
+    </PageContainer>
   );
 }

@@ -5,6 +5,7 @@ import type { CompBandRow, ListCompBandsOutput } from "@hireops/api-types";
 import { Input, Button } from "@hireops/ui";
 import { Card } from "@/components/ui";
 import { PageHeader } from "@/components/patterns";
+import { PageContainer } from "@/components/nav/PageContainer";
 import { trpc, handleTRPCError } from "@/lib/trpc-client";
 
 /**
@@ -124,7 +125,7 @@ export function CompBandsClient({ initial }: { initial: ListCompBandsOutput }) {
   }
 
   return (
-    <div className="mx-auto w-full max-w-5xl px-6 py-8">
+    <PageContainer>
       <PageHeader
         title="Comp bands"
         subtitle="Manage this tenant's compensation-band library. The requisition wizard's picker reads this list, picking a band populates the position's comp min/max, which the comp verdict engine reads."
@@ -343,6 +344,6 @@ export function CompBandsClient({ initial }: { initial: ListCompBandsOutput }) {
           </ul>
         )}
       </Card>
-    </div>
+    </PageContainer>
   );
 }

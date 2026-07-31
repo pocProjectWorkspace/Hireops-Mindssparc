@@ -9,6 +9,7 @@ import type {
 } from "@hireops/api-types";
 import { trpc, handleTRPCError } from "@/lib/trpc-client";
 import { Badge, Button, EmptyState, TableShell, Thead, Th, Tbody, Tr, Td } from "@/components/ui";
+import { PageContainer } from "@/components/nav/PageContainer";
 
 /**
  * /jd-library → Templates (T12/G11). The org's curated JD-template library
@@ -107,7 +108,7 @@ export function JdTemplatesPanel({ initial }: { initial: ListJdTemplatesOutput }
   }
 
   return (
-    <div className="mx-auto w-full max-w-6xl px-8 py-6">
+    <PageContainer>
       <div className="mb-4 flex items-start justify-between gap-3">
         <p className="max-w-3xl text-sm text-neutral-600">
           Curated JD templates that pre-fill the requisition wizard&rsquo;s basics and skill
@@ -211,7 +212,7 @@ export function JdTemplatesPanel({ initial }: { initial: ListJdTemplatesOutput }
           }}
         />
       ) : null}
-    </div>
+    </PageContainer>
   );
 }
 

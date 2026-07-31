@@ -7,6 +7,7 @@ import { Badge, EmptyState, Card } from "@/components/ui";
 import { cn } from "@/components/ui/cn";
 import { trpc } from "@/lib/trpc-client";
 import type { InterviewRow, InterviewRecommendation } from "@hireops/api-types";
+import { PageContainer } from "@/components/nav/PageContainer";
 
 /**
  * INT-02 / RECR-01 — recruiter interviews surface, elevated to the prototype
@@ -251,7 +252,7 @@ export function InterviewsListView() {
   const loading = scheduled.isLoading || completed.isLoading;
 
   return (
-    <div className="mx-auto w-full max-w-6xl px-8 py-6">
+    <PageContainer>
       <div className="mb-4 inline-flex rounded-lg border border-neutral-200 bg-neutral-50 p-1">
         {TABS.map((t) => (
           <button
@@ -309,6 +310,6 @@ export function InterviewsListView() {
           ))}
         </div>
       )}
-    </div>
+    </PageContainer>
   );
 }

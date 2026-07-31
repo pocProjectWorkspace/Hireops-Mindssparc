@@ -9,6 +9,7 @@ import type {
 import { trpc } from "@/lib/trpc-client";
 import { EmptyState } from "@/components/ui";
 import { HeroStatCard, DocStatusChip, DocOverallChip, PageHeader } from "@/components/patterns";
+import { PageContainer } from "@/components/nav/PageContainer";
 import { StatTile } from "@/components/ui";
 import { ApplicationDocumentsPanel } from "./ApplicationDocumentsPanel";
 
@@ -54,7 +55,7 @@ export function HrDocumentsView({ initial }: { initial: ListApplicationDocumentC
   const invalidate = () => void utils.listApplicationDocumentCandidates.invalidate();
 
   return (
-    <div className="mx-auto w-full max-w-6xl px-8 py-6">
+    <PageContainer>
       <PageHeader
         title="Documents & verification"
         subtitle="Pre-offer document collection for candidates between technical interview and offer acceptance. Every document access is PII-logged."
@@ -116,7 +117,7 @@ export function HrDocumentsView({ initial }: { initial: ListApplicationDocumentC
           ))}
         </ul>
       )}
-    </div>
+    </PageContainer>
   );
 }
 

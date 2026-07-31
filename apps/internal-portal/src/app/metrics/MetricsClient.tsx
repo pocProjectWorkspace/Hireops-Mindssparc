@@ -3,6 +3,7 @@
 import dynamic from "next/dynamic";
 import type { GetHrMetricsOutput } from "@hireops/api-types";
 import { StatTile } from "@/components/ui";
+import { PageContainer } from "@/components/nav/PageContainer";
 import { trpc } from "@/lib/trpc-client";
 
 /**
@@ -33,7 +34,7 @@ export function MetricsClient({ initial }: { initial: GetHrMetricsOutput }) {
   const { kpis } = data;
 
   return (
-    <div className="mx-auto w-full max-w-6xl px-6 py-8">
+    <PageContainer>
       <p className="mb-6 text-sm text-neutral-600">
         Hiring pipeline, sourcing, offers and AI usage across the tenant. Pipeline, source, offer
         and score panels are a current snapshot (all time); AI spend is the last 14 days.
@@ -51,7 +52,7 @@ export function MetricsClient({ initial }: { initial: GetHrMetricsOutput }) {
       </section>
 
       <ChartGrid data={data} />
-    </div>
+    </PageContainer>
   );
 }
 

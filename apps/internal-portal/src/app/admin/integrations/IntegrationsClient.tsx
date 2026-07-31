@@ -16,6 +16,7 @@ import {
   Td,
   type BadgeTone,
 } from "@/components/ui";
+import { PageContainer } from "@/components/nav/PageContainer";
 import { trpc } from "@/lib/trpc-client";
 import { humanizeSentence } from "@/lib/labels";
 
@@ -57,7 +58,7 @@ export function IntegrationsClient() {
   const totals = summarise(rows);
 
   return (
-    <div className="mx-auto w-full max-w-5xl px-6 py-8">
+    <PageContainer>
       <div className="mb-5 flex items-start gap-3 rounded-md border border-status-warning-200 bg-status-warning-50 px-4 py-3 text-sm text-status-warning-800">
         <span aria-hidden className="mt-0.5 shrink-0">
           <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
@@ -159,7 +160,7 @@ export function IntegrationsClient() {
           </Tbody>
         </TableShell>
       )}
-    </div>
+    </PageContainer>
   );
 }
 

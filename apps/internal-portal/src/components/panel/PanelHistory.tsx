@@ -3,6 +3,7 @@
 import { useMemo, useState } from "react";
 import { Card, EmptyState, TableShell, Thead, Th, Tbody, Tr, Td } from "@/components/ui";
 import { RecommendationChip } from "@/components/patterns";
+import { PageContainer } from "@/components/nav/PageContainer";
 import { trpc } from "@/lib/trpc-client";
 import type { GetPanelDashboardOutput, PanelSubmittedFeedbackItem } from "@hireops/api-types";
 
@@ -52,7 +53,7 @@ export function PanelHistory({ initialBoard }: { initialBoard: GetPanelDashboard
   }, [submitted, search, round]);
 
   return (
-    <div className="mx-auto w-full max-w-5xl px-8 py-6">
+    <PageContainer>
       <div className="mb-4 flex flex-wrap items-center gap-3">
         <input
           type="search"
@@ -127,6 +128,6 @@ export function PanelHistory({ initialBoard }: { initialBoard: GetPanelDashboard
           </Tbody>
         </TableShell>
       )}
-    </div>
+    </PageContainer>
   );
 }

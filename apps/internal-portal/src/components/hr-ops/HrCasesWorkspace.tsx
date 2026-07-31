@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import type { ListHrCasesOutput, HrCaseListRow, HrCaseStage } from "@hireops/api-types";
 import { trpc } from "@/lib/trpc-client";
 import { TableShell, Thead, Th, Tbody, Tr, Td, EmptyState, StatTile } from "@/components/ui";
+import { PageContainer } from "@/components/nav/PageContainer";
 import {
   PageHeader,
   HeroStatCard,
@@ -65,7 +66,7 @@ export function HrCasesWorkspace({ initial }: { initial: ListHrCasesOutput }) {
   }, [data.rows, tab, search]);
 
   return (
-    <div className="mx-auto w-full max-w-6xl space-y-6 px-8 py-6">
+    <PageContainer className="space-y-6">
       <PageHeader
         title="HR cases"
         subtitle="Candidates in the offer-desk window, technical rounds through to an accepted offer. Open a case to review interview feedback and run the HR round."
@@ -138,7 +139,7 @@ export function HrCasesWorkspace({ initial }: { initial: ListHrCasesOutput }) {
           </Tbody>
         </TableShell>
       )}
-    </div>
+    </PageContainer>
   );
 }
 

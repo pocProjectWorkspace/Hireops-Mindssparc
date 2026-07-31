@@ -12,6 +12,7 @@ import { trpc } from "@/lib/trpc-client";
 import { Card, StatTile, type StatTileTone } from "@/components/ui";
 import { cn } from "@/components/ui/cn";
 import { PageHeader, StageFunnel, ShieldIcon } from "@/components/patterns";
+import { PageContainer } from "@/components/nav/PageContainer";
 
 /**
  * RecruiterDashboard (RECR-01) — the bespoke recruiter landing surface. Two
@@ -190,7 +191,7 @@ export function RecruiterDashboard({
   }));
 
   return (
-    <div className="mx-auto flex max-w-6xl flex-col gap-6 px-8 py-6">
+    <PageContainer className="flex flex-col gap-6">
       <PageHeader
         title={`Welcome back, ${displayName}`}
         subtitle="Your pipeline, interviews, and follow-ups at a glance."
@@ -399,6 +400,6 @@ export function RecruiterDashboard({
           </section>
         </aside>
       </div>
-    </div>
+    </PageContainer>
   );
 }
