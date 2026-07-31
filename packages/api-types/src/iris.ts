@@ -47,6 +47,78 @@ export const irisListActionsOutputSchema = z.object({
 });
 export type IrisListActionsOutput = z.infer<typeof irisListActionsOutputSchema>;
 
+// ─────────────── per-role Iris action policy (T-POLICY) ───────────────
+
+/**
+ * Per-tenant, per-role Iris action policy. A DENY-OVERLAY on each action's
+ * baked-in static `roles`: it can only NARROW who may run an action, never
+ * widen. An UNCONFIGURED tenant (no stored `irisPolicy`, or a malformed / future
+ * block) resolves to the empty overlay and is BYTE-IDENTICAL to today's
+ * behaviour. Mirrors the `resolveAiBudget` house pattern: a versioned zod block
+ * stored as a sibling key under `tenants.settings`, resolved leniently.
+ *
+ * `disabledRoles[actionId]` lists the roles for which that action is turned OFF.
+ * A role NOT in an action's static `roles` can never be enabled, so listing it
+ * here is a no-op (the effective set is `staticRoles \ disabledRoles`).
+ */
+export const IRIS_POLICY_VERSION = "iris-policy-v1";
+
+export const irisPolicySchema = z.object({
+  version: z.literal(IRIS_POLICY_VERSION).default(IRIS_POLICY_VERSION),
+  /** action id -> roles for which the action is DISABLED. Missing/empty = today's behaviour. */
+  disabledRoles: z.record(z.string(), z.array(z.string())).default({}),
+});
+export type IrisPolicy = z.infer<typeof irisPolicySchema>;
+
+export function defaultIrisPolicy(): IrisPolicy {
+  return irisPolicySchema.parse({});
+}
+
+/**
+ * Merge a raw stored `irisPolicy` block (partial / unknown / absent) with
+ * defaults, returning a complete validated policy. Malformed / future blocks
+ * fall back to the empty overlay rather than throwing — same lenient discipline
+ * as `resolveAiBudget`, so a bad block never silently WIDENS access.
+ */
+export function resolveIrisPolicy(raw: unknown): IrisPolicy {
+  const parsed = irisPolicySchema.safeParse(raw ?? {});
+  return parsed.success ? parsed.data : defaultIrisPolicy();
+}
+
+/** Effective roles for an action after the deny-overlay (pure; used by filter + gate). */
+export function irisActionAllowedRoles(
+  actionId: string,
+  staticRoles: readonly string[],
+  policy: IrisPolicy,
+): string[] {
+  const disabled = new Set(policy.disabledRoles[actionId] ?? []);
+  return staticRoles.filter((r) => !disabled.has(r));
+}
+
+// ─── admin get/update Iris policy (T-POLICY editor I/O) ───
+
+/**
+ * getIrisPolicy — the admin editor's read. Returns the resolved policy PLUS the
+ * FULL action catalog (each action's static `roles` included, NOT role-filtered
+ * to the admin caller) so the matrix can render every action × role cell.
+ */
+export const getIrisPolicyInputSchema = z.object({}).optional();
+export const getIrisPolicyOutputSchema = z.object({
+  policy: irisPolicySchema,
+  actions: z.array(irisActionMenuItemSchema),
+});
+export type GetIrisPolicyOutput = z.infer<typeof getIrisPolicyOutputSchema>;
+
+export const updateIrisPolicyInputSchema = z.object({
+  policy: irisPolicySchema,
+});
+export type UpdateIrisPolicyInput = z.infer<typeof updateIrisPolicyInputSchema>;
+
+export const updateIrisPolicyOutputSchema = z.object({
+  policy: irisPolicySchema,
+});
+export type UpdateIrisPolicyOutput = z.infer<typeof updateIrisPolicyOutputSchema>;
+
 // ─────────────── irisSearchApplications ───────────────
 
 /**

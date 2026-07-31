@@ -780,6 +780,14 @@ import {
   irisDraftCandidateMessageOutputSchema,
   setRequisitionHoldInputSchema,
   setRequisitionHoldOutputSchema,
+  resolveIrisPolicy,
+  defaultIrisPolicy,
+  irisActionAllowedRoles,
+  type IrisPolicy,
+  getIrisPolicyInputSchema,
+  getIrisPolicyOutputSchema,
+  updateIrisPolicyInputSchema,
+  updateIrisPolicyOutputSchema,
 } from "@hireops/api-types";
 import { createClient } from "@supabase/supabase-js";
 import {
@@ -1781,6 +1789,25 @@ function requireAnyRole(ctx: HonoTRPCContext, allowed: Set<string>, message: str
   if (!ctx.roles.some((r) => allowed.has(r))) {
     throw new TRPCError({ code: "FORBIDDEN", message });
   }
+}
+
+/**
+ * T-POLICY — resolve the tenant's per-role Iris action policy (a DENY-OVERLAY on
+ * each action's static `roles`). Reads the `irisPolicy` sibling key under
+ * tenants.settings (mirrors getAiBudget's tenants.settings read), leniently
+ * resolving an absent / malformed block to the EMPTY overlay so an unconfigured
+ * tenant is byte-identical to today. Uses the same poolDb handle the policy
+ * writer (updateIrisPolicy) uses.
+ */
+async function resolveIrisPolicyForCtx(ctx: HonoTRPCContext): Promise<IrisPolicy> {
+  if (!ctx.tenantId) return defaultIrisPolicy();
+  const [row] = await poolDb
+    .select({ settings: tenants.settings })
+    .from(tenants)
+    .where(eq(tenants.id, ctx.tenantId))
+    .limit(1);
+  const settings = (row?.settings ?? {}) as Record<string, unknown>;
+  return resolveIrisPolicy(settings.irisPolicy);
 }
 
 // ─────────────── HRHEAD-02 feasibility / benchmark helpers ───────────────
@@ -9207,6 +9234,69 @@ export const appRouter = router({
         }
 
         return { ok: true as const, settings: nextBlock };
+      });
+    }),
+
+  // ─────────────────────── getIrisPolicy (T-POLICY) ───────────────────────
+  //
+  // Admin read of the per-role Iris action policy (a DENY-OVERLAY on each
+  // action's static roles). Returns the resolved policy PLUS the FULL action
+  // catalog (each action's static `roles`, NOT filtered to the admin caller) so
+  // the editor can render every action × role cell. Admin-gated + read-only, no
+  // withAudit (matches getTenantAiSettings / getAiBudget). An unconfigured
+  // tenant resolves to the empty overlay — byte-identical to today.
+  getIrisPolicy: protectedProcedure
+    .input(getIrisPolicyInputSchema)
+    .output(getIrisPolicyOutputSchema)
+    .query(async ({ ctx }) => {
+      requireAnyRole(ctx, AI_SETTINGS_ADMIN_ROLES, "Iris policy is admin-only");
+      const policy = await resolveIrisPolicyForCtx(ctx);
+      return { policy, actions: listIrisActions() };
+    }),
+
+  // ─────────────────────── updateIrisPolicy (T-POLICY) ───────────────────────
+  //
+  // Admin write of the per-role Iris action policy. Admin-gated + audited.
+  // Merges the validated block into tenants.settings under the `irisPolicy`
+  // SIBLING key via the SAME atomic top-level jsonb `||` merge updateAiBudget /
+  // updateTenantAiSettings use — preserving aiSettings / aiBudget / systemSetup
+  // etc. verbatim. The write goes through the unscoped pool (service_role);
+  // `tenants` is FORCE RLS with SELECT-only policies, so the explicit admin gate
+  // + the ctx.tenantId predicate are the authorisation. The saved overlay DRIVES
+  // all four Iris call sites (resolveIrisPolicyForCtx) — the honesty guarantee.
+  updateIrisPolicy: protectedProcedure
+    .input(updateIrisPolicyInputSchema)
+    .output(updateIrisPolicyOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      return withAudit("update_iris_policy", ctx, input, async () => {
+        requireAnyRole(ctx, AI_SETTINGS_ADMIN_ROLES, "Iris policy is admin-only");
+        if (!ctx.tenantId) {
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: "protected procedure missing tenantId",
+          });
+        }
+        const tenantId = ctx.tenantId;
+        // input.policy is already validated + defaulted by the zod .input();
+        // resolveIrisPolicy re-normalises the stored shape (lenient, never widens).
+        const policy: IrisPolicy = resolveIrisPolicy(input.policy);
+
+        const res = await poolDb.execute(dsql`
+          UPDATE public.tenants
+          SET settings = COALESCE(settings, '{}'::jsonb)
+              || jsonb_build_object('irisPolicy', ${JSON.stringify(policy)}::jsonb)
+          WHERE id = ${tenantId}::uuid
+          RETURNING id
+        `);
+        const updated = (res as { rows?: unknown[] }).rows ?? (res as unknown[]);
+        if (updated.length !== 1) {
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: "tenant settings update affected an unexpected number of rows",
+          });
+        }
+
+        return { policy };
       });
     }),
 
@@ -21607,7 +21697,7 @@ export const appRouter = router({
   irisListActions: protectedProcedure
     .input(irisListActionsInputSchema)
     .output(irisListActionsOutputSchema)
-    .query(({ ctx }) => {
+    .query(async ({ ctx }) => {
       // IRIS-B1.1 — PER-ACTION gating. Instead of one global role gate, return
       // only the actions whose `roles` intersect the caller's roles (each
       // action's roles mirror the app-surface roles a human needs to do it;
@@ -21616,7 +21706,15 @@ export const appRouter = router({
       // manager sees create_requisition_jd but not reject_application. No blanket
       // FORBIDDEN — an ineligible persona simply gets a role-appropriate (possibly
       // empty) menu.
-      const actions = listIrisActions().filter((a) => a.roles.some((r) => ctx.roles.includes(r)));
+      //
+      // T-POLICY — apply the tenant's per-role DENY-OVERLAY before the caller
+      // intersection. An action turned OFF for a role is dropped from that role's
+      // static set, so a recruiter with reject_application disabled no longer sees
+      // it. Unconfigured tenants resolve to the empty overlay (no change).
+      const policy = await resolveIrisPolicyForCtx(ctx);
+      const actions = listIrisActions().filter((a) =>
+        irisActionAllowedRoles(a.id, a.roles, policy).some((r) => ctx.roles.includes(r)),
+      );
       return { actions };
     }),
 
@@ -21861,10 +21959,15 @@ export const appRouter = router({
         return degradedResolution();
       }
       // The CALLER's role-eligible actions — the EXACT same per-action filter
-      // irisListActions applies. The resolver builds the prompt from only these
-      // and re-validates the model's choice against them.
+      // irisListActions applies (INCLUDING the T-POLICY deny-overlay, so NL can
+      // never propose an action a role has been turned off). The resolver builds
+      // the prompt from only these and re-validates the model's choice against
+      // them.
+      const policy = await resolveIrisPolicyForCtx(ctx);
       const eligibleActionIds = listIrisActions()
-        .filter((a) => a.roles.some((r) => ctx.roles.includes(r)))
+        .filter((a) =>
+          irisActionAllowedRoles(a.id, a.roles, policy).some((r) => ctx.roles.includes(r)),
+        )
         .map((a) => a.id);
       // Actor membership for cost attribution on the ai_usage_logs row.
       const db = requireDb(ctx);
@@ -21902,9 +22005,14 @@ export const appRouter = router({
       // IRIS-B1.1 — PER-ACTION gate: require the app-surface roles for THIS
       // action (mirrors what a human needs to do it by hand). An ineligible role
       // gets FORBIDDEN on the specific action, never a blanket lockout.
+      // T-POLICY — gate on the EFFECTIVE roles after the tenant's deny-overlay,
+      // so a role turned off for this action gets FORBIDDEN here even if it holds
+      // the static role. An empty effective set → FORBIDDEN for everyone (correct).
+      const policy = await resolveIrisPolicyForCtx(ctx);
+      const allowed = irisActionAllowedRoles(action.id, action.roles, policy);
       requireAnyRole(
         ctx,
-        new Set(action.roles),
+        new Set(allowed),
         `You don't have the role to run "${action.label}" through Iris.`,
       );
       // Validate against the action's OWN input contract — invalid params are a
@@ -21955,9 +22063,14 @@ export const appRouter = router({
         // roles for THIS action. The dispatched procedure keeps its own RLS +
         // withAudit; this mirrors the human-surface role at the Iris layer so an
         // ineligible persona gets FORBIDDEN on the specific action.
+        // T-POLICY — gate on the EFFECTIVE roles after the tenant's deny-overlay,
+        // so a role turned off for this action can't commit it (the dispatched
+        // procedure keeps its own RLS regardless).
+        const policy = await resolveIrisPolicyForCtx(ctx);
+        const allowed = irisActionAllowedRoles(action.id, action.roles, policy);
         requireAnyRole(
           ctx,
-          new Set(action.roles),
+          new Set(allowed),
           `You don't have the role to run "${action.label}" through Iris.`,
         );
         if (!ctx.tenantId) {

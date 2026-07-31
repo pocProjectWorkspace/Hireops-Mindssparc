@@ -7,6 +7,7 @@ import { AiModelOverview } from "./AiModelOverview";
 import { AiSettingsClient } from "./AiSettingsClient";
 import { BiasLexiconClient } from "./BiasLexiconClient";
 import { ScoringWeightsClient } from "./ScoringWeightsClient";
+import { IrisPolicyClient } from "./IrisPolicyClient";
 
 export const dynamic = "force-dynamic"; // Admin-gated + reads live tenant config.
 
@@ -26,11 +27,12 @@ export default async function AiSettingsPage() {
   const session = await requireAdmin();
   const caller = createServerTRPCCaller(session);
   const from = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
-  const [settings, usage, lexicon, weights] = await Promise.all([
+  const [settings, usage, lexicon, weights, irisPolicy] = await Promise.all([
     caller.getTenantAiSettings({}),
     caller.getAiUsageSummary({ from }),
     caller.getBiasLexicon({}),
     caller.getScoringWeights({}),
+    caller.getIrisPolicy({}),
   ]);
 
   return (
@@ -44,6 +46,7 @@ export default async function AiSettingsPage() {
       <AiModelOverview usage={usage} />
       <AiSettingsClient initialSettings={settings} usage={usage} />
       <ScoringWeightsClient initialWeights={weights} />
+      <IrisPolicyClient initial={irisPolicy} />
       <BiasLexiconClient initialLexicon={lexicon} />
     </AppShell>
   );
