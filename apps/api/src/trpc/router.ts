@@ -3912,6 +3912,43 @@ export const appRouter = router({
           .orderBy(desc(applications.createdAt))
           .limit(1);
 
+        // T-FIX-1 (Fix A) — the LATEST stage transition for that application,
+        // so the drawer can SHOW the persisted reject reason (and any other
+        // stage change). Read-only; RLS already tenant-scopes it. actorName
+        // mirrors the membership→users display-name join used elsewhere in this
+        // file (see the interview-panelist read: leftJoin memberships on id,
+        // then leftJoin users on userId → users.displayName). Null actor (a
+        // system transition, e.g. AI auto-advance) yields actorName = null.
+        let latestTransition: GetCandidateByIdOutput["latestTransition"] = null;
+        if (appRow) {
+          const [transitionRow] = await db
+            .select({
+              toStage: applicationStateTransitions.toStage,
+              fromStage: applicationStateTransitions.fromStage,
+              reason: applicationStateTransitions.reason,
+              transitionedAt: applicationStateTransitions.transitionedAt,
+              actorName: users.displayName,
+            })
+            .from(applicationStateTransitions)
+            .leftJoin(
+              tenantUserMemberships,
+              eq(tenantUserMemberships.id, applicationStateTransitions.actorMembershipId),
+            )
+            .leftJoin(users, eq(users.id, tenantUserMemberships.userId))
+            .where(eq(applicationStateTransitions.applicationId, appRow.id))
+            .orderBy(desc(applicationStateTransitions.transitionedAt))
+            .limit(1);
+          if (transitionRow) {
+            latestTransition = {
+              toStage: transitionRow.toStage,
+              fromStage: transitionRow.fromStage ?? null,
+              reason: transitionRow.reason ?? null,
+              transitionedAt: toIsoString(transitionRow.transitionedAt),
+              actorName: transitionRow.actorName ?? null,
+            };
+          }
+        }
+
         // HRHEAD-03 screeningPrivacy — presentation-level masking. When the
         // tenant enables anonymisation and the caller is a masked-role user
         // (recruiter without an accountable role), a candidate still below the
@@ -3969,6 +4006,7 @@ export const appRouter = router({
                 aiScoredAt: toIsoString(appRow.aiScoredAt),
               }
             : null,
+          latestTransition,
         };
       });
     }),

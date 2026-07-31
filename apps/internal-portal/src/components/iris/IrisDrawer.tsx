@@ -206,11 +206,10 @@ export function IrisDrawer({ open, onClose, context }: IrisDrawerProps) {
       if (e.key === "Escape") onClose();
     };
     window.addEventListener("keydown", onKey);
-    const prev = document.body.style.overflow;
-    document.body.style.overflow = "hidden";
+    // T-FIX-1 (Fix B) — no body scroll-lock: this is a NON-blocking side panel,
+    // the page behind stays scrollable/interactive. ESC + the X still close it.
     return () => {
       window.removeEventListener("keydown", onKey);
-      document.body.style.overflow = prev;
     };
   }, [open, onClose]);
 
@@ -509,17 +508,15 @@ export function IrisDrawer({ open, onClose, context }: IrisDrawerProps) {
   return createPortal(
     <div
       role="dialog"
-      aria-modal="true"
       aria-label="Iris assistant"
-      className="fixed inset-0 z-modal flex justify-end"
+      // T-FIX-1 (Fix B) — a genuinely non-blocking side panel. The root spans
+      // the viewport (so the panel can pin right + float above content via
+      // z-modal) but is pointer-events-none, so ONLY the <aside> captures input
+      // and the page behind stays fully usable. No backdrop button (that's what
+      // blocked the page + killed click-away); closing is ESC + the X button.
+      className="pointer-events-none fixed inset-0 z-modal flex justify-end"
     >
-      <button
-        type="button"
-        aria-label="Close drawer"
-        onClick={onClose}
-        className="absolute inset-0 bg-neutral-900/40 transition-opacity"
-      />
-      <aside className="relative ml-auto flex h-full w-[34rem] max-w-[92vw] flex-col overflow-hidden bg-neutral-50 shadow-3">
+      <aside className="pointer-events-auto relative ml-auto flex h-full w-[34rem] max-w-[92vw] flex-col overflow-hidden bg-neutral-50 shadow-3">
         <header className="flex items-start justify-between gap-4 border-b border-neutral-200 bg-white px-6 py-5">
           <div className="min-w-0">
             <h2 className="flex items-center gap-2 text-lg font-semibold tracking-tight text-neutral-900">
@@ -605,6 +602,37 @@ export function IrisDrawer({ open, onClose, context }: IrisDrawerProps) {
                         {nlResult.clarifyingQuestion ??
                           nlResult.message ??
                           "I couldn't map that to an action, try rephrasing or pick one from the menu."}
+                        {/* T-FIX-1 (Fix C) — an out-of-catalog "can't do that"
+                            case (no clarifying question) tells the user what Iris
+                            CAN do, drawn from their OWN already-gated actions.
+                            Exposes no new capability; a clarifying question keeps
+                            the current behaviour (show the question only). */}
+                        {!nlResult.clarifyingQuestion && actions.length > 0 ? (
+                          <div className="mt-3 border-t border-neutral-100 pt-3">
+                            <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-neutral-500">
+                              Here&apos;s what Iris can do
+                            </p>
+                            <div className="space-y-2">
+                              {grouped.map(([group, items]) => (
+                                <div key={group}>
+                                  <p className="text-[11px] font-medium text-neutral-400">
+                                    {humanize(group)}
+                                  </p>
+                                  <ul className="mt-0.5 space-y-0.5">
+                                    {items.map((action) => (
+                                      <li key={action.id} className="flex gap-2 text-neutral-600">
+                                        <span aria-hidden className="text-neutral-300">
+                                          •
+                                        </span>
+                                        {action.label}
+                                      </li>
+                                    ))}
+                                  </ul>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        ) : null}
                       </div>
                     ) : null}
                   </div>

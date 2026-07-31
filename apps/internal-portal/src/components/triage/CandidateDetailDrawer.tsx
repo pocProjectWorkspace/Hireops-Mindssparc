@@ -10,6 +10,9 @@ import { useUndoToast } from "./UndoToastProvider";
 import { OfferSection } from "@/components/offers/OfferSection";
 import { InterviewScheduleSection } from "@/components/interviews/InterviewScheduleSection";
 import { AIScoreBadge } from "./AIScoreBadge";
+import { humanizeSentence } from "@/lib/labels";
+import { timeAgo } from "@/lib/approval-format";
+import { TERMINAL_NEGATIVE } from "@/components/candidate/candidate-format";
 
 /**
  * Slide-in drawer at 60vw with backdrop, Esc-to-close, click-backdrop-
@@ -150,6 +153,11 @@ export function CandidateDetailDrawer() {
   const person = detail.data?.person;
   const candidate = detail.data?.candidate;
   const application = detail.data?.application;
+  // T-FIX-1 (Fix A) — the latest persisted stage change (carries the reject
+  // reason). Terminal-negative target stages tone as an error and read as a
+  // "Rejection reason"; everything else is a neutral "Latest stage change".
+  const latestTransition = detail.data?.latestTransition;
+  const isRejection = latestTransition ? TERMINAL_NEGATIVE.has(latestTransition.toStage) : false;
   const parsed = narrowParsed(candidate?.parsedSkills);
   const skills = Array.isArray(parsed.skills) ? parsed.skills : [];
   const work = Array.isArray(parsed.work_history) ? parsed.work_history : [];
@@ -220,6 +228,45 @@ export function CandidateDetailDrawer() {
               explanation={application.aiScoreExplanation}
               variant="drawer"
             />
+          ) : null}
+
+          {/* Status (T-FIX-1) — the latest persisted stage change, incl. the
+              reject reason. Error-toned when the candidate landed in a terminal
+              negative stage; neutral otherwise. */}
+          {latestTransition ? (
+            <section
+              className={`rounded-lg border p-4 ${
+                isRejection
+                  ? "border-status-error-200 bg-status-error-50"
+                  : "border-neutral-200 bg-white"
+              }`}
+            >
+              <SectionHeading>
+                {isRejection ? "Rejection reason" : "Latest stage change"}
+              </SectionHeading>
+              <p
+                className={`text-sm font-medium ${
+                  isRejection ? "text-status-error-800" : "text-neutral-900"
+                }`}
+              >
+                {humanizeSentence(latestTransition.toStage)}
+              </p>
+              {latestTransition.reason ? (
+                <p
+                  className={`mt-1 text-sm ${
+                    isRejection ? "text-status-error-700" : "text-neutral-600"
+                  }`}
+                >
+                  {latestTransition.reason}
+                </p>
+              ) : null}
+              <p className="mt-2 text-xs text-neutral-400">
+                by {latestTransition.actorName ?? "System"}
+                {latestTransition.transitionedAt
+                  ? ` · ${timeAgo(latestTransition.transitionedAt)}`
+                  : ""}
+              </p>
+            </section>
           ) : null}
 
           {/* Skills */}

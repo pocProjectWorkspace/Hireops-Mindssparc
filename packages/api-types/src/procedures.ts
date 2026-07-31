@@ -133,10 +133,27 @@ export const candidateApplicationScoreSchema = z.object({
   aiScoredAt: z.string().nullable(),
 });
 
+/**
+ * T-FIX-1 (Fix A) — the latest application_state_transitions row for this
+ * candidate's application, so the drawer can SHOW the reject reason (and any
+ * other stage change) that's already persisted. Nullable facet: null when the
+ * candidate has no application or the application has no transition history.
+ * `actorName` is the human who made the change (null for system transitions);
+ * `transitionedAt` is an ISO string (or null if unset).
+ */
+export const candidateLatestTransitionSchema = z.object({
+  toStage: applicationStageSchema,
+  fromStage: applicationStageSchema.nullable(),
+  reason: z.string().nullable(),
+  transitionedAt: z.string().nullable(),
+  actorName: z.string().nullable(),
+});
+
 export const getCandidateByIdOutputSchema = z.object({
   candidate: candidateRowSchema,
   person: candidatePersonSchema,
   application: candidateApplicationScoreSchema.nullable(),
+  latestTransition: candidateLatestTransitionSchema.nullable(),
 });
 
 export type GetCandidateByIdInput = z.infer<typeof getCandidateByIdInputSchema>;
