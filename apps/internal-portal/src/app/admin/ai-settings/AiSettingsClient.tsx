@@ -1,5 +1,6 @@
 "use client";
 
+import { PageContainer } from "@/components/nav/PageContainer";
 import { useMemo, useState } from "react";
 import {
   AI_FEATURE_KEYS,
@@ -64,7 +65,7 @@ export function AiSettingsClient({
   }
 
   return (
-    <div className="mx-auto w-full max-w-3xl px-6 py-8">
+    <PageContainer variant="measure" className="py-8">
       <h2 className="mb-1 text-base font-semibold text-neutral-900">Per-feature controls</h2>
       <p className="mb-6 text-sm text-neutral-600">
         Per-tenant kill-switches consumed directly by the AI call path. Model, temperature and token
@@ -199,7 +200,7 @@ export function AiSettingsClient({
           </button>
         ) : null}
       </div>
-    </div>
+    </PageContainer>
   );
 }
 

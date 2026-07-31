@@ -1,5 +1,6 @@
 "use client";
 
+import { PageContainer } from "@/components/nav/PageContainer";
 import { useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import {
@@ -509,7 +510,7 @@ export function RequisitionWizard({
   const allGreen = checklist.every((c) => c.ok);
 
   return (
-    <div className="mx-auto w-full max-w-3xl px-8 py-6">
+    <PageContainer variant="measure" className="py-6">
       <Stepper step={step} onJump={(n) => (rid || n === 1 ? goToStep(n) : undefined)} rid={rid} />
       <AutosaveIndicator
         savedAt={updateDraft.data ? Date.now() : null}
@@ -1086,7 +1087,7 @@ export function RequisitionWizard({
           ) : null}
         </Card>
       ) : null}
-    </div>
+    </PageContainer>
   );
 }
 

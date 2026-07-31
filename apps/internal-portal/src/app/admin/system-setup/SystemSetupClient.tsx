@@ -1,5 +1,6 @@
 "use client";
 
+import { PageContainer } from "@/components/nav/PageContainer";
 import { useMemo, useState } from "react";
 import {
   type SystemSetup,
@@ -119,7 +120,7 @@ export function SystemSetupClient({ initial }: { initial: SystemSetup }) {
   }
 
   return (
-    <div className="mx-auto w-full max-w-3xl px-6 py-8">
+    <PageContainer variant="measure" className="py-8">
       <div className="mb-6 rounded-xl border border-neutral-200 bg-neutral-50 px-5 py-4">
         <p className="text-sm text-neutral-700">
           Operational configuration for this tenant. When enabled, these settings are consumed by
@@ -347,7 +348,7 @@ export function SystemSetupClient({ initial }: { initial: SystemSetup }) {
           </button>
         ) : null}
       </div>
-    </div>
+    </PageContainer>
   );
 }
 

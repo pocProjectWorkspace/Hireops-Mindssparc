@@ -1,3 +1,4 @@
+import { PageContainer } from "@/components/nav/PageContainer";
 import { Card, EmptyState } from "@/components/ui";
 import { RecommendationChip } from "@/components/patterns";
 import type { GetPanelDashboardOutput } from "@hireops/api-types";
@@ -31,7 +32,7 @@ function fmtDate(iso: string | null): string {
 export function PanelFeedbackQueue({ board }: { board: GetPanelDashboardOutput }) {
   const { pending, submitted } = board;
   return (
-    <div className="mx-auto flex w-full max-w-4xl flex-col gap-8 px-8 py-6">
+    <PageContainer variant="measure" className="flex flex-col gap-8 py-6">
       {/* Pending */}
       <section className="flex flex-col gap-3">
         <div className="flex items-center gap-2">
@@ -136,6 +137,6 @@ export function PanelFeedbackQueue({ board }: { board: GetPanelDashboardOutput }
           </Card>
         )}
       </section>
-    </div>
+    </PageContainer>
   );
 }

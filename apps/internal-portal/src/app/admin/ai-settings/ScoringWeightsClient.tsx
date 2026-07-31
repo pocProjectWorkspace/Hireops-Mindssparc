@@ -1,5 +1,6 @@
 "use client";
 
+import { PageContainer } from "@/components/nav/PageContainer";
 import { useMemo, useState } from "react";
 import {
   SCORING_WEIGHT_CATEGORIES,
@@ -50,7 +51,7 @@ export function ScoringWeightsClient({ initialWeights }: { initialWeights: Scori
   }
 
   return (
-    <div className="mx-auto w-full max-w-3xl px-6 pb-10">
+    <PageContainer variant="measure" className="pb-10">
       <Card className="p-5">
         <div className="mb-1 flex items-center justify-between gap-4">
           <h2 className="text-sm font-semibold text-neutral-900">Scoring weight profile</h2>
@@ -140,6 +141,6 @@ export function ScoringWeightsClient({ initialWeights }: { initialWeights: Scori
           </button>
         </div>
       </Card>
-    </div>
+    </PageContainer>
   );
 }

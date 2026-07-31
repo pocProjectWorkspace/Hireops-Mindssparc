@@ -1,5 +1,6 @@
 "use client";
 
+import { PageContainer } from "@/components/nav/PageContainer";
 import { useMemo, useState } from "react";
 import {
   BIAS_CATEGORIES,
@@ -101,7 +102,7 @@ export function BiasLexiconClient({ initialLexicon }: { initialLexicon: BiasLexi
   const blockCount = rows.filter((r) => r.severity === "block").length;
 
   return (
-    <div className="mx-auto mt-2 w-full max-w-3xl px-6 pb-10">
+    <PageContainer variant="measure" className="mt-2 pb-10">
       <div className="mb-4 border-t border-neutral-200 pt-8">
         <h2 className="text-base font-semibold text-neutral-900">JD bias gate</h2>
         <p className="mt-1 text-sm text-neutral-600">
@@ -263,6 +264,6 @@ export function BiasLexiconClient({ initialLexicon }: { initialLexicon: BiasLexi
           </button>
         ) : null}
       </div>
-    </div>
+    </PageContainer>
   );
 }

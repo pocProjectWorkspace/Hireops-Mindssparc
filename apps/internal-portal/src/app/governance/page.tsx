@@ -1,3 +1,4 @@
+import { PageContainer } from "@/components/nav/PageContainer";
 import { requireAuth, sessionUserChip } from "@/lib/auth";
 import { createServerTRPCCaller } from "@/lib/trpc-server";
 import { AppShell } from "@/components/nav/AppShell";
@@ -61,7 +62,7 @@ export default async function GovernancePage() {
       active="governance"
       user={sessionUserChip(session)}
     >
-      <div className="mx-auto w-full max-w-3xl px-6 py-8">
+      <PageContainer variant="measure" className="py-8">
         <p className="mb-6 max-w-prose text-sm text-neutral-600">
           Bias Shield anonymisation and candidate feedback-sharing policy. These controls are
           consumed by real code paths: screening privacy shapes what recruiters see in triage;
@@ -73,7 +74,7 @@ export default async function GovernancePage() {
         />
         <RiskFlagsPanel risk={risk} />
         <RetentionSection items={retention.items} />
-      </div>
+      </PageContainer>
     </AppShell>
   );
 }

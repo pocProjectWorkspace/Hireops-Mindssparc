@@ -1,5 +1,6 @@
 "use client";
 
+import { PageContainer } from "@/components/nav/PageContainer";
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import type { OffboardingInitiationType } from "@hireops/api-types";
@@ -62,7 +63,7 @@ export function NewOffboardingForm() {
   const busy = mutation.isPending;
 
   return (
-    <div className="mx-auto w-full max-w-2xl px-8 py-6">
+    <PageContainer variant="measure" className="py-6">
       <a
         href="/offboarding"
         className="mb-4 inline-flex items-center gap-1 text-sm text-neutral-500 transition-colors hover:text-neutral-800"
@@ -193,7 +194,7 @@ export function NewOffboardingForm() {
           </div>
         )}
       </Card>
-    </div>
+    </PageContainer>
   );
 }
 

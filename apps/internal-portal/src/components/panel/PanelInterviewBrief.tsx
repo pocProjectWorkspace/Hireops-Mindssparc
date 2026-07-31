@@ -1,5 +1,6 @@
 "use client";
 
+import { PageContainer } from "@/components/nav/PageContainer";
 import { useMemo, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { Button } from "@hireops/ui";
@@ -185,7 +186,7 @@ export function PanelInterviewBrief({
   }
 
   return (
-    <div className="mx-auto w-full max-w-4xl px-8 py-6">
+    <PageContainer variant="measure" className="py-6">
       <a href="/panel" className="mb-4 inline-block text-sm text-brand-700 hover:underline">
         ← My interviews
       </a>
@@ -362,7 +363,7 @@ export function PanelInterviewBrief({
           </div>
         ) : null}
       </Card>
-    </div>
+    </PageContainer>
   );
 }
 

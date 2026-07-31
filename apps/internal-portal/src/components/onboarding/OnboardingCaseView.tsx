@@ -1,5 +1,6 @@
 "use client";
 
+import { PageContainer } from "@/components/nav/PageContainer";
 import { useRef, useState } from "react";
 import type { ChangeEvent, ReactNode } from "react";
 import { useQueryClient } from "@tanstack/react-query";
@@ -99,7 +100,7 @@ export function OnboardingCaseView({
   const done = tasks.filter((t) => t.status === "completed").length;
 
   return (
-    <div className="mx-auto w-full max-w-4xl px-8 py-6">
+    <PageContainer variant="measure" className="py-6">
       <a
         href="/onboarding"
         className="mb-4 inline-flex items-center gap-1 text-sm text-neutral-500 transition-colors hover:text-neutral-800"
@@ -139,7 +140,7 @@ export function OnboardingCaseView({
 
       {/* Documents */}
       <DocumentsSection caseId={caseId} tasks={tasks} documents={documents} />
-    </div>
+    </PageContainer>
   );
 }
 

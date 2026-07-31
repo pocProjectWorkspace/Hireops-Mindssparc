@@ -1,5 +1,6 @@
 "use client";
 
+import { PageContainer } from "@/components/nav/PageContainer";
 import { useMemo, useState } from "react";
 import type {
   GetRetentionPolicyOutput,
@@ -142,7 +143,7 @@ export function RetentionPolicyClient({
   }
 
   return (
-    <div className="mx-auto w-full max-w-3xl px-6 py-8">
+    <PageContainer variant="measure" className="py-8">
       <PageHeader
         title="Document retention policy"
         subtitle="Set how long each document type is retained. These retention periods are real config, they drive the overdue register below, not just display."
@@ -319,6 +320,6 @@ export function RetentionPolicyClient({
           </TableShell>
         )}
       </Card>
-    </div>
+    </PageContainer>
   );
 }

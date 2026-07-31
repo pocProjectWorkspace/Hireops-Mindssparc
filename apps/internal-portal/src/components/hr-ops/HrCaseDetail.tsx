@@ -1,5 +1,6 @@
 "use client";
 
+import { PageContainer } from "@/components/nav/PageContainer";
 import { useState } from "react";
 import type { ReactNode } from "react";
 import type { GetHrCaseDetailOutput, HrCaseFeedbackCard } from "@hireops/api-types";
@@ -74,7 +75,7 @@ export function HrCaseDetail({
   ];
 
   return (
-    <div className="mx-auto w-full max-w-5xl space-y-6 px-8 py-6">
+    <PageContainer variant="measure" className="space-y-6 py-6">
       {/* Header */}
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div className="min-w-0">
@@ -141,7 +142,7 @@ export function HrCaseDetail({
       ) : (
         <DocumentsTab applicationId={applicationId} />
       )}
-    </div>
+    </PageContainer>
   );
 }
 

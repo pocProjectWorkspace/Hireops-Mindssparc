@@ -1,5 +1,6 @@
 "use client";
 
+import { PageContainer } from "@/components/nav/PageContainer";
 import { useMemo, useState } from "react";
 import type { GetGovernancePolicyOutput, UpdateGovernancePolicyInput } from "@hireops/api-types";
 import { Button, Input } from "@hireops/ui";
@@ -197,7 +198,7 @@ export function GovernancePolicyClient({ initial }: { initial: GetGovernancePoli
   }, [draft, resolved]);
 
   return (
-    <div className="mx-auto w-full max-w-3xl px-6 py-8">
+    <PageContainer variant="measure" className="py-8">
       <PageHeader
         title="Governance policy"
         subtitle="Configure the compliance-score weights and the governance SLA policy that drive the HR-head governance surface. These values are real config, not just display."
@@ -383,6 +384,6 @@ export function GovernancePolicyClient({ initial }: { initial: GetGovernancePoli
           </Button>
         </div>
       </Card>
-    </div>
+    </PageContainer>
   );
 }

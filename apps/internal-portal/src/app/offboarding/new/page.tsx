@@ -1,3 +1,4 @@
+import { PageContainer } from "@/components/nav/PageContainer";
 import { requireAuth, sessionUserChip } from "@/lib/auth";
 import { AppShell } from "@/components/nav/AppShell";
 import { EmptyState } from "@/components/ui";
@@ -28,12 +29,12 @@ export default async function NewOffboardingPage() {
       {canAccess ? (
         <NewOffboardingForm />
       ) : (
-        <div className="mx-auto w-full max-w-2xl px-8 py-16">
+        <PageContainer variant="measure" className="py-16">
           <EmptyState
             title="You don't have access to offboarding"
             hint="Offboarding is managed by HR Ops and People Ops. Ask an admin if you need access."
           />
-        </div>
+        </PageContainer>
       )}
     </AppShell>
   );

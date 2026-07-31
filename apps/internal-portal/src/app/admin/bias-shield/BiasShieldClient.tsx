@@ -1,5 +1,6 @@
 "use client";
 
+import { PageContainer } from "@/components/nav/PageContainer";
 import { useMemo } from "react";
 import {
   type BiasLexicon,
@@ -72,7 +73,7 @@ export function BiasShieldClient({ lexicon }: { lexicon: BiasLexicon }) {
   const totalBlock = lexicon.entries.filter((e) => e.severity === "block").length;
 
   return (
-    <div className="mx-auto w-full max-w-4xl px-6 py-8">
+    <PageContainer variant="measure" className="py-8">
       {/* ── The refusal centerpiece ── */}
       <section className="mb-8 overflow-hidden rounded-2xl border border-brand-200 bg-brand-50">
         <div className="px-7 py-7">
@@ -198,6 +199,6 @@ export function BiasShieldClient({ lexicon }: { lexicon: BiasLexicon }) {
         The lexicon shown reflects this tenant’s live configuration. This screen is read-only; the
         gate is configured on Admin → AI settings.
       </p>
-    </div>
+    </PageContainer>
   );
 }

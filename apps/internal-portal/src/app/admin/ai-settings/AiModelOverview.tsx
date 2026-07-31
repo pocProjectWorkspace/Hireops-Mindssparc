@@ -1,5 +1,6 @@
 "use client";
 
+import { PageContainer } from "@/components/nav/PageContainer";
 import { AI_MODEL_ALLOWLIST, type GetAiUsageSummaryOutput } from "@hireops/api-types";
 import { Card, Badge, TableShell, Thead, Th, Tbody, Tr, Td } from "@/components/ui";
 
@@ -24,7 +25,7 @@ export function AiModelOverview({ usage }: { usage: GetAiUsageSummaryOutput }) {
   const totalTokens = totals.input_tokens + totals.output_tokens;
 
   return (
-    <div className="mx-auto w-full max-w-3xl px-6 pt-8">
+    <PageContainer variant="measure" className="pt-8">
       <Card className="mb-4 p-5">
         <div className="mb-1 flex items-center justify-between gap-4">
           <h2 className="text-sm font-semibold text-neutral-900">Model &amp; provider</h2>
@@ -106,7 +107,7 @@ export function AiModelOverview({ usage }: { usage: GetAiUsageSummaryOutput }) {
           </TableShell>
         )}
       </Card>
-    </div>
+    </PageContainer>
   );
 }
 

@@ -1,5 +1,6 @@
 "use client";
 
+import { PageContainer } from "@/components/nav/PageContainer";
 import { useMemo, useState } from "react";
 import {
   type ApprovalMatrixRow,
@@ -136,7 +137,7 @@ export function ApprovalRoutingClient({ initial }: { initial: ApprovalMatrixRow[
   }
 
   return (
-    <div className="mx-auto w-full max-w-3xl px-6 py-8">
+    <PageContainer variant="measure" className="py-8">
       <div className="mb-6 rounded-xl border border-neutral-200 bg-neutral-50 px-5 py-4">
         <p className="text-sm text-neutral-700">
           Choose who approves each chain and when the policy takes effect. Policies are{" "}
@@ -322,7 +323,7 @@ export function ApprovalRoutingClient({ initial }: { initial: ApprovalMatrixRow[
           ) : null}
         </div>
       </Card>
-    </div>
+    </PageContainer>
   );
 }
 

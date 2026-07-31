@@ -1,5 +1,6 @@
 "use client";
 
+import { PageContainer } from "@/components/nav/PageContainer";
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import type { GetRequisitionDetailOutput } from "@hireops/api-types";
@@ -155,7 +156,7 @@ export function RequisitionDetailView({
   const decidePending = decide.isPending;
 
   return (
-    <div className="mx-auto w-full max-w-4xl px-8 py-6 space-y-6">
+    <PageContainer variant="measure" className="py-6 space-y-6">
       {error ? (
         <div className="rounded-lg border border-status-error-200 bg-status-error-50 px-4 py-3 text-sm text-status-error-700">
           {error}
@@ -401,7 +402,7 @@ export function RequisitionDetailView({
         requisitionId={requisitionId}
         canManage={canManageInterviews && !["cancelled", "closed"].includes(r.status)}
       />
-    </div>
+    </PageContainer>
   );
 }
 
