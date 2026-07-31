@@ -24,6 +24,7 @@ import {
   Td,
 } from "@/components/ui";
 import { ChevronRightIcon } from "@/components/patterns/icons";
+import { PageContainer } from "@/components/nav/PageContainer";
 import {
   MatchTierChip,
   MissingInfoCell,
@@ -337,7 +338,7 @@ export function CandidatesByRoleList({
   );
 
   return (
-    <div className="mx-auto w-full max-w-6xl px-8 py-6">
+    <PageContainer>
       <div className="mb-5 flex items-center gap-3">
         <h2 className="flex items-center gap-2 text-lg font-semibold text-neutral-900">
           All candidates
@@ -407,6 +408,6 @@ export function CandidatesByRoleList({
           ))}
         </div>
       )}
-    </div>
+    </PageContainer>
   );
 }

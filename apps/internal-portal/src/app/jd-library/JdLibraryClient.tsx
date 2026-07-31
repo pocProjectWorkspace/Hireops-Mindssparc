@@ -12,6 +12,7 @@ import { trpc } from "@/lib/trpc-client";
 import { humanize } from "@/lib/labels";
 import { JdTemplatesPanel } from "@/components/jd-library/JdTemplatesPanel";
 import { cn } from "@/components/ui/cn";
+import { PageContainer } from "@/components/nav/PageContainer";
 
 /**
  * RO-03 — the /jd-library client. A searchable table over the current JD of
@@ -68,8 +69,8 @@ export function JdLibraryClient({
 
   return (
     <div>
-      <div className="border-b border-neutral-200 px-8">
-        <nav className="mx-auto flex w-full max-w-6xl gap-1" aria-label="JD library sections">
+      <div className="border-b border-neutral-200 px-4 lg:px-8">
+        <nav className="flex w-full gap-1" aria-label="JD library sections">
           {(
             [
               ["descriptions", "Job descriptions"],
@@ -126,7 +127,7 @@ function JdDescriptionsTab({ initial }: { initial: ListJdLibraryOutput }) {
   }, [rows, search]);
 
   return (
-    <div className="mx-auto w-full max-w-6xl px-8 py-6">
+    <PageContainer>
       <p className="mb-4 text-sm text-neutral-600">
         Every job description across your requisitions. Keyword chips come from the JD&rsquo;s
         skills (or its AI-extracted keywords), real data, never invented. Expand a row for its
@@ -182,7 +183,7 @@ function JdDescriptionsTab({ initial }: { initial: ListJdLibraryOutput }) {
       {modal ? (
         <JdViewModal title={modal.title} version={modal.version} onClose={() => setModal(null)} />
       ) : null}
-    </div>
+    </PageContainer>
   );
 }
 

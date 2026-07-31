@@ -16,6 +16,7 @@ import {
 } from "@/components/ui";
 import { trpc } from "@/lib/trpc-client";
 import { RecruiterBriefDrawer } from "@/components/recruiter/RecruiterBriefDrawer";
+import { PageContainer } from "@/components/nav/PageContainer";
 import {
   MISSING_INFO_STATUSES,
   type ListMissingInfoOutput,
@@ -75,7 +76,7 @@ export function MissingInfoClient({ initial }: { initial: ListMissingInfoOutput 
       : null;
 
   return (
-    <div className="mx-auto max-w-[92rem] px-8 py-6">
+    <PageContainer>
       <div className="mb-1 flex items-center gap-2">
         <h2 className="text-lg font-semibold tracking-tight text-neutral-900">
           Missing Info Tracker
@@ -240,6 +241,6 @@ export function MissingInfoClient({ initial }: { initial: ListMissingInfoOutput 
       )}
 
       <RecruiterBriefDrawer applicationId={drawerAppId} onClose={() => setDrawerAppId(null)} />
-    </div>
+    </PageContainer>
   );
 }

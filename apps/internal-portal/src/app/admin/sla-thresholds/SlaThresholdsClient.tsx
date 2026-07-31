@@ -11,6 +11,7 @@ import { Button, Input } from "@hireops/ui";
 import { Card } from "@/components/ui";
 import { PageHeader } from "@/components/patterns";
 import { trpc, handleTRPCError } from "@/lib/trpc-client";
+import { PageContainer } from "@/components/nav/PageContainer";
 
 /**
  * Admin SLA thresholds editor (T4.1) — the per-stage SLA hours.
@@ -124,7 +125,7 @@ export function SlaThresholdsClient({ initial }: { initial: GetSlaThresholdsOutp
   }
 
   return (
-    <div className="mx-auto w-full max-w-3xl px-6 py-8">
+    <PageContainer variant="measure" className="py-8">
       <PageHeader
         title="SLA thresholds"
         subtitle="Set the per-stage SLA hours for this tenant. These hours drive breach detection, recruiter urgency, governance/compliance scoring, and the imminent-breach alert emails, not just display."
@@ -196,6 +197,6 @@ export function SlaThresholdsClient({ initial }: { initial: GetSlaThresholdsOutp
           </Button>
         </div>
       </Card>
-    </div>
+    </PageContainer>
   );
 }

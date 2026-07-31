@@ -10,6 +10,7 @@ import { Input, Switch, Button } from "@hireops/ui";
 import { Card, Badge } from "@/components/ui";
 import { PageHeader } from "@/components/patterns";
 import { trpc, handleTRPCError } from "@/lib/trpc-client";
+import { PageContainer } from "@/components/nav/PageContainer";
 
 /**
  * Admin Theme & Branding editor (AD2).
@@ -87,7 +88,7 @@ export function BrandingClient({ initial }: { initial: GetTenantBrandingOutput }
   }
 
   return (
-    <div className="mx-auto w-full max-w-5xl px-6 py-8">
+    <PageContainer variant="measure" className="py-8">
       <PageHeader
         title="Theme & branding"
         subtitle="Customise this tenant's identity. The company name rebrands the product; colour, logo and dark-mode form the brand profile shown below."
@@ -221,7 +222,7 @@ export function BrandingClient({ initial }: { initial: GetTenantBrandingOutput }
           </button>
         ) : null}
       </div>
-    </div>
+    </PageContainer>
   );
 }
 

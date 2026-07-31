@@ -7,6 +7,7 @@ import { Card, EmptyState, TableShell, Thead, Th, Tbody, Tr, Td } from "@/compon
 import type { ListMyRequisitionsV2Output } from "@hireops/api-types";
 import { HealthBar, DifficultyChip, ReqStatusChip, formatReqDate } from "./shared";
 import { AiAssistedPill, useProvenanceMap } from "@/components/iris/AiAssistedPill";
+import { PageContainer } from "@/components/nav/PageContainer";
 
 /**
  * RequisitionsListV2 (RO-01) — My Requisitions v2. Search + status filter over
@@ -79,7 +80,7 @@ export function RequisitionsListV2({
   }
 
   return (
-    <div className="mx-auto w-full max-w-6xl px-8 py-6">
+    <PageContainer>
       <div className="mb-4 flex flex-wrap items-center gap-3">
         <input
           type="search"
@@ -182,7 +183,7 @@ export function RequisitionsListV2({
           </Tbody>
         </TableShell>
       )}
-    </div>
+    </PageContainer>
   );
 }
 
