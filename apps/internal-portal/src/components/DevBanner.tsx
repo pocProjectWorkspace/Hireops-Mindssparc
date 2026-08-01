@@ -1,13 +1,14 @@
 /**
- * Tiny corner indicator for non-production builds. Picks NEXT_PUBLIC_ENV
- * (preferred) → falls back to NODE_ENV. Hides in production. Yellow on
+ * Tiny corner indicator for LOCAL builds. Picks NEXT_PUBLIC_ENV
+ * (preferred) → falls back to NODE_ENV. Hidden on production AND staging
+ * (staging is a demo/recording surface, so it must read clean). Yellow on
  * black so it survives any theme experimentation downstream.
  *
  * Plain server component — no client state needed.
  */
 export function DevBanner() {
   const env = process.env.NEXT_PUBLIC_ENV ?? process.env.NODE_ENV ?? "dev";
-  if (env === "production") return null;
+  if (env === "production" || env === "staging") return null;
   return (
     <div
       role="status"
