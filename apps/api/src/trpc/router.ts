@@ -124,6 +124,8 @@ import {
   type IrisCaller,
 } from "../lib/iris/registry";
 import { resolveIrisIntent, degradedResolution } from "../lib/iris/resolve-intent";
+import { answerIrisHelp, degradedHelp } from "../lib/iris/iris-help";
+import { capabilityEntriesForRoles } from "../lib/iris/capability-map";
 import {
   draftCandidateMessage,
   deterministicCandidateMessageDraft,
@@ -774,6 +776,8 @@ import {
   irisSearchApplicationsOutputSchema,
   irisResolveIntentInputSchema,
   irisResolveIntentOutputSchema,
+  irisHelpInputSchema,
+  irisHelpOutputSchema,
   messageCandidateInputSchema,
   messageCandidateOutputSchema,
   irisDraftCandidateMessageInputSchema,
@@ -21976,6 +21980,52 @@ export const appRouter = router({
         tenantId,
         text: input.text,
         eligibleActionIds,
+        context: input.context,
+        requestId: ctx.requestId,
+        actorMembershipId,
+      });
+    }),
+
+  /**
+   * irisHelp (IRIS-HELP) — the natural-language HELP/GUIDE layer. Answers a
+   * "how do I …" question STRICTLY from the caller's role-eligible curated
+   * capability map, and may hand off to ONE role+policy eligible whitelisted
+   * action (opening its existing form; it never dispatches here). Honours the
+   * iris_assistant kill-switch and logs cost under feature "iris_help". It's a
+   * mutation because the ai-client writes a usage-log row; there is NO business
+   * write here.
+   */
+  irisHelp: protectedProcedure
+    .input(irisHelpInputSchema)
+    .output(irisHelpOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      if (!ctx.tenantId) {
+        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
+      }
+      const tenantId = ctx.tenantId;
+      // IRIS kill-switch: the same per-tenant iris_assistant switch as the other
+      // Iris AI calls. Disabled → the lib's calm degrade (no model call, no row).
+      const aiSettings = await resolveTenantAiSettingsDb(tenantId);
+      if (!aiSettings.iris_assistant.enabled) {
+        return degradedHelp();
+      }
+      // Role-eligible curated entries + role+policy eligible actions (with labels)
+      // for an optional handoff — the SAME deny-overlay irisListActions applies,
+      // so help never explains or offers an action a role has been turned off.
+      const policy = await resolveIrisPolicyForCtx(ctx);
+      const eligibleActions = listIrisActions()
+        .filter((a) =>
+          irisActionAllowedRoles(a.id, a.roles, policy).some((r) => ctx.roles.includes(r)),
+        )
+        .map((a) => ({ id: a.id, label: a.label }));
+      const entries = capabilityEntriesForRoles(ctx.roles);
+      const db = requireDb(ctx);
+      const actorMembershipId = await resolveActorMembership(db, ctx);
+      return answerIrisHelp({
+        tenantId,
+        question: input.question,
+        entries,
+        eligibleActions,
         context: input.context,
         requestId: ctx.requestId,
         actorMembershipId,

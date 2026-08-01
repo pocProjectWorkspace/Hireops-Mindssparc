@@ -452,3 +452,44 @@ export const irisResolveIntentOutputSchema = z.object({
   message: z.string().nullable().optional(),
 });
 export type IrisResolveIntentOutput = z.infer<typeof irisResolveIntentOutputSchema>;
+
+// ─────────────── irisHelp (IRIS-HELP) ───────────────
+
+/**
+ * irisHelp (IRIS-HELP) — the natural-language HELP/GUIDE layer. A question in; a
+ * grounded answer out, drawn STRICTLY from the caller's role-eligible curated
+ * capability entries. It ANSWERS, never executes: `suggestedActionId` (when
+ * present) is one of the caller's role+policy eligible whitelisted actions and
+ * only ever hands off into the UNCHANGED preview → confirm → execute pipeline.
+ * Honours the iris_assistant kill-switch (degrades to a calm answer) and logs
+ * cost under feature "iris_help".
+ */
+export const irisHelpInputSchema = z.object({
+  /** The user's question. Bounded so a paste can't balloon the prompt. */
+  question: z.string().min(1).max(1000),
+  /** Optional page context so the answer can be situated ("on this page …"). */
+  context: z
+    .object({
+      route: z.string().max(500).optional(),
+      entityType: z.string().max(100).optional(),
+      entityId: z.string().max(200).optional(),
+    })
+    .optional(),
+});
+export type IrisHelpInput = z.infer<typeof irisHelpInputSchema>;
+
+export const irisHelpOutputSchema = z.object({
+  /** The grounded answer (or the calm degrade text). Always present. */
+  answer: z.string(),
+  /**
+   * A whitelisted action id the user could run now, or null. Guaranteed to be one
+   * of the caller's role+policy eligible actions; the client opens its existing
+   * form (a handoff), never dispatches from here.
+   */
+  suggestedActionId: z.string().nullable(),
+  /** The suggested action's human label (for the handoff button), or null. */
+  suggestedActionLabel: z.string().nullable(),
+  /** The titles of the capability entries the answer drew from (for provenance). */
+  citedTitles: z.array(z.string()),
+});
+export type IrisHelpOutput = z.infer<typeof irisHelpOutputSchema>;
