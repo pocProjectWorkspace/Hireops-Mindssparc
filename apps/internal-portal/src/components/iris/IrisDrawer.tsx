@@ -15,6 +15,7 @@ import type {
   IrisResolveIntentOutput,
 } from "@hireops/api-types";
 import { suggestedActionForRoute, type IrisPageContext } from "./context-map";
+import { IrisAvatar } from "./IrisAvatar";
 import { IrisApplicationPicker, type IrisPickedApplication } from "./IrisApplicationPicker";
 import { IrisDocumentTypeMultiSelect } from "./IrisDocumentTypeMultiSelect";
 import { IrisOfferPicker, type IrisPickedOffer } from "./IrisOfferPicker";
@@ -520,9 +521,7 @@ export function IrisDrawer({ open, onClose, context }: IrisDrawerProps) {
         <header className="flex items-start justify-between gap-4 border-b border-neutral-200 bg-white px-6 py-5">
           <div className="min-w-0">
             <h2 className="flex items-center gap-2 text-lg font-semibold tracking-tight text-neutral-900">
-              <span aria-hidden className="text-brand-500">
-                ✨
-              </span>
+              <IrisAvatar size={28} />
               Iris
             </h2>
             <p className="mt-0.5 text-xs text-neutral-500">

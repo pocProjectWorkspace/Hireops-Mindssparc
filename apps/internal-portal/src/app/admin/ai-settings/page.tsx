@@ -32,7 +32,9 @@ export default async function AiSettingsPage() {
     caller.getAiUsageSummary({ from }),
     caller.getBiasLexicon({}),
     caller.getScoringWeights({}),
-    caller.getIrisPolicy({}),
+    // Resilient: if the API build predates getIrisPolicy the whole page must
+    // not 500 — degrade to a muted "unavailable" note instead.
+    caller.getIrisPolicy({}).catch(() => null),
   ]);
 
   return (
@@ -46,7 +48,13 @@ export default async function AiSettingsPage() {
       <AiModelOverview usage={usage} />
       <AiSettingsClient initialSettings={settings} usage={usage} />
       <ScoringWeightsClient initialWeights={weights} />
-      <IrisPolicyClient initial={irisPolicy} />
+      {irisPolicy ? (
+        <IrisPolicyClient initial={irisPolicy} />
+      ) : (
+        <PageContainer variant="measure">
+          <p className="text-sm text-neutral-500">Iris action policy is unavailable right now.</p>
+        </PageContainer>
+      )}
       <BiasLexiconClient initialLexicon={lexicon} />
     </AppShell>
   );

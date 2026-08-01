@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { IrisAvatar } from "./IrisAvatar";
 import { IrisDrawer } from "./IrisDrawer";
 import { useIrisContext } from "./IrisProvider";
 
@@ -21,7 +22,7 @@ export function IrisLauncher() {
         aria-haspopup="dialog"
         className="inline-flex h-9 items-center gap-1.5 rounded-button border border-brand-200 bg-brand-50 px-3 text-sm font-medium text-brand-700 transition-colors hover:border-brand-300 hover:bg-brand-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-500"
       >
-        <span aria-hidden>✨</span>
+        <IrisAvatar size={20} />
         Ask Iris
       </button>
       <IrisDrawer open={open} onClose={() => setOpen(false)} context={context} />
