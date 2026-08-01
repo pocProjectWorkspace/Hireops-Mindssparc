@@ -71,6 +71,7 @@ import {
 import { MobileNav } from "./MobileNav";
 import { IrisProvider } from "@/components/iris/IrisProvider";
 import { IrisLauncher } from "@/components/iris/IrisLauncher";
+import { OnboardingJourney } from "@/components/onboarding-journey/OnboardingJourney";
 
 export type PortalNavKey =
   | "home"
@@ -138,6 +139,8 @@ export type PortalNavKey =
   // T4.3 — document retention policy + overdue register
   | "retention-policy";
 
+// ONBOARD-1: NavItem is exported so the onboarding journey can render the
+// same nav items the sidebar shows (filtered by role via navItemsForRoles).
 export interface NavItem {
   key: PortalNavKey;
   label: string;
@@ -152,7 +155,7 @@ export interface NavItem {
   roles?: string[];
 }
 
-const MAIN_NAV: NavItem[] = [
+export const MAIN_NAV: NavItem[] = [
   // DASH-01: the persona landing dashboard is Home — first item, all roles.
   { key: "home", label: "Home", href: "/dashboard", icon: <IconHome /> },
   {
@@ -439,7 +442,17 @@ function visibleNav(items: NavItem[], isAdmin: boolean, roles: string[]): NavIte
   });
 }
 
-const ADMIN_NAV: NavItem[] = [
+/**
+ * ONBOARD-1: role-only nav filter for surfaces that don't carry the separate
+ * `isAdmin` flag (the onboarding journey). Un-gated items always show; gated
+ * items need a role overlap. Admin sessions carry the "admin" role, which every
+ * gated item lists, so this matches the sidebar's visible output.
+ */
+export function navItemsForRoles(items: NavItem[], roles: string[]): NavItem[] {
+  return items.filter((i) => !i.roles || i.roles.some((r) => roles.includes(r)));
+}
+
+export const ADMIN_NAV: NavItem[] = [
   { key: "workflows", label: "Workflows", href: "/admin/workflows", icon: <IconWorkflows /> },
   { key: "branding", label: "Theme & branding", href: "/admin/branding", icon: <IconBranding /> },
   { key: "audit", label: "Audit", href: "/admin/audit", icon: <IconAudit /> },
@@ -570,12 +583,12 @@ const ADMIN_NAV: NavItem[] = [
  * INVARIANT: every MAIN_NAV / ADMIN_NAV item key must appear in exactly one
  * section below — a key omitted here would never render in the sidebar.
  */
-interface NavSection {
+export interface NavSection {
   heading?: string;
   keys: PortalNavKey[];
 }
 
-const MAIN_NAV_SECTIONS: NavSection[] = [
+export const MAIN_NAV_SECTIONS: NavSection[] = [
   { keys: ["home"] },
   {
     heading: "Recruiting",
@@ -617,7 +630,7 @@ const MAIN_NAV_SECTIONS: NavSection[] = [
   },
 ];
 
-const ADMIN_NAV_SECTIONS: NavSection[] = [
+export const ADMIN_NAV_SECTIONS: NavSection[] = [
   {
     heading: "Admin · Platform",
     keys: [
@@ -767,7 +780,7 @@ function NavGroup({
   );
 }
 
-function UserChip({ user }: { user: AppShellUser }) {
+function UserChip({ user, roles }: { user: AppShellUser; roles: string[] }) {
   const initial = (user.label.trim()[0] ?? "?").toUpperCase();
   return (
     <div className="border-t border-sidebar-border p-3">
@@ -792,6 +805,9 @@ function UserChip({ user }: { user: AppShellUser }) {
         </span>
         Sign out
       </a>
+      {/* ONBOARD-1: the onboarding journey renders its own inline "Take the
+          tour" trigger here and portals its modal to document.body. */}
+      <OnboardingJourney roles={roles} userLabel={user.label} />
     </div>
   );
 }
@@ -830,7 +846,7 @@ function Sidebar({
             ))
           : null}
       </div>
-      <UserChip user={user} />
+      <UserChip user={user} roles={roles} />
     </aside>
   );
 }
