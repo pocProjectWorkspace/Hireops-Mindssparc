@@ -13,6 +13,7 @@ import type {
   IrisActionMenuItem,
   IrisExecuteOutput,
   IrisResolveIntentOutput,
+  IrisHelpOutput,
 } from "@hireops/api-types";
 import { suggestedActionForRoute, type IrisPageContext } from "./context-map";
 import { IrisAvatar } from "./IrisAvatar";
@@ -127,6 +128,13 @@ export function IrisDrawer({ open, onClose, context }: IrisDrawerProps) {
   const [nlCandidateSeed, setNlCandidateSeed] = useState("");
   const [nlRequisitionSeed, setNlRequisitionSeed] = useState("");
 
+  // IRIS-HELP — the "How do I…" advisory mode. `nlMode` toggles the shared input
+  // between proposing an action ("do") and answering a question from the curated
+  // capability map ("help"). `helpResult` holds the grounded answer + optional
+  // action handoff.
+  const [nlMode, setNlMode] = useState<"do" | "help">("do");
+  const [helpResult, setHelpResult] = useState<IrisHelpOutput | null>(null);
+
   // create_requisition_jd form fields (minimum-info; the schema defaults the
   // rest). title + locationType are the required minimum.
   const [title, setTitle] = useState("");
@@ -203,6 +211,8 @@ export function IrisDrawer({ open, onClose, context }: IrisDrawerProps) {
     setNlResult(null);
     setNlCandidateSeed("");
     setNlRequisitionSeed("");
+    setNlMode("do");
+    setHelpResult(null);
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") onClose();
     };
@@ -302,6 +312,13 @@ export function IrisDrawer({ open, onClose, context }: IrisDrawerProps) {
   // message_candidate — AI DRAFTS the email (proposes only); the returned subject
   // + body prefill the EDITABLE fields. Nothing sends here — the human edits, then
   // Confirms on the review step, which runs the real gated messageCandidate send.
+  // IRIS-HELP — answer a "How do I…" question from the curated capability map.
+  // Grounded + role/policy-filtered server-side; PROPOSES only (any action
+  // handoff opens the existing form, never dispatches).
+  const help = trpc.irisHelp.useMutation({
+    onSuccess: (data) => setHelpResult(data),
+  });
+
   const draftMessage = trpc.irisDraftCandidateMessage.useMutation({
     onSuccess: (data) => {
       setMessageSubject(data.subject);
@@ -401,6 +418,20 @@ export function IrisDrawer({ open, onClose, context }: IrisDrawerProps) {
     setNlResult(null);
     resolveIntent.mutate({
       text,
+      context: {
+        route: context.route,
+        ...(context.entityType ? { entityType: context.entityType } : {}),
+        ...(context.entityId ? { entityId: context.entityId } : {}),
+      },
+    });
+  }
+
+  function onSubmitHelp() {
+    const question = nlText.trim();
+    if (!question) return;
+    setHelpResult(null);
+    help.mutate({
+      question,
       context: {
         route: context.route,
         ...(context.entityType ? { entityType: context.entityType } : {}),
@@ -567,36 +598,112 @@ export function IrisDrawer({ open, onClose, context }: IrisDrawerProps) {
                 {/* ── NL chat input (IRIS-A3) — a third entry mode. ── */}
                 <section>
                   <SectionHeading>Ask Iris</SectionHeading>
+                  {/* IRIS-HELP — the mode toggle: propose an action ("Do it") vs
+                      answer a "How do I…" question from the curated capability map.
+                      Switching modes clears the other mode's result. */}
+                  <div className="mb-2 inline-flex rounded-md border border-neutral-200 bg-neutral-100 p-0.5 text-xs font-medium">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setNlMode("do");
+                        setHelpResult(null);
+                      }}
+                      className={
+                        nlMode === "do"
+                          ? "rounded bg-white px-2.5 py-1 text-neutral-900 shadow-1"
+                          : "rounded px-2.5 py-1 text-neutral-500"
+                      }
+                    >
+                      Do it
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setNlMode("help");
+                        setNlResult(null);
+                      }}
+                      className={
+                        nlMode === "help"
+                          ? "rounded bg-white px-2.5 py-1 text-neutral-900 shadow-1"
+                          : "rounded px-2.5 py-1 text-neutral-500"
+                      }
+                    >
+                      How do I…
+                    </button>
+                  </div>
                   <div className="space-y-2">
                     <textarea
                       value={nlText}
                       rows={2}
                       onChange={(e) => setNlText(e.target.value)}
                       onKeyDown={(e) => {
-                        if ((e.metaKey || e.ctrlKey) && e.key === "Enter") onSubmitNl();
+                        if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
+                          if (nlMode === "do") onSubmitNl();
+                          else onSubmitHelp();
+                        }
                       }}
                       maxLength={1000}
-                      placeholder="Describe what you want to do, e.g. “Reject Priya Nair — not enough backend experience”."
+                      placeholder={
+                        nlMode === "do"
+                          ? "Describe what you want to do, e.g. “Reject Priya Nair, not enough backend experience”."
+                          : "Ask how to do something, e.g. “How do I post a new requisition?”"
+                      }
                       className="w-full resize-y rounded-md border border-neutral-300 bg-white px-3 py-2 text-sm text-neutral-900 placeholder:text-neutral-400 transition-colors focus:border-brand-600 focus:outline-none focus:ring-1 focus:ring-brand-600"
                     />
                     <div className="flex items-center justify-between gap-3">
                       <p className="text-[11px] text-neutral-400">
-                        Iris drafts an action for you to review and confirm, it never sends anything
-                        on its own.
+                        {nlMode === "do"
+                          ? "Iris drafts an action for you to review and confirm, it never sends anything on its own."
+                          : "Iris answers from what you can actually do here, and can start the action for you."}
                       </p>
                       <Button
-                        onClick={onSubmitNl}
-                        disabled={resolveIntent.isPending || nlText.trim().length === 0}
+                        onClick={nlMode === "do" ? onSubmitNl : onSubmitHelp}
+                        disabled={
+                          (nlMode === "do" ? resolveIntent.isPending : help.isPending) ||
+                          nlText.trim().length === 0
+                        }
                       >
-                        {resolveIntent.isPending ? "Thinking…" : "Ask"}
+                        {(nlMode === "do" ? resolveIntent.isPending : help.isPending)
+                          ? "Thinking…"
+                          : "Ask"}
                       </Button>
                     </div>
-                    {resolveIntent.isError ? (
+                    {nlMode === "do" && resolveIntent.isError ? (
                       <p className="text-sm text-status-error-700">
                         Couldn&apos;t reach Iris just now, pick an action from the menu below.
                       </p>
                     ) : null}
-                    {nlResult && !nlResult.actionId ? (
+                    {nlMode === "help" && help.isError ? (
+                      <p className="text-sm text-status-error-700">
+                        Couldn&apos;t reach Iris just now, try again in a moment.
+                      </p>
+                    ) : null}
+                    {nlMode === "help" && helpResult ? (
+                      <div className="rounded-lg border border-neutral-200 bg-white p-3 text-sm text-neutral-700">
+                        <p className="whitespace-pre-wrap">{helpResult.answer}</p>
+                        {helpResult.suggestedActionId &&
+                        actions.some((a) => a.id === helpResult.suggestedActionId) ? (
+                          <div className="mt-3">
+                            <Button
+                              onClick={() => {
+                                if (helpResult.suggestedActionId)
+                                  openForm(helpResult.suggestedActionId);
+                              }}
+                            >
+                              {helpResult.suggestedActionLabel
+                                ? `Do it with Iris: ${helpResult.suggestedActionLabel}`
+                                : "Do it with Iris"}
+                            </Button>
+                          </div>
+                        ) : null}
+                        {helpResult.citedTitles.length > 0 ? (
+                          <p className="mt-2 text-[11px] text-neutral-400">
+                            Based on: {helpResult.citedTitles.join(", ")}
+                          </p>
+                        ) : null}
+                      </div>
+                    ) : null}
+                    {nlMode === "do" && nlResult && !nlResult.actionId ? (
                       <div className="rounded-lg border border-neutral-200 bg-white p-3 text-sm text-neutral-700">
                         {nlResult.clarifyingQuestion ??
                           nlResult.message ??
