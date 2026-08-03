@@ -28,6 +28,7 @@ export type CandidateNavKey =
   | "applications"
   | "interviews"
   | "documents"
+  | "learning"
   | "notifications"
   | "settings";
 
@@ -56,6 +57,27 @@ function IconBell() {
     >
       <path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9" />
       <path d="M10.5 21a1.5 1.5 0 0 0 3 0" />
+    </svg>
+  );
+}
+
+/** Open book — Learning (LD-1B). 16px / 1.75 stroke, matches nav-icons. */
+function IconBook() {
+  return (
+    <svg
+      width="16"
+      height="16"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.75"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M12 7C10.5 5.6 8.6 5 6 5H3v12h3c2.6 0 4.5.6 6 2" />
+      <path d="M12 7c1.5-1.4 3.4-2 6-2h3v12h-3c-2.6 0-4.5.6-6 2z" />
+      <line x1="12" y1="7" x2="12" y2="19" />
     </svg>
   );
 }
@@ -107,6 +129,15 @@ export const CANDIDATE_NAV: CandidateNavItem[] = [
     href: "/candidate/documents",
     icon: <IconDocuments />,
     external: true,
+  },
+  {
+    // LD-1B: the learning a recruiter has pushed onto this hire's onboarding
+    // case — grouped by layer, each item an outbound link plus a self-attested
+    // progress control.
+    key: "learning",
+    label: "Learning",
+    href: "/candidate/learning",
+    icon: <IconBook />,
   },
   {
     key: "notifications",

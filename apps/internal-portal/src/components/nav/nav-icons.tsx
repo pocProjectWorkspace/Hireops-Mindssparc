@@ -482,3 +482,15 @@ export function IconBiasShield() {
     </Svg>
   );
 }
+
+// LD-1B — Learning & development. An open book: HireOps points at learning
+// that lives elsewhere, it does not author or host it.
+export function IconLearning() {
+  return (
+    <Svg>
+      <path d="M12 7C10.5 5.6 8.6 5 6 5H3v12h3c2.6 0 4.5.6 6 2" />
+      <path d="M12 7c1.5-1.4 3.4-2 6-2h3v12h-3c-2.6 0-4.5.6-6 2z" />
+      <line x1="12" y1="7" x2="12" y2="19" />
+    </Svg>
+  );
+}

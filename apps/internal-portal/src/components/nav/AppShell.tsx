@@ -66,6 +66,7 @@ import {
   IconMessaging,
   IconSystemSetup,
   IconBiasShield,
+  IconLearning,
   IconSignOut,
 } from "./nav-icons";
 import { MobileNav } from "./MobileNav";
@@ -137,7 +138,9 @@ export type PortalNavKey =
   // T4.2 — configurable governance/compliance policy
   | "governance-policy"
   // T4.3 — document retention policy + overdue register
-  | "retention-policy";
+  | "retention-policy"
+  // LD-1B — the L&D catalogue + tracks pushed onto a hire's onboarding case
+  | "learning";
 
 // ONBOARD-1: NavItem is exported so the onboarding journey can render the
 // same nav items the sidebar shows (filtered by role via navItemsForRoles).
@@ -569,6 +572,9 @@ export const ADMIN_NAV: NavItem[] = [
     href: "/admin/retention-policy",
     icon: <IconRetentionPolicy />,
   },
+  // LD-1B — the L&D catalogue (pointers at learning hosted elsewhere) + the
+  // curated tracks a recruiter pushes onto one hire's onboarding case.
+  { key: "learning", label: "Learning", href: "/admin/learning", icon: <IconLearning /> },
 ];
 
 /**
@@ -658,6 +664,7 @@ export const ADMIN_NAV_SECTIONS: NavSection[] = [
       "sla-thresholds",
       "governance-policy",
       "retention-policy",
+      "learning",
     ],
   },
   {

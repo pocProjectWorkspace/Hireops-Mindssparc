@@ -126,8 +126,14 @@ export const TASK_GROUPS: TaskGroupDef[] = [
   {
     key: "people",
     title: "People & check-ins",
-    types: ["buddy_assignment", "training", "check_in"],
+    types: ["buddy_assignment", "check_in"],
   },
+  // LD-1B: pushed learning lands as ordinary tasks — 'orientation' for the
+  // organisation layer, 'training' for role/individual — alongside the
+  // generator's own "mandatory onboarding training" task. They read as one
+  // section rather than 'training' hiding under people and 'orientation'
+  // falling through to "Other".
+  { key: "learning", title: "Learning & development", types: ["orientation", "training"] },
   { key: "probation", title: "Probation", types: ["probation_review"] },
 ];
 

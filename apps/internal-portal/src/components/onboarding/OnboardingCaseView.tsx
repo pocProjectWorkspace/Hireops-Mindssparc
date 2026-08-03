@@ -16,6 +16,7 @@ import { Input, Select } from "@hireops/ui";
 import { trpc } from "@/lib/trpc-client";
 import { getSupabaseBrowserClient } from "@/lib/supabase-client";
 import { Badge, Button, Card, EmptyState } from "@/components/ui";
+import { AssignLearningPanel } from "./AssignLearningPanel";
 import {
   CASE_STATUS_META,
   TASK_STATUS_META,
@@ -70,10 +71,11 @@ type TaskItem = Omit<OnboardingTaskRow, "metadata"> & { metadata?: unknown };
  * expected/actual start, probation window, buddy/manager) plus the status
  * chip and the single forward-only status action allowed from here. Below,
  * the generated checklist grouped into document collection / IT & assets /
- * people & check-ins / probation, each task actionable: complete, reopen,
- * block (reason required — the API 400s without one), skip. A documents
- * section lists any collected files, or a quiet placeholder (upload is a
- * later ticket).
+ * people & check-ins / learning & development / probation, each task
+ * actionable: complete, reopen, block (reason required — the API 400s without
+ * one), skip. Below it, the LD-1B learning push (assign a curated track and/or
+ * loose resources at this hire; the items land back in the checklist above).
+ * A documents section lists any collected files, or a quiet placeholder.
  *
  * Seeded from the server render (`initial`) and kept live by React Query; a
  * mutation invalidates the detail query so the header progress and task
@@ -137,6 +139,9 @@ export function OnboardingCaseView({
 
       {/* Checklist */}
       <Checklist tasks={tasks} />
+
+      {/* Learning push (LD-1B) — pushed items land in the checklist above. */}
+      <AssignLearningPanel caseId={caseId} />
 
       {/* Documents */}
       <DocumentsSection caseId={caseId} tasks={tasks} documents={documents} />
