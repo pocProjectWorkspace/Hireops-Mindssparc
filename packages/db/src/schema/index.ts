@@ -114,3 +114,6 @@ export * from "./tenant-email-template-overrides";
 // Tenant interview round templates + custom scorecard values (T2.2 / G07)
 export * from "./tenant-interview-round-template";
 export * from "./tenant-scorecard-template";
+// L&D catalogue + curated tracks pushed onto a hire's onboarding case (LD-1A)
+export * from "./learning-resources";
+export * from "./learning-tracks";

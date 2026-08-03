@@ -54,6 +54,9 @@ import {
   compBands,
   panelPools,
   panelPoolMembers,
+  learningResources,
+  learningTracks,
+  learningTrackItems,
   jdVersions,
   jdSkills,
   approvalChains,
@@ -604,6 +607,30 @@ import {
   setPanelPoolArchivedInputSchema,
   setPanelPoolArchivedOutputSchema,
   type PanelPoolRow,
+  // LD-1A L&D catalogue, tracks, and the push onto a hire's onboarding case
+  listLearningResourcesInputSchema,
+  listLearningResourcesOutputSchema,
+  upsertLearningResourceInputSchema,
+  upsertLearningResourceOutputSchema,
+  archiveLearningResourceInputSchema,
+  archiveLearningResourceOutputSchema,
+  listLearningTracksInputSchema,
+  listLearningTracksOutputSchema,
+  upsertLearningTrackInputSchema,
+  upsertLearningTrackOutputSchema,
+  setLearningTrackItemsInputSchema,
+  setLearningTrackItemsOutputSchema,
+  assignLearningToCaseInputSchema,
+  assignLearningToCaseOutputSchema,
+  candidateUpdateLearningProgressInputSchema,
+  candidateUpdateLearningProgressOutputSchema,
+  type LearningProvider,
+  type LearningResourceRow,
+  type LearningTrackRow,
+  type LearningTrackItemRow,
+  type LearningTrackLayer,
+  type CandidateLearningItem,
+  type LearningAssignmentLayer,
   // HRHEAD-02 market intelligence + feasibility
   listMarketBenchmarksInputSchema,
   listMarketBenchmarksOutputSchema,
@@ -1255,6 +1282,15 @@ const SLA_CONFIG_ROLES = new Set(["admin", "hr_head"]);
 const PANEL_POOL_READ_ROLES = new Set(["admin", "hiring_manager", "recruiter"]);
 const PANEL_POOL_WRITE_ROLES = new Set(["admin", "recruiter"]);
 
+// LD-1A — the L&D CATALOGUE (learning resources + curated tracks) is org
+// config: what the company decides every hire, or every hire in a role, should
+// learn. admin + hr_head own it, the same pair that owns the SLA thresholds and
+// the comp-band library. NOTE the deliberate asymmetry with the PUSH
+// (assignLearningToCase), which is gated ONBOARDING_MANAGE_ROLES — curating the
+// library and deciding what one specific new hire gets are different acts by
+// different people. RLS still scopes rows to the tenant on top of this gate.
+const LEARNING_ADMIN_ROLES = new Set(["admin", "hr_head"]);
+
 /** DB row → API row for a comp band. numeric columns come back as strings —
  * convert to number; timestamps to ISO strings. */
 function compBandRowToApi(row: typeof compBands.$inferSelect): CompBandRow {
@@ -1283,6 +1319,45 @@ function panelPoolRowToApi(
     focus: row.focus ?? null,
     isArchived: row.isArchived,
     memberMembershipIds,
+    createdAt: row.createdAt.toISOString(),
+    updatedAt: row.updatedAt.toISOString(),
+  };
+}
+
+/** DB row → API row for a learning resource (LD-1A). `provider` is a text +
+ * CHECK column, so the DB value is narrowed to the zod union here — the CHECK
+ * constraint is what makes the cast honest. */
+function learningResourceRowToApi(row: typeof learningResources.$inferSelect): LearningResourceRow {
+  return {
+    id: row.id,
+    title: row.title,
+    description: row.description ?? null,
+    provider: row.provider as LearningProvider,
+    url: row.url,
+    externalRef: row.externalRef ?? null,
+    estimatedMinutes: row.estimatedMinutes ?? null,
+    isArchived: row.isArchived,
+    sortOrder: row.sortOrder,
+    createdAt: row.createdAt.toISOString(),
+    updatedAt: row.updatedAt.toISOString(),
+  };
+}
+
+/** DB row (+ its resolved, ordered items) → API row for a learning track. */
+function learningTrackRowToApi(
+  row: typeof learningTracks.$inferSelect,
+  items: LearningTrackItemRow[],
+): LearningTrackRow {
+  return {
+    id: row.id,
+    name: row.name,
+    layer: row.layer as LearningTrackLayer,
+    businessUnitId: row.businessUnitId ?? null,
+    positionId: row.positionId ?? null,
+    roleFamily: row.roleFamily ?? null,
+    isActive: row.isActive,
+    sortOrder: row.sortOrder,
+    items,
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
   };
@@ -1383,6 +1458,79 @@ async function loadValidScorecardKeys(
     .where(eq(tenantScorecardTemplate.tenantId, tenantId));
   for (const r of rows) keys.add(r.scorecardKey);
   return keys;
+}
+
+/**
+ * LD-1A — a pushed learning task's due date: the case's expected start date
+ * (a 'YYYY-MM-DD' date column) plus the track item's `due_offset_days`, at UTC
+ * midnight. NULL when either input is unknown — the design is explicit that a
+ * missing start date yields no due date rather than a fabricated one.
+ */
+function learningDueAt(expectedStartDate: string | null, offsetDays: number | null): Date | null {
+  if (!expectedStartDate || offsetDays == null) return null;
+  const base = new Date(`${expectedStartDate}T00:00:00.000Z`);
+  if (Number.isNaN(base.getTime())) return null;
+  base.setUTCDate(base.getUTCDate() + offsetDays);
+  return base;
+}
+
+/**
+ * LD-1A — load a tenant's learning-track items, joined to the catalogue rows
+ * they point at, keyed by track id and ordered by (sort_order, title).
+ *
+ * One grouped read for the whole tenant (the listPanelPools fold), narrowed to
+ * `trackIds` when the caller only wants one track back. Archived resources are
+ * still returned: the admin editor must be able to SEE that a track contains a
+ * retired link (that is the link-rot signal), and `resourceIsArchived` carries
+ * it. The push (assignLearningToCase) is where archived rows are dropped.
+ */
+async function loadLearningTrackItems(
+  db: NonNullable<HonoTRPCContext["db"]>,
+  tenantId: string,
+  trackIds?: string[],
+): Promise<Map<string, LearningTrackItemRow[]>> {
+  const conditions = [eq(learningTrackItems.tenantId, tenantId)];
+  if (trackIds) {
+    if (trackIds.length === 0) return new Map();
+    conditions.push(inArray(learningTrackItems.trackId, trackIds));
+  }
+  const rows = await db
+    .select({
+      trackId: learningTrackItems.trackId,
+      resourceId: learningTrackItems.resourceId,
+      sortOrder: learningTrackItems.sortOrder,
+      isRequired: learningTrackItems.isRequired,
+      dueOffsetDays: learningTrackItems.dueOffsetDays,
+      resourceTitle: learningResources.title,
+      resourceProvider: learningResources.provider,
+      resourceIsArchived: learningResources.isArchived,
+    })
+    .from(learningTrackItems)
+    .innerJoin(
+      learningResources,
+      and(
+        eq(learningResources.tenantId, learningTrackItems.tenantId),
+        eq(learningResources.id, learningTrackItems.resourceId),
+      ),
+    )
+    .where(and(...conditions))
+    .orderBy(learningTrackItems.sortOrder, learningResources.title);
+
+  const byTrack = new Map<string, LearningTrackItemRow[]>();
+  for (const r of rows) {
+    const list = byTrack.get(r.trackId) ?? [];
+    list.push({
+      resourceId: r.resourceId,
+      resourceTitle: r.resourceTitle,
+      resourceProvider: r.resourceProvider as LearningProvider,
+      resourceIsArchived: r.resourceIsArchived,
+      sortOrder: r.sortOrder,
+      isRequired: r.isRequired,
+      dueOffsetDays: r.dueOffsetDays ?? null,
+    });
+    byTrack.set(r.trackId, list);
+  }
+  return byTrack;
 }
 
 /** Is a raw string a valid application_stage? Guards a text policy column value
@@ -2920,6 +3068,28 @@ interface CandidateOnbDocSqlRow {
   file_name: string | null;
   rejection_reason: string | null;
   uploaded_at: Date | string | null;
+}
+
+/** LD-1A — one learning task on the hire's case, left-joined to the catalogue
+ * row its metadata points at. The resource may be missing (archived-and-purged
+ * is impossible today, but a catalogue row is not guaranteed), so the pushed
+ * metadata snapshot is the fallback for url / provider. */
+interface CandidateOnbLearningSqlRow {
+  task_id: string;
+  task_status: string;
+  task_title: string;
+  task_description: string | null;
+  layer: string | null;
+  is_required: boolean | null;
+  meta_url: string | null;
+  meta_provider: string | null;
+  resource_title: string | null;
+  resource_description: string | null;
+  resource_url: string | null;
+  resource_provider: string | null;
+  estimated_minutes: number | string | null;
+  due_at: Date | string | null;
+  completed_at: Date | string | null;
 }
 
 // ─────────────── HROPS-02 comp & offer desk helpers ───────────────
@@ -15361,8 +15531,13 @@ export const appRouter = router({
   /**
    * candidateGetMyOnboarding — the candidate's onboarding case (if any, latest)
    * plus its document-collection checklist, each slot carrying the current
-   * uploaded document + its verification status. Person-scoped via
+   * uploaded document + its verification status, plus (LD-1A) the learning
+   * pushed onto the case, tagged by layer. Person-scoped via
    * case → candidate → person = the caller.
+   *
+   * The learning list is a SECOND query on the already-resolved case rather
+   * than a new procedure — the case lookup is already paid for, and extending
+   * beats duplicating it.
    */
   candidateGetMyOnboarding: candidateProcedure
     .output(candidateGetMyOnboardingOutputSchema)
@@ -15394,7 +15569,7 @@ export const appRouter = router({
         (caseResult as unknown as CandidateOnbCaseSqlRow[]);
       const caseRow = caseRows[0];
       if (!caseRow) {
-        return { case: null, documents: [] };
+        return { case: null, documents: [], learning: [] };
       }
 
       // One row per document_collection task, left-joined to its current
@@ -15445,6 +15620,63 @@ export const appRouter = router({
             : null,
         }));
 
+      // LD-1A — the learning a recruiter has PUSHED onto this case. Same
+      // already-resolved case (the lookup is already paid for), filtered to the
+      // two learning task types and joined back to the catalogue row the task's
+      // metadata points at — the documents query above is the model. The
+      // metadata snapshot (url / provider, taken at push time) is the fallback
+      // so an item still renders if its catalogue row was archived afterwards.
+      const learningResult = await db.execute(dsql`
+        SELECT
+          t.id::text                              AS task_id,
+          t.status                                AS task_status,
+          t.title                                 AS task_title,
+          t.description                           AS task_description,
+          (t.metadata->>'layer')                  AS layer,
+          (t.metadata->>'isRequired')::boolean    AS is_required,
+          (t.metadata->>'url')                    AS meta_url,
+          (t.metadata->>'provider')               AS meta_provider,
+          lr.title                                AS resource_title,
+          lr.description                          AS resource_description,
+          lr.url                                  AS resource_url,
+          lr.provider                             AS resource_provider,
+          lr.estimated_minutes                    AS estimated_minutes,
+          t.due_at,
+          t.completed_at
+        FROM public.onboarding_tasks t
+        LEFT JOIN public.learning_resources lr
+          ON lr.tenant_id = t.tenant_id
+          AND lr.id = NULLIF(t.metadata->>'learningResourceId', '')::uuid
+        WHERE t.tenant_id = ${ctx.candidate.tenantId}
+          AND t.case_id = ${caseRow.id}
+          AND t.task_type IN ('training', 'orientation')
+          AND t.metadata->>'learningResourceId' IS NOT NULL
+        ORDER BY t.due_at NULLS LAST, t.created_at, t.id
+      `);
+      const learningRows =
+        (learningResult as unknown as { rows?: CandidateOnbLearningSqlRow[] }).rows ??
+        (learningResult as unknown as CandidateOnbLearningSqlRow[]);
+
+      const learning: CandidateLearningItem[] = learningRows.map((r) => {
+        const layer: LearningAssignmentLayer =
+          r.layer === "organisation" || r.layer === "role" ? r.layer : "individual";
+        return {
+          taskId: r.task_id,
+          status: r.task_status,
+          layer,
+          title: r.resource_title ?? r.task_title,
+          description: r.resource_description ?? r.task_description ?? null,
+          provider: r.resource_provider ?? r.meta_provider ?? null,
+          url: r.resource_url ?? r.meta_url ?? null,
+          estimatedMinutes: r.estimated_minutes == null ? null : Number(r.estimated_minutes),
+          isRequired: r.is_required ?? true,
+          dueAt: r.due_at ? new Date(r.due_at as string | Date).toISOString() : null,
+          completedAt: r.completed_at
+            ? new Date(r.completed_at as string | Date).toISOString()
+            : null,
+        };
+      });
+
       return {
         case: {
           id: caseRow.id,
@@ -15453,6 +15685,7 @@ export const appRouter = router({
           expectedStartDate: caseRow.expected_start_date ?? null,
         },
         documents,
+        learning,
       };
     }),
 
@@ -15532,6 +15765,108 @@ export const appRouter = router({
           };
         },
       );
+    }),
+
+  /**
+   * candidateUpdateLearningProgress (LD-1A) — the hire flips ONE of their own
+   * learning tasks pending → in_progress → completed.
+   *
+   * Ownership is proven person-scoped through the case exactly as
+   * candidateAttachDocument does it (case → candidate → person = the caller),
+   * and the task is additionally constrained to the two learning task types
+   * WITH a learningResourceId in metadata — so this can never touch a
+   * document_collection, probation_review or IT-provisioning task.
+   *
+   * Forward-only: a completed item cannot be reopened from here (a recruiter
+   * can still move it with updateOnboardingTaskStatus).
+   *
+   * HONEST LIMITATION: completion is SELF-ATTESTED. HireOps orchestrates
+   * learning hosted elsewhere; without an LMS callback nothing here verifies
+   * the hire consumed the material. No surface may imply otherwise.
+   */
+  candidateUpdateLearningProgress: candidateProcedure
+    .input(candidateUpdateLearningProgressInputSchema)
+    .output(candidateUpdateLearningProgressOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      return withAudit("candidate_update_learning_progress", ctx, input, async () => {
+        const db = ctx.db;
+        if (!db) {
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: "candidate ctx.db missing",
+          });
+        }
+
+        // Person-scoped ownership: task → case → candidate → person MUST be
+        // this candidate's, and the task MUST be a learning task.
+        const [owned] = await db
+          .select({ id: onboardingTasks.id, status: onboardingTasks.status })
+          .from(onboardingTasks)
+          .innerJoin(
+            onboardingCases,
+            and(
+              eq(onboardingCases.tenantId, onboardingTasks.tenantId),
+              eq(onboardingCases.id, onboardingTasks.caseId),
+            ),
+          )
+          .innerJoin(
+            candidates,
+            and(
+              eq(candidates.tenantId, onboardingCases.tenantId),
+              eq(candidates.id, onboardingCases.candidateId),
+            ),
+          )
+          .where(
+            and(
+              eq(onboardingTasks.tenantId, ctx.candidate.tenantId),
+              eq(onboardingTasks.id, input.taskId),
+              eq(candidates.personId, ctx.candidate.personId),
+              inArray(onboardingTasks.taskType, ["training", "orientation"]),
+              dsql`${onboardingTasks.metadata}->>'learningResourceId' IS NOT NULL`,
+            ),
+          )
+          .limit(1);
+        if (!owned) {
+          throw new TRPCError({ code: "NOT_FOUND", message: "learning_task_not_found" });
+        }
+        if (owned.status === "completed" && input.status !== "completed") {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: "A completed learning item can't be reopened here.",
+          });
+        }
+
+        const [updated] = await db
+          .update(onboardingTasks)
+          .set({
+            status: input.status,
+            completedAt: input.status === "completed" ? new Date() : null,
+            updatedAt: new Date(),
+          })
+          .where(
+            and(
+              eq(onboardingTasks.tenantId, ctx.candidate.tenantId),
+              eq(onboardingTasks.id, input.taskId),
+            ),
+          )
+          .returning({
+            id: onboardingTasks.id,
+            status: onboardingTasks.status,
+            completedAt: onboardingTasks.completedAt,
+          });
+        if (!updated) {
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: "learning task update returned no row",
+          });
+        }
+
+        return {
+          taskId: updated.id,
+          status: updated.status,
+          completedAt: toIsoString(updated.completedAt),
+        };
+      });
     }),
 
   // ═══════════ DASH-01 — persona landing dashboards ═══════════
@@ -21017,6 +21352,672 @@ export const appRouter = router({
             row,
             members.map((m) => m.membershipId),
           ),
+        };
+      });
+    }),
+
+  // ═══════════ LD-1A — L&D catalogue, tracks, and the push ═══════════
+  //
+  // HireOps ORCHESTRATES learning, it does not author or host it. The tenant
+  // curates a catalogue of POINTERS (learning_resources — a Workday Learning /
+  // LinkedIn / Cornerstone deep link, a SharePoint doc, an unlisted video) and
+  // optionally bundles them into TRACKS (organisation induction, role tracks).
+  // A recruiter then PUSHES a track and/or loose resources onto ONE new hire's
+  // onboarding case, which materialises ordinary onboarding_tasks and notifies
+  // the candidate.
+  //
+  // Curating (admin + hr_head) and pushing (ONBOARDING_MANAGE_ROLES) are
+  // deliberately different gates — different acts, different people. Every
+  // mutation is audited; RLS scopes every row to the tenant.
+
+  /**
+   * listLearningResources — the catalogue. Excludes archived unless
+   * includeArchived. Ordered by (sort_order, title).
+   */
+  listLearningResources: protectedProcedure
+    .input(listLearningResourcesInputSchema)
+    .output(listLearningResourcesOutputSchema)
+    .query(async ({ ctx, input }) => {
+      requireAnyRole(
+        ctx,
+        LEARNING_ADMIN_ROLES,
+        "The learning catalogue requires the admin or hr_head role",
+      );
+      const db = requireDb(ctx);
+      if (!ctx.tenantId) {
+        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
+      }
+      const where = input.includeArchived
+        ? eq(learningResources.tenantId, ctx.tenantId)
+        : and(
+            eq(learningResources.tenantId, ctx.tenantId),
+            eq(learningResources.isArchived, false),
+          );
+      const rows = await db
+        .select()
+        .from(learningResources)
+        .where(where)
+        .orderBy(learningResources.sortOrder, learningResources.title);
+      return { rows: rows.map(learningResourceRowToApi) };
+    }),
+
+  /**
+   * upsertLearningResource — admin / hr_head, audited. Creates (no id) or
+   * updates (id) one catalogue row. A (tenant, title) collision surfaces a
+   * clean BAD_REQUEST (not a raw 23505) via a nested transaction (SAVEPOINT) —
+   * the createPanelPool / createCompBand precedent. NOT_FOUND when an id is
+   * given that is not the tenant's.
+   */
+  upsertLearningResource: protectedProcedure
+    .input(upsertLearningResourceInputSchema)
+    .output(upsertLearningResourceOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      return withAudit("upsert_learning_resource", ctx, input, async () => {
+        requireAnyRole(
+          ctx,
+          LEARNING_ADMIN_ROLES,
+          "Managing the learning catalogue requires the admin or hr_head role",
+        );
+        const db = requireDb(ctx);
+        if (!ctx.tenantId) {
+          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
+        }
+        const tenantId = ctx.tenantId;
+        const membershipId = await resolveActorMembership(db, ctx);
+        const title = input.title.trim();
+        const description = input.description?.trim() ? input.description.trim() : null;
+        const externalRef = input.externalRef?.trim() ? input.externalRef.trim() : null;
+
+        let row: typeof learningResources.$inferSelect | undefined;
+        try {
+          // Nested transaction (SAVEPOINT): a (tenant, title) unique violation
+          // rolls back to the savepoint rather than aborting the request's
+          // outer RLS transaction, so the clean BAD_REQUEST below survives.
+          [row] = await db.transaction((tx) =>
+            input.id
+              ? tx
+                  .update(learningResources)
+                  .set({
+                    title,
+                    description,
+                    provider: input.provider,
+                    url: input.url.trim(),
+                    externalRef,
+                    estimatedMinutes: input.estimatedMinutes ?? null,
+                    ...(input.sortOrder === undefined ? {} : { sortOrder: input.sortOrder }),
+                    updatedByMembershipId: membershipId,
+                    updatedAt: new Date(),
+                  })
+                  .where(
+                    and(
+                      eq(learningResources.tenantId, tenantId),
+                      eq(learningResources.id, input.id),
+                    ),
+                  )
+                  .returning()
+              : tx
+                  .insert(learningResources)
+                  .values({
+                    tenantId,
+                    title,
+                    description,
+                    provider: input.provider,
+                    url: input.url.trim(),
+                    externalRef,
+                    estimatedMinutes: input.estimatedMinutes ?? null,
+                    sortOrder: input.sortOrder ?? 0,
+                    createdByMembershipId: membershipId,
+                    updatedByMembershipId: membershipId,
+                  })
+                  .returning(),
+          );
+        } catch (err) {
+          if (isUniqueViolation(err)) {
+            throw new TRPCError({
+              code: "BAD_REQUEST",
+              message: `A learning resource titled "${title}" already exists. Pick a distinct title.`,
+            });
+          }
+          throw err;
+        }
+        if (!row) {
+          throw new TRPCError({ code: "NOT_FOUND", message: "learning resource not found" });
+        }
+        return { row: learningResourceRowToApi(row) };
+      });
+    }),
+
+  /**
+   * archiveLearningResource — admin / hr_head, audited. Flips is_archived.
+   * Resources are archived, NEVER deleted: track items FK them ON DELETE
+   * RESTRICT, and learning tasks already pushed onto a hire's case carry the
+   * resource id in metadata and must keep resolving. Archiving retires the row
+   * from the pickers and from any future push.
+   */
+  archiveLearningResource: protectedProcedure
+    .input(archiveLearningResourceInputSchema)
+    .output(archiveLearningResourceOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      return withAudit("archive_learning_resource", ctx, input, async () => {
+        requireAnyRole(
+          ctx,
+          LEARNING_ADMIN_ROLES,
+          "Managing the learning catalogue requires the admin or hr_head role",
+        );
+        const db = requireDb(ctx);
+        if (!ctx.tenantId) {
+          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
+        }
+        const tenantId = ctx.tenantId;
+        const membershipId = await resolveActorMembership(db, ctx);
+        const [row] = await db
+          .update(learningResources)
+          .set({
+            isArchived: input.archived,
+            updatedByMembershipId: membershipId,
+            updatedAt: new Date(),
+          })
+          .where(and(eq(learningResources.tenantId, tenantId), eq(learningResources.id, input.id)))
+          .returning();
+        if (!row) {
+          throw new TRPCError({ code: "NOT_FOUND", message: "learning resource not found" });
+        }
+        return { row: learningResourceRowToApi(row) };
+      });
+    }),
+
+  /**
+   * listLearningTracks — the tenant's curated bundles, each folded with its
+   * ordered items (one grouped read over learning_track_items). Excludes
+   * inactive tracks unless includeInactive; optional layer filter.
+   */
+  listLearningTracks: protectedProcedure
+    .input(listLearningTracksInputSchema)
+    .output(listLearningTracksOutputSchema)
+    .query(async ({ ctx, input }) => {
+      requireAnyRole(
+        ctx,
+        LEARNING_ADMIN_ROLES,
+        "Learning tracks require the admin or hr_head role",
+      );
+      const db = requireDb(ctx);
+      if (!ctx.tenantId) {
+        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
+      }
+      const tenantId = ctx.tenantId;
+      const conditions = [eq(learningTracks.tenantId, tenantId)];
+      if (!input.includeInactive) conditions.push(eq(learningTracks.isActive, true));
+      if (input.layer) conditions.push(eq(learningTracks.layer, input.layer));
+
+      const tracks = await db
+        .select()
+        .from(learningTracks)
+        .where(and(...conditions))
+        .orderBy(learningTracks.layer, learningTracks.sortOrder, learningTracks.name);
+      const byTrack = await loadLearningTrackItems(db, tenantId);
+      return { rows: tracks.map((t) => learningTrackRowToApi(t, byTrack.get(t.id) ?? [])) };
+    }),
+
+  /**
+   * upsertLearningTrack — admin / hr_head, audited. Creates (no id) or updates
+   * (id) a track HEADER; the items are set separately by setLearningTrackItems
+   * so a header edit never disturbs the contents.
+   *
+   * The binding invariant (a 'role' track binds to exactly one of position /
+   * role family; an 'organisation' track to neither) is enforced by the zod
+   * schema AND the learning_tracks_binding_check DB constraint. The
+   * business-unit / position ids are validated against this tenant here so a
+   * foreign id yields a clean BAD_REQUEST instead of a raw FK error.
+   */
+  upsertLearningTrack: protectedProcedure
+    .input(upsertLearningTrackInputSchema)
+    .output(upsertLearningTrackOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      return withAudit("upsert_learning_track", ctx, input, async () => {
+        requireAnyRole(
+          ctx,
+          LEARNING_ADMIN_ROLES,
+          "Managing learning tracks requires the admin or hr_head role",
+        );
+        const db = requireDb(ctx);
+        if (!ctx.tenantId) {
+          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
+        }
+        const tenantId = ctx.tenantId;
+        const membershipId = await resolveActorMembership(db, ctx);
+
+        const businessUnitId = input.businessUnitId ?? null;
+        const positionId = input.positionId ?? null;
+        const roleFamily = input.roleFamily?.trim() ? input.roleFamily.trim() : null;
+
+        if (businessUnitId) {
+          const [bu] = await db
+            .select({ id: businessUnits.id })
+            .from(businessUnits)
+            .where(and(eq(businessUnits.tenantId, tenantId), eq(businessUnits.id, businessUnitId)))
+            .limit(1);
+          if (!bu) throw new TRPCError({ code: "BAD_REQUEST", message: "Unknown business unit." });
+        }
+        if (positionId) {
+          const [pos] = await db
+            .select({ id: positions.id })
+            .from(positions)
+            .where(and(eq(positions.tenantId, tenantId), eq(positions.id, positionId)))
+            .limit(1);
+          if (!pos) throw new TRPCError({ code: "BAD_REQUEST", message: "Unknown position." });
+        }
+
+        const values = {
+          name: input.name.trim(),
+          layer: input.layer,
+          businessUnitId,
+          positionId,
+          roleFamily,
+          updatedByMembershipId: membershipId,
+        };
+
+        const [row] = input.id
+          ? await db
+              .update(learningTracks)
+              .set({
+                ...values,
+                ...(input.isActive === undefined ? {} : { isActive: input.isActive }),
+                ...(input.sortOrder === undefined ? {} : { sortOrder: input.sortOrder }),
+                updatedAt: new Date(),
+              })
+              .where(and(eq(learningTracks.tenantId, tenantId), eq(learningTracks.id, input.id)))
+              .returning()
+          : await db
+              .insert(learningTracks)
+              .values({
+                tenantId,
+                ...values,
+                isActive: input.isActive ?? true,
+                sortOrder: input.sortOrder ?? 0,
+                createdByMembershipId: membershipId,
+              })
+              .returning();
+        if (!row) {
+          throw new TRPCError({ code: "NOT_FOUND", message: "learning track not found" });
+        }
+        const byTrack = await loadLearningTrackItems(db, tenantId, [row.id]);
+        return { row: learningTrackRowToApi(row, byTrack.get(row.id) ?? []) };
+      });
+    }),
+
+  /**
+   * setLearningTrackItems — admin / hr_head, audited. Replace-set the track's
+   * whole ordered item list (the round-template shape): array order IS the sort
+   * order, an empty array clears the track. Validates the track is the tenant's
+   * (NOT_FOUND) and that every resource id is a catalogue row in this tenant
+   * (BAD_REQUEST). Duplicate resource ids collapse to the first occurrence.
+   */
+  setLearningTrackItems: protectedProcedure
+    .input(setLearningTrackItemsInputSchema)
+    .output(setLearningTrackItemsOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      return withAudit("set_learning_track_items", ctx, input, async () => {
+        requireAnyRole(
+          ctx,
+          LEARNING_ADMIN_ROLES,
+          "Managing learning tracks requires the admin or hr_head role",
+        );
+        const db = requireDb(ctx);
+        if (!ctx.tenantId) {
+          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
+        }
+        const tenantId = ctx.tenantId;
+
+        const [track] = await db
+          .select()
+          .from(learningTracks)
+          .where(and(eq(learningTracks.tenantId, tenantId), eq(learningTracks.id, input.trackId)))
+          .limit(1);
+        if (!track) throw new TRPCError({ code: "NOT_FOUND", message: "learning track not found" });
+
+        // Dedupe, preserving the caller's order (the sort order).
+        const seen = new Set<string>();
+        const items = input.items.filter((i) => {
+          if (seen.has(i.resourceId)) return false;
+          seen.add(i.resourceId);
+          return true;
+        });
+
+        if (items.length > 0) {
+          const known = await db
+            .select({ id: learningResources.id })
+            .from(learningResources)
+            .where(
+              and(
+                eq(learningResources.tenantId, tenantId),
+                inArray(
+                  learningResources.id,
+                  items.map((i) => i.resourceId),
+                ),
+              ),
+            );
+          if (known.length !== items.length) {
+            throw new TRPCError({
+              code: "BAD_REQUEST",
+              message: "One or more learning resources are not in this tenant's catalogue.",
+            });
+          }
+        }
+
+        // Replace-set: drop the track's existing items, insert these.
+        await db
+          .delete(learningTrackItems)
+          .where(
+            and(
+              eq(learningTrackItems.tenantId, tenantId),
+              eq(learningTrackItems.trackId, input.trackId),
+            ),
+          );
+        if (items.length > 0) {
+          await db.insert(learningTrackItems).values(
+            items.map((i, idx) => ({
+              tenantId,
+              trackId: input.trackId,
+              resourceId: i.resourceId,
+              sortOrder: idx,
+              isRequired: i.isRequired ?? true,
+              dueOffsetDays: i.dueOffsetDays ?? null,
+            })),
+          );
+        }
+
+        const byTrack = await loadLearningTrackItems(db, tenantId, [track.id]);
+        return { row: learningTrackRowToApi(track, byTrack.get(track.id) ?? []) };
+      });
+    }),
+
+  /**
+   * assignLearningToCase — THE PUSH (LD-1A). A recruiter decides what this hire
+   * needs and pushes it: a track's items, loose catalogue rows, or both.
+   *
+   * There is no per-hire assignment table. Each pushed resource becomes an
+   * ordinary onboarding_tasks row whose `metadata` points back at the catalogue
+   * row — exactly how a document_collection task points at a document type via
+   * metadata->>'documentTypeId'. So case rollup, overdue logic, the internal
+   * case-detail surface, updateOnboardingTaskStatus and the audit trail all
+   * apply with no new read path.
+   *
+   *   task_type  'orientation' when the source track's layer is 'organisation',
+   *              else 'training' (both already permitted by the existing
+   *              onboarding_tasks CHECK — the table is UNCHANGED).
+   *   metadata   { learningResourceId, trackId?, layer, url, provider,
+   *                isRequired }
+   *   due_at     expected_start_date + due_offset_days, else NULL.
+   *
+   * Allowed at ANY case status: a pre_boarding hire who has not yet activated a
+   * portal account still gets the notification and finds the items waiting. The
+   * recruiter owns the timing (resolved 3 Aug).
+   *
+   * IDEMPOTENT on (case_id, metadata->>'learningResourceId'): a re-push adds
+   * only what is new and never resets progress on what is already there.
+   * Archived resources are skipped — a retired link is not pushed at a hire.
+   */
+  assignLearningToCase: protectedProcedure
+    .input(assignLearningToCaseInputSchema)
+    .output(assignLearningToCaseOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      return withAudit("assign_learning_to_case", ctx, input, async () => {
+        // The PUSH is an onboarding act, not a config act — hence the
+        // onboarding gate rather than LEARNING_ADMIN_ROLES.
+        requireAnyRole(ctx, ONBOARDING_MANAGE_ROLES, "Onboarding is not available for your role");
+        const db = requireDb(ctx);
+        if (!ctx.tenantId) {
+          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
+        }
+        const tenantId = ctx.tenantId;
+
+        // 1. The case must be this tenant's. Any status is allowed.
+        const [caseRow] = await db
+          .select({
+            id: onboardingCases.id,
+            candidateId: onboardingCases.candidateId,
+            expectedStartDate: onboardingCases.expectedStartDate,
+            candidateName: persons.fullName,
+            candidateEmail: persons.emailPrimary,
+            positionTitle: positions.title,
+          })
+          .from(onboardingCases)
+          .leftJoin(
+            candidates,
+            and(
+              eq(candidates.tenantId, onboardingCases.tenantId),
+              eq(candidates.id, onboardingCases.candidateId),
+            ),
+          )
+          .leftJoin(
+            persons,
+            and(
+              eq(persons.tenantId, onboardingCases.tenantId),
+              eq(persons.id, candidates.personId),
+            ),
+          )
+          .leftJoin(
+            applications,
+            and(
+              eq(applications.tenantId, onboardingCases.tenantId),
+              eq(applications.id, onboardingCases.applicationId),
+            ),
+          )
+          .leftJoin(
+            requisitions,
+            and(
+              eq(requisitions.tenantId, onboardingCases.tenantId),
+              eq(requisitions.id, applications.requisitionId),
+            ),
+          )
+          .leftJoin(
+            positions,
+            and(
+              eq(positions.tenantId, onboardingCases.tenantId),
+              eq(positions.id, requisitions.positionId),
+            ),
+          )
+          .where(and(eq(onboardingCases.tenantId, tenantId), eq(onboardingCases.id, input.caseId)))
+          .limit(1);
+        if (!caseRow) {
+          throw new TRPCError({ code: "NOT_FOUND", message: "Onboarding case not found" });
+        }
+
+        // 2. Resolve what is being pushed. A track contributes its layer, its
+        //    per-item requiredness and its due offsets; loose resources are the
+        //    'individual' layer with no offset.
+        interface PushItem {
+          resource: typeof learningResources.$inferSelect;
+          layer: LearningAssignmentLayer;
+          trackId: string | null;
+          isRequired: boolean;
+          dueOffsetDays: number | null;
+          sortOrder: number;
+        }
+        const push = new Map<string, PushItem>();
+
+        if (input.trackId) {
+          const [track] = await db
+            .select()
+            .from(learningTracks)
+            .where(and(eq(learningTracks.tenantId, tenantId), eq(learningTracks.id, input.trackId)))
+            .limit(1);
+          if (!track) {
+            throw new TRPCError({ code: "NOT_FOUND", message: "learning track not found" });
+          }
+          const trackItems = await db
+            .select({
+              item: learningTrackItems,
+              resource: learningResources,
+            })
+            .from(learningTrackItems)
+            .innerJoin(
+              learningResources,
+              and(
+                eq(learningResources.tenantId, learningTrackItems.tenantId),
+                eq(learningResources.id, learningTrackItems.resourceId),
+              ),
+            )
+            .where(
+              and(
+                eq(learningTrackItems.tenantId, tenantId),
+                eq(learningTrackItems.trackId, track.id),
+                // A retired link is never pushed at a hire.
+                eq(learningResources.isArchived, false),
+              ),
+            )
+            .orderBy(learningTrackItems.sortOrder, learningResources.title);
+          for (const row of trackItems) {
+            push.set(row.resource.id, {
+              resource: row.resource,
+              layer: track.layer === "organisation" ? "organisation" : "role",
+              trackId: track.id,
+              isRequired: row.item.isRequired,
+              dueOffsetDays: row.item.dueOffsetDays ?? null,
+              sortOrder: row.item.sortOrder,
+            });
+          }
+        }
+
+        const looseIds = [...new Set(input.resourceIds ?? [])];
+        if (looseIds.length > 0) {
+          const loose = await db
+            .select()
+            .from(learningResources)
+            .where(
+              and(
+                eq(learningResources.tenantId, tenantId),
+                inArray(learningResources.id, looseIds),
+                eq(learningResources.isArchived, false),
+              ),
+            )
+            .orderBy(learningResources.sortOrder, learningResources.title);
+          if (loose.length !== looseIds.length) {
+            throw new TRPCError({
+              code: "BAD_REQUEST",
+              message: "One or more learning resources are unknown or archived.",
+            });
+          }
+          for (const resource of loose) {
+            // A resource already coming from the track keeps the track's
+            // layer / due offset — the bundle is the stronger statement.
+            if (push.has(resource.id)) continue;
+            push.set(resource.id, {
+              resource,
+              layer: "individual",
+              trackId: null,
+              isRequired: true,
+              dueOffsetDays: null,
+              sortOrder: resource.sortOrder,
+            });
+          }
+        }
+
+        const wanted = [...push.values()].sort((a, b) => a.sortOrder - b.sortOrder);
+        if (wanted.length === 0) {
+          return { caseId: caseRow.id, assigned: 0, skipped: 0, notified: 0, taskIds: [] };
+        }
+
+        // 3. Idempotency: which resources does this case already carry?
+        const existingRows = await db
+          .select({
+            resourceId: dsql<string | null>`${onboardingTasks.metadata}->>'learningResourceId'`,
+          })
+          .from(onboardingTasks)
+          .where(
+            and(
+              eq(onboardingTasks.tenantId, tenantId),
+              eq(onboardingTasks.caseId, caseRow.id),
+              inArray(onboardingTasks.taskType, ["training", "orientation"]),
+              dsql`${onboardingTasks.metadata}->>'learningResourceId' IS NOT NULL`,
+            ),
+          );
+        const already = new Set(existingRows.map((r) => r.resourceId).filter((v) => v !== null));
+
+        const toInsert = wanted.filter((w) => !already.has(w.resource.id));
+        const skipped = wanted.length - toInsert.length;
+        if (toInsert.length === 0) {
+          return { caseId: caseRow.id, assigned: 0, skipped, notified: 0, taskIds: [] };
+        }
+
+        // 4. One onboarding task per new resource.
+        const inserted = await db
+          .insert(onboardingTasks)
+          .values(
+            toInsert.map((w) => ({
+              tenantId,
+              caseId: caseRow.id,
+              taskType: w.layer === "organisation" ? "orientation" : "training",
+              status: "pending",
+              title: w.resource.title,
+              description: w.resource.description,
+              dueAt: learningDueAt(caseRow.expectedStartDate ?? null, w.dueOffsetDays),
+              metadata: {
+                learningResourceId: w.resource.id,
+                ...(w.trackId ? { trackId: w.trackId } : {}),
+                layer: w.layer,
+                url: w.resource.url,
+                provider: w.resource.provider,
+                isRequired: w.isRequired,
+              },
+            })),
+          )
+          .returning({ id: onboardingTasks.id });
+
+        // 5. Tell the hire. One notification per newly-assigned resource, with
+        //    a dedup_key per (case, resource) — so a re-push (which assigns
+        //    nothing new) also re-notifies nothing. Best-effort: a notify
+        //    failure must never roll back the assignment.
+        let notified = 0;
+        const [tenantRow] = await db
+          .select({ displayName: tenants.displayName })
+          .from(tenants)
+          .where(eq(tenants.id, tenantId))
+          .limit(1);
+        const companyName = tenantRow?.displayName ?? "your new employer";
+        const candidateName = caseRow.candidateName ?? "there";
+        const positionTitle = caseRow.positionTitle ?? "your new role";
+        if (caseRow.candidateEmail) {
+          for (const w of toInsert) {
+            const subject = `New learning assigned: ${w.resource.title}`;
+            const body =
+              `Hi ${candidateName.split(" ")[0] ?? candidateName},\n\n` +
+              `${companyName} has added "${w.resource.title}" to your onboarding plan for ${positionTitle}.\n\n` +
+              `You can open it from your onboarding page and mark your progress there.\n\n` +
+              `Thanks,\nThe ${companyName} team`;
+            try {
+              await enqueueNotification(db, {
+                tenantId,
+                recipientType: "candidate",
+                recipientEmail: caseRow.candidateEmail,
+                recipientCandidateId: caseRow.candidateId,
+                templateKey: "candidate.agent_message",
+                templateData: {
+                  candidateName,
+                  companyName,
+                  positionTitle,
+                  body,
+                  subject,
+                },
+                subject,
+                dedupKey: `learning_assigned:${caseRow.id}:${w.resource.id}`,
+              });
+              notified += 1;
+            } catch (err) {
+              ctx.log.warn(
+                { err, request_id: ctx.requestId, case_id: caseRow.id, resource_id: w.resource.id },
+                "assignLearningToCase: enqueueNotification failed",
+              );
+            }
+          }
+        }
+
+        return {
+          caseId: caseRow.id,
+          assigned: inserted.length,
+          skipped,
+          notified,
+          taskIds: inserted.map((r) => r.id),
         };
       });
     }),

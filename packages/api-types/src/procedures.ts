@@ -8,6 +8,7 @@ import {
 } from "./enums";
 import { jdBiasScanSchema, biasCategorySchema, biasSeveritySchema } from "./bias-lexicon";
 import { skillsMatchResultSchema } from "./panel-prep";
+import { candidateLearningItemSchema } from "./learning";
 
 /**
  * Input + output schemas for the initial six tRPC procedures (API-01).
@@ -3798,11 +3799,15 @@ export type CandidateOnboardingCase = z.infer<typeof candidateOnboardingCaseSche
 /**
  * The candidate's onboarding surface. `case` is null before an offer is
  * accepted (no case exists yet — the quiet empty state); `documents` is the
- * document-collection checklist for the case.
+ * document-collection checklist for the case; `learning` (LD-1A) is the
+ * training/orientation tasks a recruiter has pushed onto the case, joined back
+ * to the learning catalogue and tagged by layer. Both lists are empty when
+ * `case` is null.
  */
 export const candidateGetMyOnboardingOutputSchema = z.object({
   case: candidateOnboardingCaseSchema.nullable(),
   documents: z.array(candidateDocumentSlotSchema),
+  learning: z.array(candidateLearningItemSchema),
 });
 export type CandidateGetMyOnboardingOutput = z.infer<typeof candidateGetMyOnboardingOutputSchema>;
 

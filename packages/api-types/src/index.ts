@@ -36,3 +36,4 @@ export * from "./panel-pools";
 export * from "./sla-thresholds";
 export * from "./retention-policy";
 export * from "./iris";
+export * from "./learning";
