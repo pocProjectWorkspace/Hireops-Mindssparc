@@ -33,6 +33,7 @@
     "db:seed:t14": "tsx src/scripts/seed-t14-email-overrides.ts",
     "db:seed:t21": "tsx src/scripts/seed-t21-field-policy.ts",
     "db:seed:t22": "tsx src/scripts/seed-t22-interview-templates.ts",
+    "db:seed:analytics-demo": "tsx src/scripts/seed-analytics-demo.ts",
     "db:groom:demo-data": "tsx src/scripts/groom-demo-data.ts",
     "db:store:demo-ai-credential": "tsx src/scripts/store-demo-ai-credential.ts"
   },
