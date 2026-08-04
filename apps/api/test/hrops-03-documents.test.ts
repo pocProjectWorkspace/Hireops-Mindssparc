@@ -50,8 +50,8 @@ if (!SUPABASE_URL || !SUPABASE_ANON_KEY || !SUPABASE_SERVICE_ROLE_KEY) {
 }
 
 const PASSWORD = "TestPassword123!";
-const RECRUITER = "recruiter1@kyndryl-poc.test";
-const HR_OPS_USER = "hr_ops1@kyndryl-poc.test";
+const RECRUITER = "recruiter1@mindssparc.com";
+const HR_OPS_USER = "hr_ops1@mindssparc.com";
 
 // '0d03' namespace — valid v4-format fixed UUIDs for this suite's fixtures.
 const D3_BU = "00000000-0000-4000-8000-00000d030001";

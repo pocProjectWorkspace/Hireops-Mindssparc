@@ -55,10 +55,10 @@ if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
 }
 
 const PASSWORD = "TestPassword123!";
-const ADMIN = "admin1@kyndryl-poc.test";
-const HR_HEAD = "hrhead1@kyndryl-poc.test";
-const RECRUITER = "recruiter1@kyndryl-poc.test";
-const HIRING_MANAGER = "hiringmanager1@kyndryl-poc.test";
+const ADMIN = "admin1@mindssparc.com";
+const HR_HEAD = "hrhead1@mindssparc.com";
+const RECRUITER = "recruiter1@mindssparc.com";
+const HIRING_MANAGER = "hiringmanager1@mindssparc.com";
 const TENANT_SLUG = "kyndryl-poc";
 
 const SYNTH_TENANT = randomUUID();
@@ -219,7 +219,7 @@ describe("T4.3 — document retention policy + honest overdue register", () => {
     `;
     await poolSql`
       INSERT INTO public.persons (id, tenant_id, full_name, email_primary, email_normalised, location_country)
-      VALUES (${PERSON}, ${tenantId}, 'T43 Candidate', 't43cand@kyndryl-poc.test', 't43cand@kyndryl-poc.test', 'IN')
+      VALUES (${PERSON}, ${tenantId}, 'T43 Candidate', 't43cand@mindssparc.com', 't43cand@mindssparc.com', 'IN')
     `;
     await poolSql`
       INSERT INTO public.candidates (id, tenant_id, person_id, source, consent_version)

@@ -48,9 +48,9 @@ if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
 }
 
 const PASSWORD = "TestPassword123!";
-const RECRUITER = "recruiter1@kyndryl-poc.test";
-const HR_HEAD = "hrhead1@kyndryl-poc.test";
-const ADMIN = "admin1@kyndryl-poc.test";
+const RECRUITER = "recruiter1@mindssparc.com";
+const HR_HEAD = "hrhead1@mindssparc.com";
+const ADMIN = "admin1@mindssparc.com";
 const TENANT_SLUG = "kyndryl-poc";
 
 // The field this suite owns. Its pre-test state is captured + restored so a

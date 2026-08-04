@@ -44,9 +44,9 @@ const here = dirname(fileURLToPath(import.meta.url));
 const FIXTURE_DIR = resolve(here, "../../../packages/ai-client/src/local/fixtures");
 
 const PASSWORD = "TestPassword123!";
-const RECRUITER = "recruiter1@kyndryl-poc.test";
-const PANEL = "panel1@kyndryl-poc.test";
-const ADMIN = "admin1@kyndryl-poc.test";
+const RECRUITER = "recruiter1@mindssparc.com";
+const PANEL = "panel1@mindssparc.com";
+const ADMIN = "admin1@mindssparc.com";
 
 // Fixed fixture ids (a202 namespace — PANEL-02 test rows, groom-safe cleanup).
 const P2_BU = "00000000-0000-4000-8000-000000a20201";

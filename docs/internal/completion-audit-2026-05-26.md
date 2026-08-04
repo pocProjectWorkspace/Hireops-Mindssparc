@@ -336,7 +336,7 @@ The following sequence runs end-to-end on the synthetic `kyndryl-poc` tenant (pe
 | 1 | Visit `/t/kyndryl-poc/apply/{req-slug}` as a candidate | D3 apply form, D5 intake, D6 public req resolution |
 | 2 | Upload PDF resume, fill knockout questions, attest DPDPA consent, submit | D3 apply form, C6 resume parser, O2 knockout eval, D5 dedup |
 | 3 | Application lands; AI scoring fires async; recruiter receives email + SLA breach alert | O1 AI scoring, J5 outbox dispatcher, J1 email channel, J6 SLA scan |
-| 4 | Log into internal portal as `recruiter1@kyndryl-poc.test` (`/login` → SSO) | E1 portal shell |
+| 4 | Log into internal portal as `recruiter1@mindssparc.com` (`/login` → SSO) | E1 portal shell |
 | 5 | Land on `/triage` — Hot Zone shows SLA-breached candidate; Momentum Feed shows AI-scored candidates ordered by score | E2 triage screen, E3 candidate management, E4 stage mutations |
 | 6 | Open drawer for any candidate → see AI score + top contributing factors + skills + parsed CV | O3 AI score discriminator, E3 candidate detail drawer |
 | 7 | Advance through stages with 30s undo affordance | E4 reverse-mutation undo |

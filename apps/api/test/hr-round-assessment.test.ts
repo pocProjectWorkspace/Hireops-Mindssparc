@@ -32,8 +32,8 @@ if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
 }
 
 const PASSWORD = "TestPassword123!";
-const HR_OPS = "hr_ops1@kyndryl-poc.test";
-const RECRUITER = "recruiter1@kyndryl-poc.test";
+const HR_OPS = "hr_ops1@mindssparc.com";
+const RECRUITER = "recruiter1@mindssparc.com";
 
 // Final UUID group: 10-char prefix + 2-char suffix (12 hex total).
 const P = "00000000-0000-4000-8000-0000000ac0";

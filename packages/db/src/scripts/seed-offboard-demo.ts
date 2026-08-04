@@ -54,8 +54,8 @@ const here = dirname(fileURLToPath(import.meta.url));
 loadDotenv({ path: resolve(here, "../../../../.env") });
 
 const TENANT_SLUG = "kyndryl-poc";
-const HR_OPS_EMAIL = "hr_ops1@kyndryl-poc.test";
-const ADMIN_EMAIL = "admin1@kyndryl-poc.test";
+const HR_OPS_EMAIL = "hr_ops1@mindssparc.com";
+const ADMIN_EMAIL = "admin1@mindssparc.com";
 
 // Terminate event type + business-key prefix (mirrors apps/api offboarding-case
 // lib — duplicated here because the seed can't import from apps/api).

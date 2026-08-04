@@ -32,8 +32,8 @@ if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
 }
 
 const PASSWORD = "TestPassword123!";
-const RECRUITER = "recruiter1@kyndryl-poc.test";
-const HR_HEAD = "hrhead1@kyndryl-poc.test";
+const RECRUITER = "recruiter1@mindssparc.com";
+const HR_HEAD = "hrhead1@mindssparc.com";
 const TENANT_SLUG = "kyndryl-poc";
 
 const I2_BU = "00000000-0000-4000-8000-000000012b01";
@@ -330,7 +330,7 @@ describe("INT-02 interview scheduling", () => {
     const [other] = await poolSql<{ id: string }[]>`
       SELECT tum.id FROM public.tenant_user_memberships tum
       JOIN auth.users u ON u.id = tum.user_id
-      WHERE tum.tenant_id = ${tenantId} AND u.email = 'panel1@kyndryl-poc.test'
+      WHERE tum.tenant_id = ${tenantId} AND u.email = 'panel1@mindssparc.com'
     `;
     assert.ok(other?.id, "panel1 membership must exist (seed-test-users)");
     const res = await trpcMutation<{ interviewId: string }>(

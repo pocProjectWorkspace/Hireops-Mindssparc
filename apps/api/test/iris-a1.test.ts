@@ -50,8 +50,8 @@ const here = dirname(fileURLToPath(import.meta.url));
 const FIXTURE_DIR = resolve(here, "../../../packages/ai-client/src/local/fixtures");
 
 const PASSWORD = "TestPassword123!";
-const ADMIN = "admin1@kyndryl-poc.test";
-const RECRUITER = "recruiter1@kyndryl-poc.test";
+const ADMIN = "admin1@mindssparc.com";
+const RECRUITER = "recruiter1@mindssparc.com";
 const TENANT_SLUG = "kyndryl-poc";
 
 const RUN = Date.now().toString(36);

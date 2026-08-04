@@ -43,9 +43,9 @@ if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
 }
 
 const PASSWORD = "TestPassword123!";
-const HR_OPS = "hr_ops1@kyndryl-poc.test";
-const ADMIN = "admin1@kyndryl-poc.test";
-const RECRUITER = "recruiter1@kyndryl-poc.test";
+const HR_OPS = "hr_ops1@mindssparc.com";
+const ADMIN = "admin1@mindssparc.com";
+const RECRUITER = "recruiter1@mindssparc.com";
 const TENANT_SLUG = "kyndryl-poc";
 
 // Fixed synthetic fixtures (hex-only, UUIDv4-valid; '0f02' ~ "offboard-02").

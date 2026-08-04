@@ -25,7 +25,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 loadDotenv({ path: resolve(here, "../../../../.env") });
 
 const TENANT_SLUG = "kyndryl-poc";
-const HIRING_MANAGER_EMAIL = "hiringmanager1@kyndryl-poc.test";
+const HIRING_MANAGER_EMAIL = "hiringmanager1@mindssparc.com";
 
 // a5b/a5c namespace (free — a5a0..a599 are used by seed-demo-data).
 const RO2_BU = "00000000-0000-4000-8000-00000000a5b0";

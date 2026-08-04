@@ -72,7 +72,7 @@ function hashSeedToken(token: string): string {
 }
 
 const TENANT_SLUG = "kyndryl-poc";
-const RECRUITER_EMAIL = "recruiter1@kyndryl-poc.test";
+const RECRUITER_EMAIL = "recruiter1@mindssparc.com";
 const PORTAL_BASE = process.env.NEXT_PUBLIC_SITE_URL ?? "http://localhost:3002";
 
 // Stable UUIDs — 'a5' prefix marks these as seed-demo-data fixtures.
@@ -158,9 +158,9 @@ const IV_D_SCHEDULED = "00000000-0000-4000-8000-00000000a5d1"; // Karthik (D) �
 const IV_C_CONFIRMED = "00000000-0000-4000-8000-00000000a5d2"; // Sneha (C) — upcoming, candidate-confirmed
 const IV_E_COMPLETED = "00000000-0000-4000-8000-00000000a5d3"; // Priya (E) — completed w/ panel1 scorecard
 
-const PANEL_EMAIL = "panel1@kyndryl-poc.test";
-const HIRING_MANAGER_EMAIL = "hiringmanager1@kyndryl-poc.test";
-const HR_HEAD_EMAIL = "hrhead1@kyndryl-poc.test";
+const PANEL_EMAIL = "panel1@mindssparc.com";
+const HIRING_MANAGER_EMAIL = "hiringmanager1@mindssparc.com";
+const HR_HEAD_EMAIL = "hrhead1@mindssparc.com";
 
 // ─────────────── PANEL-01 — panel1 workboard demo spread ───────────────
 //
@@ -522,8 +522,8 @@ const DESIGN_ROUNDS: PlanRound[] = [
 // applications, a56x cases, a57x accepted offers) — distinct from the
 // recruitment chain (a5[0-2]x) and the agent chain (a59x). a5xx = protected
 // from the groom, so these seeded cases are never classed as residue.
-const ONB_HR_OPS_EMAIL = "hr_ops1@kyndryl-poc.test";
-const ONB_ADMIN_EMAIL = "admin1@kyndryl-poc.test";
+const ONB_HR_OPS_EMAIL = "hr_ops1@mindssparc.com";
+const ONB_ADMIN_EMAIL = "admin1@mindssparc.com";
 
 const ONB_PERSON_IDS = [
   "00000000-0000-4000-8000-00000000a531",
@@ -3218,7 +3218,7 @@ async function main() {
     console.log("provider; otherwise the LocalAIClient fixture corpus handles it in");
     console.log("test mode.");
     console.log("");
-    console.log("Login as recruiter1@kyndryl-poc.test / TestPassword123! to walk the lifecycle.");
+    console.log("Login as recruiter1@mindssparc.com / TestPassword123! to walk the lifecycle.");
   } finally {
     await poolSql.end({ timeout: 10 });
   }

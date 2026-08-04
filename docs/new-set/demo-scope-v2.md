@@ -53,7 +53,7 @@ ATS lifecycle, shown competently.
 | 1 | Open mobile browser to `/t/kyndryl-poc/apply/gcc-blr-senior-backend` | "What a candidate sees when they click an apply link. Mobile-first by design — most candidates apply from phones. Path-based tenant scoping; every Kyndryl URL starts with `/t/kyndryl-poc/`." |
 | 2 | Fill name, email, phone, upload resume, attest DPDPA consent, submit | "Minimum-friction form. No notice period or CTC asked upfront — those are recruiter-screen questions." |
 | 3 | Show confirmation page with reference number, switch to email inbox showing application-received email | "Confirmation page with reference. Confirmation email lands in seconds — that's the Resend integration, real sending domain with verified DKIM/SPF/DMARC." |
-| 4 | Switch to laptop, log in as `recruiter1@kyndryl-poc.test` to `/triage` | "Recruiter view. Two-zone triage — Hot Zone for SLA-breached candidates needing attention, Momentum Feed ordered by AI fit score." |
+| 4 | Switch to laptop, log in as `recruiter1@mindssparc.com` to `/triage` | "Recruiter view. Two-zone triage — Hot Zone for SLA-breached candidates needing attention, Momentum Feed ordered by AI fit score." |
 | 5 | Open drawer for the just-submitted candidate, show AI score + factors + parsed CV | "Candidate just submitted. Scored by Claude — top contributing factors, parsed skills, original CV. Scoring is async; doesn't block the candidate's submit." |
 | 6 | Brief pause, take any questions on the core flow | — |
 

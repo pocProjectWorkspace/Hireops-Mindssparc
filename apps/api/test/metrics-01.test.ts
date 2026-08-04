@@ -37,9 +37,9 @@ if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
 
 const PASSWORD = "TestPassword123!";
 const USERS = {
-  recruiter: "recruiter1@kyndryl-poc.test",
-  hrHead: "hrhead1@kyndryl-poc.test",
-  admin: "admin1@kyndryl-poc.test",
+  recruiter: "recruiter1@mindssparc.com",
+  hrHead: "hrhead1@mindssparc.com",
+  admin: "admin1@mindssparc.com",
 } as const;
 
 const jwt: Record<string, string> = {};

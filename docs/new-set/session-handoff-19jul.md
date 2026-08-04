@@ -113,7 +113,7 @@ pnpm db:seed:test-users && pnpm db:seed:demo-data && pnpm db:seed:partner-demo \
 ## 5. Credentials & surfaces (all passwords `TestPassword123!`)
 
 hireops-portal.vercel.app: `hiringmanager1@` `hrhead1@` `recruiter1@`
-`panel1@` `hr_ops1@` `admin1@` (all @kyndryl-poc.test) ·
+`panel1@` `hr_ops1@` `admin1@` (all @mindssparc.com) ·
 `priya.subramanian@example.test` at /candidate/login ·
 hireops-partner-portal.vercel.app: `partner1@talentbridge-partners.test`.
 Email delivers ONLY to digitalfuturity@outlook.com (Resend test mode).

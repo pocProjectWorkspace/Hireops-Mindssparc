@@ -17,11 +17,11 @@ import AxeBuilder from "@axe-core/playwright";
  *
  * Prerequisites:
  *   - apps/api + apps/internal-portal running (webServer block boots them)
- *   - pnpm db:seed:test-users          → recruiter1@kyndryl-poc.test
+ *   - pnpm db:seed:test-users          → recruiter1@mindssparc.com
  *   - pnpm db:seed:demo-data           → 5 demo applications + 1 extended offer
  */
 
-const TEST_EMAIL = "recruiter1@kyndryl-poc.test";
+const TEST_EMAIL = "recruiter1@mindssparc.com";
 const TEST_PASSWORD = "TestPassword123!";
 
 async function signIn(page: Page): Promise<void> {

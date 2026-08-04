@@ -28,14 +28,14 @@
 - **Prototype gap audit** (`docs/prototype-gap-audit.md`): full persona map of procurve-ai-main vs built; plan re-sequenced — Wave A (approval spine) → B (interview loop) → C (candidate accounts) → polish; **offboarding deferred post-August**; no facade features; Cal.diy (MIT) is the future calendar-sync seam, not a build.
 - **Wave A (REQ-01→03, closed 17 July):** roles `hiring_manager`/`hr_head` (enum + seed users hiringmanager1@/hrhead1@), role-aware AppShell nav; `/requisitions` + 4-step creation wizard with REAL-Anthropic JD generation (`jd_generation` in ai_usage_logs); skills/knockouts consumable by the apply evaluator (min-years = numeric_min knockout, no schema change); submit-for-approval = per-tenant 1-step matrix + immutable chain + approval_requests (one-pending partial unique); `/requisition-approvals` HR-head queue + decision panel (approve / send-back-with-reason → draft + resubmit works / reject → cancelled terminal); `postRequisition` approved→posted + human slug → public apply page serves it. The full arc verified live incl. send-back round-trip. Migrations 0050.
 - **Wave B:** INT-01 (local `a48fab3`) — interview_plans / interviews (partial unique per active round, `external_booking_ref` seam, `candidate_confirmed_at`) / interview_panelists (relational) / interview_feedback (single vocabulary `strong_yes|yes|hold|no`), migrations 0051–0053 applied, rls-lint 62 tables. INT-02 (scheduling: plan editor, schedule-with-panel, signed-link candidate confirm, invitation email, `/interviews`) in flight.
-- **New test users:** hiringmanager1@ / hrhead1@kyndryl-poc.test (TestPassword123!). Gate suites now include req-01/02/03 + partner-auth + partner-submission + onboarding.
+- **New test users:** hiringmanager1@ / hrhead1@mindssparc.com (TestPassword123!). Gate suites now include req-01/02/03 + partner-auth + partner-submission + onboarding.
 - **HANDOVER.md ticket-log debt** now spans DESIGN-01→04, UX-01, GROOM-01, ONBOARD-01→06, PARTNER-01/02, REQ-01→03, INT-01+ — commit messages remain canonical meanwhile.
 
 **Pre-demo runbook (3 commands + 1 check):**
 1. `pnpm db:groom:demo-data --execute` (sweeps any test residue since the last CI run)
 2. `pnpm db:seed:demo-data` (fresh timestamps: Rohan 7d stale + pending approval a599, Meera 6d live-fire target)
 3. Verify Railway workers healthy (`railway logs --service workers` shows worker.ready + drain passes)
-4. Hard-refresh the portal. Login: recruiter1/admin1@kyndryl-poc.test, TestPassword123!. Candidate emails typed on stage must be digitalfuturity@outlook.com (Resend test mode).
+4. Hard-refresh the portal. Login: recruiter1/admin1@mindssparc.com, TestPassword123!. Candidate emails typed on stage must be digitalfuturity@outlook.com (Resend test mode).
 
 **Backlog — things to work on (post-demo priority order):**
 1. Drawer AI-score hero: getCandidateById lacks score/top_factors — needs a small query addition + wiring the existing ScoreMeter ring (deferred from DESIGN-02).
@@ -106,7 +106,7 @@ Monorepo: pnpm 11 + Turborepo + Node 22 LTS + TypeScript 5 strict. Apps: `api` (
 - **Node 22 required.** pnpm needs Node ≥22.13. Use `export PATH="$HOME/.nvm/versions/node/v22.14.0/bin:$PATH"` before any `pnpm`.
 - **Commit gate:** `pnpm test:gate` (~12 min) = agent-actions unit tests + targeted api tests. It is the local gate; full `pnpm api:test` is unreliable on the Supabase pooler (realities #107/#109). Also run `pnpm typecheck` + `pnpm lint` (both ~19 tasks).
 - **Dev servers:** `pnpm dev` runs api (3001) + portal (3002) + workers. **Port 3002 collides with the user's separate AURA project** — run the portal on **3003** (`next dev -p 3003`); the api CORS already allows 3003. Under many file watchers the portal hits `EMFILE`; start it with `WATCHPACK_POLLING=true`.
-- **Test users:** `recruiter1@kyndryl-poc.test`, `hr_ops1@…`, `admin1@…`, password `TestPassword123!`. Seed via `pnpm db:seed:test-users`. Demo data: `pnpm db:seed:demo-data` (occasionally hangs on the pooler; kill + retry). **Neither seeds agents/approvals** — a pending-approval demo seed still needs writing.
+- **Test users:** `recruiter1@mindssparc.com`, `hr_ops1@…`, `admin1@…`, password `TestPassword123!`. Seed via `pnpm db:seed:test-users`. Demo data: `pnpm db:seed:demo-data` (occasionally hangs on the pooler; kill + retry). **Neither seeds agents/approvals** — a pending-approval demo seed still needs writing.
 - **`audit_logs` partitions must be pre-created** or every audited write fails (reality #112). Migration `0042` covers through 2027-06; this recurs annually until an auto-rotation job ships (open-question #35).
 - **`tsx` doesn't hot-reload cross-package `.tsx`** (the email templates). After editing a template, **restart the worker** or the change won't take. Every email template needs the `@jsxRuntime automatic @jsxImportSource react` pragma or the worker throws "React is not defined" (reality: the FOLLOWUP-01 JSX fix).
 - **The demo tenant has no Anthropic credential.** AI scoring and agent drafts need a real key stored via `storeIntegrationCredential` (integration_type `ai_anthropic`), or `AI_CLIENT_MODE=local` + fixtures. For demo, wire a real key.

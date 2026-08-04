@@ -48,9 +48,9 @@ if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
 }
 
 const PASSWORD = "TestPassword123!";
-const ADMIN = "admin1@kyndryl-poc.test";
-const RECRUITER = "recruiter1@kyndryl-poc.test";
-const HIRING_MANAGER = "hiringmanager1@kyndryl-poc.test";
+const ADMIN = "admin1@mindssparc.com";
+const RECRUITER = "recruiter1@mindssparc.com";
+const HIRING_MANAGER = "hiringmanager1@mindssparc.com";
 const TENANT_SLUG = "kyndryl-poc";
 
 // Unique per run so a shared-DB rerun never collides.
@@ -434,7 +434,7 @@ describe("IRIS-B1 pipeline actions through Iris (honesty)", () => {
 
     // hr_ops (an onboarding persona, NOT in listCandidates' triage read set) can
     // also use the picker read — the whole point of the purpose-built gate.
-    const hrOpsJwt = await signIn("hr_ops1@kyndryl-poc.test");
+    const hrOpsJwt = await signIn("hr_ops1@mindssparc.com");
     const hrOpsSearch = await trpcQuery("irisSearchApplications", { query: "" }, hrOpsJwt);
     assert.ok(!isErr(hrOpsSearch), `hr_ops search allowed, got ${JSON.stringify(hrOpsSearch)}`);
   });

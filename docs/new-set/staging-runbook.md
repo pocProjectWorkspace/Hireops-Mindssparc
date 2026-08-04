@@ -122,7 +122,7 @@ pnpm db:seed:demo-data     # demo tenant, reqs, candidates, AND the SEED-01 wedg
                            #   "Demo Follow-ups Agent" + a pre-seeded pending approval
                            #   (Candidate G / Rohan) + the scanner live-fire target.
 ```
-Test users (password `TestPassword123!`): `recruiter1@kyndryl-poc.test`, `hr_ops1@kyndryl-poc.test`, `admin1@kyndryl-poc.test`.
+Test users (password `TestPassword123!`): `recruiter1@mindssparc.com`, `hr_ops1@mindssparc.com`, `admin1@mindssparc.com`.
 
 - `seed-test-users` needs `SUPABASE_URL` + `SUPABASE_SERVICE_ROLE_KEY` (Auth admin) + `DATABASE_URL`.
 - `seed-demo-data` needs `DATABASE_URL` + `SIGNED_LINK_SECRET` + `NEXT_PUBLIC_SITE_URL` (it bakes portal links into seeded rows — set it to the staging **portal** URL so seeded offer links point at staging, not localhost).
@@ -328,7 +328,7 @@ The AI client resolves per-tenant (`tenants.settings.ai_provider`, default `anth
 
 ## 11. Smoke checklist
 
-Run through the full wedge on the deployed staging stack. Log in at the portal URL (`recruiter1@kyndryl-poc.test` / `TestPassword123!`; `admin1@…` for admin pages).
+Run through the full wedge on the deployed staging stack. Log in at the portal URL (`recruiter1@mindssparc.com` / `TestPassword123!`; `admin1@…` for admin pages).
 
 - [ ] **Login** — `/login` authenticates; JWT carries `tid`/`roles` (if tenant-scoped pages are empty, the §3 hook is off).
 - [ ] **Triage** — `/triage` loads Hot Zone + Momentum with seeded candidates (proves the in-process router → staging DB path).

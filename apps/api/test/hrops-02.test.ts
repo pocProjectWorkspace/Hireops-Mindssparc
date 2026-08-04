@@ -47,10 +47,10 @@ const here = dirname(fileURLToPath(import.meta.url));
 const FIXTURE_DIR = resolve(here, "../../../packages/ai-client/src/local/fixtures");
 
 const PASSWORD = "TestPassword123!";
-const RECRUITER = "recruiter1@kyndryl-poc.test";
-const HR_OPS = "hr_ops1@kyndryl-poc.test";
-const HR_HEAD = "hrhead1@kyndryl-poc.test";
-const ADMIN = "admin1@kyndryl-poc.test";
+const RECRUITER = "recruiter1@mindssparc.com";
+const HR_OPS = "hr_ops1@mindssparc.com";
+const HR_HEAD = "hrhead1@mindssparc.com";
+const ADMIN = "admin1@mindssparc.com";
 const TENANT_SLUG = "kyndryl-poc";
 
 // Fixed fixture ids (a7c2 namespace — HROPS-02 test rows, groom-safe cleanup).

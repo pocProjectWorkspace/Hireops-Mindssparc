@@ -43,9 +43,9 @@ if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
 }
 
 const PASSWORD = "TestPassword123!";
-const RECRUITER = "recruiter1@kyndryl-poc.test";
-const HIRING_MANAGER = "hiringmanager1@kyndryl-poc.test";
-const HR_HEAD = "hrhead1@kyndryl-poc.test";
+const RECRUITER = "recruiter1@mindssparc.com";
+const HIRING_MANAGER = "hiringmanager1@mindssparc.com";
+const HR_HEAD = "hrhead1@mindssparc.com";
 const TENANT_SLUG = "kyndryl-poc";
 
 const RUN = Date.now().toString(36);

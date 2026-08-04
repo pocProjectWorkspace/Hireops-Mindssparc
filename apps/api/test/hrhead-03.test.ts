@@ -62,9 +62,9 @@ if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
 }
 
 const PASSWORD = "TestPassword123!";
-const ADMIN = "admin1@kyndryl-poc.test";
-const RECRUITER = "recruiter1@kyndryl-poc.test";
-const HR_HEAD = "hrhead1@kyndryl-poc.test";
+const ADMIN = "admin1@mindssparc.com";
+const RECRUITER = "recruiter1@mindssparc.com";
+const HR_HEAD = "hrhead1@mindssparc.com";
 const TENANT_SLUG = "kyndryl-poc";
 
 // hrhead-03 synth namespace (groom-safe — deleted in afterAll).

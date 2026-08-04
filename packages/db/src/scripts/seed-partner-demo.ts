@@ -38,7 +38,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 loadDotenv({ path: resolve(here, "../../../../.env") });
 
 const TENANT_SLUG = "kyndryl-poc";
-const RECRUITER_EMAIL = "recruiter1@kyndryl-poc.test";
+const RECRUITER_EMAIL = "recruiter1@mindssparc.com";
 const TEST_PASSWORD = "TestPassword123!";
 
 // Partner login (credible partner domain — deliberately NOT @hireops-dev.local

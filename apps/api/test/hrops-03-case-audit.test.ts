@@ -44,8 +44,8 @@ if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
 }
 
 const PASSWORD = "TestPassword123!";
-const RECRUITER = "recruiter1@kyndryl-poc.test";
-const HR_OPS_USER = "hr_ops1@kyndryl-poc.test";
+const RECRUITER = "recruiter1@mindssparc.com";
+const HR_OPS_USER = "hr_ops1@mindssparc.com";
 
 // '0d13' namespace — valid v4-format fixed UUIDs for this suite's fixtures.
 const D13_BU = "00000000-0000-4000-8000-00000d130001";

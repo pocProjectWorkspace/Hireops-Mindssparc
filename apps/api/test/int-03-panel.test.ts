@@ -33,8 +33,8 @@ if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
 }
 
 const PASSWORD = "TestPassword123!";
-const RECRUITER = "recruiter1@kyndryl-poc.test";
-const PANEL = "panel1@kyndryl-poc.test";
+const RECRUITER = "recruiter1@mindssparc.com";
+const PANEL = "panel1@mindssparc.com";
 
 const I3_BU = "00000000-0000-4000-8000-000000013c01";
 const I3_POSITION = "00000000-0000-4000-8000-000000013c02";

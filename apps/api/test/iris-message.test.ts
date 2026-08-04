@@ -39,9 +39,9 @@ if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
 }
 
 const PASSWORD = "TestPassword123!";
-const ADMIN = "admin1@kyndryl-poc.test";
-const RECRUITER = "recruiter1@kyndryl-poc.test";
-const HIRING_MANAGER = "hiringmanager1@kyndryl-poc.test";
+const ADMIN = "admin1@mindssparc.com";
+const RECRUITER = "recruiter1@mindssparc.com";
+const HIRING_MANAGER = "hiringmanager1@mindssparc.com";
 const TENANT_SLUG = "kyndryl-poc";
 
 // Unique per run so a shared-DB rerun never collides.

@@ -36,9 +36,9 @@ if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
 }
 
 const PASSWORD = "TestPassword123!";
-const PANEL = "panel1@kyndryl-poc.test";
-const RECRUITER = "recruiter1@kyndryl-poc.test";
-const ADMIN = "admin1@kyndryl-poc.test";
+const PANEL = "panel1@mindssparc.com";
+const RECRUITER = "recruiter1@mindssparc.com";
+const ADMIN = "admin1@mindssparc.com";
 
 // Fixed fixture ids (0ba1 namespace — PANEL-01 test rows, groom-safe cleanup).
 const FX_BU = "00000000-0000-4000-8000-0000000ba101";

@@ -67,8 +67,8 @@ const here = dirname(fileURLToPath(import.meta.url));
 const FIXTURE_DIR = resolve(here, "../../../packages/ai-client/src/local/fixtures");
 
 const PASSWORD = "TestPassword123!";
-const ADMIN = "admin1@kyndryl-poc.test";
-const RECRUITER = "recruiter1@kyndryl-poc.test";
+const ADMIN = "admin1@mindssparc.com";
+const RECRUITER = "recruiter1@mindssparc.com";
 const TENANT_SLUG = "kyndryl-poc";
 
 // Synthetic tenant for the drain test (c0f30 namespace, groom-safe: deleted
@@ -87,7 +87,7 @@ const CAND_B = "00000000-0000-4000-8000-0000c0f30a0a";
 const APP_B = "00000000-0000-4000-8000-0000c0f30a0b";
 
 const RUN = Date.now().toString(36);
-const INVITE_EMAIL = `conf03-invite-${RUN}@kyndryl-poc.test`;
+const INVITE_EMAIL = `conf03-invite-${RUN}@mindssparc.com`;
 
 const drainLog = createLogger({ base: { service: "conf-03-test" } });
 
@@ -636,7 +636,7 @@ describe("CONF-03 — scoring weights + users & roles + retention", () => {
         "m",
         { skills_match: 25, experience_level: 25, industry_relevance: 25, education: 25 },
       ],
-      ["inviteTenantUser", "m", { email: "x@kyndryl-poc.test", roles: ["recruiter"] }],
+      ["inviteTenantUser", "m", { email: "x@mindssparc.com", roles: ["recruiter"] }],
       ["updateMembershipRoles", "m", { membershipId: adminMembershipId, roles: ["recruiter"] }],
       ["setMembershipStatus", "m", { membershipId: adminMembershipId, status: "suspended" }],
     ];

@@ -47,9 +47,9 @@ const here = dirname(fileURLToPath(import.meta.url));
 const FIXTURE_DIR = resolve(here, "../../../packages/ai-client/src/local/fixtures");
 
 const PASSWORD = "TestPassword123!";
-const RECRUITER = "recruiter1@kyndryl-poc.test";
-const HIRING_MANAGER = "hiringmanager1@kyndryl-poc.test";
-const HR_HEAD = "hrhead1@kyndryl-poc.test";
+const RECRUITER = "recruiter1@mindssparc.com";
+const HIRING_MANAGER = "hiringmanager1@mindssparc.com";
+const HR_HEAD = "hrhead1@mindssparc.com";
 const TENANT_SLUG = "kyndryl-poc";
 
 // A per-run suffix keeps the position title unique so the active-title unique

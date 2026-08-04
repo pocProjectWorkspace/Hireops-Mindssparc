@@ -46,8 +46,8 @@ if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
 }
 
 const PASSWORD = "TestPassword123!";
-const RECRUITER = "recruiter1@kyndryl-poc.test";
-const ADMIN = "admin1@kyndryl-poc.test";
+const RECRUITER = "recruiter1@mindssparc.com";
+const ADMIN = "admin1@mindssparc.com";
 const TENANT_SLUG = "kyndryl-poc";
 
 // A second, unrelated tenant seeded in the shared DB — used only to prove

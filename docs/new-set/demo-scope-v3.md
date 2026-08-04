@@ -50,14 +50,14 @@ having worked.
 
 ### Act 1 — A role is born (hiring manager + HR head, ~8 min)
 
-1. Log in `hiringmanager1@kyndryl-poc.test` → Requisitions → New.
+1. Log in `hiringmanager1@mindssparc.com` → Requisitions → New.
 2. Basics for a real-sounding role; **Generate JD with AI** (live
    Anthropic, ~10s — narrate the cost ledger while it thinks).
 3. Type "rockstar ninja" into a JD section → the **bias scanner
    highlights live** with suggestions. Try to submit → blocked with the
    term list (block mode pre-set for the demo). Fix the language, add
    skills + a knockout, submit.
-4. Log in `hrhead1@kyndryl-poc.test` → Req approvals → open it → the
+4. Log in `hrhead1@mindssparc.com` → Req approvals → open it → the
    bias warnings, JD, and skills are all in the decision view →
    **Send back with a reason** → show the hiring manager's banner →
    resubmit → **Approve**.

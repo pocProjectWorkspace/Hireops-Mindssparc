@@ -12,12 +12,12 @@ offboard-demo`).
 
 | # | Persona | Login | Portal | What they see |
 |---|---------|-------|--------|---------------|
-| 1 | Hiring manager | `hiringmanager1@kyndryl-poc.test` | hireops-portal.vercel.app | Requisitions, creation wizard (AI JD + bias gate), approval tracker |
-| 2 | HR head | `hrhead1@kyndryl-poc.test` | hireops-portal.vercel.app | Req approvals queue, decision panel (approve / send back / reject) |
-| 3 | Recruiter | `recruiter1@kyndryl-poc.test` | hireops-portal.vercel.app | Triage (score ring), interview scheduling, offers, agent approvals, onboarding |
-| 4 | Panelist | `panel1@kyndryl-poc.test` | hireops-portal.vercel.app | My interviews, candidate brief, scorecard |
-| 5 | HR ops | `hr_ops1@kyndryl-poc.test` | hireops-portal.vercel.app | Offboarding (clearance gates, exit, settlement), onboarding |
-| 6 | Admin | `admin1@kyndryl-poc.test` | hireops-portal.vercel.app | AI settings, bias lexicon, scoring weights, users & roles, costs, audit, workflows, integrations |
+| 1 | Hiring manager | `hiringmanager1@mindssparc.com` | hireops-portal.vercel.app | Requisitions, creation wizard (AI JD + bias gate), approval tracker |
+| 2 | HR head | `hrhead1@mindssparc.com` | hireops-portal.vercel.app | Req approvals queue, decision panel (approve / send back / reject) |
+| 3 | Recruiter | `recruiter1@mindssparc.com` | hireops-portal.vercel.app | Triage (score ring), interview scheduling, offers, agent approvals, onboarding |
+| 4 | Panelist | `panel1@mindssparc.com` | hireops-portal.vercel.app | My interviews, candidate brief, scorecard |
+| 5 | HR ops | `hr_ops1@mindssparc.com` | hireops-portal.vercel.app | Offboarding (clearance gates, exit, settlement), onboarding |
+| 6 | Admin | `admin1@mindssparc.com` | hireops-portal.vercel.app | AI settings, bias lexicon, scoring weights, users & roles, costs, audit, workflows, integrations |
 | 7 | Partner | `partner1@talentbridge-partners.test` | **hireops-partner-portal.vercel.app** | TalentBridge dashboard, assigned reqs, submit candidate |
 | 8 | Candidate | `priya.subramanian@example.test` | hireops-portal.vercel.app**/candidate/login** | Her offer (accept in-portal), onboarding documents, interviews |
 

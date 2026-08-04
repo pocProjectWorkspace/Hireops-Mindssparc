@@ -111,7 +111,7 @@ client switches automatically.
    and `EMAIL_PROVIDER=local` (default; `real` reaches the not-yet-implemented stub).
 2. `pnpm install`
 3. `pnpm db:migrate` — applies pending migrations
-4. `pnpm db:seed:test-users` — once per dev DB; creates `recruiter1@kyndryl-poc.test` / `hr_ops1@kyndryl-poc.test` / `admin1@kyndryl-poc.test` with password `TestPassword123!`
+4. `pnpm db:seed:test-users` — once per dev DB; creates `recruiter1@mindssparc.com` / `hr_ops1@mindssparc.com` / `admin1@mindssparc.com` with password `TestPassword123!`
 5. `pnpm dev` — boots apps/api on :3001, apps/internal-portal on :3002, and
    apps/workers (no port — long-running outbox drain + scheduler + Workday
    simulation drain) in parallel.

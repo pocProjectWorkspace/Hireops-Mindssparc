@@ -47,11 +47,11 @@ if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
 }
 
 const PASSWORD = "TestPassword123!";
-const ADMIN = "admin1@kyndryl-poc.test";
-const HR_OPS = "hr_ops1@kyndryl-poc.test";
-const RECRUITER = "recruiter1@kyndryl-poc.test";
-const HIRING_MANAGER = "hiringmanager1@kyndryl-poc.test";
-const HR_HEAD = "hrhead1@kyndryl-poc.test";
+const ADMIN = "admin1@mindssparc.com";
+const HR_OPS = "hr_ops1@mindssparc.com";
+const RECRUITER = "recruiter1@mindssparc.com";
+const HIRING_MANAGER = "hiringmanager1@mindssparc.com";
+const HR_HEAD = "hrhead1@mindssparc.com";
 const TENANT_SLUG = "kyndryl-poc";
 
 const RUN = Date.now().toString(36);
