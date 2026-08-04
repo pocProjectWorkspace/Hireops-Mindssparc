@@ -158,7 +158,11 @@ export function AssignLearningPanel({ caseId }: { caseId: string }) {
   return (
     <section className="mt-8">
       <div className="mb-3 flex items-baseline justify-between">
-        <h3 className="text-sm font-semibold text-neutral-800">Learning &amp; development</h3>
+        {/* NOT "Learning & development" — the checklist above already has a
+            group by that name (onboarding-format.ts TASK_GROUPS), and two
+            identical headings on one page read as two sections rather than a
+            cause and its effect. This one is named for what it DOES. */}
+        <h3 className="text-sm font-semibold text-neutral-800">Assign learning</h3>
         <Button
           variant={open ? "ghost" : "secondary"}
           size="sm"
@@ -168,7 +172,7 @@ export function AssignLearningPanel({ caseId }: { caseId: string }) {
             setResult(null);
           }}
         >
-          {open ? "Close" : "Assign learning"}
+          {open ? "Close" : "Choose items"}
         </Button>
       </div>
 
