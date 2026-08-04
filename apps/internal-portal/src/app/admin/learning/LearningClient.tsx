@@ -5,9 +5,11 @@ import type { ReactNode } from "react";
 import type {
   LearningProvider,
   LearningResourceRow,
+  LearningSkillMapRow,
   LearningTrackLayer,
   LearningTrackRow,
   ListLearningResourcesOutput,
+  ListLearningSkillMapOutput,
   ListLearningTracksOutput,
 } from "@hireops/api-types";
 import { Input, Select } from "@hireops/ui";
@@ -35,7 +37,8 @@ import {
 } from "@/components/learning/learning-format";
 
 /**
- * Admin Learning & development (LD-1B). Two tabs, one page:
+ * Admin Learning & development (LD-1B, third tab added by LD-2B). Three tabs,
+ * one page — but only TWO mechanisms underneath, and that asymmetry is honest:
  *
  *  (A) Catalogue — `learning_resources`. A library of POINTERS at learning that
  *      already exists somewhere else. `url` is the payload; HireOps stores no
@@ -48,9 +51,18 @@ import {
  *      header and the contents are two separate writes (upsertLearningTrack /
  *      setLearningTrackItems), so editing a name never disturbs the items.
  *
- * Nothing on this page reaches a hire by itself. The push is an explicit act of
- * intent on the onboarding case detail surface (assignLearningToCase); tracks
- * are bundles you push, not rules that fire on their own.
+ *  (C) Upskilling library — `learning_skill_map`. NOT a curated bundle: layers
+ *      A and B are authored once and pushed as-is, whereas a hire's own
+ *      capability gaps are per-individual by definition and cannot be
+ *      pre-authored. So the org curates WHICH RESOURCE CLOSES WHICH SKILL and
+ *      HireOps derives each hire's plan from the JD-vs-CV skill comparison it
+ *      already ran at application time.
+ *
+ * Nothing on this page reaches a hire by itself — not even the derived plan.
+ * The push is an explicit act of intent on the onboarding case detail surface
+ * (assignLearningToCase); tracks are bundles you push, not rules that fire on
+ * their own, and the upskilling library only ever produces SUGGESTIONS a
+ * recruiter reviews and pushes there.
  */
 
 /** Radix Select forbids "" values — sentinel for "no business unit". */
@@ -64,14 +76,16 @@ const LAYER_OPTIONS: { value: LearningTrackLayer; label: string }[] = [
   { value: "role", label: LEARNING_TRACK_LAYER_LABELS.role },
 ];
 
-type Tab = "catalogue" | "tracks";
+type Tab = "catalogue" | "tracks" | "skills";
 
 export function LearningClient({
   initialResources,
   initialTracks,
+  initialSkillMap,
 }: {
   initialResources: ListLearningResourcesOutput;
   initialTracks: ListLearningTracksOutput;
+  initialSkillMap: ListLearningSkillMapOutput;
 }) {
   const [tab, setTab] = useState<Tab>("catalogue");
   const [notice, setNotice] = useState<string | null>(null);
@@ -84,15 +98,20 @@ export function LearningClient({
     { includeInactive: true },
     { initialData: initialTracks },
   );
+  const skillMapQuery = trpc.listLearningSkillMap.useQuery({}, { initialData: initialSkillMap });
 
   const resources = resourcesQuery.data?.rows ?? [];
   const tracks = tracksQuery.data?.rows ?? [];
+  const skillMappings = skillMapQuery.data?.rows ?? [];
+  // The tab counts what the tab MANAGES: the upskilling library is read one
+  // skill at a time, so it counts skills, not the (skill → resource) rows.
+  const skillGroupCount = groupBySkill(skillMappings).length;
 
   return (
     <PageContainer>
       <PageHeader
         title="Learning & development"
-        subtitle="Point at learning that already exists — a Workday Learning or LinkedIn course, a SharePoint doc, an unlisted video — and bundle it into tracks a recruiter can push at one new hire."
+        subtitle="Point at learning that already exists — a Workday Learning or LinkedIn course, a SharePoint doc, an unlisted video — bundle it into tracks a recruiter can push at one new hire, and say which resource closes which skill so each hire's own upskilling plan can be derived."
       />
 
       {notice ? (
@@ -122,12 +141,17 @@ export function LearningClient({
         <TabButton active={tab === "tracks"} onClick={() => setTab("tracks")}>
           Tracks ({tracks.length})
         </TabButton>
+        <TabButton active={tab === "skills"} onClick={() => setTab("skills")}>
+          Upskilling library ({skillGroupCount})
+        </TabButton>
       </div>
 
       {tab === "catalogue" ? (
         <CatalogueTab resources={resources} setNotice={setNotice} />
-      ) : (
+      ) : tab === "tracks" ? (
         <TracksTab tracks={tracks} resources={resources} setNotice={setNotice} />
+      ) : (
+        <SkillMapTab mappings={skillMappings} resources={resources} setNotice={setNotice} />
       )}
     </PageContainer>
   );
@@ -1086,6 +1110,346 @@ function TrackItemsEditor({
           Save contents
         </Button>
       </div>
+    </div>
+  );
+}
+
+// ═════════ (C) the upskilling library — layer 3's engine (LD-2B) ═════════
+//
+// `learning_skill_map` is a different KIND of thing from the two tabs above,
+// and the copy on this tab says so out loud. A track is a plan someone wrote.
+// This is not a plan: it is the org stating "if a hire is missing X, this
+// closes it". The per-hire plan is DERIVED from it — HireOps compares the
+// role's jd_skills against what the candidate's CV evidenced at application
+// time, and offers the mapped resources for the skills that are missing.
+//
+// Those offers are SUGGESTIONS, shown on the hire's onboarding case, pushed
+// only if the recruiter agrees. Nothing configured here reaches anyone on its
+// own; there stays exactly one way learning reaches a hire.
+
+interface SkillMappingDraft {
+  id?: string;
+  skillName: string;
+  /** NO_RESOURCE until something is picked — Radix forbids "" values. */
+  resourceId: string;
+  sortOrder: string;
+}
+
+function emptySkillMappingDraft(skillName = ""): SkillMappingDraft {
+  return { skillName, resourceId: NO_RESOURCE, sortOrder: "0" };
+}
+
+function toSkillMappingDraft(m: LearningSkillMapRow): SkillMappingDraft {
+  return {
+    id: m.id,
+    skillName: m.skillName,
+    resourceId: m.resourceId,
+    sortOrder: String(m.sortOrder),
+  };
+}
+
+interface SkillGroup {
+  /** The normalised key — see the note below. */
+  key: string;
+  /** The first spelling seen, shown verbatim. */
+  skillName: string;
+  rows: LearningSkillMapRow[];
+}
+
+/**
+ * One row per (skill, resource); the surface reads one skill at a time, so
+ * group them. The key uses the SAME normalisation the matcher uses server-side
+ * (trim + lowercase, `skillNeedle`), so "Kubernetes" and "kubernetes " collapse
+ * here exactly as they do when a hire's gap is looked up — the editor never
+ * shows a split that the suggestion path would not honour.
+ */
+function groupBySkill(rows: LearningSkillMapRow[]): SkillGroup[] {
+  const groups = new Map<string, SkillGroup>();
+  for (const row of rows) {
+    const key = row.skillName.trim().toLowerCase();
+    const existing = groups.get(key);
+    if (existing) existing.rows.push(row);
+    else groups.set(key, { key, skillName: row.skillName.trim(), rows: [row] });
+  }
+  return [...groups.values()].sort((a, b) => a.skillName.localeCompare(b.skillName));
+}
+
+function SkillMapTab({
+  mappings,
+  resources,
+  setNotice,
+}: {
+  mappings: LearningSkillMapRow[];
+  resources: LearningResourceRow[];
+  setNotice: (s: string | null) => void;
+}) {
+  const utils = trpc.useUtils();
+  const [draft, setDraft] = useState<SkillMappingDraft | null>(null);
+  const [formError, setFormError] = useState<string | null>(null);
+
+  const upsert = trpc.upsertLearningSkillMapping.useMutation({
+    onSuccess: async (res) => {
+      await utils.listLearningSkillMap.invalidate();
+      setDraft(null);
+      setFormError(null);
+      setNotice(`“${res.row.resourceTitle}” now closes “${res.row.skillName}”.`);
+    },
+    onError: (err) => {
+      setFormError(err.message);
+      setNotice(`Save failed: ${err.message}`);
+      handleTRPCError(err);
+    },
+  });
+  // A hard delete, unlike the catalogue: a mapping is a curation opinion with
+  // nothing hanging off it. Anything already pushed at a hire points at the
+  // RESOURCE, never at the mapping, so unmapping never disturbs a live plan.
+  const remove = trpc.deleteLearningSkillMapping.useMutation({
+    onSuccess: async () => {
+      await utils.listLearningSkillMap.invalidate();
+      setNotice("Unmapped — hires who already have that resource keep it.");
+    },
+    onError: (err) => {
+      setNotice(`Unmap failed: ${err.message}`);
+      handleTRPCError(err);
+    },
+  });
+
+  const busy = upsert.isPending || remove.isPending;
+  const groups = groupBySkill(mappings);
+
+  // Archived rows stay MAPPED (un-archiving restores the mapping) but are never
+  // suggested, so they are shown in the list and kept out of the picker.
+  const active = resources.filter((r) => !r.isArchived);
+  const titleById = new Map<string, string>([
+    ...resources.map((r) => [r.id, r.title] as const),
+    ...mappings.map((m) => [m.resourceId, m.resourceTitle] as const),
+  ]);
+  const draftResourceIsArchived =
+    draft != null &&
+    draft.resourceId !== NO_RESOURCE &&
+    !active.some((r) => r.id === draft.resourceId);
+
+  const resourceOptions = [
+    {
+      value: NO_RESOURCE,
+      label: active.length === 0 ? "No active catalogue resources" : "Pick a resource…",
+    },
+    ...active.map((r) => ({ value: r.id, label: r.title })),
+    // Editing a mapping that points at a retired link still needs an option to
+    // sit on, else the trigger renders blank.
+    ...(draft && draftResourceIsArchived
+      ? [
+          {
+            value: draft.resourceId,
+            label: `${titleById.get(draft.resourceId) ?? draft.resourceId} (archived)`,
+          },
+        ]
+      : []),
+  ];
+
+  function patch(p: Partial<SkillMappingDraft>) {
+    setDraft((d) => (d ? { ...d, ...p } : d));
+  }
+
+  function save() {
+    if (!draft) return;
+    const skillName = draft.skillName.trim();
+    if (!skillName) {
+      setFormError("Name the skill this resource closes.");
+      return;
+    }
+    if (draft.resourceId === NO_RESOURCE) {
+      setFormError("Pick the catalogue resource that closes it.");
+      return;
+    }
+    setFormError(null);
+    setNotice(null);
+    upsert.mutate({
+      ...(draft.id ? { id: draft.id } : {}),
+      skillName,
+      resourceId: draft.resourceId,
+      sortOrder: Number(draft.sortOrder) || 0,
+    });
+  }
+
+  return (
+    <div className="space-y-4">
+      <Card className="p-5">
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <h2 className="text-sm font-semibold text-neutral-900">Upskilling library</h2>
+            <p className="mt-1 text-sm text-neutral-500">
+              A skill, and the resources that close it. Order within a skill is the order the
+              suggestions are offered in.
+            </p>
+          </div>
+          <Button
+            size="sm"
+            disabled={busy || draft !== null}
+            onClick={() => {
+              setFormError(null);
+              setDraft(emptySkillMappingDraft());
+            }}
+          >
+            Add mapping
+          </Button>
+        </div>
+
+        <div className="mt-4 rounded-lg border border-neutral-200 bg-neutral-50 px-4 py-3 text-sm text-neutral-600">
+          This is <span className="font-medium text-neutral-900">not a curated plan</span> — it is
+          the org saying &ldquo;if a hire is missing this skill, this is what closes it&rdquo;. The
+          plan itself is derived per hire: HireOps compares what the role&apos;s job description
+          asks for against what that person&apos;s CV evidenced when they applied, then offers the
+          mapped resources for whatever is missing. A recruiter sees those suggestions on the
+          hire&apos;s onboarding case, with the skill each one closes, and pushes the ones they
+          agree with. Skill names are free text on purpose: they have to line up with your own JD
+          skill vocabulary, which is free text too.
+        </div>
+
+        {groups.length === 0 ? (
+          <EmptyState
+            className="py-10"
+            title="No skills mapped yet"
+            hint="Map a skill — “Kubernetes”, “IFRS 17”, “stakeholder management” — to the catalogue resource that closes it. Until something is mapped, a hire’s gaps are still detected but nothing can be suggested to close them."
+          />
+        ) : (
+          <div className="mt-4 space-y-3">
+            {groups.map((g) => (
+              <div
+                key={g.key}
+                className="rounded-lg border border-neutral-200 bg-neutral-50/40 p-4"
+              >
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="text-sm font-medium text-neutral-900">{g.skillName}</span>
+                    <Badge tone="neutral">
+                      {g.rows.length} {g.rows.length === 1 ? "resource" : "resources"}
+                    </Badge>
+                  </div>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    disabled={busy || draft !== null}
+                    onClick={() => {
+                      setFormError(null);
+                      setDraft(emptySkillMappingDraft(g.skillName));
+                    }}
+                  >
+                    Add to this skill
+                  </Button>
+                </div>
+
+                <ul className="mt-3 space-y-1 border-t border-neutral-200 pt-3">
+                  {g.rows.map((m) => (
+                    <li
+                      key={m.id}
+                      className="flex flex-wrap items-center gap-2 text-xs text-neutral-600"
+                    >
+                      <span className="font-medium text-neutral-800">{m.resourceTitle}</span>
+                      <span className="text-neutral-400">{providerLabel(m.resourceProvider)}</span>
+                      {m.resourceIsArchived ? (
+                        <Badge tone="warning">Archived — never suggested</Badge>
+                      ) : null}
+                      <span className="flex-1" />
+                      <Button
+                        size="sm"
+                        variant="secondary"
+                        disabled={busy}
+                        onClick={() => {
+                          setFormError(null);
+                          setDraft(toSkillMappingDraft(m));
+                        }}
+                      >
+                        Edit
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        disabled={busy}
+                        onClick={() => {
+                          setNotice(null);
+                          remove.mutate({ id: m.id });
+                        }}
+                      >
+                        Unmap
+                      </Button>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ))}
+          </div>
+        )}
+      </Card>
+
+      {draft ? (
+        <Card className="p-5">
+          <h3 className="text-sm font-semibold text-neutral-900">
+            {draft.id ? "Edit mapping" : "New mapping"}
+          </h3>
+          <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-6">
+            <div className="sm:col-span-2">
+              <FieldLabel>Skill</FieldLabel>
+              <Input
+                size="sm"
+                value={draft.skillName}
+                onChange={(e) => patch({ skillName: e.target.value })}
+                placeholder="e.g. Kubernetes"
+              />
+            </div>
+            <div className="sm:col-span-3">
+              <FieldLabel>Resource that closes it</FieldLabel>
+              <Select
+                size="sm"
+                options={resourceOptions}
+                value={draft.resourceId}
+                disabled={active.length === 0 && !draftResourceIsArchived}
+                onValueChange={(v) => patch({ resourceId: v })}
+              />
+            </div>
+            <div className="sm:col-span-1">
+              <FieldLabel>Sort order</FieldLabel>
+              <Input
+                size="sm"
+                type="number"
+                value={draft.sortOrder}
+                onChange={(e) => patch({ sortOrder: e.target.value })}
+              />
+            </div>
+          </div>
+
+          <p className="mt-3 text-xs text-neutral-500">
+            Match the skill to the wording your job descriptions use — the gap is found by comparing
+            these names against the JD&apos;s skills, ignoring case and surrounding spaces. One
+            resource can close several skills, and one skill can have several resources.
+          </p>
+
+          {active.length === 0 ? (
+            <p className="mt-3 text-sm text-neutral-500">
+              The catalogue has no active resources to map. Add one on the Catalogue tab first.
+            </p>
+          ) : null}
+
+          {formError ? <p className="mt-3 text-sm text-status-error-700">{formError}</p> : null}
+
+          <div className="mt-4 flex justify-end gap-2">
+            <Button
+              size="sm"
+              variant="ghost"
+              disabled={busy}
+              onClick={() => {
+                setDraft(null);
+                setFormError(null);
+              }}
+            >
+              Cancel
+            </Button>
+            <Button size="sm" disabled={busy} onClick={save}>
+              {draft.id ? "Save mapping" : "Create mapping"}
+            </Button>
+          </div>
+        </Card>
+      ) : null}
     </div>
   );
 }
