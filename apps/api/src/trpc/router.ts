@@ -57,6 +57,7 @@ import {
   learningResources,
   learningTracks,
   learningTrackItems,
+  learningSkillMap,
   jdVersions,
   jdSkills,
   approvalChains,
@@ -624,6 +625,17 @@ import {
   assignLearningToCaseOutputSchema,
   candidateUpdateLearningProgressInputSchema,
   candidateUpdateLearningProgressOutputSchema,
+  listLearningSkillMapInputSchema,
+  listLearningSkillMapOutputSchema,
+  upsertLearningSkillMappingInputSchema,
+  upsertLearningSkillMappingOutputSchema,
+  deleteLearningSkillMappingInputSchema,
+  deleteLearningSkillMappingOutputSchema,
+  getSuggestedLearningForCaseInputSchema,
+  getSuggestedLearningForCaseOutputSchema,
+  type LearningSkillMapRow,
+  type SuggestedLearningItem,
+  type LearningMissingSkill,
   type LearningProvider,
   type LearningResourceRow,
   type LearningTrackRow,
@@ -958,6 +970,15 @@ import { getStorageClient } from "../lib/storage";
 import { attachDocumentToCase, matchDocumentCollectionTask } from "../lib/onboarding-document";
 import { attachApplicationDocumentBlob } from "../lib/application-document";
 import { acceptOfferAtomically, runOfferAcceptSideEffects } from "../lib/offer-accept";
+// The FROZEN JD-skill-vs-parsed-skills matcher, extracted verbatim from
+// buildRequisitionInsights (LD-2A). Shared by the Insights skill-gap chart and
+// the per-hire upskilling suggestions so the two can never drift apart.
+import {
+  parsedSkillTokens,
+  skillNeedle,
+  tokensMatchNeedle,
+  tokensCoverSkill,
+} from "../lib/skill-match";
 
 /**
  * Lowercase, drop +suffix in the local part. Gmail dot-stripping is
@@ -1358,6 +1379,26 @@ function learningTrackRowToApi(
     isActive: row.isActive,
     sortOrder: row.sortOrder,
     items,
+    createdAt: row.createdAt.toISOString(),
+    updatedAt: row.updatedAt.toISOString(),
+  };
+}
+
+/** DB row (+ the catalogue row it points at) → API row for one skill→resource
+ * mapping (LD-2A). The join is always an inner join on a compound FK, so the
+ * resource is guaranteed present. */
+function learningSkillMapRowToApi(
+  row: typeof learningSkillMap.$inferSelect,
+  resource: typeof learningResources.$inferSelect,
+): LearningSkillMapRow {
+  return {
+    id: row.id,
+    skillName: row.skillName,
+    resourceId: row.resourceId,
+    resourceTitle: resource.title,
+    resourceProvider: resource.provider as LearningProvider,
+    resourceIsArchived: resource.isArchived,
+    sortOrder: row.sortOrder,
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
   };
@@ -22022,6 +22063,384 @@ export const appRouter = router({
       });
     }),
 
+  // ═══════════ LD-2A — layer 3: the per-individual upskilling map ═══════════
+  //
+  // Layers 1 and 2 (LD-1A) are curated BUNDLES someone authors once. Layer 3 —
+  // this hire's own capability gaps — is per-individual by definition and
+  // cannot be pre-authored. So the org curates WHICH RESOURCE CLOSES WHICH
+  // SKILL (learning_skill_map) and the system derives the plan from the
+  // JD-vs-hire skill comparison HireOps already ran at application time.
+  //
+  // The derived half returns SUGGESTIONS ONLY. getSuggestedLearningForCase
+  // writes nothing; the recruiter pushes what they agree with through the
+  // existing assignLearningToCase. There stays exactly ONE way learning reaches
+  // a hire, and the derived part is visible and overridable rather than
+  // automatic.
+  //
+  // Curating the map is admin config (LEARNING_ADMIN_ROLES); reading a specific
+  // hire's suggestions is an onboarding act (ONBOARDING_MANAGE_ROLES) — the
+  // same deliberate asymmetry as the catalogue vs the push.
+
+  /**
+   * listLearningSkillMap — the tenant's (skill → resource) mappings, each
+   * joined to the catalogue row it points at. Ordered by (skill, sort_order,
+   * title). Archived resources are STILL returned: the editor must be able to
+   * see that a mapping points at a retired link. The suggestion path is where
+   * archived rows are dropped.
+   */
+  listLearningSkillMap: protectedProcedure
+    .input(listLearningSkillMapInputSchema)
+    .output(listLearningSkillMapOutputSchema)
+    .query(async ({ ctx, input }) => {
+      requireAnyRole(
+        ctx,
+        LEARNING_ADMIN_ROLES,
+        "The learning skill map requires the admin or hr_head role",
+      );
+      const db = requireDb(ctx);
+      if (!ctx.tenantId) {
+        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
+      }
+      const rows = await db
+        .select({ mapping: learningSkillMap, resource: learningResources })
+        .from(learningSkillMap)
+        .innerJoin(
+          learningResources,
+          and(
+            eq(learningResources.tenantId, learningSkillMap.tenantId),
+            eq(learningResources.id, learningSkillMap.resourceId),
+          ),
+        )
+        .where(eq(learningSkillMap.tenantId, ctx.tenantId))
+        .orderBy(learningSkillMap.skillName, learningSkillMap.sortOrder, learningResources.title);
+
+      // The optional filter normalises BOTH sides exactly as the suggestion
+      // path does, so what the admin searches for is what the matcher sees.
+      const needle = input.skillName ? skillNeedle(input.skillName) : null;
+      const filtered = needle
+        ? rows.filter((r) => skillNeedle(r.mapping.skillName) === needle)
+        : rows;
+      return { rows: filtered.map((r) => learningSkillMapRowToApi(r.mapping, r.resource)) };
+    }),
+
+  /**
+   * upsertLearningSkillMapping — admin / hr_head, audited. Creates (no id) or
+   * updates (id) one mapping. The resource must be this tenant's catalogue row
+   * (BAD_REQUEST otherwise, rather than a raw FK error); a duplicate
+   * (skill, resource) pair surfaces a clean BAD_REQUEST via a nested
+   * transaction (SAVEPOINT) — the upsertLearningResource precedent.
+   */
+  upsertLearningSkillMapping: protectedProcedure
+    .input(upsertLearningSkillMappingInputSchema)
+    .output(upsertLearningSkillMappingOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      return withAudit("upsert_learning_skill_mapping", ctx, input, async () => {
+        requireAnyRole(
+          ctx,
+          LEARNING_ADMIN_ROLES,
+          "Managing the learning skill map requires the admin or hr_head role",
+        );
+        const db = requireDb(ctx);
+        if (!ctx.tenantId) {
+          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
+        }
+        const tenantId = ctx.tenantId;
+        const membershipId = await resolveActorMembership(db, ctx);
+        const skillName = input.skillName.trim();
+
+        const [resource] = await db
+          .select()
+          .from(learningResources)
+          .where(
+            and(
+              eq(learningResources.tenantId, tenantId),
+              eq(learningResources.id, input.resourceId),
+            ),
+          )
+          .limit(1);
+        if (!resource) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: "That learning resource is not in this tenant's catalogue.",
+          });
+        }
+
+        let row: typeof learningSkillMap.$inferSelect | undefined;
+        try {
+          // Nested transaction (SAVEPOINT): a (tenant, skill, resource) unique
+          // violation rolls back to the savepoint rather than aborting the
+          // request's outer RLS transaction, so the BAD_REQUEST below survives.
+          [row] = await db.transaction((tx) =>
+            input.id
+              ? tx
+                  .update(learningSkillMap)
+                  .set({
+                    skillName,
+                    resourceId: input.resourceId,
+                    ...(input.sortOrder === undefined ? {} : { sortOrder: input.sortOrder }),
+                    updatedByMembershipId: membershipId,
+                    updatedAt: new Date(),
+                  })
+                  .where(
+                    and(eq(learningSkillMap.tenantId, tenantId), eq(learningSkillMap.id, input.id)),
+                  )
+                  .returning()
+              : tx
+                  .insert(learningSkillMap)
+                  .values({
+                    tenantId,
+                    skillName,
+                    resourceId: input.resourceId,
+                    sortOrder: input.sortOrder ?? 0,
+                    createdByMembershipId: membershipId,
+                    updatedByMembershipId: membershipId,
+                  })
+                  .returning(),
+          );
+        } catch (err) {
+          if (isUniqueViolation(err)) {
+            throw new TRPCError({
+              code: "BAD_REQUEST",
+              message: `"${resource.title}" is already mapped to the skill "${skillName}".`,
+            });
+          }
+          throw err;
+        }
+        if (!row) {
+          throw new TRPCError({ code: "NOT_FOUND", message: "learning skill mapping not found" });
+        }
+        return { row: learningSkillMapRowToApi(row, resource) };
+      });
+    }),
+
+  /**
+   * deleteLearningSkillMapping — admin / hr_head, audited. A HARD delete,
+   * unlike the catalogue: a mapping is a curation opinion with nothing hanging
+   * off it. Tasks already pushed at a hire point at the RESOURCE, never at the
+   * mapping, so unmapping never breaks an existing plan.
+   */
+  deleteLearningSkillMapping: protectedProcedure
+    .input(deleteLearningSkillMappingInputSchema)
+    .output(deleteLearningSkillMappingOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      return withAudit("delete_learning_skill_mapping", ctx, input, async () => {
+        requireAnyRole(
+          ctx,
+          LEARNING_ADMIN_ROLES,
+          "Managing the learning skill map requires the admin or hr_head role",
+        );
+        const db = requireDb(ctx);
+        if (!ctx.tenantId) {
+          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
+        }
+        const [row] = await db
+          .delete(learningSkillMap)
+          .where(
+            and(eq(learningSkillMap.tenantId, ctx.tenantId), eq(learningSkillMap.id, input.id)),
+          )
+          .returning({ id: learningSkillMap.id });
+        if (!row) {
+          throw new TRPCError({ code: "NOT_FOUND", message: "learning skill mapping not found" });
+        }
+        return { id: row.id };
+      });
+    }),
+
+  /**
+   * getSuggestedLearningForCase — THE DIFFERENTIATOR (LD-2A). For ONE hire:
+   * which skills does this role demand that this person's CV does not evidence,
+   * and what has the org mapped to close them?
+   *
+   * READ-ONLY. It assigns nothing and writes nothing — the recruiter pushes
+   * what they agree with through assignLearningToCase, so there stays exactly
+   * one way learning reaches a hire.
+   *
+   * The comparison is NOT new: it is the same matcher the Insights skill-gap
+   * chart has always used, extracted into ../lib/skill-match so the two cannot
+   * drift. Most onboarding tools structurally cannot do this because they never
+   * scored the person against the JD. HireOps did, at application time.
+   *
+   *   case → application → requisition → jd_version → jd_skills   (the demand)
+   *   case → candidate  → parsed_skills                           (the evidence)
+   *
+   * Ranking: must-have gaps (jd_skills.is_required) first, then the JD's own
+   * skill order, then the mapping's sort order. A resource that closes several
+   * gaps is credited to the highest-ranked one and listed once.
+   *
+   * Excluded: archived resources (a retired link is never suggested) and
+   * anything already pushed onto this case (the same
+   * metadata->>'learningResourceId' key assignLearningToCase is idempotent on).
+   *
+   * DEGRADATION — the point of the `hasParsedSkills` flag: a hire whose
+   * parsed_skills is null, empty or badly shaped yields NO gaps and NO
+   * suggestions. An empty token set matches nothing, so the naive reading would
+   * flag every JD skill as missing — the exact false 100%-gap wall the analytics
+   * seed produced. The honest answer is "no gaps identified", and the surface
+   * should say the CV was not parsed rather than invent a plan.
+   */
+  getSuggestedLearningForCase: protectedProcedure
+    .input(getSuggestedLearningForCaseInputSchema)
+    .output(getSuggestedLearningForCaseOutputSchema)
+    .query(async ({ ctx, input }) => {
+      // Reading one specific hire's suggestions is an onboarding act, not a
+      // config act — hence the onboarding gate, matching the push.
+      requireAnyRole(ctx, ONBOARDING_MANAGE_ROLES, "Onboarding is not available for your role");
+      const db = requireDb(ctx);
+      if (!ctx.tenantId) {
+        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
+      }
+      const tenantId = ctx.tenantId;
+      const limit = input.limit ?? 10;
+
+      // 1. The case must be this tenant's; resolve BOTH sides of the comparison
+      //    in one read. Left joins throughout: a case with a missing
+      //    requisition or an unparsed candidate degrades, it does not throw.
+      const [caseRow] = await db
+        .select({
+          id: onboardingCases.id,
+          parsedSkills: candidates.parsedSkills,
+          jdVersionId: requisitions.jdVersionId,
+        })
+        .from(onboardingCases)
+        .leftJoin(
+          candidates,
+          and(
+            eq(candidates.tenantId, onboardingCases.tenantId),
+            eq(candidates.id, onboardingCases.candidateId),
+          ),
+        )
+        .leftJoin(
+          applications,
+          and(
+            eq(applications.tenantId, onboardingCases.tenantId),
+            eq(applications.id, onboardingCases.applicationId),
+          ),
+        )
+        .leftJoin(
+          requisitions,
+          and(
+            eq(requisitions.tenantId, onboardingCases.tenantId),
+            eq(requisitions.id, applications.requisitionId),
+          ),
+        )
+        .where(and(eq(onboardingCases.tenantId, tenantId), eq(onboardingCases.id, input.caseId)))
+        .limit(1);
+      if (!caseRow) {
+        throw new TRPCError({ code: "NOT_FOUND", message: "Onboarding case not found" });
+      }
+
+      // 2. The demand: the JD's skills, must-haves first.
+      const jdSkillRows = caseRow.jdVersionId
+        ? await db
+            .select({ skillName: jdSkills.skillName, isRequired: jdSkills.isRequired })
+            .from(jdSkills)
+            .where(
+              and(eq(jdSkills.tenantId, tenantId), eq(jdSkills.jdVersionId, caseRow.jdVersionId)),
+            )
+            .orderBy(desc(jdSkills.isRequired), jdSkills.skillName)
+        : [];
+
+      // 3. The evidence. NO tokens = the CV was never parsed → "no gaps
+      //    identified", NOT "missing everything". See the degradation note.
+      const tokens = parsedSkillTokens(caseRow.parsedSkills);
+      const base = {
+        caseId: caseRow.id,
+        jdSkillCount: jdSkillRows.length,
+        hasParsedSkills: tokens.size > 0,
+      };
+      if (tokens.size === 0 || jdSkillRows.length === 0) {
+        return { ...base, suggestions: [], missingSkills: [] };
+      }
+
+      const missing = jdSkillRows.filter((s) => !tokensCoverSkill(tokens, s.skillName));
+      if (missing.length === 0) {
+        return { ...base, suggestions: [], missingSkills: [] };
+      }
+
+      // 4. What the org has mapped to close skills, archived links dropped.
+      //    The map is small tenant config, so it is read whole and matched in
+      //    memory — which also keeps the normalisation identical on both sides
+      //    (trim + lowercase) instead of relying on SQL collation.
+      const mapRows = await db
+        .select({ mapping: learningSkillMap, resource: learningResources })
+        .from(learningSkillMap)
+        .innerJoin(
+          learningResources,
+          and(
+            eq(learningResources.tenantId, learningSkillMap.tenantId),
+            eq(learningResources.id, learningSkillMap.resourceId),
+          ),
+        )
+        .where(
+          and(
+            eq(learningSkillMap.tenantId, tenantId),
+            // A retired link is never suggested at a hire.
+            eq(learningResources.isArchived, false),
+          ),
+        )
+        .orderBy(learningSkillMap.sortOrder, learningResources.title);
+
+      const byNeedle = new Map<string, typeof mapRows>();
+      for (const r of mapRows) {
+        const key = skillNeedle(r.mapping.skillName);
+        const list = byNeedle.get(key) ?? [];
+        list.push(r);
+        byNeedle.set(key, list);
+      }
+
+      // 5. Never suggest what this case already carries — the same
+      //    metadata->>'learningResourceId' key the push is idempotent on.
+      const existingRows = await db
+        .select({
+          resourceId: dsql<string | null>`${onboardingTasks.metadata}->>'learningResourceId'`,
+        })
+        .from(onboardingTasks)
+        .where(
+          and(
+            eq(onboardingTasks.tenantId, tenantId),
+            eq(onboardingTasks.caseId, caseRow.id),
+            inArray(onboardingTasks.taskType, ["training", "orientation"]),
+            dsql`${onboardingTasks.metadata}->>'learningResourceId' IS NOT NULL`,
+          ),
+        );
+      const already = new Set(existingRows.map((r) => r.resourceId).filter((v) => v !== null));
+
+      // 6. Rank. `missing` is already must-haves-first in the JD's own order,
+      //    and each skill's mappings are already in (sort_order, title) order,
+      //    so a single pass produces the ranking.
+      const suggestions: SuggestedLearningItem[] = [];
+      const missingSkills: LearningMissingSkill[] = [];
+      const seenResource = new Set<string>();
+      for (const s of missing) {
+        const usable = (byNeedle.get(skillNeedle(s.skillName)) ?? []).filter(
+          (m) => !already.has(m.resource.id),
+        );
+        missingSkills.push({
+          skillName: s.skillName,
+          isRequired: s.isRequired,
+          hasSuggestion: usable.length > 0,
+        });
+        for (const m of usable) {
+          // A resource that closes several gaps is credited to the
+          // highest-ranked one and listed once.
+          if (seenResource.has(m.resource.id)) continue;
+          seenResource.add(m.resource.id);
+          suggestions.push({
+            resourceId: m.resource.id,
+            title: m.resource.title,
+            description: m.resource.description ?? null,
+            provider: m.resource.provider as LearningProvider,
+            url: m.resource.url,
+            estimatedMinutes: m.resource.estimatedMinutes ?? null,
+            skillName: s.skillName,
+            isRequiredSkill: s.isRequired,
+          });
+        }
+      }
+
+      return { ...base, suggestions: suggestions.slice(0, limit), missingSkills };
+    }),
+
   // ═══════════ T2.1 / G05 — required-candidate-field policy ═══════════
   //
   // A tenant's editable requiredness/gate OVERRIDE over the seven-field
@@ -27336,19 +27755,10 @@ function scorecardMean(scorecard: unknown): number | null {
   return nums.reduce((a, b) => a + b, 0) / nums.length;
 }
 
-/** Case-insensitive skill tokens from a candidate's parsed_skills.skills array. */
-function parsedSkillTokens(parsed: unknown): Set<string> {
-  const out = new Set<string>();
-  if (parsed && typeof parsed === "object") {
-    const skills = (parsed as Record<string, unknown>).skills;
-    if (Array.isArray(skills)) {
-      for (const s of skills) {
-        if (typeof s === "string") out.add(s.trim().toLowerCase());
-      }
-    }
-  }
-  return out;
-}
+// `parsedSkillTokens` + the two-way containment test used by the skill-gap
+// block below now live in ../lib/skill-match (LD-2A) so the per-hire upskilling
+// suggestions answer with the SAME matcher. Pure extraction — the semantics are
+// unchanged (test/ro-03.test.ts Test 4 is the guard).
 
 async function buildRequisitionInsights(
   db: InsightsDb,
@@ -27631,12 +28041,10 @@ async function buildRequisitionInsights(
       const totalCandidates = tokensByCandidate.length;
 
       skillGap = jdSkillRows.map((s) => {
-        const needle = s.skillName.trim().toLowerCase();
+        const needle = skillNeedle(s.skillName);
         let missing = 0;
         for (const toks of tokensByCandidate) {
-          const has = Array.from(toks).some(
-            (t) => t === needle || t.includes(needle) || needle.includes(t),
-          );
+          const has = tokensMatchNeedle(toks, needle);
           if (!has) missing += 1;
         }
         const gapPct =

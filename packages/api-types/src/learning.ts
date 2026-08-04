@@ -321,3 +321,145 @@ export const candidateUpdateLearningProgressOutputSchema = z.object({
 export type CandidateUpdateLearningProgressOutput = z.infer<
   typeof candidateUpdateLearningProgressOutputSchema
 >;
+
+// ══════════════ (E) layer 3 — the per-individual upskilling map (LD-2A) ══════════════
+
+/**
+ * THE ASYMMETRY, stated plainly: layers 1 and 2 above are curated BUNDLES a
+ * person authors once. Layer 3 — this hire's own capability gaps — is
+ * per-individual by definition and cannot be pre-authored. So the org does not
+ * curate the plan; it curates WHICH RESOURCE CLOSES WHICH SKILL
+ * (`learning_skill_map`), and the system derives the plan from the JD-vs-hire
+ * skill comparison HireOps already ran at application time.
+ *
+ * What comes back is SUGGESTIONS, never assignments. `getSuggestedLearningForCase`
+ * writes nothing: the recruiter pushes what they agree with through the existing
+ * `assignLearningToCase`, so there stays exactly ONE way learning reaches a hire.
+ * Every suggestion carries the skill it closes so the surface can explain itself.
+ */
+
+/** One (skill → resource) mapping, denormalised with the catalogue bits the
+ * admin editor renders. */
+export const learningSkillMapRowSchema = z.object({
+  id: z.string().uuid(),
+  skillName: z.string(),
+  resourceId: z.string().uuid(),
+  resourceTitle: z.string(),
+  resourceProvider: learningProviderSchema,
+  /** Archived resources stay MAPPED (un-archiving restores the mapping) but are
+   * never suggested. The editor shows the flag so the retirement is visible. */
+  resourceIsArchived: z.boolean(),
+  sortOrder: z.number().int(),
+  createdAt: z.string(), // ISO
+  updatedAt: z.string(), // ISO
+});
+export type LearningSkillMapRow = z.infer<typeof learningSkillMapRowSchema>;
+
+export const listLearningSkillMapInputSchema = z
+  .object({
+    /** Narrow to one skill (matched trimmed + case-insensitively, the same
+     * normalisation the suggestion path uses). */
+    skillName: z.string().trim().min(1).max(200).optional(),
+  })
+  .default({});
+export type ListLearningSkillMapInput = z.infer<typeof listLearningSkillMapInputSchema>;
+
+export const listLearningSkillMapOutputSchema = z.object({
+  rows: z.array(learningSkillMapRowSchema),
+});
+export type ListLearningSkillMapOutput = z.infer<typeof listLearningSkillMapOutputSchema>;
+
+/**
+ * Create (no id) or update (id) one mapping. `skill_name` is free text on
+ * purpose — it has to line up with the tenant's own `jd_skills.skill_name`
+ * vocabulary, which is free text too. unique(tenant, skill_name, resource_id)
+ * makes (skill, resource) the idempotent key, so a duplicate surfaces a clean
+ * BAD_REQUEST rather than a second identical row.
+ */
+export const upsertLearningSkillMappingInputSchema = z.object({
+  id: z.string().uuid().optional(),
+  skillName: z.string().trim().min(1).max(200),
+  resourceId: z.string().uuid(),
+  sortOrder: z.number().int().min(0).max(9999).optional(),
+});
+export type UpsertLearningSkillMappingInput = z.infer<typeof upsertLearningSkillMappingInputSchema>;
+
+export const upsertLearningSkillMappingOutputSchema = z.object({
+  row: learningSkillMapRowSchema,
+});
+export type UpsertLearningSkillMappingOutput = z.infer<
+  typeof upsertLearningSkillMappingOutputSchema
+>;
+
+/** Unmap a resource from a skill. A HARD delete, unlike the catalogue: a
+ * mapping is a curation opinion with nothing hanging off it — tasks already
+ * pushed at a hire point at the RESOURCE, never at the mapping. */
+export const deleteLearningSkillMappingInputSchema = z.object({
+  id: z.string().uuid(),
+});
+export type DeleteLearningSkillMappingInput = z.infer<typeof deleteLearningSkillMappingInputSchema>;
+
+export const deleteLearningSkillMappingOutputSchema = z.object({
+  id: z.string().uuid(),
+});
+export type DeleteLearningSkillMappingOutput = z.infer<
+  typeof deleteLearningSkillMappingOutputSchema
+>;
+
+/** One suggested resource, carrying the JD skill it closes. */
+export const suggestedLearningItemSchema = z.object({
+  resourceId: z.string().uuid(),
+  title: z.string(),
+  description: z.string().nullable(),
+  provider: learningProviderSchema,
+  url: z.string(),
+  estimatedMinutes: z.number().int().nullable(),
+  /** The JD skill this closes, verbatim from `jd_skills` — the WHY the surface
+   * shows next to the item. */
+  skillName: z.string(),
+  /** Whether that JD skill is a must-have. Must-have gaps rank first. */
+  isRequiredSkill: z.boolean(),
+});
+export type SuggestedLearningItem = z.infer<typeof suggestedLearningItemSchema>;
+
+/** One gap in the hire's profile against this JD. */
+export const learningMissingSkillSchema = z.object({
+  skillName: z.string(),
+  isRequired: z.boolean(),
+  /** true = the org has something to offer for this gap right now. false =
+   * nothing is mapped to the skill, everything mapped is archived, or all of it
+   * is already on this case — the first of which is the admin's cue to add a
+   * mapping, and worth showing rather than hiding. */
+  hasSuggestion: z.boolean(),
+});
+export type LearningMissingSkill = z.infer<typeof learningMissingSkillSchema>;
+
+export const getSuggestedLearningForCaseInputSchema = z.object({
+  caseId: z.string().uuid(),
+  /** Cap on returned suggestions so a weak-profile hire is not buried. */
+  limit: z.number().int().min(1).max(50).optional(),
+});
+export type GetSuggestedLearningForCaseInput = z.infer<
+  typeof getSuggestedLearningForCaseInputSchema
+>;
+
+export const getSuggestedLearningForCaseOutputSchema = z.object({
+  caseId: z.string().uuid(),
+  /** Ranked: must-have gaps first, then the JD's own skill order, then the
+   * mapping's sort order. Excludes archived resources and anything already
+   * pushed onto this case. */
+  suggestions: z.array(suggestedLearningItemSchema),
+  missingSkills: z.array(learningMissingSkillSchema),
+  /** How many skills the JD lists. 0 = nothing to compare against. */
+  jdSkillCount: z.number().int().nonnegative(),
+  /**
+   * false when the hire's `parsed_skills` is null, empty or badly shaped. The
+   * honest answer then is "no gaps identified" — empty lists — NOT "missing
+   * everything", which is exactly the false 100%-gap wall the analytics seed
+   * produced. The surface should say the CV was not parsed, not invent a plan.
+   */
+  hasParsedSkills: z.boolean(),
+});
+export type GetSuggestedLearningForCaseOutput = z.infer<
+  typeof getSuggestedLearningForCaseOutputSchema
+>;

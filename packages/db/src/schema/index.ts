@@ -117,3 +117,5 @@ export * from "./tenant-scorecard-template";
 // L&D catalogue + curated tracks pushed onto a hire's onboarding case (LD-1A)
 export * from "./learning-resources";
 export * from "./learning-tracks";
+// skill → resource map: the engine behind the per-hire upskilling layer (LD-2A)
+export * from "./learning-skill-map";

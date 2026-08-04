@@ -729,6 +729,13 @@
       "when": 1784500000251,
       "tag": "0111_ld1a_learning_catalogue",
       "breakpoints": true
+    },
+    {
+      "idx": 112,
+      "version": "7",
+      "when": 1784500000252,
+      "tag": "0112_ld2a_learning_skill_map",
+      "breakpoints": true
     }
   ]
 }
