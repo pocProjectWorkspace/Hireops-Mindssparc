@@ -25635,6 +25635,14 @@ interface LoadedApproval {
  * agent_approval_rules for the optional approver_user_id (specific_user
  * mode). Throws NOT_FOUND if missing or not pending — callers don't
  * need to second-guess status.
+ *
+ * Takes a row lock (FOR UPDATE OF ar) on the approval itself. Every caller is a
+ * resolution mutation that reads the status here and writes it further down, in
+ * a DIFFERENT statement — without the lock two resolutions racing (a double-tap
+ * on a phone is enough) could both read 'pending', both write a decision, and
+ * both record an api_audit_logs row, because withAudit only skips the audit
+ * write when the handler THROWS. The lock serialises them, so the second call
+ * re-reads 'approved' and is refused. LEFT-JOINed rules stay unlocked.
  */
 async function loadPendingApprovalForResolution(
   db: NonNullable<HonoTRPCContext["db"]>,
@@ -25660,6 +25668,7 @@ async function loadPendingApprovalForResolution(
       ON rule.action_id = run_act.action_id AND rule.tenant_id = ar.tenant_id
     WHERE ar.id = ${approvalRequestId}::uuid
     LIMIT 1
+    FOR UPDATE OF ar
   `);
   interface Row {
     id: string;
