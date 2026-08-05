@@ -1241,10 +1241,16 @@ function GateStatus({ scan }: { scan: JdBiasScan | null }) {
     );
   }
   if (scan.matches.length > 0) {
+    // DISTINCT terms, not raw matches. The quality meter above counts distinct
+    // term+category (computeJdBiasScore), and the HR head's queue shows distinct
+    // flags (distinctBiasFlags server-side) — so counting raw matches here made
+    // one JD report "2 block · 0 warn" on the meter and "4 flagged phrases"
+    // directly beneath it, because two blocking terms each appeared twice.
+    const distinct = new Set(scan.matches.map((m) => `${m.term.toLowerCase()}|${m.category}`)).size;
     return (
       <div className="mt-4 rounded-lg border border-status-warning-200 bg-status-warning-50 px-4 py-3 text-sm text-status-warning-700">
-        Bias gate: {scan.matches.length} flagged {scan.matches.length === 1 ? "phrase" : "phrases"}{" "}
-        , submission is allowed; the HR head will see the flags in the approval queue.
+        Bias gate: {distinct} flagged {distinct === 1 ? "phrase" : "phrases"}, submission is
+        allowed; the HR head will see the flags in the approval queue.
       </div>
     );
   }
