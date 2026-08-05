@@ -58,40 +58,58 @@ function legacyEmailFor(email: string): string {
   return `${email.split("@")[0]}@${LEGACY_EMAIL_DOMAIN}`;
 }
 
+/**
+ * displayName is a PERSON'S NAME and jobTitle is their ROLE at the company.
+ * They used to be the same string ("Test Hiring Manager" in both), which read
+ * as a placeholder wherever a colleague's name is rendered — the onboarding
+ * case header says "Manager: Test Hiring Manager", and the user chip in the nav
+ * says "Test Recruiter". Nothing in the app reads job_title today, so the
+ * conflation was invisible until onboarding started naming people.
+ *
+ * Names are checked against public.persons so no staff member collides with a
+ * demo candidate. The email local parts are UNCHANGED — they are in the
+ * credentials handout and the login is what testers type.
+ */
 const TEST_USERS = [
   {
     email: "recruiter1@mindssparc.com",
-    displayName: "Test Recruiter",
+    displayName: "Nisha Balakrishnan",
+    jobTitle: "Senior Recruiter",
     roles: ["recruiter"] as const,
   },
   {
     email: "hr_ops1@mindssparc.com",
-    displayName: "Test HR Ops",
+    displayName: "Farhan Qureshi",
+    jobTitle: "HR Operations Specialist",
     roles: ["hr_ops"] as const,
   },
   {
     email: "admin1@mindssparc.com",
-    displayName: "Test Admin",
+    displayName: "Ravi Thulasidas",
+    jobTitle: "Platform Administrator",
     roles: ["admin"] as const,
   },
   {
     // REQ-01 (Wave A): the requisition-owner persona. The prototype's
     // "requirement_owner" = our hiring_manager role.
     email: "hiringmanager1@mindssparc.com",
-    displayName: "Test Hiring Manager",
+    displayName: "Suresh Venkataraman",
+    jobTitle: "Engineering Manager",
     roles: ["hiring_manager"] as const,
   },
   {
     // REQ-01 (Wave A): the HR-head approval persona (REQ-03 wires the queue).
     email: "hrhead1@mindssparc.com",
-    displayName: "Test HR Head",
+    displayName: "Latha Ramaswamy",
+    jobTitle: "Head of Human Resources",
     roles: ["hr_head"] as const,
   },
   {
     // INT-03 (Wave B): the panel/interviewer persona. Sees "My interviews",
     // opens the candidate brief, submits ONE scorecard per interview.
     email: "panel1@mindssparc.com",
-    displayName: "Test Panelist",
+    displayName: "Girish Kamath",
+    jobTitle: "Principal Engineer",
     roles: ["panel_member"] as const,
   },
 ] as const;
@@ -183,14 +201,22 @@ async function main() {
         process.exit(1);
       }
 
-      // public.users — id is FK to auth.users.id; insert + onConflictDoNothing.
+      // public.users — id is FK to auth.users.id. The label is UPDATED on
+      // conflict, not skipped: with onConflictDoNothing a persona seeded once
+      // kept its original display_name forever, so re-running this script could
+      // never correct a name that had already landed.
       await db
         .insert(users)
         .values({ id: authUserId, displayName: u.displayName })
-        .onConflictDoNothing();
+        .onConflictDoUpdate({
+          target: users.id,
+          set: { displayName: u.displayName, updatedAt: new Date() },
+        });
 
       // tenant_user_memberships — unique index on (user_id, tenant_id) is the
-      // conflict target. Roles is an enum array.
+      // conflict target. Roles is an enum array. Only the job title is
+      // refreshed on conflict; roles and status are left alone so an admin's
+      // change through the users admin screen survives a re-seed.
       await db
         .insert(tenantUserMemberships)
         .values({
@@ -198,9 +224,12 @@ async function main() {
           tenantId: tenant.id,
           roles: [...u.roles],
           status: "active",
-          jobTitle: u.displayName,
+          jobTitle: u.jobTitle,
         })
-        .onConflictDoNothing();
+        .onConflictDoUpdate({
+          target: [tenantUserMemberships.userId, tenantUserMemberships.tenantId],
+          set: { jobTitle: u.jobTitle, updatedAt: new Date() },
+        });
 
       console.log(`  seeded ${u.email} (roles=${u.roles.join(",")})`);
     }
