@@ -310,7 +310,12 @@ function ScheduleForm({
       ) : null}
       {err ? <p className="text-xs text-status-error-700">{err}</p> : null}
       <div className="flex gap-2">
-        <Button variant="primary" size="sm" disabled={!canSubmit || busy}>
+        {/* type="submit" is REQUIRED. The Button primitive defaults to
+            type="button" (deliberately — so a stray button in a form cannot
+            submit it), which meant this button rendered as a no-op: the form's
+            onSubmit never fired, no request was made, and there was no error to
+            show. It read as "clicking Schedule does nothing". */}
+        <Button type="submit" variant="primary" size="sm" disabled={!canSubmit || busy}>
           {busy ? "Saving…" : mode === "reschedule" ? "Reschedule" : "Schedule"}
         </Button>
         <Button variant="secondary" size="sm" onClick={onCancel} disabled={busy}>

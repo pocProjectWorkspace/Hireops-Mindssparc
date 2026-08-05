@@ -224,7 +224,11 @@ function DraftOfferForm({ applicationId, onCreated, onCancel }: DraftFormProps) 
         />
       </label>
       <div className="flex gap-2">
-        <Button variant="primary" size="sm" disabled={!canSubmit || draft.isPending}>
+        {/* type="submit" is REQUIRED — the Button primitive defaults to
+            type="button", so without this the form's onSubmit never fired and
+            "Save draft" silently did nothing. Same defect as the interview
+            Schedule button. */}
+        <Button type="submit" variant="primary" size="sm" disabled={!canSubmit || draft.isPending}>
           {draft.isPending ? "Drafting…" : "Save draft"}
         </Button>
         <Button variant="secondary" size="sm" onClick={onCancel} disabled={draft.isPending}>
