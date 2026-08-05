@@ -27,6 +27,9 @@ import { asDraftPayload, formatCostMicros, timeAgo } from "@/lib/approval-format
 interface ApprovalDetailPanelProps {
   approvalId: string;
   onResolved: () => void;
+  /** Clears the selection. Below lg the queue swaps panes rather than showing
+   * both, so the detail view is the whole screen and needs its own way back. */
+  onBack?: () => void;
 }
 
 /** Human-readable label for a triggerContext key. */
@@ -53,7 +56,7 @@ function DefRow({ label, children }: { label: string; children: ReactNode }) {
 const FIELD =
   "w-full rounded-md border border-neutral-300 bg-white px-3 py-2 text-sm text-neutral-900 transition-colors focus:border-brand-600 focus:outline-none focus:ring-1 focus:ring-brand-600 disabled:bg-neutral-100";
 
-export function ApprovalDetailPanel({ approvalId, onResolved }: ApprovalDetailPanelProps) {
+export function ApprovalDetailPanel({ approvalId, onResolved, onBack }: ApprovalDetailPanelProps) {
   const queryClient = useQueryClient();
   const detail = trpc.getApprovalRequest.useQuery(
     { approvalRequestId: approvalId },
@@ -159,6 +162,18 @@ export function ApprovalDetailPanel({ approvalId, onResolved }: ApprovalDetailPa
     <div className="flex h-full flex-col bg-neutral-50">
       {/* Header */}
       <div className="border-b border-neutral-200 bg-white px-6 py-4">
+        {/* Below lg the queue hands the whole screen to this panel, so this is
+            the only way back to the list. Desktop keeps both panes visible and
+            does not need it. */}
+        {onBack ? (
+          <button
+            type="button"
+            onClick={onBack}
+            className="mb-3 -ml-1 inline-flex items-center gap-1 rounded-button px-1 py-1 text-sm text-neutral-600 hover:text-neutral-900 lg:hidden"
+          >
+            <span aria-hidden="true">←</span> Back to queue
+          </button>
+        ) : null}
         <div className="flex items-start justify-between gap-4">
           <div className="min-w-0">
             <div className="flex items-center gap-2">

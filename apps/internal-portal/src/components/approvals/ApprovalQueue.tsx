@@ -32,8 +32,21 @@ export function ApprovalQueue({ initial }: { initial: ListPendingApprovalsOutput
 
   return (
     <div className="flex min-h-0 flex-1">
-      {/* List */}
-      <aside className="flex w-[380px] shrink-0 flex-col border-r border-neutral-200 bg-white">
+      {/*
+        List. On lg+ this is a fixed 380px rail beside the detail pane. Below lg
+        it becomes the FULL width and the detail pane is hidden — a phone cannot
+        show master and detail at once, and the previous `w-[380px] shrink-0`
+        left roughly ten pixels for the detail on a 390px viewport.
+
+        Selecting an item swaps the panes rather than shrinking either, which is
+        the standard master-detail behaviour on a phone. ApprovalDetailPanel
+        renders its own "Back to queue" control below lg.
+      */}
+      <aside
+        className={`${
+          selectedStillPresent ? "hidden lg:flex" : "flex"
+        } w-full shrink-0 flex-col border-r border-neutral-200 bg-white lg:w-[380px]`}
+      >
         <div className="flex items-center gap-2 border-b border-neutral-200 px-4 py-3">
           <span className="text-xs font-semibold uppercase tracking-wide text-neutral-600">
             Pending
@@ -61,10 +74,15 @@ export function ApprovalQueue({ initial }: { initial: ListPendingApprovalsOutput
         </div>
       </aside>
 
-      {/* Detail */}
-      <section className="min-h-0 flex-1 bg-neutral-50">
+      {/* Detail. Hidden below lg until something is selected — see the note on
+          the list above. The empty state is desktop-only guidance ("choose an
+          approval on the left"), which would be nonsense on a phone where the
+          queue occupies the whole screen. */}
+      <section
+        className={`${selectedStillPresent ? "flex" : "hidden lg:flex"} min-h-0 flex-1 flex-col bg-neutral-50`}
+      >
         {selectedStillPresent ? (
-          <ApprovalDetailPanel approvalId={selectedId} onResolved={clear} />
+          <ApprovalDetailPanel approvalId={selectedId} onResolved={clear} onBack={clear} />
         ) : (
           <div className="flex h-full items-center justify-center px-6">
             <EmptyState
