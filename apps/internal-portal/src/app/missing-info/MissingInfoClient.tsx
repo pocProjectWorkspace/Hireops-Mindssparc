@@ -5,6 +5,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import {
   Badge,
   Card,
+  cn,
   EmptyState,
   StatTile,
   TableShell,
@@ -64,9 +65,39 @@ export function MissingInfoClient({ initial }: { initial: ListMissingInfoOutput 
     placeholderData: (prev) => prev,
   });
 
+  // Per-row outcome line. "Request" changed nothing a recruiter could see — the
+  // row keeps its place, the button keeps its label, and only a small status
+  // Badge flips — so a successful chase was indistinguishable from a dead
+  // button, and a failed one was invisible entirely (neither mutation had an
+  // onError). The audit log shows a tester firing the same request four times
+  // in 45s and then giving up. Every click sent a real candidate email.
+  const [feedback, setFeedback] = useState<{
+    key: string;
+    message: string;
+    failed: boolean;
+  } | null>(null);
+  const rowKey = (v: { applicationId: string; fieldKey: string }) =>
+    `${v.applicationId}:${v.fieldKey}`;
+
   const invalidate = () => queryClient.invalidateQueries({ queryKey: [["listMissingInfo"]] });
-  const requestInfo = trpc.requestMissingInfo.useMutation({ onSuccess: invalidate });
-  const resolve = trpc.resolveMissingInfo.useMutation({ onSuccess: invalidate });
+  const requestInfo = trpc.requestMissingInfo.useMutation({
+    onSuccess: (res, vars) => {
+      invalidate();
+      setFeedback({
+        key: rowKey(vars),
+        message: res.notified ? "Request emailed to candidate" : "Logged — no candidate email",
+        failed: false,
+      });
+    },
+    onError: (err, vars) => setFeedback({ key: rowKey(vars), message: err.message, failed: true }),
+  });
+  const resolve = trpc.resolveMissingInfo.useMutation({
+    onSuccess: (_res, vars) => {
+      invalidate();
+      setFeedback({ key: rowKey(vars), message: `Marked ${vars.action}`, failed: false });
+    },
+    onError: (err, vars) => setFeedback({ key: rowKey(vars), message: err.message, failed: true }),
+  });
 
   const data = query.data ?? initial;
   const busyKey = requestInfo.isPending
@@ -195,8 +226,13 @@ export function MissingInfoClient({ initial }: { initial: ListMissingInfoOutput 
                             })
                           }
                           className="font-medium text-brand-700 hover:underline disabled:opacity-50"
+                          title={
+                            row.status === "requested"
+                              ? "Send this candidate another email about this field"
+                              : "Email this candidate about this field"
+                          }
                         >
-                          {busy ? "…" : "Request"}
+                          {busy ? "…" : row.status === "requested" ? "Re-request" : "Request"}
                         </button>
                       ) : null}
                       {row.status !== "verified" ? (
@@ -232,6 +268,17 @@ export function MissingInfoClient({ initial }: { initial: ListMissingInfoOutput 
                         </button>
                       ) : null}
                     </div>
+                    {feedback?.key === key ? (
+                      <p
+                        role="status"
+                        className={cn(
+                          "mt-1 text-right text-[11px]",
+                          feedback.failed ? "text-status-error-700" : "text-status-positive-700",
+                        )}
+                      >
+                        {feedback.message}
+                      </p>
+                    ) : null}
                   </Td>
                 </Tr>
               );

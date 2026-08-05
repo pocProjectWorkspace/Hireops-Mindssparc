@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import type { ReactNode } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { Badge, Button, DataBar } from "@/components/ui";
@@ -94,7 +94,20 @@ export function RecruiterBriefDrawer({ applicationId, onClose }: RecruiterBriefD
   const invalidate = () => queryClient.invalidateQueries({ queryKey: [["getRecruiterBrief"]] });
 
   const generate = trpc.generateRecruiterBrief.useMutation({ onSuccess: invalidate });
-  const requestInfo = trpc.requestMissingInfo.useMutation({ onSuccess: invalidate });
+
+  // A successful request swaps the button for a status Badge, so success speaks
+  // for itself here — but a FAILURE used to be swallowed whole and read as a
+  // dead button. Surface it against the field it belongs to.
+  const [requestError, setRequestError] = useState<{ fieldKey: string; message: string } | null>(
+    null,
+  );
+  const requestInfo = trpc.requestMissingInfo.useMutation({
+    onSuccess: () => {
+      setRequestError(null);
+      invalidate();
+    },
+    onError: (err, vars) => setRequestError({ fieldKey: vars.fieldKey, message: err.message }),
+  });
 
   if (!applicationId) return null;
 
@@ -263,6 +276,11 @@ export function RecruiterBriefDrawer({ applicationId, onClose }: RecruiterBriefD
                           </p>
                           {g.blocksAdvanceLabel ? (
                             <p className="text-[11px] text-neutral-500">{g.blocksAdvanceLabel}</p>
+                          ) : null}
+                          {requestError?.fieldKey === g.fieldKey ? (
+                            <p role="status" className="text-[11px] text-status-error-700">
+                              {requestError.message}
+                            </p>
                           ) : null}
                         </div>
                         {g.status === "pending" ? (
