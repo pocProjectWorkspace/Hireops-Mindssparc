@@ -27045,6 +27045,10 @@ async function selectInterviewRows(
  * the partial-unique index — the caller should reschedule instead. Runs inside
  * the procedure's tenant-bound tx so link + panel + email commit atomically
  * with the interview (an email-enqueue failure is logged, not fatal).
+ *
+ * Booking a round also SYNCS the application's stage (see syncStageForRound):
+ * an interview on the record is what puts a candidate in that stage, so
+ * current_stage must not be left behind by it.
  */
 async function doScheduleRound(
   db: NonNullable<HonoTRPCContext["db"]>,
@@ -27062,7 +27066,11 @@ async function doScheduleRound(
   },
 ): Promise<{ interviewId: string; roundNumber: number; invitationSentTo: string | null }> {
   const [app] = await db
-    .select({ tenantId: applications.tenantId, requisitionId: applications.requisitionId })
+    .select({
+      tenantId: applications.tenantId,
+      requisitionId: applications.requisitionId,
+      currentStage: applications.currentStage,
+    })
     .from(applications)
     .where(eq(applications.id, input.applicationId))
     .limit(1);
@@ -27204,6 +27212,15 @@ async function doScheduleRound(
     })),
   );
 
+  await syncStageForRound(db, ctx, {
+    applicationId: input.applicationId,
+    tenantId: app.tenantId,
+    currentStage: app.currentStage,
+    scorecardTemplate: plan.scorecardTemplate,
+    roundName: plan.roundName,
+    createdByMembershipId,
+  });
+
   let invitationSentTo: string | null = null;
   const meta = await fetchOfferEmailContext(db, input.applicationId);
   if (meta) {
@@ -27245,6 +27262,71 @@ async function doScheduleRound(
   }
 
   return { interviewId, roundNumber: input.roundNumber, invitationSentTo };
+}
+
+/**
+ * Keep applications.current_stage honest when a round is booked.
+ *
+ * Scheduling used to write the interview and nothing else, so a candidate with
+ * a technical or HR round on the calendar still sat at recruiter_review. Every
+ * stage-keyed surface then disagreed with the interview list — the triage stage
+ * filter showed candidates the recruiter knew were already interviewing, and
+ * /hr-rounds missed candidates whose HR round was booked. (Latent until the
+ * "Schedule interview" button stopped being a no-op in 83ed681; before that
+ * nobody could reach this path from the portal.)
+ *
+ * The target stage is interviewStageContext().belongsToStage — the SAME mapping
+ * INT-04 already uses to decide which stage an interview belongs to. That
+ * symmetry is the point: completing a round used to CONFLICT with
+ * "this interview belongs to the tech_interview stage but the application is at
+ * recruiter_review", because nothing ever moved the application there.
+ *
+ * FORWARD ONLY, via the canonical enum ordering: booking a follow-up technical
+ * round for someone already at hr_round must not drag them back, and the
+ * terminal stages (offer_declined / withdrawn / recruiter_rejected) all sort
+ * after the interview stages, so a round booked against a closed application
+ * leaves it closed. Deliberately NOT routed through
+ * transitionApplicationStage: that helper's gates exist to police a recruiter's
+ * explicit advance, and a scheduling call must not fail because of them —
+ * this is bookkeeping that follows a move the recruiter already made.
+ */
+async function syncStageForRound(
+  db: NonNullable<HonoTRPCContext["db"]>,
+  ctx: HonoTRPCContext,
+  args: {
+    applicationId: string;
+    tenantId: string;
+    currentStage: ApplicationStage;
+    scorecardTemplate: string;
+    roundName: string;
+    createdByMembershipId: string;
+  },
+): Promise<void> {
+  const { belongsToStage: targetStage } = interviewStageContext(args.scorecardTemplate);
+  if (STAGE_ORDER_INDEX[targetStage] <= STAGE_ORDER_INDEX[args.currentStage]) return;
+
+  await db.insert(applicationStateTransitions).values({
+    tenantId: args.tenantId,
+    applicationId: args.applicationId,
+    fromStage: args.currentStage,
+    toStage: targetStage,
+    actorMembershipId: args.createdByMembershipId,
+    reason: `Scheduled "${args.roundName}"`,
+  });
+  await db
+    .update(applications)
+    .set({ currentStage: targetStage, stageEnteredAt: new Date() })
+    .where(eq(applications.id, args.applicationId));
+
+  ctx.log.info(
+    {
+      request_id: ctx.requestId,
+      application_id: args.applicationId,
+      from_stage: args.currentStage,
+      to_stage: targetStage,
+    },
+    "syncStageForRound: advanced application stage on interview scheduling",
+  );
 }
 
 /**
