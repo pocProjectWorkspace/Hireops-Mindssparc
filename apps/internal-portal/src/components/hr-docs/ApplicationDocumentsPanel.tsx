@@ -130,7 +130,12 @@ function DocumentRow({ doc, onChanged }: { doc: ApplicationDocumentRow; onChange
     <li className="flex flex-col gap-2 px-4 py-3">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="flex min-w-0 items-center gap-2">
-          <p className="truncate text-sm font-medium text-neutral-900">
+          {/* Wraps on a phone rather than ellipsing away half the name; still
+              truncates once there is room for a single line. */}
+          <p
+            title={doc.documentTypeName ?? "Document"}
+            className="min-w-0 break-words text-sm font-medium text-neutral-900 sm:truncate"
+          >
             {doc.documentTypeName ?? "Document"}
           </p>
           <DocStatusChip status={doc.status} />

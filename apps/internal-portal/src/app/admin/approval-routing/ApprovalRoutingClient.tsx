@@ -45,8 +45,8 @@ interface FormState {
   subjectType: ApprovalMatrixSubjectType;
   name: string;
   approverRole: ApprovalMatrixApproverRole;
-  effectiveFrom: string; // datetime-local
-  effectiveTo: string; // datetime-local or ""
+  effectiveFrom: string; // YYYY-MM-DD
+  effectiveTo: string; // YYYY-MM-DD or ""
 }
 
 const EMPTY_FORM: FormState = {
@@ -119,8 +119,12 @@ export function ApprovalRoutingClient({ initial }: { initial: ApprovalMatrixRow[
       setError("Choose an effective-from date.");
       return;
     }
-    const from = new Date(form.effectiveFrom);
-    const to = form.effectiveTo ? new Date(form.effectiveTo) : null;
+    const from = startOfLocalDay(form.effectiveFrom);
+    if (!from) {
+      setError("Choose an effective-from date.");
+      return;
+    }
+    const to = form.effectiveTo ? startOfLocalDay(form.effectiveTo) : null;
     if (to && to.getTime() <= from.getTime()) {
       setError("The effective-to date must be after the effective-from date.");
       return;
@@ -284,7 +288,7 @@ export function ApprovalRoutingClient({ initial }: { initial: ApprovalMatrixRow[
           <label className="block">
             <span className="mb-1 block text-xs font-medium text-neutral-600">Effective from</span>
             <input
-              type="datetime-local"
+              type="date"
               className={inputCls}
               value={form.effectiveFrom}
               onChange={(e) => setForm((f) => ({ ...f, effectiveFrom: e.target.value }))}
@@ -296,7 +300,7 @@ export function ApprovalRoutingClient({ initial }: { initial: ApprovalMatrixRow[
               Effective to <span className="text-neutral-400">(optional)</span>
             </span>
             <input
-              type="datetime-local"
+              type="date"
               className={inputCls}
               value={form.effectiveTo}
               onChange={(e) => setForm((f) => ({ ...f, effectiveTo: e.target.value }))}
@@ -346,12 +350,31 @@ function fmtDate(iso: string): string {
   return d.toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" });
 }
 
-/** ISO → the `datetime-local` value (YYYY-MM-DDTHH:mm) in local time. */
+/**
+ * ISO → the `date` input value (YYYY-MM-DD) in LOCAL time.
+ *
+ * These policies are effective-DATED: the label says "Effective from", the
+ * validation says "choose an effective-from date", and the list renders them
+ * with fmtDate, which prints no time. The control used to be datetime-local, so
+ * it demanded a time nothing ever showed back — on a phone that is a whole
+ * extra spinner step for a value with no meaning here. Two policies starting
+ * the same day also looked identical while an invisible time decided which of
+ * them won.
+ */
 function toLocalInput(iso: string): string {
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return "";
   const pad = (n: number) => String(n).padStart(2, "0");
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(
-    d.getMinutes(),
-  )}`;
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
+/**
+ * A YYYY-MM-DD input value → local midnight on that day. Deliberately NOT
+ * `new Date("2026-08-05")`, which the spec parses as UTC midnight and which
+ * therefore lands on the previous day for anyone behind UTC.
+ */
+function startOfLocalDay(value: string): Date | null {
+  const [y, m, d] = value.split("-").map(Number);
+  if (!y || !m || !d) return null;
+  return new Date(y, m - 1, d);
 }

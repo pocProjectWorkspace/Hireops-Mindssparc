@@ -176,7 +176,9 @@ export function CandidateDetailDrawer() {
         onClick={close}
         className="absolute inset-0 bg-neutral-900/40 transition-opacity"
       />
-      <aside className="relative ml-auto flex h-full w-[60vw] max-w-3xl flex-col overflow-hidden bg-neutral-50 shadow-3">
+      {/* 60vw is 234px on a 390px phone — the panel was unreadable there. Take
+          the full width below sm, as the recruiter brief drawer already does. */}
+      <aside className="relative ml-auto flex h-full w-full max-w-3xl flex-col overflow-hidden bg-neutral-50 shadow-3 sm:w-[60vw]">
         {/* Identity header */}
         <header className="flex items-start justify-between gap-4 border-b border-neutral-200 bg-white px-6 py-5">
           {detail.isLoading ? (

@@ -170,8 +170,14 @@ function DocRow({
   return (
     <div className="flex flex-wrap items-center justify-between gap-3 px-5 py-4">
       <div className="min-w-0">
-        <p className="truncate text-sm font-medium text-neutral-900">{name}</p>
-        <p className="mt-0.5 truncate text-xs text-neutral-500">{meta}</p>
+        {/* A document type and an uploaded filename are both long enough to lose
+            their distinguishing end to an ellipsis on a phone — wrap there. */}
+        <p title={name} className="break-words text-sm font-medium text-neutral-900 sm:truncate">
+          {name}
+        </p>
+        <p title={meta} className="mt-0.5 break-words text-xs text-neutral-500 sm:truncate">
+          {meta}
+        </p>
         {reason ? <p className="mt-1 text-xs text-status-error-700">Reason: {reason}</p> : null}
         {error ? (
           <p role="alert" className="mt-1 text-xs text-status-error-700">

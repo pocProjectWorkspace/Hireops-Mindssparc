@@ -209,7 +209,7 @@ export function RequisitionDetailView({
             </p>
           </div>
           {canWrite && r.isDraft ? (
-            <div className="flex gap-2">
+            <div className="flex flex-wrap gap-2">
               <Button
                 variant="secondary"
                 onClick={() => router.push(`/requisitions/new?rid=${requisitionId}`)}

@@ -1067,11 +1067,13 @@ export function RequisitionWizard({
 
           <GateStatus scan={scan} />
 
-          <div className="mt-6 flex justify-between">
+          {/* Three buttons on one non-wrapping row ran off a phone and clipped
+              "Submit for approval" — the one control the step exists for. */}
+          <div className="mt-6 flex flex-wrap items-center justify-between gap-2">
             <Button variant="ghost" onClick={() => goToStep(4)} disabled={busy}>
               Back
             </Button>
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2">
               <Button variant="secondary" onClick={() => persistDraft()} disabled={busy}>
                 Save as draft
               </Button>

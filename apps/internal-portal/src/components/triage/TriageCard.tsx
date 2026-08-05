@@ -75,7 +75,9 @@ export function TriageCard({
       onClick={() => onOpen({ candidateId: row.candidateId, applicationId: row.applicationId })}
       aria-pressed={selected}
       className={cn(
-        "flex w-full items-center gap-3 px-6 py-3 text-left transition-colors",
+        // px-6 + a full-size avatar + the score/SLA cluster left the name and
+        // email a sliver on a phone; tighten the gutter and the right gap there.
+        "flex w-full items-center gap-3 px-4 py-3 text-left transition-colors sm:px-6",
         "focus-visible:outline focus-visible:-outline-offset-2 focus-visible:outline-2 focus-visible:outline-brand-500",
         variant === "breach" && "border-l-2 border-l-status-error-500",
         selected ? "bg-brand-50" : "hover:bg-neutral-50",
@@ -93,7 +95,7 @@ export function TriageCard({
         </div>
       </div>
 
-      <div className="flex shrink-0 items-center gap-4">
+      <div className="flex shrink-0 items-center gap-2 sm:gap-4">
         <ScoreMeter score={row.aiScore} />
         <Badge tone={inStageTone} pill className="tabular-nums">
           {inStageLabel}
