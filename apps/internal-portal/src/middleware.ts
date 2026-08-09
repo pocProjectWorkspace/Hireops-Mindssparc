@@ -85,5 +85,12 @@ export async function middleware(req: NextRequest) {
 
 export const config = {
   // Skip Next internals + static asset routes.
-  matcher: ["/((?!_next/static|_next/image|favicon.ico|api/trpc).*)"],
+  //
+  // Image files are matched by EXTENSION rather than named one by one. Only
+  // favicon.ico was listed, so /logo/*, the app-dir icon.png / apple-icon.png
+  // and /iris-avatar.png were all auth-gated and answered a signed-out browser
+  // with a 307 to /login — which broke the logo on the login page itself, the
+  // one screen guaranteed to be viewed without a session. No page route ends
+  // in an image extension, so this cannot expose anything.
+  matcher: ["/((?!_next/static|_next/image|api/trpc|.*\\.(?:png|ico|svg|jpg|jpeg|gif|webp)$).*)"],
 };

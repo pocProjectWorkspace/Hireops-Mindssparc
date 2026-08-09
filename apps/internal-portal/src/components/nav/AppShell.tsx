@@ -725,12 +725,16 @@ export interface AppShellProps {
 function Wordmark() {
   return (
     <div className="flex items-center gap-2.5 border-b border-sidebar-border bg-sidebar-brand px-4 py-[1.15rem]">
-      <span
+      {/* The mark alone, with "HireOps" left as live text: at 28px the lockup's
+          own lettering would render softer than the type it sits beside. */}
+      <img
+        src="/logo/hireops-mark.png"
+        alt=""
         aria-hidden
-        className="flex h-7 w-7 items-center justify-center rounded-md bg-brand-600 text-sm font-bold text-white shadow-1"
-      >
-        H
-      </span>
+        width={28}
+        height={28}
+        className="h-7 w-7 shrink-0 object-contain"
+      />
       <span className="text-base font-semibold tracking-tight text-sidebar-fg">HireOps</span>
     </div>
   );

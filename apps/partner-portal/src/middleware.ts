@@ -60,5 +60,9 @@ export async function middleware(req: NextRequest) {
 }
 
 export const config = {
-  matcher: ["/((?!_next/static|_next/image|favicon.ico|api/trpc).*)"],
+  // Image files are matched by EXTENSION, not named one by one — only
+  // favicon.ico was listed, so /logo/* and the app-dir icon.png /
+  // apple-icon.png were auth-gated and 307'd to /login for a signed-out
+  // browser, breaking the logo on the login page itself.
+  matcher: ["/((?!_next/static|_next/image|api/trpc|.*\\.(?:png|ico|svg|jpg|jpeg|gif|webp)$).*)"],
 };

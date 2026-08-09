@@ -48,12 +48,16 @@ export interface PartnerShellProps {
 function Wordmark() {
   return (
     <div className="flex items-center gap-2">
-      <span
+      {/* Mark only — "Partners" has to stay live text alongside it, so the
+          lockup's own wordmark would compete with it. */}
+      <img
+        src="/logo/hireops-mark.png"
+        alt=""
         aria-hidden
-        className="flex h-7 w-7 items-center justify-center rounded-md bg-brand-600 text-sm font-bold text-white"
-      >
-        H
-      </span>
+        width={28}
+        height={28}
+        className="h-7 w-7 shrink-0 object-contain"
+      />
       <span className="text-base font-semibold tracking-tight text-neutral-900">
         HireOps <span className="font-normal text-neutral-500">Partners</span>
       </span>

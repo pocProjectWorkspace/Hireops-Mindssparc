@@ -28,15 +28,16 @@ export default function LoginPage() {
           className="pointer-events-none absolute -bottom-32 -left-16 h-96 w-96 rounded-full bg-brand-500/20 blur-3xl"
         />
 
-        {/* wordmark */}
-        <div className="relative flex items-center gap-2.5">
-          <span
-            aria-hidden
-            className="flex h-9 w-9 items-center justify-center rounded-md bg-white/10 text-lg font-bold text-white ring-1 ring-white/15"
-          >
-            H
-          </span>
-          <span className="text-xl font-semibold tracking-tight text-white">HireOps</span>
+        {/* wordmark — the full lockup, which is drawn for a dark ground and has
+            the room to breathe here. Compact surfaces use the mark alone. */}
+        <div className="relative flex items-center">
+          <img
+            src="/logo/hireops-lockup.png"
+            alt="HireOps"
+            width={228}
+            height={92}
+            className="h-[3.25rem] w-auto"
+          />
         </div>
 
         {/* positioning */}
@@ -76,12 +77,14 @@ export default function LoginPage() {
         <div className="w-full max-w-sm">
           {/* mobile-only wordmark (the brand panel is hidden below lg) */}
           <div className="mb-10 flex items-center justify-center gap-2.5 lg:hidden">
-            <span
+            <img
+              src="/logo/hireops-mark.png"
+              alt=""
               aria-hidden
-              className="flex h-9 w-9 items-center justify-center rounded-md bg-brand-600 text-lg font-bold text-white"
-            >
-              H
-            </span>
+              width={36}
+              height={36}
+              className="h-9 w-9 shrink-0 object-contain"
+            />
             <span className="text-xl font-semibold tracking-tight text-neutral-900">HireOps</span>
           </div>
 

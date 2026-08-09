@@ -16,12 +16,14 @@ export default function LoginPage() {
     <main className="flex min-h-screen flex-col items-center justify-center bg-neutral-50 px-6 py-12">
       <div className="w-full max-w-sm">
         <div className="mb-6 flex items-center justify-center gap-2.5">
-          <span
+          <img
+            src="/logo/hireops-mark.png"
+            alt=""
             aria-hidden
-            className="flex h-9 w-9 items-center justify-center rounded-md bg-brand-600 text-lg font-bold text-white"
-          >
-            H
-          </span>
+            width={36}
+            height={36}
+            className="h-9 w-9 shrink-0 object-contain"
+          />
           <span className="text-xl font-semibold tracking-tight text-neutral-900">
             HireOps <span className="font-normal text-neutral-500">Partners</span>
           </span>
