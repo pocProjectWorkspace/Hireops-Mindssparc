@@ -70,6 +70,7 @@ import {
   IconSignOut,
 } from "./nav-icons";
 import { MobileNav } from "./MobileNav";
+import { BrandGlyph } from "./BrandGlyph";
 import { IrisProvider } from "@/components/iris/IrisProvider";
 import { IrisLauncher } from "@/components/iris/IrisLauncher";
 import { OnboardingJourney } from "@/components/onboarding-journey/OnboardingJourney";
@@ -725,16 +726,9 @@ export interface AppShellProps {
 function Wordmark() {
   return (
     <div className="flex items-center gap-2.5 border-b border-sidebar-border bg-sidebar-brand px-4 py-[1.15rem]">
-      {/* The mark alone, with "HireOps" left as live text: at 28px the lockup's
-          own lettering would render softer than the type it sits beside. */}
-      <img
-        src="/logo/hireops-mark.png"
-        alt=""
-        aria-hidden
-        width={28}
-        height={28}
-        className="h-7 w-7 shrink-0 object-contain"
-      />
+      {/* Vector glyph in currentColor, not the colour PNG: the mark's figures
+          are near-black navy and disappear into this dark chrome. */}
+      <BrandGlyph size={28} className="shrink-0 text-white" />
       <span className="text-base font-semibold tracking-tight text-sidebar-fg">HireOps</span>
     </div>
   );

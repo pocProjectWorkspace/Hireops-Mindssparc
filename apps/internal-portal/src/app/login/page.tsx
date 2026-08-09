@@ -1,4 +1,5 @@
 import { LoginForm } from "@/components/LoginForm";
+import { BrandGlyph } from "@/components/nav/BrandGlyph";
 
 // LoginForm uses useSearchParams() for the post-login `?from=` redirect
 // destination — Next refuses to prerender pages that read search params
@@ -28,16 +29,13 @@ export default function LoginPage() {
           className="pointer-events-none absolute -bottom-32 -left-16 h-96 w-96 rounded-full bg-brand-500/20 blur-3xl"
         />
 
-        {/* wordmark — the full lockup, which is drawn for a dark ground and has
-            the room to breathe here. Compact surfaces use the mark alone. */}
-        <div className="relative flex items-center">
-          <img
-            src="/logo/hireops-lockup.png"
-            alt="HireOps"
-            width={228}
-            height={92}
-            className="h-[3.25rem] w-auto"
-          />
+        {/* The colour lockup does NOT go here — its "Hire" is near-black navy
+            and sinks into this panel. The lockup sits on the white sign-in
+            column instead; this side carries the monochrome glyph, which takes
+            its colour from the surface and stays legible. */}
+        <div className="relative flex items-center gap-2.5">
+          <BrandGlyph size={34} className="shrink-0 text-white" />
+          <span className="text-xl font-semibold tracking-tight text-white">HireOps</span>
         </div>
 
         {/* positioning */}
@@ -75,17 +73,17 @@ export default function LoginPage() {
       {/* ── Right: sign-in ─────────────────────────────────────────────────── */}
       <section className="flex w-full flex-col items-center justify-center px-6 py-12 lg:w-1/2 xl:w-[45%]">
         <div className="w-full max-w-sm">
-          {/* mobile-only wordmark (the brand panel is hidden below lg) */}
-          <div className="mb-10 flex items-center justify-center gap-2.5 lg:hidden">
+          {/* The colour lockup lives here, above the form, at every breakpoint.
+              This column is white, which is the ground the artwork was drawn
+              for — the dark brand panel swallowed it. */}
+          <div className="mb-9 flex justify-center">
             <img
-              src="/logo/hireops-mark.png"
-              alt=""
-              aria-hidden
-              width={36}
-              height={36}
-              className="h-9 w-9 shrink-0 object-contain"
+              src="/logo/hireops-lockup.png"
+              alt="HireOps"
+              width={240}
+              height={97}
+              className="h-14 w-auto"
             />
-            <span className="text-xl font-semibold tracking-tight text-neutral-900">HireOps</span>
           </div>
 
           <h1 className="text-2xl font-semibold tracking-tight text-neutral-900">Sign in</h1>
