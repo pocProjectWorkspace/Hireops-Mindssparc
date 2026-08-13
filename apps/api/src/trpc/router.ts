@@ -4493,10 +4493,14 @@ export const appRouter = router({
     .input(listRequisitionSummariesInputSchema)
     .output(listRequisitionSummariesOutputSchema)
     .query(async ({ ctx, input }) => {
+      // hr_ops is allowed on THIS read only: the partner-admin surface
+      // (PARTNER_ADMIN_ROLES = admin + hr_ops) needs id+title summaries for
+      // its assign-requisition picker. The rest of the requisition surface
+      // stays on REQUISITION_READ_ROLES.
       requireAnyRole(
         ctx,
-        REQUISITION_READ_ROLES,
-        "Requisition access requires the hiring_manager, recruiter, or admin role",
+        new Set([...REQUISITION_READ_ROLES, "hr_ops"]),
+        "Requisition access requires the hiring_manager, recruiter, hr_ops, or admin role",
       );
       const db = requireDb(ctx);
       const rows = await db

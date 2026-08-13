@@ -108,6 +108,8 @@ export type PortalNavKey =
   | "hr-rounds"
   | "comp-offers"
   | "hr-analytics"
+  // P0.1B — internal partner administration (admin + hr_ops, main nav)
+  | "partners"
   | "workflows"
   | "branding"
   | "audit"
@@ -431,6 +433,18 @@ export const MAIN_NAV: NavItem[] = [
     href: "/hr-analytics",
     icon: <IconHrAnalytics />,
     roles: ["hr_ops", "admin"],
+  },
+  {
+    // P0.1B: internal partner administration (empanel orgs, invite partner
+    // users, assign requisitions). admin + hr_ops, matching the
+    // PARTNER_ADMIN_ROLES gate on the partner-admin procedures. Lives in the
+    // main nav, not the Admin group, so hr_ops — who has no Admin group — can
+    // reach it.
+    key: "partners",
+    label: "Partners",
+    href: "/partners",
+    icon: <IconBusinessUnits />,
+    roles: ["admin", "hr_ops"],
   },
 ];
 
