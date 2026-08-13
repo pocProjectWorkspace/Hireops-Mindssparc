@@ -18,7 +18,8 @@
  *
  * "partner" (P0.1A) is a staffing-agency contact who is NOT yet a
  * partner_users row — the invitation email is precisely what turns them into
- * one, so neither "candidate" nor "recruiter" would be honest.
+ * one, so neither "candidate" nor "recruiter" would be honest. P0.4 reuses the
+ * same value for the three emails addressed to an EXISTING partner user.
  */
 export type EmailRecipientType = "candidate" | "recruiter" | "hiring_manager" | "partner";
 
@@ -43,7 +44,12 @@ export type TemplateKey =
   | "recruiter.sla_ops_alert"
   | "recruiter.offer_accepted"
   | "recruiter.offer_declined"
-  | "partner.invitation";
+  | "partner.invitation"
+  // P0.4 — the three partner-facing lifecycle emails. Each carries stage /
+  // date / candidate name only (requirements.md §6.3); nothing internal.
+  | "partner.submission_received"
+  | "partner.stage_changed"
+  | "partner.claim_expiry_warning";
 
 /**
  * A file attached to an outgoing email. Content is base64 (matches Resend's

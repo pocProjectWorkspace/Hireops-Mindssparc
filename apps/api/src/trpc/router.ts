@@ -29,6 +29,7 @@ import {
   gt,
   gte,
   inArray,
+  isNotNull,
   isNull,
   lt,
   lte,
@@ -63,6 +64,7 @@ import {
   approvalChains,
   approvalMatrices,
   partnerAssignments,
+  partnerUsers,
   candidateOwnershipClaims,
   tenantUserMemberships,
   users,
@@ -14902,6 +14904,17 @@ export const appRouter = router({
                   .limit(1);
                 priorRequisitionTitle = prior?.title ?? null;
               }
+              // P0.4 — receipt to the submitting partner user. Dedup is per
+              // application, so a repeat submission against the SAME req
+              // (alreadyOnThisReq) reuses the existing key and sends nothing.
+              await enqueuePartnerSubmissionReceived(db, ctx, {
+                tenantId,
+                requisitionId: input.requisitionId,
+                applicationId: ingest.applicationId,
+                candidateName: input.candidate.fullName.trim(),
+                partnerContactName: ctx.partner.displayName,
+                partnerEmail: ctx.partner.email,
+              });
               return {
                 outcome: "added_to_existing",
                 applicationId: ingest.applicationId,
@@ -15010,6 +15023,19 @@ export const appRouter = router({
             decision: dedupDecision,
             decisionReason: dedupReason,
             submissionMetadata,
+          });
+
+          // P0.4 — receipt to the submitting partner user, in the SAME tx as
+          // the submission it acknowledges (the interview-invitation enqueue's
+          // discipline): if the claim insert had lost the race and rolled the
+          // tx back, no receipt would exist for a submission that didn't.
+          await enqueuePartnerSubmissionReceived(db, ctx, {
+            tenantId,
+            requisitionId: input.requisitionId,
+            applicationId: ingest.applicationId,
+            candidateName: input.candidate.fullName.trim(),
+            partnerContactName: ctx.partner.displayName,
+            partnerEmail: ctx.partner.email,
           });
 
           return {
@@ -26419,6 +26445,46 @@ async function transitionApplicationStage(
     }
   }
 
+  // P0.4 — the partner-facing half. When the application was sourced by a
+  // partner AND we know which of their people submitted it, that person hears
+  // about the milestone stages (PARTNER_VISIBLE_STAGES) and nothing else.
+  // Stage + date + candidate name only: no reason, no score, no feedback, no
+  // interviewer, no hint that another partner exists (requirements.md §6.3).
+  //
+  // This lives in the shared helper rather than at the call sites so advance,
+  // reject and the interview-decision advance are all covered by construction.
+  if (PARTNER_VISIBLE_STAGES.has(targetStage)) {
+    const partnerMeta = await fetchPartnerStageEmailContext(db, applicationId).catch(
+      (err: unknown) => {
+        ctx.log.warn(
+          { err, request_id: ctx.requestId, application_id: applicationId },
+          "transitionApplicationStage: partner email context lookup failed",
+        );
+        return null;
+      },
+    );
+    if (partnerMeta) {
+      await enqueuePartnerEmail(db, ctx, {
+        tenantId: app.tenantId,
+        recipientType: "partner",
+        recipientEmail: partnerMeta.partnerEmail,
+        templateKey: "partner.stage_changed",
+        templateData: {
+          partnerContactName: partnerMeta.partnerContactName,
+          candidateName: partnerMeta.candidateName,
+          requisitionTitle: partnerMeta.requisitionTitle,
+          companyName: partnerMeta.companyName,
+          stageLabel: STAGE_LABELS[targetStage] ?? targetStage,
+          changedAtFormatted: formatPartnerEmailDate(new Date()),
+          isTerminal: PARTNER_TERMINAL_STAGES.has(targetStage),
+        },
+        // Once per (application, destination stage), ever — a bounce back and
+        // forth between two stages must not re-mail the partner each lap.
+        dedupKey: `partner_stage:${applicationId}:${targetStage}`,
+      });
+    }
+  }
+
   return {
     applicationId,
     fromStage: app.currentStage,
@@ -26505,6 +26571,211 @@ async function fetchTransitionEmailContext(
     positionTitle: row.positionTitle,
     companyName: row.companyName,
   };
+}
+
+// ─────────────── P0.4: partner-facing notification helpers ───────────────
+
+/**
+ * P0.4 — the ONLY stages a sourcing partner is told about.
+ *
+ * Deliberately shorter than CANDIDATE_VISIBLE_STAGES: a partner gets the
+ * milestones that change what they should do (their candidate is in play, is
+ * interviewing, has an outcome), not the internal micro-moves. offer_drafted is
+ * excluded on purpose — "an offer is being prepared" is commercially sensitive
+ * and changes nothing for the partner until it is accepted or declined.
+ *
+ * Whatever lands here, the email carries stage + date + candidate name and
+ * NOTHING else (requirements.md §6.3).
+ */
+const PARTNER_VISIBLE_STAGES = new Set<ApplicationStage>([
+  "shortlisted",
+  "tech_interview",
+  "hr_round",
+  "offer_accepted",
+  "offer_declined",
+  "recruiter_rejected",
+  "withdrawn",
+]);
+
+/**
+ * The subset of the above that ENDS the candidate's run. These get the neutral
+ * "no longer progressing" copy — the stage label is stated, the reason never is
+ * (a partner never learns WHY, only THAT).
+ */
+const PARTNER_TERMINAL_STAGES = new Set<ApplicationStage>([
+  "offer_declined",
+  "recruiter_rejected",
+  "withdrawn",
+]);
+
+/** "13 August 2026" — date-only, UTC. Same discipline as the partner
+ * invitation's expiry line: the minute is noise and a date-only string
+ * sidesteps the recipient-timezone question. */
+function formatPartnerEmailDate(d: Date): string {
+  return `${d.getUTCDate()} ${PARTNER_EMAIL_MONTHS[d.getUTCMonth()] ?? ""} ${d.getUTCFullYear()}`;
+}
+
+const PARTNER_EMAIL_MONTHS = [
+  "January",
+  "February",
+  "March",
+  "April",
+  "May",
+  "June",
+  "July",
+  "August",
+  "September",
+  "October",
+  "November",
+  "December",
+] as const;
+
+/**
+ * Enqueue one partner-facing email inside the caller's transaction, tolerating
+ * the dedup collision.
+ *
+ * The insert runs in a NESTED transaction (SAVEPOINT) because notification_
+ * outbox's partial unique on (tenant_id, dedup_key) is how "send this once"
+ * is enforced: a second enqueue of the same logical event raises 23505, and
+ * without the savepoint that would poison the OUTER transaction and fail the
+ * stage transition / submission that triggered it. Rolling back to the
+ * savepoint turns a duplicate into a clean no-op. Any other failure is logged
+ * and swallowed for the same reason the candidate-facing enqueue is — a
+ * notification problem must never undo the business event.
+ */
+async function enqueuePartnerEmail(
+  db: NonNullable<HonoTRPCContext["db"]>,
+  ctx: HonoTRPCContext,
+  args: Parameters<typeof enqueueNotification>[1],
+): Promise<void> {
+  try {
+    await db.transaction((tx) => enqueueNotification(tx, args));
+  } catch (err) {
+    if (isUniqueViolation(err)) return; // already enqueued — nothing to do
+    ctx.log.warn(
+      { err, request_id: ctx.requestId, dedup_key: args.dedupKey },
+      "enqueuePartnerEmail: enqueueNotification failed",
+    );
+  }
+}
+
+interface PartnerStageEmailContext {
+  partnerEmail: string;
+  partnerContactName: string;
+  candidateName: string;
+  requisitionTitle: string;
+  companyName: string;
+}
+
+/**
+ * The partner-facing address book for one application, or null when there is
+ * nobody to write to.
+ *
+ * Null (i.e. no email) for a direct/referral application, for a partner-sourced
+ * application whose submitting user was never recorded, and for a submitter
+ * whose partner_users row has since been deactivated — a deactivated partner
+ * user has had their access revoked, so continuing to mail them candidate
+ * updates would be exactly the leak the deactivation was for.
+ */
+async function fetchPartnerStageEmailContext(
+  db: NonNullable<HonoTRPCContext["db"]>,
+  applicationId: string,
+): Promise<PartnerStageEmailContext | null> {
+  const [row] = await db
+    .select({
+      partnerEmail: partnerUsers.email,
+      partnerContactName: partnerUsers.fullName,
+      candidateName: persons.fullName,
+      requisitionTitle: positions.title,
+      companyName: tenants.displayName,
+    })
+    .from(applications)
+    .innerJoin(
+      partnerUsers,
+      and(
+        eq(partnerUsers.tenantId, applications.tenantId),
+        eq(partnerUsers.id, applications.submittedByPartnerUserId),
+        eq(partnerUsers.active, true),
+      ),
+    )
+    .innerJoin(candidates, eq(candidates.id, applications.candidateId))
+    .innerJoin(persons, eq(persons.id, candidates.personId))
+    .innerJoin(requisitions, eq(requisitions.id, applications.requisitionId))
+    .innerJoin(positions, eq(positions.id, requisitions.positionId))
+    .innerJoin(tenants, eq(tenants.id, applications.tenantId))
+    .where(and(eq(applications.id, applicationId), isNotNull(applications.sourcePartnerId)))
+    .limit(1);
+  if (!row) return null;
+  return {
+    partnerEmail: row.partnerEmail,
+    partnerContactName: row.partnerContactName,
+    candidateName: row.candidateName ?? "your candidate",
+    requisitionTitle: row.requisitionTitle,
+    companyName: row.companyName,
+  };
+}
+
+/**
+ * P0.4 — the partner's receipt for a submission they just made.
+ *
+ * Called from partnerSubmitCandidate on the `created` and `added_to_existing`
+ * outcomes (never on `duplicate_blocked` — nothing was created, and the block
+ * response is the answer). Runs inside the submission's own tx, so the receipt
+ * only exists if the submission does; dedup is per application, so the
+ * "already on this req" re-submission (which returns the SAME applicationId)
+ * silently no-ops instead of mailing twice.
+ *
+ * Everything here is derived, not passed through: the whole body is best-effort
+ * and never throws, because a submission must never fail over its receipt.
+ */
+async function enqueuePartnerSubmissionReceived(
+  db: NonNullable<HonoTRPCContext["db"]>,
+  ctx: HonoTRPCContext,
+  args: {
+    tenantId: string;
+    requisitionId: string;
+    applicationId: string;
+    candidateName: string;
+    partnerContactName: string;
+    partnerEmail: string;
+  },
+): Promise<void> {
+  try {
+    const [meta] = await db
+      .select({ requisitionTitle: positions.title, companyName: tenants.displayName })
+      .from(requisitions)
+      .innerJoin(
+        positions,
+        and(
+          eq(positions.tenantId, requisitions.tenantId),
+          eq(positions.id, requisitions.positionId),
+        ),
+      )
+      .innerJoin(tenants, eq(tenants.id, requisitions.tenantId))
+      .where(and(eq(requisitions.tenantId, args.tenantId), eq(requisitions.id, args.requisitionId)))
+      .limit(1);
+    if (!meta) return;
+
+    await enqueuePartnerEmail(db, ctx, {
+      tenantId: args.tenantId,
+      recipientType: "partner",
+      recipientEmail: args.partnerEmail,
+      templateKey: "partner.submission_received",
+      templateData: {
+        partnerContactName: args.partnerContactName,
+        candidateName: args.candidateName,
+        requisitionTitle: meta.requisitionTitle,
+        companyName: meta.companyName,
+        submittedAtFormatted: formatPartnerEmailDate(new Date()),
+      },
+      dedupKey: `partner_submission:${args.applicationId}`,
+    });
+  } catch (err) {
+    ctx.log.warn(
+      { err, request_id: ctx.requestId, application_id: args.applicationId },
+      "enqueuePartnerSubmissionReceived: failed",
+    );
+  }
 }
 
 async function fetchPositionTitleForRequisition(requisitionId: string): Promise<string> {

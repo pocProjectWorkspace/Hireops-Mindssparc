@@ -30,6 +30,18 @@ import {
 } from "./templates/offer-declined-recruiter";
 import { AgentMessage, type AgentMessageProps } from "./templates/agent-message";
 import { PartnerInvitation, type PartnerInvitationProps } from "./templates/partner-invitation";
+import {
+  PartnerSubmissionReceived,
+  type PartnerSubmissionReceivedProps,
+} from "./templates/partner-submission-received";
+import {
+  PartnerStageChanged,
+  type PartnerStageChangedProps,
+} from "./templates/partner-stage-changed";
+import {
+  PartnerClaimExpiryWarning,
+  type PartnerClaimExpiryWarningProps,
+} from "./templates/partner-claim-expiry-warning";
 
 /**
  * Template registry — single switch the worker calls to turn a
@@ -275,6 +287,58 @@ export async function renderTemplate(
           overrides?.subject,
           { companyName: props.companyName, partnerOrgName: props.partnerOrgName },
           `You're invited to ${props.companyName}'s partner portal`,
+        ),
+        html: await render(element),
+        text: await render(element, { plainText: true }),
+      };
+    }
+    case "partner.submission_received": {
+      const props = data as unknown as PartnerSubmissionReceivedProps;
+      const element = PartnerSubmissionReceived({ ...props, slots });
+      return {
+        subject: resolveSubject(
+          overrides?.subject,
+          {
+            candidateName: props.candidateName,
+            requisitionTitle: props.requisitionTitle,
+            companyName: props.companyName,
+          },
+          `Submission received: ${props.candidateName} for ${props.requisitionTitle}`,
+        ),
+        html: await render(element),
+        text: await render(element, { plainText: true }),
+      };
+    }
+    case "partner.stage_changed": {
+      const props = data as unknown as PartnerStageChangedProps;
+      const element = PartnerStageChanged({ ...props, slots });
+      return {
+        subject: resolveSubject(
+          overrides?.subject,
+          {
+            candidateName: props.candidateName,
+            stageLabel: props.stageLabel,
+            requisitionTitle: props.requisitionTitle,
+            companyName: props.companyName,
+          },
+          `${props.candidateName} — ${props.stageLabel}`,
+        ),
+        html: await render(element),
+        text: await render(element, { plainText: true }),
+      };
+    }
+    case "partner.claim_expiry_warning": {
+      const props = data as unknown as PartnerClaimExpiryWarningProps;
+      const element = PartnerClaimExpiryWarning({ ...props, slots });
+      return {
+        subject: resolveSubject(
+          overrides?.subject,
+          {
+            candidateName: props.candidateName,
+            expiresAtFormatted: props.expiresAtFormatted,
+            companyName: props.companyName,
+          },
+          `Your claim on ${props.candidateName} expires on ${props.expiresAtFormatted}`,
         ),
         html: await render(element),
         text: await render(element, { plainText: true }),

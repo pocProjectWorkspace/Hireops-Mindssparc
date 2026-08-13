@@ -82,6 +82,9 @@ export function interpolateSlot(template: string, tokens: Record<string, string>
 // documents the canonical text.)
 const CANDIDATE_SIGN_OFF = "— The {companyName} recruiting team";
 
+/** The partner-facing equivalent, shared by the four partner.* templates. */
+const PARTNER_SIGN_OFF = "— The {companyName} sourcing team";
+
 export const EMAIL_TEMPLATE_CATALOG: Record<TemplateKey, EmailTemplateCatalogEntry> = {
   "candidate.application_received": {
     templateKey: "candidate.application_received",
@@ -554,6 +557,172 @@ export const EMAIL_TEMPLATE_CATALOG: Record<TemplateKey, EmailTemplateCatalogEnt
       },
     ],
   },
+
+  // ── P0.4 — the three partner-facing lifecycle emails. Every slot below is
+  // stage / date / candidate-name copy: requirements.md §6.3 keeps reasons,
+  // scores, feedback and interviewer identities OUT of partner mail, so no
+  // token exists here that could carry one even if a tenant wanted it to.
+  "partner.submission_received": {
+    templateKey: "partner.submission_received",
+    label: "Partner submission received",
+    description:
+      "Sent to the submitting partner user when their candidate submission lands in the pipeline.",
+    subject: {
+      defaultText: "Submission received: {candidateName} for {requisitionTitle}",
+      tokens: ["candidateName", "requisitionTitle", "companyName"],
+    },
+    slots: [
+      { slotKey: "heading", label: "Heading", defaultText: "Submission received", tokens: [] },
+      {
+        slotKey: "greeting",
+        label: "Greeting",
+        defaultText: "Hi {partnerContactName},",
+        tokens: ["partnerContactName"],
+      },
+      {
+        slotKey: "body",
+        label: "Body paragraph",
+        defaultText:
+          "{companyName} has received your submission of {candidateName} for {requisitionTitle} on {submittedAtFormatted}. The candidate is in the pipeline and will be reviewed with everyone else under consideration for this role.",
+        tokens: ["companyName", "candidateName", "requisitionTitle", "submittedAtFormatted"],
+      },
+      {
+        slotKey: "nextStepsNote",
+        label: "Next-steps line",
+        defaultText:
+          "You'll get an update here whenever this candidate reaches a new stage. No action is needed from you in the meantime.",
+        tokens: [],
+      },
+      {
+        slotKey: "signOff",
+        label: "Sign-off",
+        defaultText: PARTNER_SIGN_OFF,
+        tokens: ["companyName"],
+      },
+    ],
+  },
+
+  "partner.stage_changed": {
+    templateKey: "partner.stage_changed",
+    label: "Partner candidate stage change",
+    description:
+      "Sent to the submitting partner user when their candidate reaches a partner-visible stage (stage + date only).",
+    subject: {
+      defaultText: "{candidateName} — {stageLabel}",
+      tokens: ["candidateName", "stageLabel", "requisitionTitle", "companyName"],
+    },
+    slots: [
+      {
+        slotKey: "heading",
+        label: "Heading (progress)",
+        defaultText: "Candidate progress update",
+        tokens: [],
+      },
+      {
+        slotKey: "terminalHeading",
+        label: "Heading (no longer progressing)",
+        defaultText: "Candidate update",
+        tokens: [],
+      },
+      {
+        slotKey: "greeting",
+        label: "Greeting",
+        defaultText: "Hi {partnerContactName},",
+        tokens: ["partnerContactName"],
+      },
+      {
+        slotKey: "body",
+        label: "Body paragraph (progress)",
+        defaultText:
+          "{candidateName}, whom you submitted for {requisitionTitle} at {companyName}, moved to {stageLabel} on {changedAtFormatted}.",
+        tokens: [
+          "candidateName",
+          "requisitionTitle",
+          "companyName",
+          "stageLabel",
+          "changedAtFormatted",
+        ],
+      },
+      {
+        slotKey: "terminalBody",
+        label: "Body paragraph (no longer progressing)",
+        defaultText:
+          "{candidateName}, whom you submitted for {requisitionTitle} at {companyName}, is no longer progressing. The application was moved to {stageLabel} on {changedAtFormatted}.",
+        tokens: [
+          "candidateName",
+          "requisitionTitle",
+          "companyName",
+          "stageLabel",
+          "changedAtFormatted",
+        ],
+      },
+      {
+        slotKey: "privacyNote",
+        label: "Privacy note",
+        defaultText:
+          "Stage and date are the whole update — interview feedback, assessments and internal notes stay with the {companyName} hiring team.",
+        tokens: ["companyName"],
+      },
+      {
+        slotKey: "signOff",
+        label: "Sign-off",
+        defaultText: PARTNER_SIGN_OFF,
+        tokens: ["companyName"],
+      },
+    ],
+  },
+
+  "partner.claim_expiry_warning": {
+    templateKey: "partner.claim_expiry_warning",
+    label: "Partner claim expiring",
+    description:
+      "Sent once, seven days before a partner's 90-day candidate ownership claim expires.",
+    subject: {
+      defaultText: "Your claim on {candidateName} expires on {expiresAtFormatted}",
+      tokens: ["candidateName", "expiresAtFormatted", "companyName"],
+    },
+    slots: [
+      {
+        slotKey: "heading",
+        label: "Heading",
+        defaultText: "Your candidate claim expires soon",
+        tokens: [],
+      },
+      {
+        slotKey: "greeting",
+        label: "Greeting",
+        defaultText: "Hi {partnerContactName},",
+        tokens: ["partnerContactName"],
+      },
+      {
+        slotKey: "body",
+        label: "Body paragraph",
+        defaultText:
+          "Your ownership claim on {candidateName} with {companyName} expires on {expiresAtFormatted}.",
+        tokens: ["candidateName", "companyName", "expiresAtFormatted"],
+      },
+      {
+        slotKey: "meaningNote",
+        label: "What expiry means",
+        defaultText:
+          "Until then the candidate is attributed to you exclusively. After that date the exclusivity lapses: the same candidate may be submitted again by another partner, and attribution would follow that submission instead.",
+        tokens: [],
+      },
+      {
+        slotKey: "contactNote",
+        label: "Who to contact",
+        defaultText:
+          "If you believe this candidate should stay attributed to you, speak to your {companyName} contact before the expiry date.",
+        tokens: ["companyName"],
+      },
+      {
+        slotKey: "signOff",
+        label: "Sign-off",
+        defaultText: PARTNER_SIGN_OFF,
+        tokens: ["companyName"],
+      },
+    ],
+  },
 };
 
 /**
@@ -646,6 +815,28 @@ export const EMAIL_TEMPLATE_SAMPLE_DATA: Record<TemplateKey, Record<string, unkn
     partnerOrgName: "TalentBridge Consulting",
     companyName: "Kyndryl",
     acceptUrl: "https://partners.example/accept-invite/token",
+    expiresAtFormatted: "20 August 2026",
+  },
+  "partner.submission_received": {
+    partnerContactName: "Asha Nair",
+    candidateName: "Priya Sharma",
+    requisitionTitle: "Senior Backend Engineer",
+    companyName: "Kyndryl",
+    submittedAtFormatted: "13 August 2026",
+  },
+  "partner.stage_changed": {
+    partnerContactName: "Asha Nair",
+    candidateName: "Priya Sharma",
+    requisitionTitle: "Senior Backend Engineer",
+    companyName: "Kyndryl",
+    stageLabel: "Technical interview",
+    changedAtFormatted: "18 August 2026",
+    isTerminal: false,
+  },
+  "partner.claim_expiry_warning": {
+    partnerContactName: "Asha Nair",
+    candidateName: "Priya Sharma",
+    companyName: "Kyndryl",
     expiresAtFormatted: "20 August 2026",
   },
 };

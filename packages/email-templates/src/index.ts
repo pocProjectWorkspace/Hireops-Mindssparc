@@ -27,3 +27,15 @@ export {
   type OfferDeclinedRecruiterProps,
 } from "./templates/offer-declined-recruiter";
 export { PartnerInvitation, type PartnerInvitationProps } from "./templates/partner-invitation";
+export {
+  PartnerSubmissionReceived,
+  type PartnerSubmissionReceivedProps,
+} from "./templates/partner-submission-received";
+export {
+  PartnerStageChanged,
+  type PartnerStageChangedProps,
+} from "./templates/partner-stage-changed";
+export {
+  PartnerClaimExpiryWarning,
+  type PartnerClaimExpiryWarningProps,
+} from "./templates/partner-claim-expiry-warning";

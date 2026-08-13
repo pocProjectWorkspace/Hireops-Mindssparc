@@ -35,6 +35,10 @@ export const emailTemplateKeySchema = z.enum([
   // because getEmailTemplateCatalog validates every EMAIL_TEMPLATE_CATALOG
   // entry's templateKey against this enum on the way out.
   "partner.invitation",
+  // P0.4 — the partner-facing lifecycle emails, same reason as above.
+  "partner.submission_received",
+  "partner.stage_changed",
+  "partner.claim_expiry_warning",
 ]);
 export type EmailTemplateKey = z.infer<typeof emailTemplateKeySchema>;
 
