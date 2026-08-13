@@ -16298,16 +16298,14 @@ export const appRouter = router({
    * tenant, alphabetical, with its live counts (active portal users, active
    * requisition assignments, active ownership claims).
    */
-  listPartnerOrgs: protectedProcedure
-    .output(listPartnerOrgsOutputSchema)
-    .query(async ({ ctx }) => {
-      requireAnyRole(ctx, PARTNER_ADMIN_ROLES, "Partner administration is admin / hr_ops only");
-      const db = requireDb(ctx);
-      if (!ctx.tenantId) {
-        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
-      }
-      return listPartnerOrgsForTenant(db, ctx.tenantId);
-    }),
+  listPartnerOrgs: protectedProcedure.output(listPartnerOrgsOutputSchema).query(async ({ ctx }) => {
+    requireAnyRole(ctx, PARTNER_ADMIN_ROLES, "Partner administration is admin / hr_ops only");
+    const db = requireDb(ctx);
+    if (!ctx.tenantId) {
+      throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
+    }
+    return listPartnerOrgsForTenant(db, ctx.tenantId);
+  }),
 
   /**
    * getPartnerOrg — one org's detail drawer: summary + users + LIVE
