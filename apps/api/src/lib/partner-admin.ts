@@ -25,6 +25,12 @@
  * Deliberately NOT here: the accept/redeem flow (a later ticket owns
  * /accept-invite, consuming the token and minting the partner_users row) and
  * anything the partner portal itself calls — those are partnerProcedure.
+ *
+ * P0.3 added the ownership-claim lifecycle's internal half to this file (the
+ * claims read + the manual release), because it is the same caller, the same
+ * role gate and the same org-detail surface. The time-driven half deliberately
+ * is NOT here: flipping past-expiry claims to 'expired' is a cross-tenant batch
+ * and lives in the worker (apps/workers/src/jobs/ownership-claim-sweep.ts).
  */
 
 import { createHash, randomBytes } from "node:crypto";
@@ -35,6 +41,8 @@ import {
   partnerUsers,
   partnerInvitations,
   partnerAssignments,
+  candidateOwnershipClaims,
+  persons,
   requisitions,
   positions,
   type TenantBoundDb,
@@ -54,6 +62,9 @@ import type {
   SetPartnerOrgActiveOutput,
   AssignRequisitionToPartnerInput,
   AssignRequisitionToPartnerOutput,
+  ListPartnerOrgClaimsOutput,
+  ReleaseOwnershipClaimInput,
+  ReleaseOwnershipClaimOutput,
 } from "@hireops/api-types";
 
 /**
@@ -327,6 +338,75 @@ export async function getPartnerOrgDetail(
       status: a.status,
       assignedAt: a.assignedAt.toISOString(),
       endedAt: a.endedAt ? a.endedAt.toISOString() : null,
+    })),
+  };
+}
+
+/**
+ * P0.3 — one org's ownership claims, newest first, INCLUDING the non-active
+ * history (released / expired / superseded). The status column is the story:
+ * an expired row is how internal staff see that a window closed, and hiding it
+ * would make this view disagree with the audit trail.
+ *
+ * Privacy posture is deliberately the partner portal's: exactly one personal
+ * field, the person's display name, through the same left join
+ * partnerListMySubmissions uses (nullable for the same reason — the join, not
+ * the column, is what can come back empty). No email, no phone, no scores;
+ * staff who need the candidate record open the candidate surface, where the
+ * PII-access log applies.
+ *
+ * NOT_FOUND when the org isn't this tenant's — the same cross-tenant probe
+ * answer getPartnerOrgDetail gives, so a wrong id tells the caller nothing.
+ */
+export async function listPartnerOrgClaimsForTenant(
+  db: TenantBoundDb,
+  tenantId: string,
+  partnerOrgId: string,
+): Promise<ListPartnerOrgClaimsOutput> {
+  const [org] = await db
+    .select({ id: partnerOrgs.id })
+    .from(partnerOrgs)
+    .where(and(eq(partnerOrgs.tenantId, tenantId), eq(partnerOrgs.id, partnerOrgId)))
+    .limit(1);
+  if (!org) {
+    throw new TRPCError({ code: "NOT_FOUND", message: "partner_org_not_found" });
+  }
+
+  const rows = await db
+    .select({
+      claimId: candidateOwnershipClaims.id,
+      candidateName: persons.fullName,
+      status: candidateOwnershipClaims.status,
+      claimedAt: candidateOwnershipClaims.claimedAt,
+      expiresAt: candidateOwnershipClaims.expiresAt,
+      releasedAt: candidateOwnershipClaims.releasedAt,
+      releasedReason: candidateOwnershipClaims.releasedReason,
+    })
+    .from(candidateOwnershipClaims)
+    .leftJoin(
+      persons,
+      and(
+        eq(persons.tenantId, candidateOwnershipClaims.tenantId),
+        eq(persons.id, candidateOwnershipClaims.personId),
+      ),
+    )
+    .where(
+      and(
+        eq(candidateOwnershipClaims.tenantId, tenantId),
+        eq(candidateOwnershipClaims.partnerOrgId, partnerOrgId),
+      ),
+    )
+    .orderBy(desc(candidateOwnershipClaims.claimedAt));
+
+  return {
+    items: rows.map((r) => ({
+      claimId: r.claimId,
+      candidateName: r.candidateName ?? null,
+      status: r.status,
+      claimedAt: r.claimedAt.toISOString(),
+      expiresAt: r.expiresAt.toISOString(),
+      releasedAt: r.releasedAt ? r.releasedAt.toISOString() : null,
+      releasedReason: r.releasedReason,
     })),
   };
 }
@@ -667,4 +747,61 @@ export async function endPartnerAssignmentForTenant(
     throw new TRPCError({ code: "NOT_FOUND", message: "partner_assignment_not_found" });
   }
   return { assignmentId: row.id, endedAt: row.endedAt.toISOString() };
+}
+
+// ──────────────────── ownership-claim writes (P0.3) ────────────────────
+
+/**
+ * Release a partner's exclusivity window early — the human half of the claim
+ * lifecycle (the time-driven half is the worker's ownership_claim_sweep).
+ *
+ * ONE statement, with status='active' IN THE PREDICATE rather than a
+ * read-then-write: the partial unique index only allows one active claim per
+ * person, so two concurrent releases must not both believe they won, and an
+ * UPDATE … WHERE status='active' RETURNING settles that in the row lock. No
+ * row back means one of three indistinguishable things — the claim isn't this
+ * tenant's, it doesn't exist, or it is no longer active — and all three
+ * legitimately answer NOT_FOUND: a released/expired claim is not a claim you
+ * can release, and telling a caller which of the three it was would leak
+ * across tenants. (Deliberately NOT idempotent-on-repeat like
+ * revokePartnerInvitation: released_at/released_reason are the dispute record,
+ * so a second release must not silently re-report the first one's stamp under
+ * a new reason.)
+ *
+ * released_at + released_reason are what the columns were added for and, until
+ * this function existed, nothing in the codebase ever wrote either. The row
+ * stays — status='released' is the history the internal claims table shows,
+ * and the audit trigger records the transition.
+ *
+ * The freed person can be claimed again immediately: the partial unique index
+ * counts only active rows.
+ */
+export async function releaseOwnershipClaimForTenant(
+  db: TenantBoundDb,
+  tenantId: string,
+  input: ReleaseOwnershipClaimInput,
+): Promise<ReleaseOwnershipClaimOutput> {
+  const releasedAt = new Date();
+  const [row] = await db
+    .update(candidateOwnershipClaims)
+    .set({
+      status: "released",
+      releasedAt,
+      releasedReason: input.reason.trim(),
+    })
+    .where(
+      and(
+        eq(candidateOwnershipClaims.tenantId, tenantId),
+        eq(candidateOwnershipClaims.id, input.claimId),
+        eq(candidateOwnershipClaims.status, "active"),
+      ),
+    )
+    .returning({
+      id: candidateOwnershipClaims.id,
+      releasedAt: candidateOwnershipClaims.releasedAt,
+    });
+  if (!row?.releasedAt) {
+    throw new TRPCError({ code: "NOT_FOUND", message: "active_ownership_claim_not_found" });
+  }
+  return { claimId: row.id, releasedAt: row.releasedAt.toISOString() };
 }

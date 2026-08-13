@@ -3740,6 +3740,66 @@ export const endPartnerAssignmentOutputSchema = z.object({
 export type EndPartnerAssignmentInput = z.infer<typeof endPartnerAssignmentInputSchema>;
 export type EndPartnerAssignmentOutput = z.infer<typeof endPartnerAssignmentOutputSchema>;
 
+// ────── P0.3 — ownership-claim lifecycle (internal read + release) ──────
+//
+// The internal-staff view of candidate_ownership_claims: the exclusivity
+// window a partner holds over a person, and the manual early exit from it.
+// Expiry itself is NOT here — that's the worker's ownership_claim_sweep
+// (apps/workers/src/jobs/ownership-claim-sweep.ts), because the status flip is
+// time-driven and cross-tenant. This is the human-driven half.
+//
+// Mirrors the DB enum verbatim, same restatement discipline as partnerTier /
+// partnerUserRole above (api-types never imports from @hireops/db):
+// packages/db/src/schema/ownership-claim-status.ts.
+
+export const ownershipClaimStatusSchema = z.enum(["active", "released", "expired", "superseded"]);
+export type OwnershipClaimStatusValue = z.infer<typeof ownershipClaimStatusSchema>;
+
+/**
+ * One claim on the internal partner-org detail. `candidateName` is the person's
+ * display name, resolved through the same persons left-join
+ * partnerListMySubmissions uses — nullable for exactly the same reason (the
+ * person row can be gone), and deliberately the ONLY personal field: internal
+ * staff read the claim's lifecycle here, not the candidate's record.
+ *
+ * Non-active rows are included on purpose: the status column IS the history
+ * (released / expired / superseded), and hiding it would make the internal
+ * view disagree with the audit trail.
+ */
+export const partnerOrgClaimRowSchema = z.object({
+  claimId: z.string().uuid(),
+  candidateName: z.string().nullable(),
+  status: ownershipClaimStatusSchema,
+  claimedAt: z.string(),
+  expiresAt: z.string(),
+  releasedAt: z.string().nullable(),
+  releasedReason: z.string().nullable(),
+});
+export type PartnerOrgClaimRow = z.infer<typeof partnerOrgClaimRowSchema>;
+
+export const listPartnerOrgClaimsInputSchema = z.object({ partnerOrgId: z.string().uuid() });
+export const listPartnerOrgClaimsOutputSchema = z.object({
+  items: z.array(partnerOrgClaimRowSchema),
+});
+export type ListPartnerOrgClaimsInput = z.infer<typeof listPartnerOrgClaimsInputSchema>;
+export type ListPartnerOrgClaimsOutput = z.infer<typeof listPartnerOrgClaimsOutputSchema>;
+
+/**
+ * releaseOwnershipClaim. `reason` is REQUIRED (1..500) and stored on the row:
+ * releasing a claim early takes an exclusivity window away from a partner, and
+ * released_reason is the answer to "why" when they dispute the attribution.
+ */
+export const releaseOwnershipClaimInputSchema = z.object({
+  claimId: z.string().uuid(),
+  reason: z.string().min(1).max(500),
+});
+export const releaseOwnershipClaimOutputSchema = z.object({
+  claimId: z.string().uuid(),
+  releasedAt: z.string(),
+});
+export type ReleaseOwnershipClaimInput = z.infer<typeof releaseOwnershipClaimInputSchema>;
+export type ReleaseOwnershipClaimOutput = z.infer<typeof releaseOwnershipClaimOutputSchema>;
+
 // ────── P0.2 — partner invitation acceptance (the redeem half) ──────
 //
 // The PARTNER-side counterpart to invitePartnerUser above: the invitee opens

@@ -499,6 +499,11 @@ import {
   assignRequisitionToPartnerOutputSchema,
   endPartnerAssignmentInputSchema,
   endPartnerAssignmentOutputSchema,
+  // P0.3 — ownership-claim lifecycle (internal read + manual release).
+  listPartnerOrgClaimsInputSchema,
+  listPartnerOrgClaimsOutputSchema,
+  releaseOwnershipClaimInputSchema,
+  releaseOwnershipClaimOutputSchema,
   // P0.2 — partner invitation acceptance (public redeem half).
   getPartnerInvitationPreviewInputSchema,
   getPartnerInvitationPreviewOutputSchema,
@@ -1004,6 +1009,9 @@ import {
   revokePartnerInvitationForTenant,
   assignRequisitionToPartnerForTenant,
   endPartnerAssignmentForTenant,
+  // P0.3 — the internal half of the ownership-claim lifecycle.
+  listPartnerOrgClaimsForTenant,
+  releaseOwnershipClaimForTenant,
   // P0.2 reuses ONLY the hashing helper — redemption has to derive the stored
   // hash exactly the way minting did, or no link would ever match.
   hashPartnerInviteToken,
@@ -16402,6 +16410,58 @@ export const appRouter = router({
       const tenantId = ctx.tenantId;
       return withAudit("partner_assignment_end", ctx, input, () =>
         endPartnerAssignmentForTenant(db, tenantId, input.assignmentId),
+      );
+    }),
+
+  // ═══════ P0.3 — ownership-claim lifecycle (the internal half) ═══════
+  //
+  // The 90-day exclusivity window a partner holds over a candidate has two
+  // ways to end. Time is one, and it belongs to the worker
+  // (apps/workers/src/jobs/ownership-claim-sweep.ts flips past-expiry claims
+  // to 'expired' cross-tenant, which is what stops an expired claim blocking
+  // that candidate forever). A human decision is the other, and it is these
+  // two procedures: read the org's claim history, release one early with a
+  // recorded reason.
+  //
+  // Same gate and same disciplines as the P0.1A block above: PARTNER_ADMIN_
+  // ROLES, explicit tenant_id predicate on every statement, logic in
+  // apps/api/src/lib/partner-admin.ts.
+
+  /**
+   * listPartnerOrgClaims — one org's ownership claims, newest first, with the
+   * non-active history included (status tells the story). NOT_FOUND when the
+   * org isn't this tenant's, exactly as getPartnerOrg answers.
+   */
+  listPartnerOrgClaims: protectedProcedure
+    .input(listPartnerOrgClaimsInputSchema)
+    .output(listPartnerOrgClaimsOutputSchema)
+    .query(async ({ ctx, input }) => {
+      requireAnyRole(ctx, PARTNER_ADMIN_ROLES, "Partner administration is admin / hr_ops only");
+      const db = requireDb(ctx);
+      if (!ctx.tenantId) {
+        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
+      }
+      return listPartnerOrgClaimsForTenant(db, ctx.tenantId, input.partnerOrgId);
+    }),
+
+  /**
+   * releaseOwnershipClaim — end a partner's exclusivity on a candidate early,
+   * with a required reason (it is the record when the partner disputes the
+   * attribution). Only an ACTIVE claim in this tenant can be released;
+   * anything else is NOT_FOUND. The candidate becomes claimable again at once.
+   */
+  releaseOwnershipClaim: protectedProcedure
+    .input(releaseOwnershipClaimInputSchema)
+    .output(releaseOwnershipClaimOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      requireAnyRole(ctx, PARTNER_ADMIN_ROLES, "Partner administration is admin / hr_ops only");
+      const db = requireDb(ctx);
+      if (!ctx.tenantId) {
+        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
+      }
+      const tenantId = ctx.tenantId;
+      return withAudit("ownership_claim_release", ctx, input, () =>
+        releaseOwnershipClaimForTenant(db, tenantId, input),
       );
     }),
 

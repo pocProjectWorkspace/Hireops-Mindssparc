@@ -8,6 +8,7 @@ import { runSchedulerTick, type ScheduledJob } from "./lib/scheduler";
 import { slaImminentScan } from "./jobs/sla-imminent-scan";
 import { stageStaleScan } from "./jobs/stage-stale-scan";
 import { aiBudgetScan } from "./jobs/ai-budget-scan";
+import { ownershipClaimSweep } from "./jobs/ownership-claim-sweep";
 import { drainWorkdayOutboxOnce } from "./lib/workday-simulation-drain";
 import { drainAiScoreOutboxOnce } from "./lib/ai-score-drain";
 import { drainAgentRunOutboxOnce } from "./lib/agent-run-drain";
@@ -57,6 +58,16 @@ const SCHEDULED_JOBS: ScheduledJob[] = [
     name: "ai_budget_scan",
     intervalMs: 60 * 60_000,
     run: aiBudgetScan,
+  },
+  {
+    // P0.3 — flip past-expiry ACTIVE ownership claims to 'expired'. The
+    // partial unique index can't test expires_at itself (no now() in a
+    // partial-index predicate), so without this sweep an expired claim
+    // blocks that candidate's re-submission forever. 15-min cadence, same
+    // as the two scans above.
+    name: "ownership_claim_sweep",
+    intervalMs: 15 * 60_000,
+    run: ownershipClaimSweep,
   },
 ];
 

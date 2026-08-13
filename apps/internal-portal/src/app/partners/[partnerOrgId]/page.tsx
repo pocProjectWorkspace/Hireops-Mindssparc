@@ -1,4 +1,8 @@
-import type { GetPartnerOrgOutput, RequisitionSummary } from "@hireops/api-types";
+import type {
+  GetPartnerOrgOutput,
+  ListPartnerOrgClaimsOutput,
+  RequisitionSummary,
+} from "@hireops/api-types";
 import { requireAuth, sessionUserChip } from "@/lib/auth";
 import { createServerTRPCCaller } from "@/lib/trpc-server";
 import { AppShell } from "@/components/nav/AppShell";
@@ -9,8 +13,9 @@ export const dynamic = "force-dynamic"; // Auth-gated + reads live partner state
 
 /**
  * P0.1B — one partner organisation, as internal staff administer it: the org
- * header (tier, active state), its portal users, its live invitations, and the
- * full requisition-assignment history.
+ * header (tier, active state), its portal users, its live invitations, the
+ * full requisition-assignment history, and (P0.3) its candidate ownership
+ * claims.
  *
  * Role-gated to admin / hr_ops, matching the PARTNER_ADMIN_ROLES gate on the
  * procedures themselves. A missing / cross-tenant org answers NOT_FOUND from
@@ -78,6 +83,13 @@ export default async function PartnerOrgDetailPage({
     throw err;
   }
 
+  // Same gate as getPartnerOrg (PARTNER_ADMIN_ROLES) and the same NOT_FOUND
+  // condition, which the block above has already ruled out — so this read is
+  // not made tolerant the way the requisition picker below is.
+  const initialClaims: ListPartnerOrgClaimsOutput = await caller.listPartnerOrgClaims({
+    partnerOrgId,
+  });
+
   let requisitionOptions: RequisitionSummary[] | null = null;
   try {
     const reqs = await caller.listRequisitionSummaries({ limit: 100 });
@@ -97,6 +109,7 @@ export default async function PartnerOrgDetailPage({
       <PartnerOrgDetailClient
         partnerOrgId={partnerOrgId}
         initial={initial}
+        initialClaims={initialClaims}
         requisitionOptions={requisitionOptions}
       />
     </AppShell>

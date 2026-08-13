@@ -4,7 +4,9 @@ import { useMemo, useState } from "react";
 import Link from "next/link";
 import type {
   GetPartnerOrgOutput,
+  ListPartnerOrgClaimsOutput,
   PartnerOrgAssignmentRow,
+  PartnerOrgClaimRow,
   PartnerOrgInvitationRow,
   PartnerOrgUserRow,
   PartnerUserRoleValue,
@@ -32,10 +34,11 @@ import { fmtDate, tierLabel } from "../PartnersClient";
 /**
  * P0.1B — one partner organisation's administration surface.
  *
- * Four blocks, each backed by a real procedure: the org header (with the
+ * Five blocks, each backed by a real procedure: the org header (with the
  * suspend / restore toggle), the portal users the org already has, the live
- * invitations (issue + revoke), and the requisition assignments (assign + end,
- * ended rows kept as history — the internal view is the record).
+ * invitations (issue + revoke), the requisition assignments (assign + end,
+ * ended rows kept as history — the internal view is the record), and (P0.3)
+ * the ownership claims this partner holds, with the early-release action.
  *
  * The invitation accept link is shown exactly once, in a panel, because that
  * is the truth: only the sha256 of the token is persisted, so once this panel
@@ -79,6 +82,8 @@ function friendlyError(message: string): string {
       return "That assignment is no longer here. Reload the page.";
     case "requisition_not_found":
       return "That requisition is no longer here. Reload the page.";
+    case "active_ownership_claim_not_found":
+      return "That claim is no longer active — it may have expired or been released already. Reload the page.";
     default:
       return message;
   }
@@ -87,10 +92,12 @@ function friendlyError(message: string): string {
 export function PartnerOrgDetailClient({
   partnerOrgId,
   initial,
+  initialClaims,
   requisitionOptions,
 }: {
   partnerOrgId: string;
   initial: GetPartnerOrgOutput;
+  initialClaims: ListPartnerOrgClaimsOutput;
   /** null when the session's roles can't read the requisition list (hr_ops). */
   requisitionOptions: RequisitionSummary[] | null;
 }) {
@@ -214,6 +221,12 @@ export function PartnerOrgDetailClient({
         partnerOrgId={partnerOrgId}
         assignments={assignments}
         requisitionOptions={requisitionOptions}
+        onChanged={refresh}
+      />
+
+      <ClaimsSection
+        partnerOrgId={partnerOrgId}
+        initialClaims={initialClaims}
         onChanged={refresh}
       />
     </PageContainer>
@@ -473,6 +486,177 @@ function InvitationsSection({
           </Button>
         </div>
       </Card>
+    </section>
+  );
+}
+
+// ─────────────────────── ownership claims ───────────────────────
+
+/** Claim status → badge tone. Only `active` is a live exclusivity window. */
+function claimTone(status: PartnerOrgClaimRow["status"]): "success" | "warning" | "neutral" {
+  if (status === "active") return "success";
+  if (status === "released") return "warning";
+  return "neutral";
+}
+
+/**
+ * P0.3 — the exclusivity windows this partner holds, and the early exit.
+ *
+ * The whole history is shown, not just the live claims: `expired` and
+ * `released` rows are how staff answer "who owned this candidate in March",
+ * which is the question a partner-attribution dispute actually asks.
+ *
+ * Release is a two-step because it is not reversible and it takes something
+ * away from the partner: the row's button opens a panel that requires a
+ * reason, and the reason is stored on the claim. Expiry, by contrast, is not a
+ * button anywhere — the worker's sweep owns it.
+ */
+function ClaimsSection({
+  partnerOrgId,
+  initialClaims,
+  onChanged,
+}: {
+  partnerOrgId: string;
+  initialClaims: ListPartnerOrgClaimsOutput;
+  onChanged: () => void;
+}) {
+  const utils = trpc.useUtils();
+  const query = trpc.listPartnerOrgClaims.useQuery(
+    { partnerOrgId },
+    { initialData: initialClaims, staleTime: 5_000, refetchOnWindowFocus: false },
+  );
+  const claims = (query.data ?? initialClaims).items;
+
+  const [error, setError] = useState<string | null>(null);
+  const [pendingRelease, setPendingRelease] = useState<PartnerOrgClaimRow | null>(null);
+  const [reason, setReason] = useState("");
+
+  const release = trpc.releaseOwnershipClaim.useMutation({
+    onSuccess: () => {
+      setError(null);
+      setPendingRelease(null);
+      setReason("");
+      void utils.listPartnerOrgClaims.invalidate({ partnerOrgId });
+      onChanged();
+    },
+    onError: (err) => setError(friendlyError(err.message)),
+  });
+
+  return (
+    <section className="space-y-3">
+      <h2 className="text-sm font-semibold text-neutral-900">Ownership claims</h2>
+
+      {error ? (
+        <div className="rounded-lg border border-status-error-200 bg-status-error-50 px-4 py-3 text-sm text-status-error-700">
+          {error}
+        </div>
+      ) : null}
+
+      {pendingRelease ? (
+        <Card className="border-status-warning-200 bg-status-warning-50 p-5">
+          <h3 className="text-sm font-semibold text-status-warning-800">
+            Release the claim on {pendingRelease.candidateName ?? "this candidate"}?
+          </h3>
+          <p className="mt-1 text-xs text-status-warning-800">
+            This ends the partner&apos;s exclusivity immediately and cannot be undone. Another
+            partner can submit this candidate from that moment on. The reason is stored on the claim
+            and is what we show if the partner queries the attribution.
+          </p>
+          <div className="mt-3 max-w-xl">
+            <Input
+              label="Reason"
+              required
+              value={reason}
+              onChange={(e) => setReason(e.target.value)}
+              placeholder="e.g. Partner confirmed by email they are standing down on this candidate"
+            />
+          </div>
+          <div className="mt-4 flex flex-wrap items-center gap-3">
+            <Button
+              onClick={() => {
+                setError(null);
+                release.mutate({ claimId: pendingRelease.claimId, reason: reason.trim() });
+              }}
+              disabled={reason.trim().length === 0 || release.isPending}
+            >
+              {release.isPending ? "Releasing…" : "Release claim"}
+            </Button>
+            <button
+              type="button"
+              className="text-sm text-neutral-600 hover:underline"
+              onClick={() => {
+                setPendingRelease(null);
+                setReason("");
+                setError(null);
+              }}
+            >
+              Cancel
+            </button>
+          </div>
+        </Card>
+      ) : null}
+
+      {claims.length === 0 ? (
+        <p className="text-sm text-neutral-500">
+          This partner holds no candidate ownership claims. A claim is created when they submit a
+          candidate, and it runs for 90 days.
+        </p>
+      ) : (
+        <TableShell>
+          <Thead>
+            <Th>Candidate</Th>
+            <Th>Status</Th>
+            <Th>Claimed</Th>
+            <Th>Expires</Th>
+            <Th>Released</Th>
+            <Th>
+              <span className="sr-only">Actions</span>
+            </Th>
+          </Thead>
+          <Tbody>
+            {claims.map((c) => (
+              <Tr key={c.claimId} className={c.status === "active" ? "" : "text-neutral-500"}>
+                <Td className="font-medium text-neutral-900">{c.candidateName ?? "—"}</Td>
+                <Td label="Status">
+                  <Badge tone={claimTone(c.status)}>{humanize(c.status)}</Badge>
+                </Td>
+                <Td label="Claimed">{fmtDate(c.claimedAt)}</Td>
+                <Td label="Expires">{fmtDate(c.expiresAt)}</Td>
+                <Td label="Released">
+                  {c.releasedAt ? (
+                    <span>
+                      {fmtDate(c.releasedAt)}
+                      {c.releasedReason ? (
+                        <span className="block text-xs text-neutral-500">{c.releasedReason}</span>
+                      ) : null}
+                    </span>
+                  ) : (
+                    "—"
+                  )}
+                </Td>
+                <Td className="lg:text-right">
+                  {c.status === "active" ? (
+                    <button
+                      type="button"
+                      className="text-sm text-status-error-700 hover:underline disabled:opacity-50"
+                      disabled={release.isPending}
+                      onClick={() => {
+                        setError(null);
+                        setReason("");
+                        setPendingRelease(c);
+                      }}
+                    >
+                      Release
+                    </button>
+                  ) : (
+                    <span className="text-sm text-neutral-400">—</span>
+                  )}
+                </Td>
+              </Tr>
+            ))}
+          </Tbody>
+        </TableShell>
+      )}
     </section>
   );
 }
