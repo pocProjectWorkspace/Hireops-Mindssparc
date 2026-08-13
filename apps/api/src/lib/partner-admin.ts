@@ -42,6 +42,7 @@ import {
   partnerInvitations,
   partnerAssignments,
   candidateOwnershipClaims,
+  candidateDedupAttempts,
   persons,
   requisitions,
   positions,
@@ -63,6 +64,7 @@ import type {
   AssignRequisitionToPartnerInput,
   AssignRequisitionToPartnerOutput,
   ListPartnerOrgClaimsOutput,
+  ListPartnerOrgDedupAttemptsOutput,
   ReleaseOwnershipClaimInput,
   ReleaseOwnershipClaimOutput,
 } from "@hireops/api-types";
@@ -408,6 +410,93 @@ export async function listPartnerOrgClaimsForTenant(
       releasedAt: r.releasedAt ? r.releasedAt.toISOString() : null,
       releasedReason: r.releasedReason,
     })),
+  };
+}
+
+/**
+ * P0.5 — every dedup decision made by one org's portal users, newest first.
+ *
+ * The dispute-triage companion to listPartnerOrgClaimsForTenant: claims say
+ * who OWNS a candidate, attempts say who was turned away and why. When a
+ * partner insists they submitted someone first, the block_active_claim row
+ * with its timestamp is the answer, and until now nothing in the product could
+ * show it — candidate_dedup_attempts was written on every submission and read
+ * by nobody.
+ *
+ * Scoped through partner_users because the attempt row records the PERSON who
+ * tried (attempted_by_partner_user_id), not their org — an inner join is
+ * therefore both the org filter and the only way to name the submitter. It
+ * also excludes internal-staff attempts (attempted_by_membership_id), which is
+ * correct: those aren't this org's submissions. A deactivated partner user's
+ * attempts still appear; the history of what they did doesn't disappear when
+ * their access does.
+ *
+ * Everything else deliberately matches the claims read: NOT_FOUND when the org
+ * isn't this tenant's (same cross-tenant probe answer), one personal field
+ * through the same persons left join, newest first. The cap contract is
+ * partnerListMySubmissions' — fetch one more than asked, slice, report
+ * `capped` — because this table grows per submission ATTEMPT, so a busy
+ * partner's history outruns their claim list.
+ */
+export async function listPartnerOrgDedupAttemptsForTenant(
+  db: TenantBoundDb,
+  tenantId: string,
+  partnerOrgId: string,
+  limit?: number,
+): Promise<ListPartnerOrgDedupAttemptsOutput> {
+  const [org] = await db
+    .select({ id: partnerOrgs.id })
+    .from(partnerOrgs)
+    .where(and(eq(partnerOrgs.tenantId, tenantId), eq(partnerOrgs.id, partnerOrgId)))
+    .limit(1);
+  if (!org) {
+    throw new TRPCError({ code: "NOT_FOUND", message: "partner_org_not_found" });
+  }
+
+  const cap = limit ?? 100;
+  const rows = await db
+    .select({
+      attemptId: candidateDedupAttempts.id,
+      attemptedAt: candidateDedupAttempts.attemptedAt,
+      attemptedByName: partnerUsers.fullName,
+      candidateName: persons.fullName,
+      decision: candidateDedupAttempts.decision,
+      decisionReason: candidateDedupAttempts.decisionReason,
+    })
+    .from(candidateDedupAttempts)
+    .innerJoin(
+      partnerUsers,
+      and(
+        eq(partnerUsers.tenantId, candidateDedupAttempts.tenantId),
+        eq(partnerUsers.id, candidateDedupAttempts.attemptedByPartnerUserId),
+      ),
+    )
+    .leftJoin(
+      persons,
+      and(
+        eq(persons.tenantId, candidateDedupAttempts.tenantId),
+        eq(persons.id, candidateDedupAttempts.matchedPersonId),
+      ),
+    )
+    .where(
+      and(
+        eq(candidateDedupAttempts.tenantId, tenantId),
+        eq(partnerUsers.partnerOrgId, partnerOrgId),
+      ),
+    )
+    .orderBy(desc(candidateDedupAttempts.attemptedAt))
+    .limit(cap + 1);
+
+  return {
+    items: rows.slice(0, cap).map((r) => ({
+      attemptId: r.attemptId,
+      attemptedAt: r.attemptedAt.toISOString(),
+      attemptedByName: r.attemptedByName,
+      candidateName: r.candidateName ?? null,
+      decision: r.decision,
+      decisionReason: r.decisionReason,
+    })),
+    capped: rows.length > cap,
   };
 }
 

@@ -29,7 +29,6 @@ import {
   gt,
   gte,
   inArray,
-  isNotNull,
   isNull,
   lt,
   lte,
@@ -64,7 +63,7 @@ import {
   approvalChains,
   approvalMatrices,
   partnerAssignments,
-  partnerUsers,
+  partnerOrgs,
   candidateOwnershipClaims,
   tenantUserMemberships,
   users,
@@ -506,6 +505,9 @@ import {
   listPartnerOrgClaimsOutputSchema,
   releaseOwnershipClaimInputSchema,
   releaseOwnershipClaimOutputSchema,
+  // P0.5 — the dedup-attempt history behind a partner attribution dispute.
+  listPartnerOrgDedupAttemptsInputSchema,
+  listPartnerOrgDedupAttemptsOutputSchema,
   // P0.2 — partner invitation acceptance (public redeem half).
   getPartnerInvitationPreviewInputSchema,
   getPartnerInvitationPreviewOutputSchema,
@@ -1000,6 +1002,14 @@ import { getStorageClient } from "../lib/storage";
 import { attachDocumentToCase, matchDocumentCollectionTask } from "../lib/onboarding-document";
 import { attachApplicationDocumentBlob } from "../lib/application-document";
 import { acceptOfferAtomically, runOfferAcceptSideEffects } from "../lib/offer-accept";
+// P0.4/P0.5 — the partner-facing stage email. Extracted from this file so the
+// two raw-SQL offer paths (candidate accept / decline) fire the same enqueue
+// with the same allowlist, payload and dedup key.
+import {
+  enqueuePartnerEmail,
+  enqueuePartnerStageChangedEmail,
+  formatPartnerEmailDate,
+} from "../lib/partner-stage-email";
 // P0.1A — internal partner administration. All the query/mutation logic lives
 // in the lib; the eight procedures below it are role gate + audit wrapper only.
 import {
@@ -1014,6 +1024,8 @@ import {
   // P0.3 — the internal half of the ownership-claim lifecycle.
   listPartnerOrgClaimsForTenant,
   releaseOwnershipClaimForTenant,
+  // P0.5 — the dispute-triage read over candidate_dedup_attempts.
+  listPartnerOrgDedupAttemptsForTenant,
   // P0.2 reuses ONLY the hashing helper — redemption has to derive the stored
   // hash exactly the way minting did, or no link would ever match.
   hashPartnerInviteToken,
@@ -4324,8 +4336,22 @@ export const appRouter = router({
             aiScoreExplanation: applications.aiScoreExplanation,
             aiScoredAt: applications.aiScoredAt,
             currentStage: applications.currentStage,
+            // P0.5 — the sourcing partner's name for the drawer's source chip,
+            // same LEFT JOIN as listCandidatesByRequisition so the list and the
+            // drawer can never name different agencies for the same row. Rides
+            // on the application because attribution is per-application: the
+            // same person can be a partner submission on one req and a direct
+            // applicant on another.
+            partnerOrgName: partnerOrgs.name,
           })
           .from(applications)
+          .leftJoin(
+            partnerOrgs,
+            and(
+              eq(partnerOrgs.tenantId, applications.tenantId),
+              eq(partnerOrgs.id, applications.sourcePartnerId),
+            ),
+          )
           .where(and(...appConds))
           .orderBy(desc(applications.createdAt))
           .limit(1);
@@ -4422,6 +4448,7 @@ export const appRouter = router({
                 aiScore: appRow.aiScore === null ? null : Number(appRow.aiScore),
                 aiScoreExplanation: appRow.aiScoreExplanation ?? null,
                 aiScoredAt: toIsoString(appRow.aiScoredAt),
+                partnerOrgName: appRow.partnerOrgName ?? null,
               }
             : null,
           latestTransition,
@@ -16469,6 +16496,30 @@ export const appRouter = router({
     }),
 
   /**
+   * listPartnerOrgDedupAttempts — the same org's dedup history: every
+   * submission attempt their portal users made and what the dedup gate decided.
+   * Read-only by construction (candidate_dedup_attempts is append-only), and
+   * the evidence behind "we sent that candidate first". Same gate, same
+   * NOT_FOUND posture as listPartnerOrgClaims.
+   */
+  listPartnerOrgDedupAttempts: protectedProcedure
+    .input(listPartnerOrgDedupAttemptsInputSchema)
+    .output(listPartnerOrgDedupAttemptsOutputSchema)
+    .query(async ({ ctx, input }) => {
+      requireAnyRole(ctx, PARTNER_ADMIN_ROLES, "Partner administration is admin / hr_ops only");
+      const db = requireDb(ctx);
+      if (!ctx.tenantId) {
+        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
+      }
+      return listPartnerOrgDedupAttemptsForTenant(
+        db,
+        ctx.tenantId,
+        input.partnerOrgId,
+        input.limit,
+      );
+    }),
+
+  /**
    * releaseOwnershipClaim — end a partner's exclusivity on a candidate early,
    * with a required reason (it is the record when the partner disputes the
    * attribution). Only an ACTIVE claim in this tenant can be released;
@@ -20294,6 +20345,13 @@ export const appRouter = router({
           stageEnteredAt: applications.stageEnteredAt,
           aiScore: applications.aiScore,
           aiScoreExplanation: applications.aiScoreExplanation,
+          // P0.5 — WHICH partner, not just "a partner". The source enum only
+          // says partner_empanelled / partner_adhoc, so a recruiter scanning a
+          // list of partner-sourced candidates could not tell two agencies
+          // apart. Name only, via the attribution column 0113 turned into a
+          // real FK; null for every direct application, and the chip falls
+          // back to the plain source label.
+          partnerOrgName: partnerOrgs.name,
         })
         .from(applications)
         .innerJoin(
@@ -20319,6 +20377,13 @@ export const appRouter = router({
           and(
             eq(requisitions.positionId, positions.id),
             eq(requisitions.tenantId, positions.tenantId),
+          ),
+        )
+        .leftJoin(
+          partnerOrgs,
+          and(
+            eq(partnerOrgs.tenantId, applications.tenantId),
+            eq(partnerOrgs.id, applications.sourcePartnerId),
           ),
         )
         .where(conds.length ? and(...conds) : undefined)
@@ -20378,6 +20443,7 @@ export const appRouter = router({
           fullName: mask.maskName ? candidateMaskLabel(r.candidateId) : r.fullName,
           email: mask.maskContact ? null : r.email,
           source: r.source,
+          partnerOrgName: r.partnerOrgName ?? null,
           stage: r.stage,
           stageEnteredAt: r.stageEnteredAt.toISOString(),
           aiScore: r.aiScore === null ? null : Number(r.aiScore),
@@ -26451,37 +26517,14 @@ async function transitionApplicationStage(
   //
   // This lives in the shared helper rather than at the call sites so advance,
   // reject and the interview-decision advance are all covered by construction.
-  if (PARTNER_VISIBLE_STAGES.has(targetStage)) {
-    const partnerMeta = await fetchPartnerStageEmailContext(db, applicationId).catch(
-      (err: unknown) => {
-        ctx.log.warn(
-          { err, request_id: ctx.requestId, application_id: applicationId },
-          "transitionApplicationStage: partner email context lookup failed",
-        );
-        return null;
-      },
-    );
-    if (partnerMeta) {
-      await enqueuePartnerEmail(db, ctx, {
-        tenantId: app.tenantId,
-        recipientType: "partner",
-        recipientEmail: partnerMeta.partnerEmail,
-        templateKey: "partner.stage_changed",
-        templateData: {
-          partnerContactName: partnerMeta.partnerContactName,
-          candidateName: partnerMeta.candidateName,
-          requisitionTitle: partnerMeta.requisitionTitle,
-          companyName: partnerMeta.companyName,
-          stageLabel: STAGE_LABELS[targetStage] ?? targetStage,
-          changedAtFormatted: formatPartnerEmailDate(new Date()),
-          isTerminal: PARTNER_TERMINAL_STAGES.has(targetStage),
-        },
-        // Once per (application, destination stage), ever — a bounce back and
-        // forth between two stages must not re-mail the partner each lap.
-        dedupKey: `partner_stage:${applicationId}:${targetStage}`,
-      });
-    }
-  }
+  // P0.5 moved the helper itself to lib/partner-stage-email.ts, because the
+  // candidate's own accept/decline walk the application forward in raw SQL and
+  // never come through here.
+  await enqueuePartnerStageChangedEmail(db, ctx, {
+    tenantId: app.tenantId,
+    applicationId,
+    toStage: targetStage,
+  });
 
   return {
     applicationId,
@@ -26572,146 +26615,11 @@ async function fetchTransitionEmailContext(
 }
 
 // ─────────────── P0.4: partner-facing notification helpers ───────────────
-
-/**
- * P0.4 — the ONLY stages a sourcing partner is told about.
- *
- * Deliberately shorter than CANDIDATE_VISIBLE_STAGES: a partner gets the
- * milestones that change what they should do (their candidate is in play, is
- * interviewing, has an outcome), not the internal micro-moves. offer_drafted is
- * excluded on purpose — "an offer is being prepared" is commercially sensitive
- * and changes nothing for the partner until it is accepted or declined.
- *
- * Whatever lands here, the email carries stage + date + candidate name and
- * NOTHING else (requirements.md §6.3).
- */
-const PARTNER_VISIBLE_STAGES = new Set<ApplicationStage>([
-  "shortlisted",
-  "tech_interview",
-  "hr_round",
-  "offer_accepted",
-  "offer_declined",
-  "recruiter_rejected",
-  "withdrawn",
-]);
-
-/**
- * The subset of the above that ENDS the candidate's run. These get the neutral
- * "no longer progressing" copy — the stage label is stated, the reason never is
- * (a partner never learns WHY, only THAT).
- */
-const PARTNER_TERMINAL_STAGES = new Set<ApplicationStage>([
-  "offer_declined",
-  "recruiter_rejected",
-  "withdrawn",
-]);
-
-/** "13 August 2026" — date-only, UTC. Same discipline as the partner
- * invitation's expiry line: the minute is noise and a date-only string
- * sidesteps the recipient-timezone question. */
-function formatPartnerEmailDate(d: Date): string {
-  return `${d.getUTCDate()} ${PARTNER_EMAIL_MONTHS[d.getUTCMonth()] ?? ""} ${d.getUTCFullYear()}`;
-}
-
-const PARTNER_EMAIL_MONTHS = [
-  "January",
-  "February",
-  "March",
-  "April",
-  "May",
-  "June",
-  "July",
-  "August",
-  "September",
-  "October",
-  "November",
-  "December",
-] as const;
-
-/**
- * Enqueue one partner-facing email inside the caller's transaction, tolerating
- * the dedup collision.
- *
- * The insert runs in a NESTED transaction (SAVEPOINT) because notification_
- * outbox's partial unique on (tenant_id, dedup_key) is how "send this once"
- * is enforced: a second enqueue of the same logical event raises 23505, and
- * without the savepoint that would poison the OUTER transaction and fail the
- * stage transition / submission that triggered it. Rolling back to the
- * savepoint turns a duplicate into a clean no-op. Any other failure is logged
- * and swallowed for the same reason the candidate-facing enqueue is — a
- * notification problem must never undo the business event.
- */
-async function enqueuePartnerEmail(
-  db: NonNullable<HonoTRPCContext["db"]>,
-  ctx: HonoTRPCContext,
-  args: Parameters<typeof enqueueNotification>[1],
-): Promise<void> {
-  try {
-    await db.transaction((tx) => enqueueNotification(tx, args));
-  } catch (err) {
-    if (isUniqueViolation(err)) return; // already enqueued — nothing to do
-    ctx.log.warn(
-      { err, request_id: ctx.requestId, dedup_key: args.dedupKey },
-      "enqueuePartnerEmail: enqueueNotification failed",
-    );
-  }
-}
-
-interface PartnerStageEmailContext {
-  partnerEmail: string;
-  partnerContactName: string;
-  candidateName: string;
-  requisitionTitle: string;
-  companyName: string;
-}
-
-/**
- * The partner-facing address book for one application, or null when there is
- * nobody to write to.
- *
- * Null (i.e. no email) for a direct/referral application, for a partner-sourced
- * application whose submitting user was never recorded, and for a submitter
- * whose partner_users row has since been deactivated — a deactivated partner
- * user has had their access revoked, so continuing to mail them candidate
- * updates would be exactly the leak the deactivation was for.
- */
-async function fetchPartnerStageEmailContext(
-  db: NonNullable<HonoTRPCContext["db"]>,
-  applicationId: string,
-): Promise<PartnerStageEmailContext | null> {
-  const [row] = await db
-    .select({
-      partnerEmail: partnerUsers.email,
-      partnerContactName: partnerUsers.fullName,
-      candidateName: persons.fullName,
-      requisitionTitle: positions.title,
-      companyName: tenants.displayName,
-    })
-    .from(applications)
-    .innerJoin(
-      partnerUsers,
-      and(
-        eq(partnerUsers.tenantId, applications.tenantId),
-        eq(partnerUsers.id, applications.submittedByPartnerUserId),
-        eq(partnerUsers.active, true),
-      ),
-    )
-    .innerJoin(candidates, eq(candidates.id, applications.candidateId))
-    .innerJoin(persons, eq(persons.id, candidates.personId))
-    .innerJoin(requisitions, eq(requisitions.id, applications.requisitionId))
-    .innerJoin(positions, eq(positions.id, requisitions.positionId))
-    .innerJoin(tenants, eq(tenants.id, applications.tenantId))
-    .where(and(eq(applications.id, applicationId), isNotNull(applications.sourcePartnerId)))
-    .limit(1);
-  if (!row) return null;
-  return {
-    partnerEmail: row.partnerEmail,
-    partnerContactName: row.partnerContactName,
-    candidateName: row.candidateName ?? "your candidate",
-    requisitionTitle: row.requisitionTitle,
-    companyName: row.companyName,
-  };
-}
+//
+// The stage-change half (the allowlist, the savepointed enqueue, the address
+// lookup) moved to lib/partner-stage-email.ts in P0.5 so the two raw-SQL offer
+// paths could share it. What stays here is the submission receipt, which only
+// partnerSubmitCandidate can ever fire.
 
 /**
  * P0.4 — the partner's receipt for a submission they just made.

@@ -26,6 +26,7 @@ import { sql as poolSql, db as poolDb } from "@hireops/db";
 import { enqueueNotification } from "@hireops/notifications";
 import type { Logger } from "@hireops/observability";
 import { createOnboardingCaseForApplication } from "./onboarding-case";
+import { enqueuePartnerStageChangedEmail } from "./partner-stage-email";
 
 /** postgres.js tagged-template client (same shape as ctx.sql / poolSql). */
 type PgSqlClient = typeof poolSql;
@@ -80,6 +81,25 @@ export async function runOfferAcceptSideEffects(
   } catch (err) {
     log.error({ err, offer_id: offerId }, "offers.accept.transition_failed");
   }
+
+  // P0.5 — tell the sourcing partner their candidate accepted.
+  //
+  // The transition above is raw SQL, so it never reaches the router's
+  // transitionApplicationStage and never fired the P0.4 partner email — the
+  // partner watched their candidate reach "offer in preparation" and then heard
+  // nothing about the outcome they care most about. The helper decides
+  // everything (allowlist, whether a partner is even attached, the once-ever
+  // dedup key partner_stage:<applicationId>:offer_accepted) and never throws,
+  // so a direct application costs one SELECT and a duplicate is a no-op.
+  //
+  // poolDb, not `sql`: enqueueNotification is drizzle, and this is the same
+  // service-role pool enqueueRecruiterNotice below already writes the
+  // recruiter's copy of this event on.
+  await enqueuePartnerStageChangedEmail(
+    poolDb,
+    { log },
+    { tenantId, applicationId, toStage: "offer_accepted" },
+  );
 
   await enqueueWorkdayHire(sql, { offerId, tenantId, applicationId, log });
 

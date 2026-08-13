@@ -1,6 +1,7 @@
 import type {
   GetPartnerOrgOutput,
   ListPartnerOrgClaimsOutput,
+  ListPartnerOrgDedupAttemptsOutput,
   RequisitionSummary,
 } from "@hireops/api-types";
 import { requireAuth, sessionUserChip } from "@/lib/auth";
@@ -90,6 +91,11 @@ export default async function PartnerOrgDetailPage({
     partnerOrgId,
   });
 
+  // P0.5 — the dedup history behind an attribution dispute. Same gate, same
+  // already-ruled-out NOT_FOUND, so it is prefetched flat alongside the claims.
+  const initialDedupAttempts: ListPartnerOrgDedupAttemptsOutput =
+    await caller.listPartnerOrgDedupAttempts({ partnerOrgId });
+
   let requisitionOptions: RequisitionSummary[] | null = null;
   try {
     const reqs = await caller.listRequisitionSummaries({ limit: 100 });
@@ -110,6 +116,7 @@ export default async function PartnerOrgDetailPage({
         partnerOrgId={partnerOrgId}
         initial={initial}
         initialClaims={initialClaims}
+        initialDedupAttempts={initialDedupAttempts}
         requisitionOptions={requisitionOptions}
       />
     </AppShell>

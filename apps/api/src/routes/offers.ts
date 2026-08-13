@@ -1,5 +1,5 @@
 import { Hono } from "hono";
-import { sql as poolSql } from "@hireops/db";
+import { sql as poolSql, db as poolDb } from "@hireops/db";
 import { verifyLink } from "@hireops/notifications";
 import { offerAcceptRequestSchema, offerDeclineRequestSchema } from "@hireops/api-types";
 import { baseLog } from "../lib/observability";
@@ -8,6 +8,7 @@ import {
   runOfferAcceptSideEffects,
   enqueueRecruiterNotice,
 } from "../lib/offer-accept";
+import { enqueuePartnerStageChangedEmail } from "../lib/partner-stage-email";
 
 /**
  * Public candidate accept / decline endpoints.
@@ -290,6 +291,25 @@ offersRoutes.post("/decline/:token", async (c) => {
   } catch (err) {
     baseLog.error({ err, offer_id: offer.id }, "offers.decline.transition_failed");
   }
+
+  // P0.5 — the partner's half of the same news. Twin of the accept path in
+  // lib/offer-accept.ts: this transition is raw SQL and never reaches the
+  // router, so without this call a partner-sourced candidate could decline and
+  // the partner who sourced them would never be told. The helper checks the
+  // allowlist and whether a partner is attached, and absorbs its own dedup
+  // collision, so a declined direct application is a no-op and a retried
+  // decline can never fail on partner_stage:<applicationId>:offer_declined.
+  // Deliberately AFTER the transition and BEFORE the recruiter notice — same
+  // ordering as the accept sequence.
+  await enqueuePartnerStageChangedEmail(
+    poolDb,
+    { log: baseLog },
+    {
+      tenantId: offer.tenant_id,
+      applicationId: offer.application_id,
+      toStage: "offer_declined",
+    },
+  );
 
   await enqueueRecruiterNotice(
     poolSql,

@@ -195,7 +195,17 @@ export function CandidateDetailDrawer() {
                 <div className="mt-1 flex flex-wrap items-center gap-2">
                   <span className="truncate text-sm text-neutral-500">{person?.email ?? "—"}</span>
                   {candidate?.source ? (
-                    <Badge tone="neutral">{candidate.source.replace(/_/g, " ")}</Badge>
+                    <Badge tone="neutral">
+                      {/* P0.5 — name the agency when this application is
+                          partner-attributed. "partner empanelled" told a
+                          recruiter that SOME agency sent the candidate but
+                          never which one, and that is the first thing asked
+                          when an attribution is queried. Everything else
+                          renders exactly as before. */}
+                      {application?.partnerOrgName
+                        ? `Partner · ${application.partnerOrgName}`
+                        : candidate.source.replace(/_/g, " ")}
+                    </Badge>
                   ) : null}
                   {typeof parsed.notice_period_days === "number" ? (
                     <Badge tone="info">{parsed.notice_period_days}d notice</Badge>

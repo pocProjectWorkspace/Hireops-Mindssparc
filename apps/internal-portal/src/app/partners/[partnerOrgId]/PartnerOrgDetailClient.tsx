@@ -5,8 +5,10 @@ import Link from "next/link";
 import type {
   GetPartnerOrgOutput,
   ListPartnerOrgClaimsOutput,
+  ListPartnerOrgDedupAttemptsOutput,
   PartnerOrgAssignmentRow,
   PartnerOrgClaimRow,
+  PartnerOrgDedupAttemptRow,
   PartnerOrgInvitationRow,
   PartnerOrgUserRow,
   PartnerUserRoleValue,
@@ -93,11 +95,13 @@ export function PartnerOrgDetailClient({
   partnerOrgId,
   initial,
   initialClaims,
+  initialDedupAttempts,
   requisitionOptions,
 }: {
   partnerOrgId: string;
   initial: GetPartnerOrgOutput;
   initialClaims: ListPartnerOrgClaimsOutput;
+  initialDedupAttempts: ListPartnerOrgDedupAttemptsOutput;
   /** null when the session's roles can't read the requisition list (hr_ops). */
   requisitionOptions: RequisitionSummary[] | null;
 }) {
@@ -228,6 +232,11 @@ export function PartnerOrgDetailClient({
         partnerOrgId={partnerOrgId}
         initialClaims={initialClaims}
         onChanged={refresh}
+      />
+
+      <DedupAttemptsSection
+        partnerOrgId={partnerOrgId}
+        initialDedupAttempts={initialDedupAttempts}
       />
     </PageContainer>
   );
@@ -656,6 +665,100 @@ function ClaimsSection({
             ))}
           </Tbody>
         </TableShell>
+      )}
+    </section>
+  );
+}
+
+// ─────────────────────── submission disputes ───────────────────────
+
+/** Dedup decision → badge tone. Only the two `block_*` outcomes turned a
+ * partner away, and those are the rows a dispute is ever about. */
+function dedupTone(
+  decision: PartnerOrgDedupAttemptRow["decision"],
+): "success" | "warning" | "neutral" {
+  if (decision === "allow_new") return "success";
+  if (decision === "link_existing") return "neutral";
+  return "warning";
+}
+
+/** The decision enum in the words a human uses about it. */
+const DEDUP_DECISION_LABELS: Record<PartnerOrgDedupAttemptRow["decision"], string> = {
+  allow_new: "Accepted — new candidate",
+  link_existing: "Accepted — matched existing",
+  block_active_claim: "Blocked — another partner owns them",
+  block_in_pipeline: "Blocked — already in the pipeline",
+};
+
+/**
+ * P0.5 — every dedup decision this partner's submissions ran into.
+ *
+ * Read-only, and not for want of effort: candidate_dedup_attempts is
+ * append-only (it IS the audit log for the dedup gate), so there is nothing
+ * here to edit or retract. What it is FOR is the phone call — "we sent that
+ * candidate to you first" — which the claims table above can only half answer,
+ * because a blocked submission never becomes a claim and so leaves no trace in
+ * it. This section is the other half: the attempt, the moment, and the reason
+ * it was turned away.
+ *
+ * Privacy is the claims table's: the matched candidate's display name and
+ * nothing else. The email and phone the partner typed are on the row in the
+ * database and deliberately not on this page.
+ */
+function DedupAttemptsSection({
+  partnerOrgId,
+  initialDedupAttempts,
+}: {
+  partnerOrgId: string;
+  initialDedupAttempts: ListPartnerOrgDedupAttemptsOutput;
+}) {
+  const query = trpc.listPartnerOrgDedupAttempts.useQuery(
+    { partnerOrgId },
+    { initialData: initialDedupAttempts, staleTime: 5_000, refetchOnWindowFocus: false },
+  );
+  const data = query.data ?? initialDedupAttempts;
+
+  return (
+    <section className="space-y-3">
+      <h2 className="text-sm font-semibold text-neutral-900">Submission disputes</h2>
+
+      {data.items.length === 0 ? (
+        <p className="text-sm text-neutral-500">
+          No submission attempts recorded for this partner yet. Every candidate they submit is
+          checked against the existing pipeline, and the outcome of that check lands here.
+        </p>
+      ) : (
+        <>
+          <TableShell>
+            <Thead>
+              <Th>Candidate</Th>
+              <Th>Outcome</Th>
+              <Th>Reason</Th>
+              <Th>Submitted by</Th>
+              <Th>Attempted</Th>
+            </Thead>
+            <Tbody>
+              {data.items.map((a) => (
+                <Tr key={a.attemptId}>
+                  <Td className="font-medium text-neutral-900">{a.candidateName ?? "—"}</Td>
+                  <Td label="Outcome">
+                    <Badge tone={dedupTone(a.decision)}>
+                      {DEDUP_DECISION_LABELS[a.decision]}
+                    </Badge>
+                  </Td>
+                  <Td label="Reason">{a.decisionReason ? humanize(a.decisionReason) : "—"}</Td>
+                  <Td label="Submitted by">{a.attemptedByName}</Td>
+                  <Td label="Attempted">{fmtDateTime(a.attemptedAt)}</Td>
+                </Tr>
+              ))}
+            </Tbody>
+          </TableShell>
+          {data.capped ? (
+            <p className="text-xs text-neutral-500">
+              Showing the {data.items.length} most recent attempts. This partner has more on record.
+            </p>
+          ) : null}
+        </>
       )}
     </section>
   );

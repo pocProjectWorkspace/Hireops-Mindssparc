@@ -257,7 +257,7 @@ function GroupAccordion({
                     </div>
                   </Td>
                   <Td label="Source" className="text-neutral-700">
-                    {sourceLabel(row.source, sourceLabels)}
+                    {sourceLabel(row.source, sourceLabels, row.partnerOrgName)}
                   </Td>
                   <Td label="Missing Info">
                     <MissingInfoCell info={row.missingInfo} />

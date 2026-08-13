@@ -126,12 +126,19 @@ export const candidateRowSchema = z.object({
  * (null when the candidate has no application). `aiScore` is 0–100 or null
  * (unscored / skipped); `aiScoreExplanation` is the raw jsonb the drawer
  * narrows for top factors + scored_by + the CONF-03 emphasis note.
+ *
+ * P0.5 added `partnerOrgName`: the name of the agency that sourced THIS
+ * application, or null when nobody did. It lives on the application facet
+ * rather than the candidate because attribution is per-application — the same
+ * person can arrive through a partner on one requisition and apply directly on
+ * another — and the drawer's source chip renders "Partner · <name>" from it.
  */
 export const candidateApplicationScoreSchema = z.object({
   id: z.string().uuid(),
   aiScore: z.number().nullable(),
   aiScoreExplanation: z.unknown().nullable(),
   aiScoredAt: z.string().nullable(),
+  partnerOrgName: z.string().nullable(),
 });
 
 /**
@@ -256,6 +263,12 @@ export const candidateByRequisitionRowSchema = z.object({
   fullName: z.string().nullable(),
   email: z.string().nullable(),
   source: applicationSourceSchema.nullable(),
+  /**
+   * P0.5 — the sourcing agency's name when this application is partner-
+   * attributed, else null. `source` only distinguishes empanelled from ad-hoc;
+   * this is WHICH partner, so the source chip can read "Partner · Acme Talent".
+   */
+  partnerOrgName: z.string().nullable(),
   stage: applicationStageSchema,
   stageEnteredAt: z.string(),
   aiScore: z.number().nullable(),
@@ -3783,6 +3796,71 @@ export const listPartnerOrgClaimsOutputSchema = z.object({
 });
 export type ListPartnerOrgClaimsInput = z.infer<typeof listPartnerOrgClaimsInputSchema>;
 export type ListPartnerOrgClaimsOutput = z.infer<typeof listPartnerOrgClaimsOutputSchema>;
+
+// ────── P0.5 — dedup attempts by one partner org (dispute triage) ──────
+//
+// The other half of the attribution story. A claim row says who owns a
+// candidate; a dedup attempt says who was TURNED AWAY and why — and that is
+// the row internal staff need when a partner phones up insisting they sent
+// someone first. candidate_dedup_attempts is append-only (no audit trigger; it
+// IS the audit log), so this read is the whole surface: there is nothing to
+// mutate here and no action rendered against these rows.
+//
+// Mirrors the DB enum verbatim, same restatement discipline as the enums
+// above: packages/db/src/schema/dedup-decision.ts.
+
+export const dedupDecisionSchema = z.enum([
+  "allow_new",
+  "link_existing",
+  "block_active_claim",
+  "block_in_pipeline",
+]);
+export type DedupDecisionValue = z.infer<typeof dedupDecisionSchema>;
+
+/**
+ * One dedup attempt made by one of this org's portal users.
+ *
+ * Same privacy posture as partnerOrgClaimRowSchema, for the same reason: one
+ * personal field, the MATCHED person's display name, through the same persons
+ * left join (null when nothing matched — an `allow_new` attempt matched nobody
+ * by definition — or when the person row is gone). Deliberately NOT the email
+ * and phone the partner typed: those are on the attempt row, but staff
+ * triaging "who submitted this candidate first" need the decision and its
+ * timing, not a second copy of a candidate's contact details outside the
+ * candidate surface where the PII-access log applies.
+ *
+ * `attemptedByName` is the partner's own person, not a candidate — the same
+ * name already listed in the Users section of this page.
+ */
+export const partnerOrgDedupAttemptRowSchema = z.object({
+  attemptId: z.string().uuid(),
+  attemptedAt: z.string(),
+  attemptedByName: z.string(),
+  candidateName: z.string().nullable(),
+  decision: dedupDecisionSchema,
+  decisionReason: z.string().nullable(),
+});
+export type PartnerOrgDedupAttemptRow = z.infer<typeof partnerOrgDedupAttemptRowSchema>;
+
+/**
+ * Cap contract copied from partnerListMySubmissions: default 100, caller may
+ * ask for up to 200, and `capped` tells the UI the list was truncated rather
+ * than letting it imply a partner has exactly 100 attempts on record.
+ */
+export const listPartnerOrgDedupAttemptsInputSchema = z.object({
+  partnerOrgId: z.string().uuid(),
+  limit: z.number().int().min(1).max(200).optional(),
+});
+export const listPartnerOrgDedupAttemptsOutputSchema = z.object({
+  items: z.array(partnerOrgDedupAttemptRowSchema),
+  capped: z.boolean(),
+});
+export type ListPartnerOrgDedupAttemptsInput = z.infer<
+  typeof listPartnerOrgDedupAttemptsInputSchema
+>;
+export type ListPartnerOrgDedupAttemptsOutput = z.infer<
+  typeof listPartnerOrgDedupAttemptsOutputSchema
+>;
 
 /**
  * releaseOwnershipClaim. `reason` is REQUIRED (1..500) and stored on the row:

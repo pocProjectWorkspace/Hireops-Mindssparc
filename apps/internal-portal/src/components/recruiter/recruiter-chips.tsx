@@ -187,12 +187,28 @@ const SOURCE_LABELS: Record<ApplicationSource, string> = {
   whatsapp: "WhatsApp",
 };
 
+/** The two sources that mean "an agency sent this candidate". */
+const PARTNER_SOURCES = new Set<ApplicationSource>(["partner_empanelled", "partner_adhoc"]);
+
+/**
+ * The human label for an application's source.
+ *
+ * P0.5 — `partnerOrgName` names the agency. "Partner" alone was as far as this
+ * went, which made a list of partner-sourced candidates unreadable when more
+ * than one agency was working the same requisition; the read now carries the
+ * org name and a partner row reads "Partner · Acme Talent". Appended rather
+ * than substituted so the empanelled/ad-hoc distinction (and any tenant label
+ * override) survives — an ad-hoc row reads "Partner (ad-hoc) · Acme Talent".
+ * Anything non-partner, or a partner row with no name resolved, is unchanged.
+ */
 export function sourceLabel(
   source: ApplicationSource | null,
   overrides?: Record<string, string>,
+  partnerOrgName?: string | null,
 ): string {
   if (!source) return "—";
-  return overrides?.[source] ?? SOURCE_LABELS[source] ?? source;
+  const base = overrides?.[source] ?? SOURCE_LABELS[source] ?? source;
+  return partnerOrgName && PARTNER_SOURCES.has(source) ? `${base} · ${partnerOrgName}` : base;
 }
 
 // ─────────────── missing info ───────────────
