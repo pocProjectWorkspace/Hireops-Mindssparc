@@ -297,8 +297,13 @@ async function tryEnqueue(
   try {
     await enqueueNotification(poolDb, args);
   } catch (err) {
+    // Code-based 23505 detection (P0.6): drizzle wraps the driver error in
+    // "Failed query: …" so the constraint NAME never appears in message —
+    // the old substring check misclassified every expected dedup as an
+    // enqueue_error. The driver error survives as `cause`.
+    const e = err as { code?: string; cause?: { code?: string } };
     const msg = err instanceof Error ? err.message : String(err);
-    if (msg.includes("uniq_notification_outbox_dedup")) {
+    if (e?.code === "23505" || e?.cause?.code === "23505") {
       log.debug({ kind, recipient: args.recipientEmail }, "sla_scan.dedup_skip");
     } else {
       log.error({ err: msg, kind, recipient: args.recipientEmail }, "sla_scan.enqueue_error");

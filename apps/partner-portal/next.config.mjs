@@ -20,8 +20,18 @@ if (process.env.SUPABASE_ANON_KEY && !process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY)
 // Default the browser-side tRPC endpoint to the local api (3001). The client
 // tRPC (mutations, client queries) MUST hit the api over HTTP; the /trpc
 // suffix matters (detail panels 404 without it — see PLATFORM-BUILD-STATUS).
-// Production deploys set NEXT_PUBLIC_API_BASE_URL explicitly.
+// Production deploys set NEXT_PUBLIC_API_BASE_URL explicitly — and a
+// production build without it is a hard error (P0.6): the localhost default
+// bakes into the client bundle at build time and every mutation silently
+// breaks, which is exactly how the portal shipped broken once already.
 if (!process.env.NEXT_PUBLIC_API_BASE_URL) {
+  if (process.env.VERCEL_ENV === "production" || process.env.VERCEL_ENV === "preview") {
+    throw new Error(
+      "NEXT_PUBLIC_API_BASE_URL is required for Vercel builds of the partner portal " +
+        "(the localhost default would be baked into the client bundle). Set it on the " +
+        "Vercel project to the api origin including the /trpc suffix.",
+    );
+  }
   process.env.NEXT_PUBLIC_API_BASE_URL = "http://localhost:3001/trpc";
 }
 

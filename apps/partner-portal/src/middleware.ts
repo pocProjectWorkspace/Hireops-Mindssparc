@@ -1,5 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { createServerClient, type CookieOptions } from "@supabase/ssr";
+import { isPublicPath } from "./lib/public-paths";
 
 /**
  * Partner-portal auth gate. Anything not in PUBLIC_PATHS requires a Supabase
@@ -12,20 +13,6 @@ import { createServerClient, type CookieOptions } from "@supabase/ssr";
  * factory needs its own NextRequest cookies adapter, so we can't reuse the
  * lib/ server client here.
  */
-
-const PUBLIC_PATHS = new Set<string>(["/login", "/logout"]);
-
-/**
- * Public routes whose path carries a parameter, so exact matching can't see
- * them. /accept-invite/<rawToken> is the invitation redemption link (P0.2):
- * the whole point is that its visitor has no session yet.
- */
-const PUBLIC_PREFIXES = ["/accept-invite"] as const;
-
-function isPublicPath(pathname: string): boolean {
-  if (PUBLIC_PATHS.has(pathname)) return true;
-  return PUBLIC_PREFIXES.some((p) => pathname === p || pathname.startsWith(`${p}/`));
-}
 
 export async function middleware(req: NextRequest) {
   if (isPublicPath(req.nextUrl.pathname)) {
