@@ -17,6 +17,8 @@ import { tenants } from "./tenants";
 import { candidates } from "./candidates";
 import { requisitions } from "./requisitions";
 import { tenantUserMemberships } from "./tenant-user-memberships";
+import { partnerOrgs } from "./partner-orgs";
+import { partnerUsers } from "./partner-users";
 import { applicationSourceEnum } from "./application-source";
 import { applicationStageEnum } from "./application-stage";
 
@@ -29,10 +31,12 @@ import { applicationStageEnum } from "./application-stage";
  * apply to multiple reqs via different channels (referral for one, job
  * board for another).
  *
- * source_partner_id / submitted_by_partner_user_id reference the partner
- * tables that DB-PARTNER will introduce. Those FKs are intentionally NOT
- * enforced here — the columns exist and are indexed, but the constraints
- * land with the partner schema.
+ * source_partner_id / submitted_by_partner_user_id carry partner
+ * attribution, FK-enforced since 0113 (composite (tenant_id, id) refs, the
+ * house cross-tenant-unrepresentable style). The SQL uses the PG15+
+ * column-targeted `ON DELETE SET NULL (<col>)` — a plain SET NULL on a
+ * composite FK would try to null tenant_id too. Deleting a partner org/user
+ * therefore lapses attribution without touching the application.
  *
  * RLS: standard tenant_isolation. Trigger: audit_record_change() fires.
  */
@@ -62,9 +66,8 @@ export const applications = pgTable(
     // desk renders an honest "no expected salary" state rather than inventing a
     // verdict. bigint for headroom, same as offers.
     expectedSalaryInrPaise: bigint("expected_salary_inr_paise", { mode: "bigint" }),
-    // FKs deferred to DB-PARTNER — the columns + indexes are pre-wired so
-    // queries land cleanly when partners ship; the constraints are added
-    // by the partner-schema migration.
+    // Partner attribution. FKs enforced by 0113 (see header note on the
+    // column-targeted SET NULL).
     sourcePartnerId: uuid("source_partner_id"),
     submittedByPartnerUserId: uuid("submitted_by_partner_user_id"),
     partnerSubmissionMetadata: jsonb("partner_submission_metadata"),
@@ -120,6 +123,18 @@ export const applications = pgTable(
       columns: [table.tenantId, table.assignedRecruiterMembershipId],
       foreignColumns: [tenantUserMemberships.tenantId, tenantUserMemberships.id],
       name: "fk_applications_assigned_recruiter",
+    }).onDelete("set null"),
+    // 0113 — partner attribution. The applied SQL narrows SET NULL to the
+    // partner column only (PG15+ syntax drizzle's helper can't express).
+    foreignKey({
+      columns: [table.tenantId, table.sourcePartnerId],
+      foreignColumns: [partnerOrgs.tenantId, partnerOrgs.id],
+      name: "fk_applications_source_partner",
+    }).onDelete("set null"),
+    foreignKey({
+      columns: [table.tenantId, table.submittedByPartnerUserId],
+      foreignColumns: [partnerUsers.tenantId, partnerUsers.id],
+      name: "fk_applications_submitted_by_partner_user",
     }).onDelete("set null"),
     pgPolicy("tenant_isolation", {
       as: "permissive",
