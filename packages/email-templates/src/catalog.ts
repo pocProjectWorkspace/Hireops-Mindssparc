@@ -492,6 +492,68 @@ export const EMAIL_TEMPLATE_CATALOG: Record<TemplateKey, EmailTemplateCatalogEnt
       { slotKey: "signOff", label: "Sign-off", defaultText: "— HireOps", tokens: [] },
     ],
   },
+
+  // P0.1A — the only partner-addressed template. Sent by internal staff
+  // (admin / hr_ops) from the partner administration surface; carries the
+  // single-use accept-invite link into the partner portal.
+  "partner.invitation": {
+    templateKey: "partner.invitation",
+    label: "Partner user invitation",
+    description:
+      "Sent when internal staff invite a partner user into a partner org (carries the accept-invite link).",
+    subject: {
+      defaultText: "You're invited to {companyName}'s partner portal",
+      tokens: ["companyName", "partnerOrgName"],
+    },
+    slots: [
+      { slotKey: "heading", label: "Heading", defaultText: "You've been invited", tokens: [] },
+      {
+        slotKey: "greeting",
+        label: "Greeting",
+        defaultText: "Hi {inviteeName},",
+        tokens: ["inviteeName"],
+      },
+      {
+        slotKey: "body",
+        label: "Body paragraph",
+        defaultText:
+          "{companyName} has invited you to join the {partnerOrgName} account on their partner portal, where you can see the requisitions they've opened to you and submit candidates against them. Set a password to activate your access.",
+        tokens: ["companyName", "partnerOrgName"],
+      },
+      {
+        slotKey: "ctaLabel",
+        label: "Button label",
+        defaultText: "Accept the invitation",
+        tokens: [],
+      },
+      {
+        slotKey: "expiryNote",
+        label: "Expiry note",
+        defaultText:
+          "This link is private to you, can be used once, and expires on {expiresAtFormatted}. If it expires, ask your {companyName} contact to send a new one.",
+        tokens: ["expiresAtFormatted", "companyName"],
+      },
+      {
+        slotKey: "privateNote",
+        label: "Not-expecting-this note",
+        defaultText:
+          "If you weren't expecting this invitation, you can safely ignore this email — no account is created until the link is used.",
+        tokens: [],
+      },
+      {
+        slotKey: "signOff",
+        label: "Sign-off",
+        defaultText: "— The {companyName} sourcing team",
+        tokens: ["companyName"],
+      },
+      {
+        slotKey: "plainLinkNote",
+        label: "Plain-link fallback lead-in",
+        defaultText: "If the button doesn't work, paste this link into your browser:",
+        tokens: [],
+      },
+    ],
+  },
 };
 
 /**
@@ -578,5 +640,12 @@ export const EMAIL_TEMPLATE_SAMPLE_DATA: Record<TemplateKey, Record<string, unkn
     positionTitle: "Senior Backend Engineer",
     declinedAtFormatted: "2 Aug 2026, 11:00 AM IST",
     triageUrl: "https://portal.example/triage",
+  },
+  "partner.invitation": {
+    inviteeName: "Asha Nair",
+    partnerOrgName: "TalentBridge Consulting",
+    companyName: "Kyndryl",
+    acceptUrl: "https://partners.example/accept-invite/token",
+    expiresAtFormatted: "20 August 2026",
   },
 };

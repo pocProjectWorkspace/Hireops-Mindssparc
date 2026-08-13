@@ -483,6 +483,22 @@ import {
   partnerListMySubmissionsOutputSchema,
   partnerSubmitCandidateInputSchema,
   partnerSubmitCandidateOutputSchema,
+  // P0.1A — internal partner administration (admin / hr_ops).
+  listPartnerOrgsOutputSchema,
+  getPartnerOrgInputSchema,
+  getPartnerOrgOutputSchema,
+  createPartnerOrgInputSchema,
+  createPartnerOrgOutputSchema,
+  setPartnerOrgActiveInputSchema,
+  setPartnerOrgActiveOutputSchema,
+  invitePartnerUserInputSchema,
+  invitePartnerUserOutputSchema,
+  revokePartnerInvitationInputSchema,
+  revokePartnerInvitationOutputSchema,
+  assignRequisitionToPartnerInputSchema,
+  assignRequisitionToPartnerOutputSchema,
+  endPartnerAssignmentInputSchema,
+  endPartnerAssignmentOutputSchema,
   requestCandidateActivationInputSchema,
   requestCandidateActivationOutputSchema,
   completeCandidateActivationInputSchema,
@@ -970,6 +986,18 @@ import { getStorageClient } from "../lib/storage";
 import { attachDocumentToCase, matchDocumentCollectionTask } from "../lib/onboarding-document";
 import { attachApplicationDocumentBlob } from "../lib/application-document";
 import { acceptOfferAtomically, runOfferAcceptSideEffects } from "../lib/offer-accept";
+// P0.1A — internal partner administration. All the query/mutation logic lives
+// in the lib; the eight procedures below it are role gate + audit wrapper only.
+import {
+  listPartnerOrgsForTenant,
+  getPartnerOrgDetail,
+  createPartnerOrgForTenant,
+  setPartnerOrgActiveForTenant,
+  invitePartnerUserForTenant,
+  revokePartnerInvitationForTenant,
+  assignRequisitionToPartnerForTenant,
+  endPartnerAssignmentForTenant,
+} from "../lib/partner-admin";
 // The FROZEN JD-skill-vs-parsed-skills matcher, extracted verbatim from
 // buildRequisitionInsights (LD-2A). Shared by the Insights skill-gap chart and
 // the per-hire upskilling suggestions so the two can never drift apart.
@@ -1231,6 +1259,15 @@ const AI_SETTINGS_ADMIN_ROLES = new Set(["admin"]);
 // (tenant_user_memberships has no authenticated write policy) are authorised
 // by this explicit gate + the ctx.tenantId predicate.
 const USERS_ADMIN_ROLES = new Set(["admin"]);
+
+// P0.1A — internal partner administration (create partner orgs, invite partner
+// users, open/close requisitions to a partner). hr_ops runs the vendor
+// relationship day to day; admin is the super-role. recruiter is deliberately
+// EXCLUDED: a recruiter works the reqs a partner is already on, but granting
+// portal access to an outside company is an HR-ops decision. RLS still scopes
+// every row to the tenant on top of this persona gate, and every query below
+// carries an explicit tenant_id predicate as well.
+const PARTNER_ADMIN_ROLES = new Set(["admin", "hr_ops"]);
 
 // OFFBOARD-02 — departures are an HR operation. hr_ops + people_ops run them;
 // admin is the super-role. recruiter / hiring_manager / panel get FORBIDDEN.
@@ -16072,6 +16109,167 @@ export const appRouter = router({
       }
       byStage.sort((a, b) => b.count - a.count);
       return { totalSubmissions: total, activeSubmissions: active, placed, byStage };
+    }),
+
+  // ═══════ P0.1A — internal partner administration (admin / hr_ops) ═══════
+  //
+  // The INTERNAL-STAFF counterpart to the partnerProcedure block above: this
+  // is how partner orgs, partner users and requisition assignments come into
+  // existence at all (previously seed-partner-demo.ts was the only source).
+  //
+  // Every procedure is protectedProcedure + PARTNER_ADMIN_ROLES; every read
+  // and write carries an explicit tenant_id predicate on top of the
+  // tenant_isolation RLS the tx applies. The logic lives in
+  // apps/api/src/lib/partner-admin.ts — these are role gate + audit wrapper.
+  //
+  // Out of scope here (later tickets): the internal UI, and the partner-facing
+  // accept-invite / redeem flow that turns an invitation into a partner_users
+  // row.
+
+  /**
+   * listPartnerOrgs — the partner-administration index. Every org in the
+   * tenant, alphabetical, with its live counts (active portal users, active
+   * requisition assignments, active ownership claims).
+   */
+  listPartnerOrgs: protectedProcedure
+    .output(listPartnerOrgsOutputSchema)
+    .query(async ({ ctx }) => {
+      requireAnyRole(ctx, PARTNER_ADMIN_ROLES, "Partner administration is admin / hr_ops only");
+      const db = requireDb(ctx);
+      if (!ctx.tenantId) {
+        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
+      }
+      return listPartnerOrgsForTenant(db, ctx.tenantId);
+    }),
+
+  /**
+   * getPartnerOrg — one org's detail drawer: summary + users + LIVE
+   * invitations + the full assignment history. NOT_FOUND when the org isn't
+   * this tenant's (the cross-tenant probe answer).
+   */
+  getPartnerOrg: protectedProcedure
+    .input(getPartnerOrgInputSchema)
+    .output(getPartnerOrgOutputSchema)
+    .query(async ({ ctx, input }) => {
+      requireAnyRole(ctx, PARTNER_ADMIN_ROLES, "Partner administration is admin / hr_ops only");
+      const db = requireDb(ctx);
+      if (!ctx.tenantId) {
+        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
+      }
+      return getPartnerOrgDetail(db, ctx.tenantId, input.partnerOrgId);
+    }),
+
+  /** createPartnerOrg — onboard a new staffing partner (active, onboarded now). */
+  createPartnerOrg: protectedProcedure
+    .input(createPartnerOrgInputSchema)
+    .output(createPartnerOrgOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      requireAnyRole(ctx, PARTNER_ADMIN_ROLES, "Partner administration is admin / hr_ops only");
+      const db = requireDb(ctx);
+      if (!ctx.tenantId) {
+        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
+      }
+      const tenantId = ctx.tenantId;
+      return withAudit("partner_org_create", ctx, input, () =>
+        createPartnerOrgForTenant(db, tenantId, input),
+      );
+    }),
+
+  /** setPartnerOrgActive — suspend or restore a partner org. */
+  setPartnerOrgActive: protectedProcedure
+    .input(setPartnerOrgActiveInputSchema)
+    .output(setPartnerOrgActiveOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      requireAnyRole(ctx, PARTNER_ADMIN_ROLES, "Partner administration is admin / hr_ops only");
+      const db = requireDb(ctx);
+      if (!ctx.tenantId) {
+        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
+      }
+      const tenantId = ctx.tenantId;
+      return withAudit("partner_org_set_active", ctx, input, () =>
+        setPartnerOrgActiveForTenant(db, tenantId, input),
+      );
+    }),
+
+  /**
+   * invitePartnerUser — mint a single-use invitation + send the email.
+   * CONFLICT when the email is already an active user of the org or already
+   * has a live invitation. Returns the accept URL (Resend test-mode reality —
+   * see the lib's note); the raw token is never persisted.
+   */
+  invitePartnerUser: protectedProcedure
+    .input(invitePartnerUserInputSchema)
+    .output(invitePartnerUserOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      requireAnyRole(ctx, PARTNER_ADMIN_ROLES, "Partner administration is admin / hr_ops only");
+      const db = requireDb(ctx);
+      if (!ctx.tenantId) {
+        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
+      }
+      const tenantId = ctx.tenantId;
+      const actorMembershipId = await resolveActorMembership(db, ctx);
+      const companyName = await resolveTenantDisplayName(tenantId);
+      return withAudit("partner_user_invite", ctx, input, () =>
+        invitePartnerUserForTenant(db, {
+          ...input,
+          tenantId,
+          companyName,
+          actorMembershipId,
+        }),
+      );
+    }),
+
+  /** revokePartnerInvitation — kill a live invitation (row kept, revoked_at stamped). */
+  revokePartnerInvitation: protectedProcedure
+    .input(revokePartnerInvitationInputSchema)
+    .output(revokePartnerInvitationOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      requireAnyRole(ctx, PARTNER_ADMIN_ROLES, "Partner administration is admin / hr_ops only");
+      const db = requireDb(ctx);
+      if (!ctx.tenantId) {
+        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
+      }
+      const tenantId = ctx.tenantId;
+      return withAudit("partner_invitation_revoke", ctx, input, () =>
+        revokePartnerInvitationForTenant(db, tenantId, input.invitationId),
+      );
+    }),
+
+  /**
+   * assignRequisitionToPartner — open a req to a partner org. The req has to
+   * be this tenant's; a re-assignment after an ENDED one is allowed (the
+   * unique index is partial on active rows), an active one CONFLICTs.
+   */
+  assignRequisitionToPartner: protectedProcedure
+    .input(assignRequisitionToPartnerInputSchema)
+    .output(assignRequisitionToPartnerOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      requireAnyRole(ctx, PARTNER_ADMIN_ROLES, "Partner administration is admin / hr_ops only");
+      const db = requireDb(ctx);
+      if (!ctx.tenantId) {
+        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
+      }
+      const tenantId = ctx.tenantId;
+      const actorMembershipId = await resolveActorMembership(db, ctx);
+      return withAudit("partner_assignment_create", ctx, input, () =>
+        assignRequisitionToPartnerForTenant(db, tenantId, input, actorMembershipId),
+      );
+    }),
+
+  /** endPartnerAssignment — close an assignment; it leaves the partner's list. */
+  endPartnerAssignment: protectedProcedure
+    .input(endPartnerAssignmentInputSchema)
+    .output(endPartnerAssignmentOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      requireAnyRole(ctx, PARTNER_ADMIN_ROLES, "Partner administration is admin / hr_ops only");
+      const db = requireDb(ctx);
+      if (!ctx.tenantId) {
+        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
+      }
+      const tenantId = ctx.tenantId;
+      return withAudit("partner_assignment_end", ctx, input, () =>
+        endPartnerAssignmentForTenant(db, tenantId, input.assignmentId),
+      );
     }),
 
   // ═══════════ HRHEAD-02 — Market Intelligence + Feasibility ═══════════

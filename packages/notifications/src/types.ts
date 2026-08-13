@@ -11,7 +11,16 @@
  * the worker dispatches.
  */
 
-export type EmailRecipientType = "candidate" | "recruiter" | "hiring_manager";
+/**
+ * Who the email is addressed to. Stored verbatim in
+ * notification_outbox.recipient_type (a free-text column — no DB enum, no
+ * CHECK), so this union is the only place the vocabulary is fixed.
+ *
+ * "partner" (P0.1A) is a staffing-agency contact who is NOT yet a
+ * partner_users row — the invitation email is precisely what turns them into
+ * one, so neither "candidate" nor "recruiter" would be honest.
+ */
+export type EmailRecipientType = "candidate" | "recruiter" | "hiring_manager" | "partner";
 
 /**
  * Template keys Wave 1 ships. Adding a key requires:
@@ -33,7 +42,8 @@ export type TemplateKey =
   | "recruiter.sla_breach_imminent"
   | "recruiter.sla_ops_alert"
   | "recruiter.offer_accepted"
-  | "recruiter.offer_declined";
+  | "recruiter.offer_declined"
+  | "partner.invitation";
 
 /**
  * A file attached to an outgoing email. Content is base64 (matches Resend's

@@ -3565,6 +3565,181 @@ export const partnerListMySubmissionsOutputSchema = z.object({
 export type PartnerListMySubmissionsInput = z.infer<typeof partnerListMySubmissionsInputSchema>;
 export type PartnerListMySubmissionsOutput = z.infer<typeof partnerListMySubmissionsOutputSchema>;
 
+// ────── P0.1A — internal partner administration (admin / hr_ops) ──────
+//
+// The INTERNAL-STAFF side of the partner lifecycle: create partner orgs,
+// invite partner users, assign requisitions. Distinct from every schema above
+// this line, which is the PARTNER-side (partnerProcedure) surface. Until this
+// ticket the only way to get these rows was the seed script.
+//
+// The two enums mirror the DB enums verbatim (partner_tier / partner_user_role)
+// — the api-types package deliberately doesn't import from @hireops/db, so they
+// are restated here exactly as packages/db/src/schema/partner-{tier,user-role}.ts
+// declare them.
+
+export const partnerTierSchema = z.enum(["empanelled", "ad_hoc"]);
+export type PartnerTierValue = z.infer<typeof partnerTierSchema>;
+
+export const partnerUserRoleSchema = z.enum(["partner_admin", "partner_user"]);
+export type PartnerUserRoleValue = z.infer<typeof partnerUserRoleSchema>;
+
+/**
+ * One partner org as internal staff see it: the org's own columns plus the
+ * three counts the admin list needs (active portal users, active requisition
+ * assignments, live ownership claims). Counts are computed server-side with an
+ * explicit tenant_id predicate on top of RLS.
+ */
+export const partnerOrgSummarySchema = z.object({
+  partnerOrgId: z.string().uuid(),
+  name: z.string(),
+  legalEntityName: z.string().nullable(),
+  tier: partnerTierSchema,
+  country: z.string().nullable(),
+  primaryContactEmail: z.string().nullable(),
+  primaryContactPhone: z.string().nullable(),
+  active: z.boolean(),
+  onboardedAt: z.string().nullable(),
+  userCount: z.number().int().nonnegative(),
+  activeAssignmentCount: z.number().int().nonnegative(),
+  activeClaimCount: z.number().int().nonnegative(),
+});
+export type PartnerOrgSummary = z.infer<typeof partnerOrgSummarySchema>;
+
+export const listPartnerOrgsOutputSchema = z.object({
+  items: z.array(partnerOrgSummarySchema),
+});
+export type ListPartnerOrgsOutput = z.infer<typeof listPartnerOrgsOutputSchema>;
+
+/** A partner_users row on the org-detail drawer. */
+export const partnerOrgUserRowSchema = z.object({
+  partnerUserId: z.string().uuid(),
+  fullName: z.string(),
+  email: z.string(),
+  role: partnerUserRoleSchema,
+  active: z.boolean(),
+  lastLoginAt: z.string().nullable(),
+});
+export type PartnerOrgUserRow = z.infer<typeof partnerOrgUserRowSchema>;
+
+/**
+ * A LIVE partner_invitations row (not consumed, not revoked, not expired).
+ * `fullName` is deliberately absent: partner_invitations has no column for it
+ * (see the schema file) — the invitee's name is used only in the invitation
+ * email and is not persisted.
+ */
+export const partnerOrgInvitationRowSchema = z.object({
+  invitationId: z.string().uuid(),
+  email: z.string(),
+  intendedRole: partnerUserRoleSchema,
+  expiresAt: z.string(),
+  createdAt: z.string(),
+});
+export type PartnerOrgInvitationRow = z.infer<typeof partnerOrgInvitationRowSchema>;
+
+/**
+ * A partner_assignments row with the requisition's title resolved through the
+ * same requisitions→positions join partnerListAssignedRequisitions uses.
+ * Includes ENDED assignments (the internal view is the history); the partner
+ * portal only ever sees status='active'.
+ */
+export const partnerOrgAssignmentRowSchema = z.object({
+  assignmentId: z.string().uuid(),
+  requisitionId: z.string().uuid(),
+  title: z.string(),
+  requisitionStatus: z.string(),
+  status: z.enum(["active", "paused", "ended"]),
+  assignedAt: z.string(),
+  endedAt: z.string().nullable(),
+});
+export type PartnerOrgAssignmentRow = z.infer<typeof partnerOrgAssignmentRowSchema>;
+
+export const getPartnerOrgInputSchema = z.object({ partnerOrgId: z.string().uuid() });
+export const getPartnerOrgOutputSchema = z.object({
+  org: partnerOrgSummarySchema,
+  users: z.array(partnerOrgUserRowSchema),
+  pendingInvitations: z.array(partnerOrgInvitationRowSchema),
+  assignments: z.array(partnerOrgAssignmentRowSchema),
+});
+export type GetPartnerOrgInput = z.infer<typeof getPartnerOrgInputSchema>;
+export type GetPartnerOrgOutput = z.infer<typeof getPartnerOrgOutputSchema>;
+
+export const createPartnerOrgInputSchema = z.object({
+  name: z.string().min(1).max(200),
+  tier: partnerTierSchema,
+  primaryContactEmail: z.string().email().max(320),
+  primaryContactPhone: z.string().max(40).optional(),
+  /** ISO-3166-1 alpha-2 — partner_orgs.country is char(2). */
+  country: z.string().length(2).optional(),
+});
+export const createPartnerOrgOutputSchema = z.object({ partnerOrgId: z.string().uuid() });
+export type CreatePartnerOrgInput = z.infer<typeof createPartnerOrgInputSchema>;
+export type CreatePartnerOrgOutput = z.infer<typeof createPartnerOrgOutputSchema>;
+
+export const setPartnerOrgActiveInputSchema = z.object({
+  partnerOrgId: z.string().uuid(),
+  active: z.boolean(),
+});
+export const setPartnerOrgActiveOutputSchema = z.object({
+  partnerOrgId: z.string().uuid(),
+  active: z.boolean(),
+});
+export type SetPartnerOrgActiveInput = z.infer<typeof setPartnerOrgActiveInputSchema>;
+export type SetPartnerOrgActiveOutput = z.infer<typeof setPartnerOrgActiveOutputSchema>;
+
+/**
+ * invitePartnerUser. `fullName` is email-only (see partnerOrgInvitationRowSchema).
+ *
+ * `acceptUrl` IS returned to the caller on purpose: staging email runs through
+ * Resend test-mode, which only delivers to a single inbox, so the internal UI
+ * must be able to copy the link out of the response. The raw token exists
+ * nowhere else — only its sha256 is persisted.
+ */
+export const invitePartnerUserInputSchema = z.object({
+  partnerOrgId: z.string().uuid(),
+  email: z.string().email().max(320),
+  fullName: z.string().min(1).max(200),
+  role: partnerUserRoleSchema,
+});
+export const invitePartnerUserOutputSchema = z.object({
+  invitationId: z.string().uuid(),
+  expiresAt: z.string(),
+  acceptUrl: z.string(),
+});
+export type InvitePartnerUserInput = z.infer<typeof invitePartnerUserInputSchema>;
+export type InvitePartnerUserOutput = z.infer<typeof invitePartnerUserOutputSchema>;
+
+export const revokePartnerInvitationInputSchema = z.object({
+  invitationId: z.string().uuid(),
+});
+export const revokePartnerInvitationOutputSchema = z.object({
+  invitationId: z.string().uuid(),
+  revokedAt: z.string(),
+});
+export type RevokePartnerInvitationInput = z.infer<typeof revokePartnerInvitationInputSchema>;
+export type RevokePartnerInvitationOutput = z.infer<typeof revokePartnerInvitationOutputSchema>;
+
+export const assignRequisitionToPartnerInputSchema = z.object({
+  requisitionId: z.string().uuid(),
+  partnerOrgId: z.string().uuid(),
+});
+export const assignRequisitionToPartnerOutputSchema = z.object({
+  assignmentId: z.string().uuid(),
+});
+export type AssignRequisitionToPartnerInput = z.infer<typeof assignRequisitionToPartnerInputSchema>;
+export type AssignRequisitionToPartnerOutput = z.infer<
+  typeof assignRequisitionToPartnerOutputSchema
+>;
+
+export const endPartnerAssignmentInputSchema = z.object({
+  assignmentId: z.string().uuid(),
+});
+export const endPartnerAssignmentOutputSchema = z.object({
+  assignmentId: z.string().uuid(),
+  endedAt: z.string(),
+});
+export type EndPartnerAssignmentInput = z.infer<typeof endPartnerAssignmentInputSchema>;
+export type EndPartnerAssignmentOutput = z.infer<typeof endPartnerAssignmentOutputSchema>;
+
 // ═══════════════════ CAND-01 — candidate accounts ═══════════════════
 
 /**

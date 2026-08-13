@@ -29,6 +29,7 @@ import {
   type OfferDeclinedRecruiterProps,
 } from "./templates/offer-declined-recruiter";
 import { AgentMessage, type AgentMessageProps } from "./templates/agent-message";
+import { PartnerInvitation, type PartnerInvitationProps } from "./templates/partner-invitation";
 
 /**
  * Template registry — single switch the worker calls to turn a
@@ -261,6 +262,19 @@ export async function renderTemplate(
           overrides?.subject,
           { candidateName: props.candidateName, positionTitle: props.positionTitle },
           `Offer declined: ${props.candidateName} for ${props.positionTitle}`,
+        ),
+        html: await render(element),
+        text: await render(element, { plainText: true }),
+      };
+    }
+    case "partner.invitation": {
+      const props = data as unknown as PartnerInvitationProps;
+      const element = PartnerInvitation({ ...props, slots });
+      return {
+        subject: resolveSubject(
+          overrides?.subject,
+          { companyName: props.companyName, partnerOrgName: props.partnerOrgName },
+          `You're invited to ${props.companyName}'s partner portal`,
         ),
         html: await render(element),
         text: await render(element, { plainText: true }),

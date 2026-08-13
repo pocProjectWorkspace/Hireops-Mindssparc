@@ -31,6 +31,10 @@ export const emailTemplateKeySchema = z.enum([
   "recruiter.sla_ops_alert",
   "recruiter.offer_accepted",
   "recruiter.offer_declined",
+  // P0.1A — partner user invitation. Added here (not just to the catalog)
+  // because getEmailTemplateCatalog validates every EMAIL_TEMPLATE_CATALOG
+  // entry's templateKey against this enum on the way out.
+  "partner.invitation",
 ]);
 export type EmailTemplateKey = z.infer<typeof emailTemplateKeySchema>;
 

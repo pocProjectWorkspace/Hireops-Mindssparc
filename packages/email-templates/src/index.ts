@@ -26,3 +26,4 @@ export {
   OfferDeclinedRecruiter,
   type OfferDeclinedRecruiterProps,
 } from "./templates/offer-declined-recruiter";
+export { PartnerInvitation, type PartnerInvitationProps } from "./templates/partner-invitation";
