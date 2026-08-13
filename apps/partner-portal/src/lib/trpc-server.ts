@@ -41,6 +41,32 @@ export function createPartnerServerTRPCCaller(session: PartnerAuthSession): Serv
   return appRouter.createCaller(ctx);
 }
 
+/**
+ * In-process caller for PUBLIC procedures, i.e. the ones a caller with no
+ * session at all may reach. Today that is exactly the /accept-invite preview:
+ * the invitee has an emailed token and nothing else, so there is no userId to
+ * hand over and publicProcedure asks for none.
+ *
+ * Deliberately a separate function rather than an optional argument on the
+ * partner caller — a null userId must be an explicit choice at the call site,
+ * never something a missing session silently produces.
+ */
+export function createPublicServerTRPCCaller(): ServerTRPCCaller {
+  const ctx: HonoTRPCContext = {
+    tenantId: null,
+    userId: null,
+    roles: [],
+    claims: null,
+    db: undefined,
+    sql: poolSql,
+    log: serverLogger,
+    requestId: makeRequestId(),
+    userAgent: null,
+    ipAddress: null,
+  };
+  return appRouter.createCaller(ctx);
+}
+
 function makeRequestId(): string {
   return `ssr-partner-${
     typeof globalThis.crypto?.randomUUID === "function"

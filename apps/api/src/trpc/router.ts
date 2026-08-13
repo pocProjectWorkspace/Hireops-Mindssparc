@@ -499,6 +499,13 @@ import {
   assignRequisitionToPartnerOutputSchema,
   endPartnerAssignmentInputSchema,
   endPartnerAssignmentOutputSchema,
+  // P0.2 — partner invitation acceptance (public redeem half).
+  getPartnerInvitationPreviewInputSchema,
+  getPartnerInvitationPreviewOutputSchema,
+  redeemPartnerInvitationInputSchema,
+  redeemPartnerInvitationOutputSchema,
+  type PartnerInvitationDeadState,
+  type RedeemPartnerInvitationOutput,
   requestCandidateActivationInputSchema,
   requestCandidateActivationOutputSchema,
   completeCandidateActivationInputSchema,
@@ -997,6 +1004,9 @@ import {
   revokePartnerInvitationForTenant,
   assignRequisitionToPartnerForTenant,
   endPartnerAssignmentForTenant,
+  // P0.2 reuses ONLY the hashing helper — redemption has to derive the stored
+  // hash exactly the way minting did, or no link would ever match.
+  hashPartnerInviteToken,
 } from "../lib/partner-admin";
 // The FROZEN JD-skill-vs-parsed-skills matcher, extracted verbatim from
 // buildRequisitionInsights (LD-2A). Shared by the Insights skill-gap chart and
@@ -1076,6 +1086,125 @@ async function createOrResolveAuthUser(
     code: "INTERNAL_SERVER_ERROR",
     message: `failed to create or resolve auth user: ${created.error?.message ?? "unknown"}`,
   });
+}
+
+/**
+ * P0.2 — create a BRAND-NEW Supabase auth identity for a redeeming partner
+ * invitee. Same service-role admin API, same email_confirm:true as
+ * createOrResolveAuthUser (there is no NODE_ENV=test seam anywhere in this
+ * codebase — the candidate activation test creates a real auth user and
+ * deletes it in teardown, and partner-invite-accept.test.ts does the same).
+ *
+ * The ONE deliberate difference: this never resolves-and-reuses. An email that
+ * already has an auth identity comes back as { conflict: true } and the caller
+ * surfaces `email_in_use`. Reusing it the way the candidate flow does would
+ * mean OVERWRITING a stranger's password from an emailed link — acceptable for
+ * a candidate proving control of their own address via a signed link they
+ * received, unacceptable for a partner invitation that may name an address
+ * already belonging to an internal user.
+ */
+async function createPartnerAuthUser(
+  email: string,
+  password: string,
+): Promise<{ userId: string; conflict: false } | { userId: null; conflict: true }> {
+  const supabaseUrl = process.env.SUPABASE_URL;
+  const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  if (!supabaseUrl || !serviceRoleKey) {
+    throw new TRPCError({
+      code: "INTERNAL_SERVER_ERROR",
+      message: "auth admin not configured (SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY)",
+    });
+  }
+  const admin = createClient(supabaseUrl, serviceRoleKey, {
+    auth: { persistSession: false, autoRefreshToken: false },
+  });
+  const created = await admin.auth.admin.createUser({ email, password, email_confirm: true });
+  if (created.data?.user?.id) {
+    return { userId: created.data.user.id, conflict: false };
+  }
+  // Two ways to recognise "that address is taken": the error text (fast, and
+  // correct at any user volume) and the listUsers sweep the candidate helper
+  // uses (page 1 of 200 — dev/POC volumes stay well under it). Anything else
+  // is a genuine failure and throws.
+  const message = created.error?.message ?? "";
+  if (/already/i.test(message) && /(regist|exist)/i.test(message)) {
+    return { userId: null, conflict: true };
+  }
+  const list = await admin.auth.admin.listUsers({ page: 1, perPage: 200 });
+  if (list.data?.users.some((x) => x.email?.toLowerCase() === email.toLowerCase())) {
+    return { userId: null, conflict: true };
+  }
+  throw new TRPCError({
+    code: "INTERNAL_SERVER_ERROR",
+    message: `failed to create partner auth user: ${message || "unknown"}`,
+  });
+}
+
+/**
+ * P0.2 — one invitation as the redeem path needs it, resolved from the RAW
+ * token. `intended_role` is typed as the union because the column is the
+ * partner_user_role DB enum; postgres hands it back as its text label.
+ */
+interface PartnerInvitationRedeemRow {
+  id: string;
+  tenant_id: string;
+  partner_org_id: string;
+  email: string;
+  intended_role: "partner_admin" | "partner_user";
+  expires_at: Date | string;
+  consumed_at: Date | string | null;
+  revoked_at: Date | string | null;
+  org_name: string;
+  tenant_display_name: string;
+}
+
+/**
+ * Look an invitation up by SHA-256(raw token) — the only form the DB holds.
+ *
+ * Uses ctx.sql (the service-role, RLS-bypassing pool) because the caller has
+ * no session at all yet: exactly how partnerProcedure resolves partner_users
+ * and how completeCandidateActivation reads candidate_accounts. The tenant
+ * must be active, else the link is treated as unmatched.
+ *
+ * ORDER BY created_at DESC: token_hash is only PARTIALLY unique (live rows
+ * per tenant), so dead rows could in principle share a bucket. With 32 random
+ * bytes they never will, but the newest row is the right answer if they did.
+ */
+async function loadPartnerInvitationByToken(
+  sql: HonoTRPCContext["sql"],
+  rawToken: string,
+): Promise<PartnerInvitationRedeemRow | undefined> {
+  const rows = await sql<PartnerInvitationRedeemRow[]>`
+    SELECT pi.id, pi.tenant_id, pi.partner_org_id, pi.email,
+           pi.intended_role::text AS intended_role,
+           pi.expires_at, pi.consumed_at, pi.revoked_at,
+           po.name AS org_name, t.display_name AS tenant_display_name
+    FROM public.partner_invitations pi
+    JOIN public.partner_orgs po
+      ON po.id = pi.partner_org_id AND po.tenant_id = pi.tenant_id
+    JOIN public.tenants t
+      ON t.id = pi.tenant_id AND t.status = 'active'
+    WHERE pi.token_hash = ${hashPartnerInviteToken(rawToken)}
+    ORDER BY pi.created_at DESC
+    LIMIT 1
+  `;
+  return rows[0];
+}
+
+/**
+ * The invitation's end-of-life state, or null when it is LIVE. Order matters:
+ * "you already accepted this" is the most useful thing to tell a human holding
+ * a dead link, then "it was withdrawn", then "it lapsed". A token we cannot
+ * match at all is `invalid` and says nothing more — no tenant, no org.
+ */
+function partnerInvitationDeadState(
+  row: PartnerInvitationRedeemRow | undefined,
+): PartnerInvitationDeadState | null {
+  if (!row) return "invalid";
+  if (row.consumed_at) return "already_used";
+  if (row.revoked_at) return "revoked";
+  if (new Date(row.expires_at).getTime() <= Date.now()) return "expired";
+  return null;
 }
 
 function normalisePhone(phone: string): string {
@@ -16273,6 +16402,127 @@ export const appRouter = router({
       const tenantId = ctx.tenantId;
       return withAudit("partner_assignment_end", ctx, input, () =>
         endPartnerAssignmentForTenant(db, tenantId, input.assignmentId),
+      );
+    }),
+
+  // ═════════ P0.2 — partner invitation acceptance (public redeem) ═════════
+  //
+  // Closes the loop invitePartnerUser opens. Both procedures are
+  // publicProcedure — the invitee has no identity yet, which is the entire
+  // point — and both resolve their tenant from the token via ctx.sql, the
+  // same service-role pool completeCandidateActivation and partnerProcedure
+  // use. Dead links are returned as states, not thrown: see the schemas'
+  // header in packages/api-types/src/procedures.ts.
+
+  /**
+   * getPartnerInvitationPreview — what the /accept-invite page renders before
+   * the invitee types anything: which org, which tenant invited them, the
+   * address the account will be minted against, the role, and the expiry.
+   * Anything not live comes back as a bare state; `invalid` in particular
+   * carries nothing at all, so an unmatched token can't be used to probe
+   * which tenant it might have belonged to.
+   */
+  getPartnerInvitationPreview: publicProcedure
+    .input(getPartnerInvitationPreviewInputSchema)
+    .output(getPartnerInvitationPreviewOutputSchema)
+    .query(async ({ ctx, input }) => {
+      const row = await loadPartnerInvitationByToken(ctx.sql, input.token);
+      const dead = partnerInvitationDeadState(row);
+      if (dead || !row) return { state: dead ?? "invalid" };
+      return {
+        state: "valid" as const,
+        orgName: row.org_name,
+        tenantDisplayName: row.tenant_display_name,
+        email: row.email,
+        intendedRole: row.intended_role,
+        expiresAt: new Date(row.expires_at).toISOString(),
+      };
+    }),
+
+  /**
+   * redeemPartnerInvitation — the invitee sets a password, gives their name,
+   * ticks the three wireflows §3.1 attestations, and becomes a partner user.
+   *
+   * Order of operations, and why:
+   *   1. Read the invitation and reject dead states BEFORE touching Supabase —
+   *      a replayed link must never mint an auth identity.
+   *   2. Create the auth user (never reuse — see createPartnerAuthUser).
+   *   3. ONE transaction claims the invitation (UPDATE … WHERE still-live,
+   *      which is the race guard: a concurrent second redeem loses the UPDATE)
+   *      and inserts partner_users. Either both land or neither does, so
+   *      "consumed but no portal user" is not a reachable state.
+   *
+   * The one seam left open is step 2 succeeding and step 3 losing the race:
+   * that leaves an orphan Supabase identity with no partner_users row, which
+   * is inert (partnerProcedure FORBIDs it) and logged. Claiming first instead
+   * would be worse — an email_in_use failure would burn the invitation.
+   *
+   * The attestations are persisted through withAudit's api_audit_logs input
+   * snapshot (token + password are redacted by sanitiseForAudit); neither
+   * partner_invitations nor partner_users has a metadata jsonb column to put
+   * them in, and this ticket adds no migration.
+   */
+  redeemPartnerInvitation: publicProcedure
+    .input(redeemPartnerInvitationInputSchema)
+    .output(redeemPartnerInvitationOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      const row = await loadPartnerInvitationByToken(ctx.sql, input.token);
+      const dead = partnerInvitationDeadState(row);
+      if (dead || !row) return { outcome: dead ?? "invalid" };
+      const invitation = row;
+
+      return withAudit(
+        "redeem_partner_invitation",
+        ctx,
+        input,
+        async (): Promise<RedeemPartnerInvitationOutput> => {
+          const auth = await createPartnerAuthUser(invitation.email, input.password);
+          if (auth.conflict) {
+            ctx.log.info(
+              { request_id: ctx.requestId, tenant_id: invitation.tenant_id },
+              "redeemPartnerInvitation: invitation email already has an auth identity",
+            );
+            return { outcome: "email_in_use" };
+          }
+          const userId = auth.userId;
+
+          const partnerUserId = await ctx.sql.begin(async (tx) => {
+            const claimed = await tx<{ id: string }[]>`
+              UPDATE public.partner_invitations
+              SET consumed_at = now(), consumed_by_user_id = ${userId}
+              WHERE id = ${invitation.id}
+                AND consumed_at IS NULL AND revoked_at IS NULL AND expires_at > now()
+              RETURNING id
+            `;
+            if (!claimed[0]) return null;
+            const inserted = await tx<{ id: string }[]>`
+              INSERT INTO public.partner_users
+                (tenant_id, partner_org_id, user_id, full_name, email, phone, role, active)
+              VALUES (${invitation.tenant_id}, ${invitation.partner_org_id}, ${userId},
+                      ${input.fullName.trim()}, ${invitation.email},
+                      ${input.phone?.trim() ? input.phone.trim() : null},
+                      ${invitation.intended_role}, true)
+              RETURNING id
+            `;
+            return inserted[0]?.id ?? null;
+          });
+
+          if (!partnerUserId) {
+            ctx.log.warn(
+              { request_id: ctx.requestId, tenant_id: invitation.tenant_id, auth_user_id: userId },
+              "redeemPartnerInvitation: lost the claim race; auth identity created but unused",
+            );
+            return { outcome: "already_used" };
+          }
+
+          return {
+            outcome: "accepted",
+            partnerUserId,
+            email: invitation.email,
+            orgName: invitation.org_name,
+          };
+        },
+        { tenantIdOverride: invitation.tenant_id },
       );
     }),
 

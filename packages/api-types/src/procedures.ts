@@ -3740,6 +3740,104 @@ export const endPartnerAssignmentOutputSchema = z.object({
 export type EndPartnerAssignmentInput = z.infer<typeof endPartnerAssignmentInputSchema>;
 export type EndPartnerAssignmentOutput = z.infer<typeof endPartnerAssignmentOutputSchema>;
 
+// ────── P0.2 — partner invitation acceptance (the redeem half) ──────
+//
+// The PARTNER-side counterpart to invitePartnerUser above: the invitee opens
+// <PARTNER_PORTAL_URL>/accept-invite/<rawToken>, the page previews the
+// invitation, and the form redeems it into a Supabase auth identity + a
+// partner_users row. Both procedures are PUBLIC (the invitee has no session
+// yet) — same tier as requestCandidateActivation / completeCandidateActivation.
+//
+// Dead-invitation states are MODELLED, not thrown: an expired or already-used
+// link is an ordinary thing for a human to be holding, and the page has calm
+// copy for each. Only genuinely exceptional failures throw. `invalid` is the
+// deliberately generic answer — a token we can't match tells the caller
+// nothing about which tenant (if any) it might have belonged to.
+
+/** Why an invitation can't be previewed/redeemed. `invalid` leaks nothing. */
+export const partnerInvitationDeadStateSchema = z.enum([
+  "invalid",
+  "expired",
+  "already_used",
+  "revoked",
+]);
+export type PartnerInvitationDeadState = z.infer<typeof partnerInvitationDeadStateSchema>;
+
+export const getPartnerInvitationPreviewInputSchema = z.object({
+  // base64url of 32 bytes ≈ 43 chars; the bound is generous, not a format check.
+  token: z.string().min(1).max(500),
+});
+export type GetPartnerInvitationPreviewInput = z.infer<
+  typeof getPartnerInvitationPreviewInputSchema
+>;
+
+/**
+ * A live invitation's read-only header: who invited you, into which org, as
+ * what, and until when. `email` is echoed because the accept form shows it as
+ * a FIXED field — the invitee cannot choose the address the account is minted
+ * against. There is no `fullName`: partner_invitations doesn't store one (see
+ * partnerOrgInvitationRowSchema), so the form's name field starts empty.
+ */
+export const getPartnerInvitationPreviewOutputSchema = z.union([
+  z.object({
+    state: z.literal("valid"),
+    orgName: z.string(),
+    tenantDisplayName: z.string(),
+    email: z.string(),
+    intendedRole: partnerUserRoleSchema,
+    expiresAt: z.string(),
+  }),
+  z.object({ state: partnerInvitationDeadStateSchema }),
+]);
+export type GetPartnerInvitationPreviewOutput = z.infer<
+  typeof getPartnerInvitationPreviewOutputSchema
+>;
+
+/**
+ * All three attestations are z.literal(true): the wireflows §3.1 screen makes
+ * them hard requirements, so an unticked box is a SCHEMA violation (BAD_REQUEST
+ * with a zodError) rather than something the handler has to re-check. They are
+ * persisted through the api_audit_logs input snapshot — neither
+ * partner_invitations nor partner_users has a metadata jsonb column.
+ */
+export const redeemPartnerInvitationInputSchema = z.object({
+  token: z.string().min(1).max(500),
+  // min 8 mirrors completeCandidateActivation (Supabase's own floor is 6).
+  password: z.string().min(8).max(200),
+  fullName: z.string().trim().min(1).max(200),
+  phone: z.string().trim().max(40).optional(),
+  attestations: z.object({
+    /** "I have read and agree to the Partner Terms of Use" */
+    terms: z.literal(true),
+    /** "I confirm I am authorised to accept on behalf of <org>" */
+    authority: z.literal(true),
+    /** "I understand all candidate data must have DPDPA-compliant consent" */
+    dpdpaConsent: z.literal(true),
+  }),
+});
+export type RedeemPartnerInvitationInput = z.infer<typeof redeemPartnerInvitationInputSchema>;
+
+/**
+ * `accepted` carries what the client needs to sign straight in (the email is
+ * the invitation's, not something the form supplied). The dead states are the
+ * preview's four plus `email_in_use` — that address already has an auth
+ * identity, and we will NOT silently take it over by resetting its password
+ * (the difference from completeCandidateActivation, which legitimately reuses
+ * a candidate's existing identity).
+ */
+export const redeemPartnerInvitationOutputSchema = z.union([
+  z.object({
+    outcome: z.literal("accepted"),
+    partnerUserId: z.string().uuid(),
+    email: z.string(),
+    orgName: z.string(),
+  }),
+  z.object({
+    outcome: z.enum(["invalid", "expired", "already_used", "revoked", "email_in_use"]),
+  }),
+]);
+export type RedeemPartnerInvitationOutput = z.infer<typeof redeemPartnerInvitationOutputSchema>;
+
 // ═══════════════════ CAND-01 — candidate accounts ═══════════════════
 
 /**
