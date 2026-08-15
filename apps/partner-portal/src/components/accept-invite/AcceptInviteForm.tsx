@@ -130,9 +130,7 @@ export function AcceptInviteForm({
       setFormState({
         kind: "error",
         msg:
-          err instanceof Error
-            ? err.message
-            : "We couldn't set up your account. Please try again.",
+          err instanceof Error ? err.message : "We couldn't set up your account. Please try again.",
       });
       return;
     }

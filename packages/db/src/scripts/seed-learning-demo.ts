@@ -491,7 +491,8 @@ async function main(): Promise<void> {
       const caseId = mkId(KIND.onbCase, caseN);
       // Stagger starts so the list has pre-boarding, day-zero and in-progress.
       const startOffset = [10, -3, -20, 25, -12, 5, 18, -30][caseN % 8] ?? 10;
-      const status = startOffset > 0 ? "pre_boarding" : startOffset > -14 ? "day_zero" : "in_progress";
+      const status =
+        startOffset > 0 ? "pre_boarding" : startOffset > -14 ? "day_zero" : "in_progress";
       const start = new Date(Date.now() + startOffset * DAY_MS);
       const startIso = start.toISOString().slice(0, 10);
       const probationEnds = new Date(start.getTime() + PROBATION_DAYS * DAY_MS)

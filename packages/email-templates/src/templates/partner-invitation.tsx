@@ -83,9 +83,8 @@ export function PartnerInvitation({
                 slots?.expiryNote,
                 tok,
                 <>
-                  This link is private to you, can be used once, and expires on{" "}
-                  {expiresAtFormatted}. If it expires, ask your {companyName} contact to send a new
-                  one.
+                  This link is private to you, can be used once, and expires on {expiresAtFormatted}
+                  . If it expires, ask your {companyName} contact to send a new one.
                 </>,
               )}
             </Text>

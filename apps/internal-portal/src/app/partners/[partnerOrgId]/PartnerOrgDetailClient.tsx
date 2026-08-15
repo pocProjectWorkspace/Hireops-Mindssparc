@@ -742,9 +742,7 @@ function DedupAttemptsSection({
                 <Tr key={a.attemptId}>
                   <Td className="font-medium text-neutral-900">{a.candidateName ?? "—"}</Td>
                   <Td label="Outcome">
-                    <Badge tone={dedupTone(a.decision)}>
-                      {DEDUP_DECISION_LABELS[a.decision]}
-                    </Badge>
+                    <Badge tone={dedupTone(a.decision)}>{DEDUP_DECISION_LABELS[a.decision]}</Badge>
                   </Td>
                   <Td label="Reason">{a.decisionReason ? humanize(a.decisionReason) : "—"}</Td>
                   <Td label="Submitted by">{a.attemptedByName}</Td>

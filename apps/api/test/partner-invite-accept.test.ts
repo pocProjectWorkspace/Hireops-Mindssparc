@@ -408,10 +408,9 @@ describe("P0.2 partner invitation acceptance", () => {
   });
 
   it("Test 5: an expired invitation is `expired` in both preview and redeem", async () => {
-    assert.deepEqual(
-      await makeAnonCaller().getPartnerInvitationPreview({ token: EXPIRED_TOKEN }),
-      { state: "expired" },
-    );
+    assert.deepEqual(await makeAnonCaller().getPartnerInvitationPreview({ token: EXPIRED_TOKEN }), {
+      state: "expired",
+    });
     const out = await makeAnonCaller().redeemPartnerInvitation({
       token: EXPIRED_TOKEN,
       password: REDEEM_PASSWORD,
@@ -423,10 +422,9 @@ describe("P0.2 partner invitation acceptance", () => {
   });
 
   it("Test 6: a revoked invitation is `revoked` in both preview and redeem", async () => {
-    assert.deepEqual(
-      await makeAnonCaller().getPartnerInvitationPreview({ token: REVOKED_TOKEN }),
-      { state: "revoked" },
-    );
+    assert.deepEqual(await makeAnonCaller().getPartnerInvitationPreview({ token: REVOKED_TOKEN }), {
+      state: "revoked",
+    });
     const out = await makeAnonCaller().redeemPartnerInvitation({
       token: REVOKED_TOKEN,
       password: REDEEM_PASSWORD,

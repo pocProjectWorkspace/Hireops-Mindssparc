@@ -344,7 +344,12 @@ describe("P0.1A internal partner administration", () => {
 
     // The invitation email is enqueued in the same tx, addressed to the invitee.
     const [mail] = await poolSql<
-      { template_key: string; recipient_type: string; recipient_email: string; template_data: unknown }[]
+      {
+        template_key: string;
+        recipient_type: string;
+        recipient_email: string;
+        template_data: unknown;
+      }[]
     >`
       SELECT template_key, recipient_type, recipient_email, template_data
       FROM public.notification_outbox

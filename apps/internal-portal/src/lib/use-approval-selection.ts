@@ -25,9 +25,7 @@ import { useSearchParams } from "next/navigation";
  */
 export function useApprovalSelection() {
   const searchParams = useSearchParams();
-  const [selectedId, setSelectedId] = useState<string | null>(() =>
-    searchParams.get("approvalId"),
-  );
+  const [selectedId, setSelectedId] = useState<string | null>(() => searchParams.get("approvalId"));
 
   const write = useCallback((id: string | null) => {
     setSelectedId(id);

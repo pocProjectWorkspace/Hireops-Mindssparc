@@ -24,7 +24,12 @@ export function BrandGlyph({ size = 28, className }: { size?: number; className?
       className={className}
     >
       <circle cx="10" cy="10" r="7.2" stroke="currentColor" strokeWidth="1.8" />
-      <path d="M15.2 15.2 20.5 20.5" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" />
+      <path
+        d="M15.2 15.2 20.5 20.5"
+        stroke="currentColor"
+        strokeWidth="2.2"
+        strokeLinecap="round"
+      />
       <circle cx="6.75" cy="8.7" r="1.15" fill="currentColor" />
       <circle cx="13.25" cy="8.7" r="1.15" fill="currentColor" />
       <path d="M4.6 12.75a2.15 2.15 0 0 1 4.3 0z" fill="currentColor" />
