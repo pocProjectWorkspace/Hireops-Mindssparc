@@ -223,22 +223,105 @@ const SOURCES = [
 ];
 
 const FIRST_NAMES = [
-  "Ananya", "Rohan", "Priya", "Vikram", "Meera", "Arjun", "Kavya", "Siddharth",
-  "Divya", "Karthik", "Neha", "Aditya", "Shreya", "Rahul", "Ishita", "Nikhil",
-  "Pooja", "Varun", "Sneha", "Aakash", "Tanvi", "Manish", "Ritika", "Gaurav",
-  "Lakshmi", "Sanjay", "Aisha", "Harsh", "Nandini", "Rajat", "Swati", "Deepak",
-  "Anjali", "Vivek", "Preeti", "Sameer", "Ruchi", "Abhishek", "Madhuri", "Kunal",
-  "Sunita", "Naveen", "Chitra", "Amit", "Rekha", "Prakash", "Vidya", "Sunil",
+  "Ananya",
+  "Rohan",
+  "Priya",
+  "Vikram",
+  "Meera",
+  "Arjun",
+  "Kavya",
+  "Siddharth",
+  "Divya",
+  "Karthik",
+  "Neha",
+  "Aditya",
+  "Shreya",
+  "Rahul",
+  "Ishita",
+  "Nikhil",
+  "Pooja",
+  "Varun",
+  "Sneha",
+  "Aakash",
+  "Tanvi",
+  "Manish",
+  "Ritika",
+  "Gaurav",
+  "Lakshmi",
+  "Sanjay",
+  "Aisha",
+  "Harsh",
+  "Nandini",
+  "Rajat",
+  "Swati",
+  "Deepak",
+  "Anjali",
+  "Vivek",
+  "Preeti",
+  "Sameer",
+  "Ruchi",
+  "Abhishek",
+  "Madhuri",
+  "Kunal",
+  "Sunita",
+  "Naveen",
+  "Chitra",
+  "Amit",
+  "Rekha",
+  "Prakash",
+  "Vidya",
+  "Sunil",
 ];
 
 const LAST_NAMES = [
-  "Sharma", "Iyer", "Nair", "Reddy", "Menon", "Kulkarni", "Desai", "Rao",
-  "Patel", "Krishnan", "Banerjee", "Chatterjee", "Gupta", "Malhotra", "Joshi",
-  "Bhat", "Pillai", "Saxena", "Verma", "Kapoor", "Sinha", "Mehta", "Chopra",
-  "Agarwal", "Subramanian", "Naidu", "Dutta", "Bose", "Ghosh", "Trivedi",
-  "Shetty", "Prabhu", "Hegde", "Bhattacharya", "Mukherjee", "Rangan", "Varma",
-  "Chandra", "Kaur", "Sethi", "Dubey", "Rastogi", "Anand", "Bajaj", "Tiwari",
-  "Mishra", "Pandey", "Shukla",
+  "Sharma",
+  "Iyer",
+  "Nair",
+  "Reddy",
+  "Menon",
+  "Kulkarni",
+  "Desai",
+  "Rao",
+  "Patel",
+  "Krishnan",
+  "Banerjee",
+  "Chatterjee",
+  "Gupta",
+  "Malhotra",
+  "Joshi",
+  "Bhat",
+  "Pillai",
+  "Saxena",
+  "Verma",
+  "Kapoor",
+  "Sinha",
+  "Mehta",
+  "Chopra",
+  "Agarwal",
+  "Subramanian",
+  "Naidu",
+  "Dutta",
+  "Bose",
+  "Ghosh",
+  "Trivedi",
+  "Shetty",
+  "Prabhu",
+  "Hegde",
+  "Bhattacharya",
+  "Mukherjee",
+  "Rangan",
+  "Varma",
+  "Chandra",
+  "Kaur",
+  "Sethi",
+  "Dubey",
+  "Rastogi",
+  "Anand",
+  "Bajaj",
+  "Tiwari",
+  "Mishra",
+  "Pandey",
+  "Shukla",
 ];
 
 interface ReqSpec {
@@ -698,9 +781,7 @@ async function main(): Promise<void> {
           const steps = chainFor(stage, jitter);
           const span = pick(steps, steps.length - 1).dayOffset;
           const recency =
-            stage === "ai_screening"
-              ? pick(AI_SCREENING_RECENCY_DAYS, i)
-              : pick(RECENCY_DAYS, i);
+            stage === "ai_screening" ? pick(AI_SCREENING_RECENCY_DAYS, i) : pick(RECENCY_DAYS, i);
           const createdAt = new Date(now - (span + recency) * DAY_MS);
           const at = (d: number) => new Date(createdAt.getTime() + d * DAY_MS);
           const stageEnteredAt = at(span);
@@ -841,7 +922,8 @@ async function main(): Promise<void> {
               const rec = pick(RECOMMENDATIONS[round] ?? ["yes"], i + p);
               // Scorecard values track the recommendation so mean and pass-rate
               // tell a consistent story.
-              const bandBase = rec === "strong_yes" ? 5 : rec === "yes" ? 4 : rec === "hold" ? 3 : 2;
+              const bandBase =
+                rec === "strong_yes" ? 5 : rec === "yes" ? 4 : rec === "hold" ? 3 : 2;
               const scorecard: Record<string, number> = {};
               SCORECARD_KEYS.forEach((key, ki) => {
                 scorecard[key] = Math.max(1, Math.min(5, bandBase - ((i + ki + p) % 2)));
@@ -906,7 +988,19 @@ async function deleteSeededRows(
   const pfx = `${ID_PREFIX}-%`;
   await sql`DELETE FROM public.interview_feedback WHERE tenant_id = ${tid} AND id::text LIKE ${pfx}`;
   await sql`DELETE FROM public.interview_panelists WHERE tenant_id = ${tid} AND id::text LIKE ${pfx}`;
-  await sql`DELETE FROM public.interviews WHERE tenant_id = ${tid} AND id::text LIKE ${pfx}`;
+  // Scoped by the APPLICATION, not by this seed's id prefix. An interview
+  // booked through the app carries a random uuid, so a prefix-only delete left
+  // it behind and the seed's own insert for that (application, round) then hit
+  // uniq_interviews_application_round_active and aborted the run half-applied.
+  // This seed owns these applications outright, so every interview hanging off
+  // one is ours to clear — that is what makes a re-run actually idempotent
+  // after a tester has scheduled or rescheduled a round on the cohort.
+  // Panelists and feedback cascade from the interview row.
+  await sql`
+    DELETE FROM public.interviews
+     WHERE tenant_id = ${tid}
+       AND (id::text LIKE ${pfx} OR application_id::text LIKE ${pfx})
+  `;
   await sql`DELETE FROM public.offers WHERE tenant_id = ${tid} AND id::text LIKE ${pfx}`;
   await sql`DELETE FROM public.application_state_transitions WHERE tenant_id = ${tid} AND id::text LIKE ${pfx}`;
   if (!opts.keepIdentities) {
@@ -926,7 +1020,9 @@ async function runUndo(sql: SqlClient, tid: string): Promise<void> {
     DELETE FROM public.market_benchmarks
      WHERE tenant_id = ${tid} AND role_title IN ${sql(BENCHMARK_TITLES)}
   `;
-  console.log(`  ✓ removed every 0000ad00-* row + the ${BENCHMARK_TITLES.length} seeded benchmarks`);
+  console.log(
+    `  ✓ removed every 0000ad00-* row + the ${BENCHMARK_TITLES.length} seeded benchmarks`,
+  );
   console.log(
     "  ! NOT reverted (pre-existing rows this seed edited): requisition hiring-manager /" +
       " openings / status, the position comp band + title fix, the business-unit name fix," +
