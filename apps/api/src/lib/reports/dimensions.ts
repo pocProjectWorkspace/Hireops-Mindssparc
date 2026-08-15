@@ -115,3 +115,54 @@ export function buildApplicationScope(tenantId: string, filters: ReportFilters):
 
   return { join, where: dsql.join(clauses, dsql` AND `) };
 }
+
+/**
+ * The REQUISITION axis of the same filter set (R0.2).
+ *
+ * Some reports count requisitions, not applications — #1 requisition
+ * aging, and the `reqsOwned` column of #5 recruiter productivity. Those
+ * reports must not re-derive "requisitions in period P, in BU B" by hand,
+ * so it lives here beside the application scope.
+ *
+ * The join is UNCONDITIONAL: business unit hangs off `positions`, and a
+ * requisition report needs the position for its title anyway, so `p` is
+ * always in scope for callers (`p.title`, `p.business_unit_id`).
+ *
+ * Semantics — the asymmetry against `buildApplicationScope` is the whole
+ * reason this is a separate function, and reports MUST surface it to the
+ * reader:
+ *   - period bounds `requisitions.created_at` ("requisitions raised in
+ *     the window"), NOT applications.created_at.
+ *   - businessUnitId: equality on `p.business_unit_id`.
+ *   - recruiterMembershipId: `r.primary_recruiter_id` — the req's single
+ *     owner, NOT the application's assigned recruiter.
+ *   - requisitionId / source / stage: application-axis dimensions with no
+ *     requisition meaning; deliberately IGNORED rather than guessed at.
+ */
+export interface RequisitionScope {
+  /** Always the positions join — `p` is guaranteed in scope. */
+  join: SQL;
+  /** Full WHERE expression, tenant predicate first. */
+  where: SQL;
+}
+
+export function buildRequisitionScope(tenantId: string, filters: ReportFilters): RequisitionScope {
+  const clauses: SQL[] = [dsql`r.tenant_id = ${tenantId}::uuid`];
+
+  if (filters.from) clauses.push(dsql`r.created_at >= ${filters.from}::timestamptz`);
+  if (filters.to) clauses.push(dsql`r.created_at <= ${filters.to}::timestamptz`);
+  if (filters.businessUnitId) {
+    clauses.push(dsql`p.business_unit_id = ${filters.businessUnitId}::uuid`);
+  }
+  if (filters.recruiterMembershipId) {
+    clauses.push(dsql`r.primary_recruiter_id = ${filters.recruiterMembershipId}::uuid`);
+  }
+
+  return {
+    join: dsql`
+      JOIN public.positions p
+        ON p.tenant_id = r.tenant_id AND p.id = r.position_id
+    `,
+    where: dsql.join(clauses, dsql` AND `),
+  };
+}

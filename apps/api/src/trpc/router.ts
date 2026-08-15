@@ -127,6 +127,9 @@ import { computeGovernanceRiskFlags, computeExecutiveAudit } from "../lib/govern
 // the older procedures' local `funnelByStage` maps can't shadow it.
 import * as measures from "../lib/reports/measures";
 import type { ReportFilters } from "../lib/reports/dimensions";
+// R0.2 catalog reports — the two genuinely-new P0 reports behind /reports.
+import { getRequisitionAgingReport } from "../lib/reports/requisition-aging";
+import { getRecruiterProductivityReport } from "../lib/reports/recruiter-productivity";
 import {
   getIrisAction,
   listIrisActions,
@@ -369,6 +372,11 @@ import {
   type RequisitionApprovalBiasFlag,
   getRecruitmentReportInputSchema,
   getRecruitmentReportOutputSchema,
+  // R0.2 — /reports catalog report contracts (packages/api-types/src/reports.ts).
+  getRequisitionAgingReportInputSchema,
+  getRequisitionAgingReportOutputSchema,
+  getRecruiterProductivityReportInputSchema,
+  getRecruiterProductivityReportOutputSchema,
   getHrMetricsOutputSchema,
   listJdLibraryInputSchema,
   listJdLibraryOutputSchema,
@@ -1393,6 +1401,13 @@ const REQUISITION_APPROVAL_READ_ROLES = new Set(["admin", "hr_head"]);
 // HR-leadership view: hr_head (the people-metrics owner) + admin. recruiter /
 // hiring_manager / panel_member get FORBIDDEN. RLS still scopes every read.
 const HR_METRICS_READ_ROLES = new Set(["admin", "hr_head"]);
+// R0.2 — the /reports catalog. ONE role set for the whole catalog today:
+// admin + hr_head + hr_ops, the three personas the reporting build plan
+// puts in front of it. The plan's PER-REPORT gating (a partner scorecard
+// an hr_ops sees but a hiring_manager doesn't, etc.) lands with the
+// re-homed catalog entries in a later ticket — until then a catalog
+// report is readable by all three or by none.
+const REPORTS_READ_ROLES = new Set(["admin", "hr_head", "hr_ops"]);
 // HRHEAD-03 — the Governance + Executive Audit surfaces (policy blocks, risk
 // flags, compliance score). hr_head (the governance owner) + admin. The
 // "changes require admin approval" copy on the settings blocks is COPY ONLY
@@ -10470,6 +10485,105 @@ export const appRouter = router({
           hired: totals.hired,
           rejected_or_withdrawn: totals.rejected_or_withdrawn,
         },
+      };
+    }),
+
+  // ────────── getRequisitionAgingReport (catalog #1 · R0.2) ──────────
+  //
+  // "Which requisitions are open, and how long have they been open?" —
+  // the first of the two genuinely-new P0 reports on the /reports catalog
+  // (build plan §2.2 rates the rest of the catalog as re-homing work).
+  //
+  // All the SQL lives in lib/reports/requisition-aging.ts; this procedure
+  // is the gate + the display-name join. daysOpen stops at the FIRST
+  // transition into the current terminal status (there is no closed_at
+  // column — build plan §2.3), and keeps running to now while the req is
+  // live. Filters: period (on requisitions.created_at) · BU · primary
+  // recruiter; the application-axis filters are ignored, documented on
+  // buildRequisitionScope.
+  //
+  // Names come from resolveMembershipNames (ctx.sql, service-role):
+  // public.users is self-only under RLS, so resolving them inside the
+  // tenant-bound query would return the caller's own name and nulls for
+  // every other recruiter.
+  getRequisitionAgingReport: protectedProcedure
+    .input(getRequisitionAgingReportInputSchema)
+    .output(getRequisitionAgingReportOutputSchema)
+    .query(async ({ ctx, input }) => {
+      requireAnyRole(
+        ctx,
+        REPORTS_READ_ROLES,
+        "Reports access requires the admin, hr_head or hr_ops role",
+      );
+      const db = requireDb(ctx);
+      if (!ctx.tenantId) {
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: "protected procedure missing tenantId",
+        });
+      }
+      const tenantId = ctx.tenantId;
+      const filters: ReportFilters = input;
+
+      const report = await getRequisitionAgingReport(db, tenantId, filters);
+      const names = await resolveMembershipNames(
+        ctx,
+        tenantId,
+        report.rows.map((r) => r.recruiterMembershipId),
+      );
+
+      return {
+        rows: report.rows.map((r) => ({
+          ...r,
+          recruiterName: names.get(r.recruiterMembershipId) ?? null,
+        })),
+        byStatus: report.byStatus,
+        truncated: report.truncated,
+      };
+    }),
+
+  // ──────── getRecruiterProductivityReport (catalog #5 · R0.2) ────────
+  //
+  // Per-recruiter output: reqs owned, applications, interviews booked,
+  // offers extended, hires. The second genuinely-new P0 report.
+  //
+  // Attribution is two-keyed on purpose and is documented on the measure:
+  // reqsOwned follows requisitions.primary_recruiter_id over the
+  // REQUISITION-created window, while the four activity counts follow
+  // applications.assigned_recruiter_membership_id over the
+  // APPLICATION-created window — so a source filter narrows submissions
+  // without pretending a recruiter owns fewer requisitions.
+  getRecruiterProductivityReport: protectedProcedure
+    .input(getRecruiterProductivityReportInputSchema)
+    .output(getRecruiterProductivityReportOutputSchema)
+    .query(async ({ ctx, input }) => {
+      requireAnyRole(
+        ctx,
+        REPORTS_READ_ROLES,
+        "Reports access requires the admin, hr_head or hr_ops role",
+      );
+      const db = requireDb(ctx);
+      if (!ctx.tenantId) {
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: "protected procedure missing tenantId",
+        });
+      }
+      const tenantId = ctx.tenantId;
+      const filters: ReportFilters = input;
+
+      const report = await getRecruiterProductivityReport(db, tenantId, filters);
+      const names = await resolveMembershipNames(
+        ctx,
+        tenantId,
+        report.rows.map((r) => r.recruiterMembershipId),
+      );
+
+      return {
+        rows: report.rows.map((r) => ({
+          ...r,
+          recruiterName: names.get(r.recruiterMembershipId) ?? null,
+        })),
       };
     }),
 

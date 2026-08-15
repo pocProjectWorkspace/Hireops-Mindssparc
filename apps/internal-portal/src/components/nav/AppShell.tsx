@@ -91,6 +91,9 @@ export type PortalNavKey =
   | "panel-setup"
   | "insights"
   | "metrics"
+  // R0.2 — the /reports catalog (distinct from "reports", the admin-only
+  // /admin/reports surface that re-homes into it later).
+  | "reports-catalog"
   | "governance"
   | "exec-audit"
   | "interviews"
@@ -301,6 +304,17 @@ export const MAIN_NAV: NavItem[] = [
     href: "/metrics",
     icon: <IconMetrics />,
     roles: ["hr_head", "admin"],
+  },
+  {
+    // R0.2: the reporting catalog — one filter bar over every report.
+    // admin + hr_head + hr_ops, matching the REPORTS_READ_ROLES API gate.
+    // Sits with the other analytics entries in the main nav (not Admin) so
+    // hr_head and hr_ops, who have no Admin group, can reach it.
+    key: "reports-catalog",
+    label: "Reports",
+    href: "/reports",
+    icon: <IconReports />,
+    roles: ["hr_head", "hr_ops", "admin"],
   },
   {
     // HRHEAD-03: Policy & Governance — the settings blocks (screening privacy,
@@ -643,7 +657,14 @@ export const MAIN_NAV_SECTIONS: NavSection[] = [
   },
   {
     heading: "HR leadership",
-    keys: ["metrics", "governance", "exec-audit", "market-intelligence", "feasibility"],
+    keys: [
+      "metrics",
+      "reports-catalog",
+      "governance",
+      "exec-audit",
+      "market-intelligence",
+      "feasibility",
+    ],
   },
   {
     heading: "Interview panel",
