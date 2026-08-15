@@ -4,7 +4,9 @@ import type {
   PartnerSubmissionRow,
   PartnerGetDashboardStatsOutput,
 } from "@hireops/api-types";
-import { Card, Badge, StatTile, EmptyState, type BadgeTone } from "@/components/ui";
+import { Card, Badge, StatTile, EmptyState } from "@/components/ui";
+import { AssignedReqCard } from "@/components/reqs/AssignedReqCard";
+import { fmtDate } from "@/components/reqs/req-format";
 
 /**
  * PartnerDashboard — the built surface of the PARTNER-01 shell. Presentational
@@ -12,63 +14,10 @@ import { Card, Badge, StatTile, EmptyState, type BadgeTone } from "@/components/
  * KPI row and req cards stack to a single column on a phone (partner-wireflows
  * §6.2). Depth that isn't built (submit / messages / commercials) is voiced as
  * honest "coming soon", never faked.
+ *
+ * The req card itself now lives in components/reqs — /reqs renders the same
+ * one (P1.1-UI).
  */
-
-function fmtDate(iso: string | null): string {
-  if (!iso) return "—";
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return "—";
-  return d.toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" });
-}
-
-const REQ_STATUS_TONE: Record<string, BadgeTone> = {
-  posted: "success",
-  approved: "info",
-  on_hold: "warning",
-  filled: "neutral",
-  closed: "neutral",
-  cancelled: "error",
-  draft: "neutral",
-  pending_approval: "info",
-};
-
-function AssignedReqCard({ req }: { req: PartnerAssignedRequisitionRow }) {
-  const tone = REQ_STATUS_TONE[req.requisitionStatus] ?? "neutral";
-  return (
-    <Card className="flex flex-col gap-3">
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <h3 className="truncate text-base font-semibold tracking-tight text-neutral-900">
-            {req.title}
-          </h3>
-          <p className="mt-0.5 text-sm text-neutral-500">
-            {req.location ?? "Location TBC"} ·{" "}
-            {req.numberOfOpenings === 1 ? "1 position" : `${req.numberOfOpenings} positions`}
-          </p>
-        </div>
-        <Badge tone={tone} className="shrink-0 capitalize">
-          {req.requisitionStatus.replace(/_/g, " ")}
-        </Badge>
-      </div>
-      <dl className="grid grid-cols-2 gap-x-4 gap-y-1 text-sm">
-        <dt className="text-neutral-500">Opened</dt>
-        <dd className="text-right text-neutral-800 tabular-nums">{fmtDate(req.postedAt)}</dd>
-        <dt className="text-neutral-500">Target start</dt>
-        <dd className="text-right text-neutral-800 tabular-nums">{fmtDate(req.targetStartDate)}</dd>
-        <dt className="text-neutral-500">Assigned to you</dt>
-        <dd className="text-right text-neutral-800 tabular-nums">{fmtDate(req.assignedAt)}</dd>
-      </dl>
-      <div className="flex items-center justify-end border-t border-neutral-100 pt-3">
-        <a
-          href={`/submit?req=${req.requisitionId}`}
-          className="inline-flex items-center gap-1.5 rounded-button bg-brand-600 px-3 py-1.5 text-sm font-medium text-white transition-colors hover:bg-brand-700"
-        >
-          Submit candidate
-        </a>
-      </div>
-    </Card>
-  );
-}
 
 function ComingSoonPanel({ title, blurb }: { title: string; blurb: string }) {
   return (

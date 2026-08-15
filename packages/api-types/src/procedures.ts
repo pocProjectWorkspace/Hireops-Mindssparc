@@ -3578,6 +3578,72 @@ export const partnerListMySubmissionsOutputSchema = z.object({
 export type PartnerListMySubmissionsInput = z.infer<typeof partnerListMySubmissionsInputSchema>;
 export type PartnerListMySubmissionsOutput = z.infer<typeof partnerListMySubmissionsOutputSchema>;
 
+// ────── P1.1 — partner requisition detail (partner-wireflows §3.4) ──────
+
+/**
+ * One knockout question as a PARTNER sees it. `requirement` is the threshold
+ * rendered server-side as a phrase ("At least 4", "One of: IN, PH") rather
+ * than the raw threshold_value jsonb — the jsonb also carries `field_path`,
+ * an internal evaluator detail the partner has no business seeing. All
+ * knockouts are visible to the partner by design: they need them to filter
+ * candidates before submitting (partner-wireflows §3.4 permission notes).
+ */
+export const partnerRequisitionKnockoutSchema = z.object({
+  id: z.string().uuid(),
+  questionText: z.string(),
+  type: z.enum(["boolean", "numeric_min", "numeric_max", "enum"]),
+  requirement: z.string().nullable(),
+  orderIndex: z.number().int(),
+});
+export type PartnerRequisitionKnockout = z.infer<typeof partnerRequisitionKnockoutSchema>;
+
+export const partnerGetRequisitionDetailInputSchema = z.object({
+  requisitionId: z.string().uuid(),
+});
+export type PartnerGetRequisitionDetailInput = z.infer<
+  typeof partnerGetRequisitionDetailInputSchema
+>;
+
+/**
+ * The full req a partner is allowed to see: the JD locked onto the
+ * requisition (requisitions.jd_version_id), the position's comp band, the
+ * logistics, and every knockout question. `yourSubmissionCount` is the
+ * CALLING org's own applications on this req — never the total.
+ *
+ * Deliberately ABSENT (requirements.md §6.3 "workflows partners must NOT
+ * have"): hiring-manager / recruiter / panel identities, any other partner's
+ * existence or counts, the requisition's total application count, and any
+ * internal scoring or feedback. Adding any of those to this schema is a
+ * privacy regression — partner-reqs.test.ts asserts their absence.
+ *
+ * Comp band comes through as the raw numeric strings postgres returns, with
+ * the currency, so the surface can format without a lossy parse; null when
+ * the position carries no band (the honest "not disclosed" state).
+ */
+export const partnerGetRequisitionDetailOutputSchema = z.object({
+  requisitionId: z.string().uuid(),
+  status: z.string(),
+  numberOfOpenings: z.number().int(),
+  postedAt: z.string().nullable(),
+  targetStartDate: z.string().nullable(),
+  assignedAt: z.string(),
+  title: z.string(),
+  level: z.string().nullable(),
+  jobFunction: z.string().nullable(),
+  locationType: z.string(),
+  primaryLocation: z.string().nullable(),
+  compBandMin: z.string().nullable(),
+  compBandMax: z.string().nullable(),
+  compCurrency: z.string().nullable(),
+  jdText: z.string(),
+  jdSummary: z.string().nullable(),
+  knockouts: z.array(partnerRequisitionKnockoutSchema),
+  yourSubmissionCount: z.number().int().nonnegative(),
+});
+export type PartnerGetRequisitionDetailOutput = z.infer<
+  typeof partnerGetRequisitionDetailOutputSchema
+>;
+
 // ────── P0.1A — internal partner administration (admin / hr_ops) ──────
 //
 // The INTERNAL-STAFF side of the partner lifecycle: create partner orgs,

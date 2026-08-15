@@ -484,6 +484,10 @@ import {
   partnerListMySubmissionsOutputSchema,
   partnerSubmitCandidateInputSchema,
   partnerSubmitCandidateOutputSchema,
+  // P1.1 — partner requisition detail.
+  partnerGetRequisitionDetailInputSchema,
+  partnerGetRequisitionDetailOutputSchema,
+  type PartnerRequisitionKnockout,
   // P0.1A — internal partner administration (admin / hr_ops).
   listPartnerOrgsOutputSchema,
   getPartnerOrgInputSchema,
@@ -14738,6 +14742,151 @@ export const appRouter = router({
     }),
 
   /**
+   * partnerGetRequisitionDetail — the full requisition a partner needs in
+   * order to source against it (partner-wireflows §3.4): the JD locked onto
+   * the req, the comp band, logistics, and every knockout question.
+   *
+   * Authorization is the SAME rule partnerSubmitCandidate uses — an ACTIVE
+   * partner_assignments row for (tenant, this org, this req). Assignment IS
+   * the authorization. A req that exists but isn't assigned, a req in another
+   * tenant, and a req that doesn't exist all raise the identical FORBIDDEN:
+   * the partner must not be able to probe which reqs Kyndryl has open.
+   *
+   * What this deliberately does NOT return (requirements.md §6.3, "workflows
+   * partners must NOT have"): the hiring manager's or recruiter's identity,
+   * any other partner's existence or submission counts, and the requisition's
+   * TOTAL application count. `yourSubmissionCount` is this org's own
+   * applications only. partner-reqs.test.ts asserts those keys stay absent.
+   */
+  partnerGetRequisitionDetail: partnerProcedure
+    .input(partnerGetRequisitionDetailInputSchema)
+    .output(partnerGetRequisitionDetailOutputSchema)
+    .query(async ({ ctx, input }) => {
+      const db = ctx.db;
+      if (!db) {
+        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "partner ctx.db missing" });
+      }
+      const { tenantId, partnerOrgId } = ctx.partner;
+
+      const [row] = await db
+        .select({
+          requisitionId: requisitions.id,
+          status: requisitions.status,
+          numberOfOpenings: requisitions.numberOfOpenings,
+          postedAt: requisitions.postedAt,
+          targetStartDate: requisitions.targetStartDate,
+          assignedAt: partnerAssignments.assignedAt,
+          title: positions.title,
+          level: positions.level,
+          jobFunction: positions.jobFunction,
+          locationType: positions.locationType,
+          primaryLocation: positions.primaryLocation,
+          compBandMin: positions.compBandMin,
+          compBandMax: positions.compBandMax,
+          compCurrency: positions.compCurrency,
+          jdText: jdVersions.jdText,
+          jdSummary: jdVersions.summary,
+        })
+        .from(partnerAssignments)
+        .innerJoin(
+          requisitions,
+          and(
+            eq(requisitions.tenantId, partnerAssignments.tenantId),
+            eq(requisitions.id, partnerAssignments.requisitionId),
+          ),
+        )
+        .innerJoin(
+          positions,
+          and(
+            eq(positions.tenantId, requisitions.tenantId),
+            eq(positions.id, requisitions.positionId),
+          ),
+        )
+        // The JD the requisition was created against — requisitions pin
+        // jd_version_id, so this is the exact text approved for this req, not
+        // whatever the position's latest draft happens to be.
+        .innerJoin(
+          jdVersions,
+          and(
+            eq(jdVersions.tenantId, requisitions.tenantId),
+            eq(jdVersions.id, requisitions.jdVersionId),
+          ),
+        )
+        .where(
+          and(
+            eq(partnerAssignments.tenantId, tenantId),
+            eq(partnerAssignments.partnerOrgId, partnerOrgId),
+            eq(partnerAssignments.requisitionId, input.requisitionId),
+            eq(partnerAssignments.status, "active"),
+          ),
+        )
+        .limit(1);
+      if (!row) {
+        // Indistinguishable from "no such requisition" — on purpose.
+        throw new TRPCError({ code: "FORBIDDEN", message: "requisition_not_assigned" });
+      }
+
+      const knockoutRows = await db
+        .select({
+          id: requisitionKnockouts.id,
+          questionText: requisitionKnockouts.questionText,
+          type: requisitionKnockouts.type,
+          thresholdValue: requisitionKnockouts.thresholdValue,
+          orderIndex: requisitionKnockouts.orderIndex,
+        })
+        .from(requisitionKnockouts)
+        .where(
+          and(
+            eq(requisitionKnockouts.tenantId, tenantId),
+            eq(requisitionKnockouts.requisitionId, row.requisitionId),
+          ),
+        )
+        .orderBy(requisitionKnockouts.orderIndex);
+
+      // The caller's OWN submissions on this req. source_partner_id is the
+      // attribution written at submission time, so this counts only this org.
+      const [countRow] = await db
+        .select({ n: dsql<number>`count(*)::int` })
+        .from(applications)
+        .where(
+          and(
+            eq(applications.tenantId, tenantId),
+            eq(applications.requisitionId, row.requisitionId),
+            eq(applications.sourcePartnerId, partnerOrgId),
+          ),
+        );
+
+      const knockouts: PartnerRequisitionKnockout[] = knockoutRows.map((k) => ({
+        id: k.id,
+        questionText: k.questionText,
+        type: k.type,
+        requirement: partnerKnockoutRequirement(k.type, k.thresholdValue),
+        orderIndex: k.orderIndex,
+      }));
+
+      return {
+        requisitionId: row.requisitionId,
+        status: row.status,
+        numberOfOpenings: row.numberOfOpenings,
+        postedAt: row.postedAt ? row.postedAt.toISOString() : null,
+        targetStartDate: row.targetStartDate ?? null,
+        assignedAt: row.assignedAt.toISOString(),
+        title: row.title,
+        level: row.level ?? null,
+        jobFunction: row.jobFunction ?? null,
+        locationType: row.locationType,
+        primaryLocation: row.primaryLocation ?? null,
+        compBandMin: row.compBandMin ?? null,
+        compBandMax: row.compBandMax ?? null,
+        compCurrency: row.compCurrency ?? null,
+        jdText: row.jdText,
+        jdSummary: row.jdSummary ?? null,
+        knockouts,
+        yourSubmissionCount: countRow?.n ?? 0,
+      };
+    }),
+
+  /**
    * partnerSubmitCandidate — the partner submits a candidate against an
    * assigned req (PARTNER-02). The req being ASSIGNED to the caller's partner
    * org is the authorization (FORBIDDEN otherwise). Runs the wireflows' dedup
@@ -26917,6 +27066,36 @@ function buildKnockoutThreshold(k: RequisitionKnockoutInput): Record<string, unk
       return { ...base, allowed: k.allowed ?? [] };
     default:
       return base;
+  }
+}
+
+/**
+ * P1.1 — the inverse of buildKnockoutThreshold for the PARTNER surface: turn a
+ * threshold_value jsonb into a short human phrase ("At least 4"). Partners
+ * need the bar to filter candidates against (partner-wireflows §3.4), but the
+ * raw jsonb also carries `field_path` — an internal evaluator detail — so the
+ * partner sees this phrase and never the object. Null when the threshold is
+ * missing or malformed: the question text alone is still shown.
+ */
+function partnerKnockoutRequirement(
+  type: "boolean" | "numeric_min" | "numeric_max" | "enum",
+  threshold: unknown,
+): string | null {
+  if (!threshold || typeof threshold !== "object") return null;
+  const t = threshold as Record<string, unknown>;
+  switch (type) {
+    case "boolean":
+      return t.required === false ? "Must be no" : "Must be yes";
+    case "numeric_min":
+      return t.min != null ? `At least ${String(t.min)}` : null;
+    case "numeric_max":
+      return t.max != null ? `At most ${String(t.max)}` : null;
+    case "enum":
+      return Array.isArray(t.allowed) && t.allowed.length > 0
+        ? `One of: ${(t.allowed as unknown[]).map((a) => String(a)).join(", ")}`
+        : null;
+    default:
+      return null;
   }
 }
 
