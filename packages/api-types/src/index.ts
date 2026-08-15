@@ -37,3 +37,4 @@ export * from "./sla-thresholds";
 export * from "./retention-policy";
 export * from "./iris";
 export * from "./learning";
+export * from "./reports";

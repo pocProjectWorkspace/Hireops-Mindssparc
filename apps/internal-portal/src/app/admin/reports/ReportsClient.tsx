@@ -1,6 +1,6 @@
 "use client";
 
-import type { ReactNode } from "react";
+import { useMemo, useState, type ReactNode } from "react";
 import type { GetRecruitmentReportOutput } from "@hireops/api-types";
 import {
   Card,
@@ -26,22 +26,39 @@ import { humanizeSentence } from "@/lib/labels";
  * by a plain tRPC query.
  *
  * Deliberately basic (REPORT-01): counts, medians, and breakdowns. No
- * cohorting, exports, or filters — the API reserves from/to for a later
- * date-range picker but this surface always requests all-time.
+ * cohorting or exports — the richer filter bar (BU, requisition, recruiter,
+ * source) lands with the /reports catalog surface in R0.2.
+ *
+ * R0.1 wires the date range the API had reserved and ignored. Two native
+ * date inputs bound applications.created_at; both empty = all time, which
+ * is the server-prefetched `initial` (so the default view still costs no
+ * client fetch). A calendar date is widened to a whole UTC day — 00:00:00
+ * on `from`, 23:59:59.999 on `to` — matching the inclusive bounds the
+ * semantic layer applies server-side.
  *
  * DESIGN-03: tiles → StatTile, the funnel → the shared DataBar (one bar
  * language with the costs dashboard), the source-mix + stage-duration tables →
  * TableShell. Null medians render as a calm em dash.
  */
 export function ReportsClient({ initial }: { initial: GetRecruitmentReportOutput }) {
-  const query = trpc.getRecruitmentReport.useQuery(
-    {},
-    {
-      initialData: initial,
-      refetchOnWindowFocus: false,
-      staleTime: 5_000,
-    },
+  const [from, setFrom] = useState("");
+  const [to, setTo] = useState("");
+  const isAllTime = from === "" && to === "";
+
+  const input = useMemo(
+    () => ({
+      ...(from ? { from: `${from}T00:00:00.000Z` } : {}),
+      ...(to ? { to: `${to}T23:59:59.999Z` } : {}),
+    }),
+    [from, to],
   );
+
+  const query = trpc.getRecruitmentReport.useQuery(input, {
+    // Seed only the all-time key — a filtered window must actually fetch.
+    initialData: isAllTime ? initial : undefined,
+    refetchOnWindowFocus: false,
+    staleTime: 5_000,
+  });
 
   const data = query.data ?? initial;
   const { funnel, sourceMix, timeToHire, stageDurations, totals } = data;
@@ -50,16 +67,57 @@ export function ReportsClient({ initial }: { initial: GetRecruitmentReportOutput
 
   return (
     <PageContainer>
-      <p className="mb-6 text-sm text-neutral-600">
-        Recruitment funnel, source mix, and time in pipeline across all applications. All time.
+      <p className="mb-4 text-sm text-neutral-600">
+        Recruitment funnel, source mix, and time in pipeline across{" "}
+        {isAllTime ? "all applications, all time" : "applications received in the window below"}.
         Medians use exact stage-transition history.
       </p>
+
+      <section className="mb-6 flex flex-wrap items-center gap-2">
+        <span className="text-xs font-medium uppercase tracking-wide text-neutral-400">
+          Applications received
+        </span>
+        <input
+          type="date"
+          value={from}
+          max={to || undefined}
+          onChange={(e) => setFrom(e.target.value)}
+          aria-label="From date"
+          className={dateInputCls}
+        />
+        <span className="text-xs text-neutral-400">to</span>
+        <input
+          type="date"
+          value={to}
+          min={from || undefined}
+          onChange={(e) => setTo(e.target.value)}
+          aria-label="To date"
+          className={dateInputCls}
+        />
+        {!isAllTime ? (
+          <button
+            type="button"
+            onClick={() => {
+              setFrom("");
+              setTo("");
+            }}
+            className="h-8 rounded-full border border-neutral-300 bg-white px-3 text-xs font-medium text-neutral-700 hover:bg-neutral-50 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500"
+          >
+            All time
+          </button>
+        ) : null}
+        {query.isFetching ? <span className="text-xs text-neutral-400">Updating…</span> : null}
+      </section>
 
       {!hasApplications ? (
         <Card padded={false}>
           <EmptyState
-            title="No applications recorded"
-            hint="The funnel and medians populate as applications flow through the pipeline."
+            title={isAllTime ? "No applications recorded" : "No applications in this window"}
+            hint={
+              isAllTime
+                ? "The funnel and medians populate as applications flow through the pipeline."
+                : "Widen the date range, or clear it to see all time."
+            }
           />
         </Card>
       ) : (
@@ -174,6 +232,10 @@ export function ReportsClient({ initial }: { initial: GetRecruitmentReportOutput
     </PageContainer>
   );
 }
+
+/** Pill-shaped control, same language as the audit filter bar. */
+const dateInputCls =
+  "h-8 rounded-full border border-neutral-300 bg-white px-3 text-xs text-neutral-800 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500";
 
 function Section({ title, children }: { title: string; children: ReactNode }) {
   return (

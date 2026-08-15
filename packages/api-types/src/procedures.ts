@@ -9,6 +9,7 @@ import {
 import { jdBiasScanSchema, biasCategorySchema, biasSeveritySchema } from "./bias-lexicon";
 import { skillsMatchResultSchema } from "./panel-prep";
 import { candidateLearningItemSchema } from "./learning";
+import { reportFiltersSchema } from "./reports";
 
 /**
  * Input + output schemas for the initial six tRPC procedures (API-01).
@@ -1560,15 +1561,16 @@ export type AiUsageByDay = z.infer<typeof aiUsageByDaySchema>;
 
 /**
  * Input for the recruitment funnel + time + source report at
- * /admin/reports. from/to are optional ISO datetimes bounding
- * applications.created_at (omitted = all time). Reserved for a date-range
- * picker the UI does not yet expose — the API accepts them today so the
- * later filter lands without a contract change.
+ * /admin/reports — the shared reporting filter set (period · BU ·
+ * requisition · recruiter · source · stage), all optional; `{}` = all
+ * time, whole tenant.
+ *
+ * R0.1: this used to be a local `{from?, to?}` the procedure accepted and
+ * ignored. It is now `reportFiltersSchema` (a superset, so no existing
+ * caller breaks) and every field is honoured by the semantic layer in
+ * apps/api/src/lib/reports/. from/to bound applications.created_at.
  */
-export const getRecruitmentReportInputSchema = z.object({
-  from: z.string().datetime().optional(),
-  to: z.string().datetime().optional(),
-});
+export const getRecruitmentReportInputSchema = reportFiltersSchema;
 
 /**
  * One funnel row: the count of applications currently sitting at `stage`.
