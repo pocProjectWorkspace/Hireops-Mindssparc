@@ -51,6 +51,8 @@ export * from "./candidate-ownership-claims";
 export * from "./candidate-dedup-attempts";
 export * from "./partner-candidate-messages";
 export * from "./ad-hoc-partner-domains";
+export * from "./partner-msa";
+export * from "./partner-fees";
 export * from "./notification-outbox";
 export * from "./dev-email-outbox";
 export * from "./signed-link-uses";
