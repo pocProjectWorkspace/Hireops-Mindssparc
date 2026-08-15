@@ -57,6 +57,7 @@ export default async function SubmissionDetailPage({ params }: { params: { claim
     orgName: me.orgName,
     user: { label: me.displayName, role: roleLabel(me.role) },
     active: "submissions" as const,
+    canManageTeam: me.role === "partner_admin",
   };
 
   let detail: PartnerGetSubmissionDetailOutput;

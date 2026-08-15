@@ -45,6 +45,7 @@ export default async function ReqsPage() {
       orgName={me.orgName}
       user={{ label: me.displayName, role: roleLabel(me.role) }}
       active="reqs"
+      canManageTeam={me.role === "partner_admin"}
     >
       <div className="flex flex-col gap-6">
         <div className="flex flex-wrap items-baseline justify-between gap-2">

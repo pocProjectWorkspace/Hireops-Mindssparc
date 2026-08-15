@@ -50,6 +50,7 @@ export default async function RequisitionDetailPage({
     orgName: me.orgName,
     user: { label: me.displayName, role: roleLabel(me.role) },
     active: "reqs" as const,
+    canManageTeam: me.role === "partner_admin",
   };
 
   let req: PartnerGetRequisitionDetailOutput;

@@ -57,6 +57,7 @@ export default async function SubmissionsPage({
       orgName={me.orgName}
       user={{ label: me.displayName, role: roleLabel(me.role) }}
       active="submissions"
+      canManageTeam={me.role === "partner_admin"}
     >
       <div className="flex flex-col gap-6">
         <div className="flex flex-wrap items-end justify-between gap-3">
