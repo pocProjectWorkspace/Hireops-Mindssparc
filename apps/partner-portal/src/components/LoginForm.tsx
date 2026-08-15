@@ -80,6 +80,12 @@ export function LoginForm() {
       <Button type="submit" disabled={submitting} variant="primary">
         {submitting ? "Signing in…" : "Sign in"}
       </Button>
+      <a
+        href="/forgot-password"
+        className="text-center text-sm font-medium text-brand-600 hover:underline"
+      >
+        Forgot password?
+      </a>
     </form>
   );
 }

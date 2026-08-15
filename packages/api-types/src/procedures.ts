@@ -4005,6 +4005,17 @@ export type PartnerSetTeammateActiveInput = z.infer<typeof partnerSetTeammateAct
 export type PartnerSetTeammateActiveOutput = z.infer<typeof partnerSetTeammateActiveOutputSchema>;
 
 /**
+ * P1.4 — partner-admin revoke of a pending invitation they issued (or any
+ * pending invitation in their org — internal-issued included: the org admin
+ * owns their org's door). Output reuses the internal revoke's schema; the
+ * shared core guarantees the same idempotent/CONFLICT semantics.
+ */
+export const partnerRevokeInvitationInputSchema = z.object({
+  invitationId: z.string().uuid(),
+});
+export type PartnerRevokeInvitationInput = z.infer<typeof partnerRevokeInvitationInputSchema>;
+
+/**
  * The four things that can want a partner's attention (partner-wireflows §3.2
  * "Needs your attention"). Deliberately a closed enum rather than free text:
  * the surface renders an icon per kind, and a new kind must be a conscious

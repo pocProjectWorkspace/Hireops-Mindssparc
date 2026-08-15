@@ -13,6 +13,9 @@ describe("partner portal public paths", () => {
   it("exact public paths pass", () => {
     expect(isPublicPath("/login")).toBe(true);
     expect(isPublicPath("/logout")).toBe(true);
+    // P1.4 password recovery — both legs are for visitors who can't sign in.
+    expect(isPublicPath("/forgot-password")).toBe(true);
+    expect(isPublicPath("/reset-password")).toBe(true);
   });
 
   it("accept-invite is public with or without a token segment", () => {

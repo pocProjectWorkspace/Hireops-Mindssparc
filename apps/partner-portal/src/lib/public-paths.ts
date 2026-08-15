@@ -8,7 +8,12 @@
  * a regression here locks every invitee out at the door.
  */
 
-const PUBLIC_PATHS = new Set<string>(["/login", "/logout"]);
+// /forgot-password and /reset-password (P1.4): password recovery is by
+// definition for visitors who cannot sign in. /reset-password DOES end up
+// with a Supabase recovery session, but the middleware gate would bounce the
+// recovery redirect before the client can exchange the code, so it stays
+// public and the page itself refuses to render the form without a session.
+const PUBLIC_PATHS = new Set<string>(["/login", "/logout", "/forgot-password", "/reset-password"]);
 
 const PUBLIC_PREFIXES = ["/accept-invite"] as const;
 

@@ -43,8 +43,9 @@ import type {
   PartnerListTeamOutput,
   PartnerSetTeammateActiveInput,
   PartnerSetTeammateActiveOutput,
+  RevokePartnerInvitationOutput,
 } from "@hireops/api-types";
-import { createPartnerInvitation } from "./partner-admin";
+import { createPartnerInvitation, revokePartnerInvitationForTenant } from "./partner-admin";
 
 /**
  * The role gate for the three team procedures. FORBIDDEN with an identical
@@ -158,6 +159,40 @@ export async function invitePartnerTeammate(
     // partner user has no membership row. See createPartnerInvitation's header.
     createdByMembershipId: null,
   });
+}
+
+/**
+ * P1.4 — the partner-admin twin of revokePartnerInvitationForTenant. A pending
+ * invitation the admin can SEE (partnerListTeam) but not kill forces a
+ * mistyped address to wait out its 7-day expiry.
+ *
+ * The org check runs FIRST and answers the identical FORBIDDEN for
+ * other-org / other-tenant / nonexistent ids (the house probe posture); only a
+ * proven own-org invitation reaches the shared tenant-level core, which owns
+ * the consumed/CONFLICT and already-revoked/idempotent rules so those exist
+ * exactly once.
+ */
+export async function revokePartnerInvitationForOrg(
+  db: TenantBoundDb,
+  tenantId: string,
+  partnerOrgId: string,
+  invitationId: string,
+): Promise<RevokePartnerInvitationOutput> {
+  const [owned] = await db
+    .select({ id: partnerInvitations.id })
+    .from(partnerInvitations)
+    .where(
+      and(
+        eq(partnerInvitations.tenantId, tenantId),
+        eq(partnerInvitations.partnerOrgId, partnerOrgId),
+        eq(partnerInvitations.id, invitationId),
+      ),
+    )
+    .limit(1);
+  if (!owned) {
+    throw new TRPCError({ code: "FORBIDDEN", message: "partner_invitation_not_in_org" });
+  }
+  return revokePartnerInvitationForTenant(db, tenantId, invitationId);
 }
 
 /**

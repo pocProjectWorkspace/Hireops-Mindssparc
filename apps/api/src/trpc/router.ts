@@ -498,6 +498,7 @@ import {
   partnerInviteTeammateOutputSchema,
   partnerSetTeammateActiveInputSchema,
   partnerSetTeammateActiveOutputSchema,
+  partnerRevokeInvitationInputSchema,
   partnerGetAttentionFeedOutputSchema,
   // P0.1A — internal partner administration (admin / hr_ops).
   listPartnerOrgsOutputSchema,
@@ -1054,6 +1055,7 @@ import {
   invitePartnerTeammate,
   setPartnerTeammateActive,
   getPartnerAttentionFeed,
+  revokePartnerInvitationForOrg,
 } from "../lib/partner-team";
 // The FROZEN JD-skill-vs-parsed-skills matcher, extracted verbatim from
 // buildRequisitionInsights (LD-2A). Shared by the Insights skill-gap chart and
@@ -15574,6 +15576,31 @@ export const appRouter = router({
         ctx,
         input,
         () => setPartnerTeammateActive(db, tenantId, partnerOrgId, partnerUserId, input),
+        { tenantIdOverride: tenantId },
+      );
+    }),
+
+  /**
+   * partnerRevokeInvitation (P1.4) — the admin kills a pending invitation in
+   * their own org, so a mistyped address doesn't wait out the 7-day expiry.
+   * Org check first (identical FORBIDDEN for anything not provably theirs),
+   * then the same shared core the internal revoke uses.
+   */
+  partnerRevokeInvitation: partnerProcedure
+    .input(partnerRevokeInvitationInputSchema)
+    .output(revokePartnerInvitationOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      const db = ctx.db;
+      if (!db) {
+        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "partner ctx.db missing" });
+      }
+      requirePartnerAdmin(ctx.partner.role);
+      const { tenantId, partnerOrgId } = ctx.partner;
+      return withAudit(
+        "partner_invitation_revoke_self_serve",
+        ctx,
+        input,
+        () => revokePartnerInvitationForOrg(db, tenantId, partnerOrgId, input.invitationId),
         { tenantIdOverride: tenantId },
       );
     }),

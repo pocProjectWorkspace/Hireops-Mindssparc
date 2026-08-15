@@ -86,9 +86,18 @@ export function TeamClient({
     onError: (err) => setError(friendlyError(err)),
   });
 
+  // P1.4 — a mistyped address no longer waits out its 7-day expiry.
+  const revoke = trpc.partnerRevokeInvitation.useMutation({
+    onSuccess: () => {
+      setError(null);
+      void team.refetch();
+    },
+    onError: (err) => setError(friendlyError(err)),
+  });
+
   const members = team.data?.members ?? [];
   const invitations = team.data?.invitations ?? [];
-  const busy = invite.isPending || setActive.isPending;
+  const busy = invite.isPending || setActive.isPending || revoke.isPending;
 
   function onInvite(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
@@ -99,6 +108,12 @@ export function TeamClient({
       return;
     }
     invite.mutate({ email: trimmedEmail, fullName: trimmedName, role });
+  }
+
+  function onRevoke(invitationId: string, inviteeEmail: string) {
+    const question = `Revoke the invitation for ${inviteeEmail}? Their link stops working immediately; you can re-invite them any time.`;
+    if (typeof window !== "undefined" && !window.confirm(question)) return;
+    revoke.mutate({ invitationId });
   }
 
   function onToggleActive(partnerUserId: string, nextActive: boolean, name: string) {
@@ -241,6 +256,14 @@ export function TeamClient({
                   <div className="flex shrink-0 items-center gap-2">
                     <Badge tone="neutral">{roleLabel(i.intendedRole)}</Badge>
                     <span className="text-sm text-neutral-500">expires {fmtDate(i.expiresAt)}</span>
+                    <button
+                      type="button"
+                      disabled={busy}
+                      onClick={() => onRevoke(i.invitationId, i.email)}
+                      className="text-sm font-medium text-status-error-700 hover:underline disabled:opacity-50"
+                    >
+                      Revoke
+                    </button>
                   </div>
                 </li>
               ))}
