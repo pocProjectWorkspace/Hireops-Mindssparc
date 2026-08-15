@@ -7,6 +7,7 @@ import type {
 import { Card, Badge, StatTile, EmptyState } from "@/components/ui";
 import { AssignedReqCard } from "@/components/reqs/AssignedReqCard";
 import { fmtDate } from "@/components/reqs/req-format";
+import { stageLabel, stageTone } from "@/components/submissions/submission-format";
 
 /**
  * PartnerDashboard — the built surface of the PARTNER-01 shell. Presentational
@@ -160,32 +161,37 @@ export function PartnerDashboard({
           <Card padded={false}>
             <EmptyState
               title="No submissions yet"
-              hint="Candidate submission ships next. Once it lands, every candidate your team submits will track here with their live stage."
+              hint="Every candidate your team submits tracks here with their live stage. Start from a requisition that's open to you."
             />
           </Card>
         ) : (
           <Card padded={false}>
             <ul className="divide-y divide-neutral-100">
               {submissions.map((s) => (
-                <li key={s.claimId} className="flex items-center justify-between gap-3 px-4 py-3">
-                  <div className="min-w-0">
-                    <p className="truncate text-sm font-medium text-neutral-900">
-                      {s.candidateName ?? "Candidate"}
-                    </p>
-                    <p className="truncate text-sm text-neutral-500">
-                      {s.requisitionTitle ?? "Speculative"} · submitted {fmtDate(s.claimedAt)}
-                    </p>
-                  </div>
-                  <div className="flex shrink-0 items-center gap-2">
-                    {s.stage ? (
-                      <Badge tone="info" className="capitalize">
-                        {s.stage.replace(/_/g, " ")}
+                <li key={s.claimId}>
+                  {/* P1.2 — the row is now the way through to the submission's
+                      timeline and ownership window; it used to be terminal. */}
+                  <a
+                    href={`/submissions/${s.claimId}`}
+                    className="flex items-center justify-between gap-3 px-4 py-3 transition-colors hover:bg-neutral-50"
+                  >
+                    <div className="min-w-0">
+                      <p className="truncate text-sm font-medium text-neutral-900">
+                        {s.candidateName ?? "Candidate"}
+                      </p>
+                      <p className="truncate text-sm text-neutral-500">
+                        {s.requisitionTitle ?? "Speculative"} · submitted {fmtDate(s.claimedAt)}
+                      </p>
+                    </div>
+                    <div className="flex shrink-0 items-center gap-2">
+                      {s.stage ? (
+                        <Badge tone={stageTone(s.stage)}>{stageLabel(s.stage)}</Badge>
+                      ) : null}
+                      <Badge tone="neutral" className="capitalize">
+                        {s.status.replace(/_/g, " ")}
                       </Badge>
-                    ) : null}
-                    <Badge tone="neutral" className="capitalize">
-                      {s.status.replace(/_/g, " ")}
-                    </Badge>
-                  </div>
+                    </div>
+                  </a>
                 </li>
               ))}
             </ul>

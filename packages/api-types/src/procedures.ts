@@ -3568,8 +3568,19 @@ export const partnerSubmitCandidateOutputSchema = z.discriminatedUnion("outcome"
 ]);
 export type PartnerSubmitCandidateOutput = z.infer<typeof partnerSubmitCandidateOutputSchema>;
 
+/**
+ * `stage` (P1.2) filters the list to submissions whose CLAIMING application
+ * sits at that pipeline stage — the wireflows' §3.7 "All stages ▾" control.
+ * It is a filter on top of the existing cap, NOT pagination: the cap contract
+ * is unchanged (default 100, `capped` true when more rows exist behind it),
+ * because at POC volumes a partner org has tens of submissions, not thousands.
+ * A claim with no claiming application (speculative) never matches a stage.
+ */
 export const partnerListMySubmissionsInputSchema = z
-  .object({ limit: z.number().int().min(1).max(200).optional() })
+  .object({
+    limit: z.number().int().min(1).max(200).optional(),
+    stage: applicationStageSchema.optional(),
+  })
   .optional();
 export const partnerListMySubmissionsOutputSchema = z.object({
   items: z.array(partnerSubmissionRowSchema),
@@ -3642,6 +3653,86 @@ export const partnerGetRequisitionDetailOutputSchema = z.object({
 });
 export type PartnerGetRequisitionDetailOutput = z.infer<
   typeof partnerGetRequisitionDetailOutputSchema
+>;
+
+// ───── P1.2 — partner submission detail (partner-wireflows §3.7/§3.8) ─────
+
+export const partnerGetSubmissionDetailInputSchema = z.object({
+  claimId: z.string().uuid(),
+});
+export type PartnerGetSubmissionDetailInput = z.infer<typeof partnerGetSubmissionDetailInputSchema>;
+
+/**
+ * One timeline entry as a PARTNER sees it: the stage the application moved
+ * INTO, and when. That is the whole row.
+ *
+ * The underlying application_state_transitions row also carries from_stage,
+ * `reason` (the recruiter's rejection/send-back text), actor_membership_id
+ * (who did it), and a metadata jsonb. None of those cross the boundary —
+ * requirements.md §6.3 and partner-wireflows §3.8 both say the partner sees
+ * stage transitions, NOT internal feedback, panellist names, scoring
+ * rationale, or actor identities. Widening this object is a privacy
+ * regression; partner-submission-detail.test.ts asserts the key allowlist.
+ */
+export const partnerSubmissionTimelineEntrySchema = z.object({
+  toStage: applicationStageSchema,
+  transitionedAt: z.string(),
+});
+export type PartnerSubmissionTimelineEntry = z.infer<typeof partnerSubmissionTimelineEntrySchema>;
+
+/**
+ * Everything the partner may see about ONE of their own submissions
+ * (partner-wireflows §3.8): the ownership lock and its expiry, the candidate
+ * as THEY submitted them, the req it went to, the live stage, the immutable
+ * snapshot of what they sent, and the stage-only timeline.
+ *
+ * `requisition` and `application` are nullable together: a claim can exist
+ * without a claiming application (the speculative-submission path the schema
+ * allows), and the honest rendering of that is "no application yet", not a
+ * fabricated stage.
+ *
+ * `submittedSnapshot` is applications.partner_submission_metadata passed
+ * through unchanged — it is the partner's OWN submitted data coming back to
+ * them, so there is nothing to redact, but it is deliberately typed as an
+ * opaque record so the surface renders known keys and ignores the rest rather
+ * than assuming a shape the DB doesn't enforce.
+ *
+ * Deliberately ABSENT (requirements.md §6.3): AI scores and score factors,
+ * recruiter/HM/panellist identity, interview feedback, rejection reasons, any
+ * other partner's existence, and the candidate's other applications.
+ */
+export const partnerGetSubmissionDetailOutputSchema = z.object({
+  claim: z.object({
+    claimId: z.string().uuid(),
+    status: z.string(),
+    claimedAt: z.string(),
+    expiresAt: z.string(),
+    releasedAt: z.string().nullable(),
+  }),
+  candidate: z.object({
+    fullName: z.string().nullable(),
+    email: z.string().nullable(),
+    phone: z.string().nullable(),
+  }),
+  requisition: z
+    .object({
+      requisitionId: z.string().uuid(),
+      title: z.string(),
+      status: z.string(),
+    })
+    .nullable(),
+  application: z
+    .object({
+      applicationId: z.string().uuid(),
+      currentStage: applicationStageSchema,
+      stageEnteredAt: z.string(),
+    })
+    .nullable(),
+  submittedSnapshot: z.record(z.string(), z.unknown()).nullable(),
+  timeline: z.array(partnerSubmissionTimelineEntrySchema),
+});
+export type PartnerGetSubmissionDetailOutput = z.infer<
+  typeof partnerGetSubmissionDetailOutputSchema
 >;
 
 // ────── P0.1A — internal partner administration (admin / hr_ops) ──────

@@ -10,14 +10,20 @@ import { cn, Badge } from "@/components/ui";
  * friendly — plain props, static anchors, no client hooks — so it renders
  * inside the dashboard server component that already resolved the session.
  *
- * The surface map (partner-wireflows §2) has Dashboard / Reqs / Submit
- * Candidate / Messages / Commercials. Dashboard, Reqs and Submit candidate
- * ship (PARTNER-01 + PARTNER-02 + P1.1); the rest carry an honest "Soon" badge
- * and are non-interactive, so the nav tells the true story of what's built
- * without pretending.
+ * The surface map (partner-wireflows §2) has Dashboard / Reqs / Submissions /
+ * Submit Candidate / Messages / Commercials. Dashboard, Reqs, Submissions and
+ * Submit candidate ship (PARTNER-01 + PARTNER-02 + P1.1 + P1.2); the rest
+ * carry an honest "Soon" badge and are non-interactive, so the nav tells the
+ * true story of what's built without pretending.
  */
 
-export type PartnerNavKey = "dashboard" | "reqs" | "submit" | "messages" | "commercials";
+export type PartnerNavKey =
+  | "dashboard"
+  | "reqs"
+  | "submissions"
+  | "submit"
+  | "messages"
+  | "commercials";
 
 interface NavItem {
   key: PartnerNavKey;
@@ -29,6 +35,7 @@ interface NavItem {
 const NAV: NavItem[] = [
   { key: "dashboard", label: "Dashboard", href: "/" },
   { key: "reqs", label: "Reqs", href: "/reqs" },
+  { key: "submissions", label: "Submissions", href: "/submissions" },
   { key: "submit", label: "Submit candidate", href: "/submit" },
   { key: "messages", label: "Messages", soon: true },
   { key: "commercials", label: "Commercials", soon: true },

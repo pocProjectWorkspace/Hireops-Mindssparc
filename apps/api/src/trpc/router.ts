@@ -488,6 +488,10 @@ import {
   partnerGetRequisitionDetailInputSchema,
   partnerGetRequisitionDetailOutputSchema,
   type PartnerRequisitionKnockout,
+  // P1.2 — partner submission detail.
+  partnerGetSubmissionDetailInputSchema,
+  partnerGetSubmissionDetailOutputSchema,
+  type PartnerSubmissionTimelineEntry,
   // P0.1A — internal partner administration (admin / hr_ops).
   listPartnerOrgsOutputSchema,
   getPartnerOrgInputSchema,
@@ -15235,6 +15239,11 @@ export const appRouter = router({
    * requisition + position for the role title, and to persons for the
    * candidate name. Returns [] until partner submission flow ships — the
    * shell renders an explicit empty/coming-soon state in that case.
+   *
+   * P1.2 adds the optional `stage` filter behind the /submissions surface's
+   * stage select. It filters, it does not paginate: the cap contract is
+   * untouched (default 100, `capped` reports rows behind the cap), so the
+   * filtered list is capped exactly the way the unfiltered one is.
    */
   partnerListMySubmissions: partnerProcedure
     .input(partnerListMySubmissionsInputSchema)
@@ -15290,6 +15299,9 @@ export const appRouter = router({
           and(
             eq(candidateOwnershipClaims.tenantId, ctx.partner.tenantId),
             eq(candidateOwnershipClaims.partnerOrgId, ctx.partner.partnerOrgId),
+            // A claim with no claiming application has no stage, so it
+            // correctly drops out of a stage-filtered list.
+            ...(input?.stage ? [eq(applications.currentStage, input.stage)] : []),
           ),
         )
         .orderBy(desc(candidateOwnershipClaims.claimedAt))
@@ -15307,6 +15319,164 @@ export const appRouter = router({
         stage: r.stage ?? null,
       }));
       return { items, capped };
+    }),
+
+  /**
+   * partnerGetSubmissionDetail — one submission as the partner who made it is
+   * allowed to see it (partner-wireflows §3.8): the ownership lock and its
+   * expiry, the candidate they submitted, the req it went to, the live stage,
+   * the immutable snapshot of what they sent, and a stage-only timeline.
+   *
+   * Authorization is ownership: the candidate_ownership_claims row must belong
+   * to (this tenant, this partner org). Another org's claim, another tenant's
+   * claim, and a claimId that doesn't exist all raise the IDENTICAL FORBIDDEN
+   * — the same posture partnerGetRequisitionDetail takes, for the same reason:
+   * a partner must not be able to probe whether a candidate exists in the
+   * platform, which is exactly the fact the dedup flow already refuses to
+   * disclose (requirements.md §6.4).
+   *
+   * The §6.3 fence, restated where it is enforced: the timeline is built from
+   * application_state_transitions but projects ONLY to_stage + transitioned_at.
+   * from_stage, `reason` (recruiter rejection / send-back text),
+   * actor_membership_id (who moved it) and the metadata jsonb all stay behind
+   * the boundary — the partner sees stage and date, never internal feedback,
+   * scoring rationale, or the identity of any Kyndryl actor. Nothing here
+   * returns an AI score, a panellist, or another partner's existence.
+   * partner-submission-detail.test.ts pins the timeline key allowlist.
+   */
+  partnerGetSubmissionDetail: partnerProcedure
+    .input(partnerGetSubmissionDetailInputSchema)
+    .output(partnerGetSubmissionDetailOutputSchema)
+    .query(async ({ ctx, input }) => {
+      const db = ctx.db;
+      if (!db) {
+        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "partner ctx.db missing" });
+      }
+      const { tenantId, partnerOrgId } = ctx.partner;
+
+      const [claim] = await db
+        .select({
+          claimId: candidateOwnershipClaims.id,
+          status: candidateOwnershipClaims.status,
+          claimedAt: candidateOwnershipClaims.claimedAt,
+          expiresAt: candidateOwnershipClaims.expiresAt,
+          releasedAt: candidateOwnershipClaims.releasedAt,
+          applicationId: candidateOwnershipClaims.claimedViaApplicationId,
+          // The name/contact THEY submitted — the partner supplied this data,
+          // so handing it back is not a disclosure.
+          candidateName: persons.fullName,
+          candidateEmail: persons.emailPrimary,
+          candidatePhone: persons.phonePrimary,
+        })
+        .from(candidateOwnershipClaims)
+        .leftJoin(
+          persons,
+          and(
+            eq(persons.tenantId, candidateOwnershipClaims.tenantId),
+            eq(persons.id, candidateOwnershipClaims.personId),
+          ),
+        )
+        .where(
+          and(
+            eq(candidateOwnershipClaims.tenantId, tenantId),
+            eq(candidateOwnershipClaims.partnerOrgId, partnerOrgId),
+            eq(candidateOwnershipClaims.id, input.claimId),
+          ),
+        )
+        .limit(1);
+      if (!claim) {
+        // Indistinguishable from "no such submission" — on purpose.
+        throw new TRPCError({ code: "FORBIDDEN", message: "submission_not_found" });
+      }
+
+      // The claiming application (nullable: a claim can exist without one).
+      const [app] = claim.applicationId
+        ? await db
+            .select({
+              applicationId: applications.id,
+              currentStage: applications.currentStage,
+              stageEnteredAt: applications.stageEnteredAt,
+              submittedSnapshot: applications.partnerSubmissionMetadata,
+              requisitionId: requisitions.id,
+              requisitionStatus: requisitions.status,
+              title: positions.title,
+            })
+            .from(applications)
+            .leftJoin(
+              requisitions,
+              and(
+                eq(requisitions.tenantId, applications.tenantId),
+                eq(requisitions.id, applications.requisitionId),
+              ),
+            )
+            .leftJoin(
+              positions,
+              and(
+                eq(positions.tenantId, requisitions.tenantId),
+                eq(positions.id, requisitions.positionId),
+              ),
+            )
+            .where(
+              and(eq(applications.tenantId, tenantId), eq(applications.id, claim.applicationId)),
+            )
+            .limit(1)
+        : [undefined];
+
+      // Stage + date ONLY, oldest first — see the §6.3 note above.
+      const timelineRows = app
+        ? await db
+            .select({
+              toStage: applicationStateTransitions.toStage,
+              transitionedAt: applicationStateTransitions.transitionedAt,
+            })
+            .from(applicationStateTransitions)
+            .where(
+              and(
+                eq(applicationStateTransitions.tenantId, tenantId),
+                eq(applicationStateTransitions.applicationId, app.applicationId),
+              ),
+            )
+            .orderBy(applicationStateTransitions.transitionedAt)
+        : [];
+      const timeline: PartnerSubmissionTimelineEntry[] = timelineRows.map((t) => ({
+        toStage: t.toStage,
+        transitionedAt: t.transitionedAt.toISOString(),
+      }));
+
+      return {
+        claim: {
+          claimId: claim.claimId,
+          status: claim.status,
+          claimedAt: claim.claimedAt.toISOString(),
+          expiresAt: claim.expiresAt.toISOString(),
+          releasedAt: claim.releasedAt ? claim.releasedAt.toISOString() : null,
+        },
+        candidate: {
+          fullName: claim.candidateName ?? null,
+          email: claim.candidateEmail ?? null,
+          phone: claim.candidatePhone ?? null,
+        },
+        requisition:
+          app && app.requisitionId && app.title
+            ? {
+                requisitionId: app.requisitionId,
+                title: app.title,
+                status: app.requisitionStatus ?? "unknown",
+              }
+            : null,
+        application: app
+          ? {
+              applicationId: app.applicationId,
+              currentStage: app.currentStage,
+              stageEnteredAt: app.stageEnteredAt.toISOString(),
+            }
+          : null,
+        submittedSnapshot:
+          app && app.submittedSnapshot && typeof app.submittedSnapshot === "object"
+            ? (app.submittedSnapshot as Record<string, unknown>)
+            : null,
+        timeline,
+      };
     }),
 
   // ─────────────── CAND-01 — candidate accounts (Wave C) ───────────────
