@@ -3910,6 +3910,142 @@ export const endPartnerAssignmentOutputSchema = z.object({
 export type EndPartnerAssignmentInput = z.infer<typeof endPartnerAssignmentInputSchema>;
 export type EndPartnerAssignmentOutput = z.infer<typeof endPartnerAssignmentOutputSchema>;
 
+// ─── P1.3 — partner-side team management + attention feed (§3.12 / §3.2) ───
+//
+// PARTNER-side (partnerProcedure) schemas, so by section order they belong
+// beside the P1.1/P1.2 block further up this file. They sit HERE instead for
+// one mechanical reason: they reuse partnerUserRoleSchema, which is declared in
+// the P0.1A block above and is a `const` — referencing it from an earlier line
+// would evaluate inside its temporal dead zone and throw at import time.
+// Restating the enum a third time would be worse than the misplacement.
+//
+// The org predicate is not in these schemas because it is never a client
+// input: partnerListTeam / partnerInviteTeammate / partnerSetTeammateActive all
+// scope to ctx.partner.partnerOrgId server-side, exactly as every other
+// partnerProcedure does.
+
+/**
+ * One teammate on the partner org's own team page. Same columns internal staff
+ * see on partnerOrgUserRowSchema — a partner_admin managing their own org is
+ * entitled to no less and no more than the Kyndryl admin looking at the same
+ * org. `isSelf` is computed server-side against ctx.partner.partnerUserId so
+ * the surface can suppress the Suspend action on the caller's own row without
+ * re-deriving identity in the client.
+ */
+export const partnerTeamMemberRowSchema = z.object({
+  partnerUserId: z.string().uuid(),
+  fullName: z.string(),
+  email: z.string(),
+  role: partnerUserRoleSchema,
+  active: z.boolean(),
+  lastLoginAt: z.string().nullable(),
+  isSelf: z.boolean(),
+});
+export type PartnerTeamMemberRow = z.infer<typeof partnerTeamMemberRowSchema>;
+
+/**
+ * A LIVE invitation the org has outstanding (not consumed, not revoked, not
+ * expired). `fullName` is absent for the same reason it is absent from
+ * partnerOrgInvitationRowSchema: partner_invitations has no column for it.
+ */
+export const partnerTeamInvitationRowSchema = z.object({
+  invitationId: z.string().uuid(),
+  email: z.string(),
+  intendedRole: partnerUserRoleSchema,
+  expiresAt: z.string(),
+  createdAt: z.string(),
+});
+export type PartnerTeamInvitationRow = z.infer<typeof partnerTeamInvitationRowSchema>;
+
+export const partnerListTeamOutputSchema = z.object({
+  members: z.array(partnerTeamMemberRowSchema),
+  invitations: z.array(partnerTeamInvitationRowSchema),
+});
+export type PartnerListTeamOutput = z.infer<typeof partnerListTeamOutputSchema>;
+
+/**
+ * partnerInviteTeammate — the partner-admin's own copy of invitePartnerUser,
+ * minus partnerOrgId (a partner may only ever invite into their OWN org, so
+ * accepting the id as input would be a hole, not a convenience).
+ *
+ * `acceptUrl` is returned for the identical reason the internal one returns it
+ * (staging email is Resend test-mode, single deliverable inbox): the partner
+ * admin must be able to copy the link out. It is the last place the raw token
+ * exists — only its sha256 is persisted.
+ */
+export const partnerInviteTeammateInputSchema = z.object({
+  email: z.string().email().max(320),
+  fullName: z.string().min(1).max(200),
+  role: partnerUserRoleSchema,
+});
+export const partnerInviteTeammateOutputSchema = z.object({
+  invitationId: z.string().uuid(),
+  expiresAt: z.string(),
+  acceptUrl: z.string(),
+});
+export type PartnerInviteTeammateInput = z.infer<typeof partnerInviteTeammateInputSchema>;
+export type PartnerInviteTeammateOutput = z.infer<typeof partnerInviteTeammateOutputSchema>;
+
+/**
+ * partnerSetTeammateActive — suspend / reactivate a teammate's portal access.
+ * A flag flip and nothing else (the same posture setPartnerOrgActive takes):
+ * their submissions, claims and history are untouched and the flip is fully
+ * reversible. partnerProcedure requires active = true, so a suspended teammate
+ * is locked out on their very next request.
+ */
+export const partnerSetTeammateActiveInputSchema = z.object({
+  partnerUserId: z.string().uuid(),
+  active: z.boolean(),
+});
+export const partnerSetTeammateActiveOutputSchema = z.object({
+  partnerUserId: z.string().uuid(),
+  active: z.boolean(),
+});
+export type PartnerSetTeammateActiveInput = z.infer<typeof partnerSetTeammateActiveInputSchema>;
+export type PartnerSetTeammateActiveOutput = z.infer<typeof partnerSetTeammateActiveOutputSchema>;
+
+/**
+ * The four things that can want a partner's attention (partner-wireflows §3.2
+ * "Needs your attention"). Deliberately a closed enum rather than free text:
+ * the surface renders an icon per kind, and a new kind must be a conscious
+ * addition on both sides.
+ *
+ *  - new_req:          a requisition opened to the org in the last 7 days.
+ *  - stale_submission: their own submission sitting at the same non-terminal
+ *                      stage for over 14 days (the wireflows' §3.7 "ghost
+ *                      detection" — nobody has moved it).
+ *  - offer_stage:      their own candidate at offer_drafted / offer_accepted.
+ *  - claim_expiring:   an active ownership claim inside its last 14 days.
+ */
+export const partnerAttentionKindSchema = z.enum([
+  "new_req",
+  "stale_submission",
+  "offer_stage",
+  "claim_expiring",
+]);
+export type PartnerAttentionKind = z.infer<typeof partnerAttentionKindSchema>;
+
+/**
+ * One feed row. `title` and `detail` are composed SERVER-side from stage,
+ * date, requisition title and the candidate's name — and nothing else. That is
+ * the requirements.md §6.3 fence restated where it is enforced: no recruiter or
+ * hiring-manager identity, no rejection reason, no AI score, no other partner's
+ * existence. `href` is a partner-portal path the surface links straight to.
+ */
+export const partnerAttentionItemSchema = z.object({
+  kind: partnerAttentionKindSchema,
+  title: z.string(),
+  detail: z.string(),
+  href: z.string(),
+  occurredAt: z.string(),
+});
+export type PartnerAttentionItem = z.infer<typeof partnerAttentionItemSchema>;
+
+export const partnerGetAttentionFeedOutputSchema = z.object({
+  items: z.array(partnerAttentionItemSchema),
+});
+export type PartnerGetAttentionFeedOutput = z.infer<typeof partnerGetAttentionFeedOutputSchema>;
+
 // ────── P0.3 — ownership-claim lifecycle (internal read + release) ──────
 //
 // The internal-staff view of candidate_ownership_claims: the exclusivity

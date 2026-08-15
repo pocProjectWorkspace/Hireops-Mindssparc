@@ -492,6 +492,13 @@ import {
   partnerGetSubmissionDetailInputSchema,
   partnerGetSubmissionDetailOutputSchema,
   type PartnerSubmissionTimelineEntry,
+  // P1.3 — partner-side team management + the dashboard attention feed.
+  partnerListTeamOutputSchema,
+  partnerInviteTeammateInputSchema,
+  partnerInviteTeammateOutputSchema,
+  partnerSetTeammateActiveInputSchema,
+  partnerSetTeammateActiveOutputSchema,
+  partnerGetAttentionFeedOutputSchema,
   // P0.1A — internal partner administration (admin / hr_ops).
   listPartnerOrgsOutputSchema,
   getPartnerOrgInputSchema,
@@ -1038,6 +1045,16 @@ import {
   // hash exactly the way minting did, or no link would ever match.
   hashPartnerInviteToken,
 } from "../lib/partner-admin";
+// P1.3 — the PARTNER half of the same story (team management + attention
+// feed). Same shape as above: the logic is in the lib, the four procedures are
+// role gate + audit wrapper.
+import {
+  requirePartnerAdmin,
+  listPartnerTeam,
+  invitePartnerTeammate,
+  setPartnerTeammateActive,
+  getPartnerAttentionFeed,
+} from "../lib/partner-team";
 // The FROZEN JD-skill-vs-parsed-skills matcher, extracted verbatim from
 // buildRequisitionInsights (LD-2A). Shared by the Insights skill-gap chart and
 // the per-hire upskilling suggestions so the two can never drift apart.
@@ -15477,6 +15494,104 @@ export const appRouter = router({
             : null,
         timeline,
       };
+    }),
+
+  // ───── P1.3 — partner team management + attention feed (§3.12 / §3.2) ─────
+  //
+  // The first partner-side procedures with a ROLE gate on top of the tier gate:
+  // partnerProcedure proves "you are an active partner user", the three team
+  // procedures additionally require ctx.partner.role === 'partner_admin' and
+  // answer an identical FORBIDDEN 'partner_admin_only' otherwise. The org
+  // predicate is never an input — partnerOrgId comes from ctx.partner on every
+  // one of them, so a partner admin can only ever act inside their own org.
+  //
+  // Logic lives in apps/api/src/lib/partner-team.ts, which delegates invitation
+  // minting to the core it shares with the internal invitePartnerUser.
+
+  /**
+   * partnerListTeam — the org's own people (including suspended ones, so they
+   * can be reactivated) plus its LIVE invitations. Same columns internal staff
+   * see on the org-detail drawer.
+   */
+  partnerListTeam: partnerProcedure.output(partnerListTeamOutputSchema).query(async ({ ctx }) => {
+    const db = ctx.db;
+    if (!db) {
+      throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "partner ctx.db missing" });
+    }
+    requirePartnerAdmin(ctx.partner.role);
+    return listPartnerTeam(
+      db,
+      ctx.partner.tenantId,
+      ctx.partner.partnerOrgId,
+      ctx.partner.partnerUserId,
+    );
+  }),
+
+  /**
+   * partnerInviteTeammate — mint a single-use invitation into the caller's OWN
+   * org and send the email. Same CONFLICT rules as the internal path (active
+   * user with that address, or a live invitation for it); same one-time
+   * acceptUrl in the response, for the same Resend test-mode reason.
+   */
+  partnerInviteTeammate: partnerProcedure
+    .input(partnerInviteTeammateInputSchema)
+    .output(partnerInviteTeammateOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      const db = ctx.db;
+      if (!db) {
+        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "partner ctx.db missing" });
+      }
+      requirePartnerAdmin(ctx.partner.role);
+      const { tenantId, partnerOrgId } = ctx.partner;
+      const companyName = await resolveTenantDisplayName(tenantId);
+      return withAudit(
+        "partner_team_invite",
+        ctx,
+        input,
+        () => invitePartnerTeammate(db, { tenantId, partnerOrgId, companyName, input }),
+        { tenantIdOverride: tenantId },
+      );
+    }),
+
+  /**
+   * partnerSetTeammateActive — suspend or reactivate a teammate's portal
+   * access. A teammate outside the caller's org is the identical FORBIDDEN a
+   * nonexistent id gets; suspending yourself is BAD_REQUEST (partnerProcedure
+   * requires active = true, so it would be a self-lockout).
+   */
+  partnerSetTeammateActive: partnerProcedure
+    .input(partnerSetTeammateActiveInputSchema)
+    .output(partnerSetTeammateActiveOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      const db = ctx.db;
+      if (!db) {
+        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "partner ctx.db missing" });
+      }
+      requirePartnerAdmin(ctx.partner.role);
+      const { tenantId, partnerOrgId, partnerUserId } = ctx.partner;
+      return withAudit(
+        "partner_team_set_active",
+        ctx,
+        input,
+        () => setPartnerTeammateActive(db, tenantId, partnerOrgId, partnerUserId, input),
+        { tenantIdOverride: tenantId },
+      );
+    }),
+
+  /**
+   * partnerGetAttentionFeed — the dashboard's "needs your attention" list.
+   * BOTH partner roles: a recruiter needs their own nudges, and every rule is
+   * org-scoped regardless. Deterministic rules over existing rows, newest
+   * first, capped — see the lib for the rules and the §6.3 fence on the copy.
+   */
+  partnerGetAttentionFeed: partnerProcedure
+    .output(partnerGetAttentionFeedOutputSchema)
+    .query(async ({ ctx }) => {
+      const db = ctx.db;
+      if (!db) {
+        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "partner ctx.db missing" });
+      }
+      return getPartnerAttentionFeed(db, ctx.partner.tenantId, ctx.partner.partnerOrgId);
     }),
 
   // ─────────────── CAND-01 — candidate accounts (Wave C) ───────────────

@@ -11,10 +11,16 @@ import { cn, Badge } from "@/components/ui";
  * inside the dashboard server component that already resolved the session.
  *
  * The surface map (partner-wireflows §2) has Dashboard / Reqs / Submissions /
- * Submit Candidate / Messages / Commercials. Dashboard, Reqs, Submissions and
- * Submit candidate ship (PARTNER-01 + PARTNER-02 + P1.1 + P1.2); the rest
- * carry an honest "Soon" badge and are non-interactive, so the nav tells the
- * true story of what's built without pretending.
+ * Submit Candidate / Team / Messages / Commercials. Dashboard, Reqs,
+ * Submissions, Submit candidate and Team ship (PARTNER-01 + PARTNER-02 + P1.1 +
+ * P1.2 + P1.3); the rest carry an honest "Soon" badge and are non-interactive,
+ * so the nav tells the true story of what's built without pretending.
+ *
+ * Team is the first ROLE-dependent entry (§3.12 is partner-org-admin only). It
+ * renders only when the caller's partnerGetMe().role is partner_admin, which
+ * every page already has in hand — `canManageTeam` is that boolean, passed the
+ * same way `user` is. It is nav hygiene, not access control: /team and the
+ * three procedures behind it enforce the role server-side regardless.
  */
 
 export type PartnerNavKey =
@@ -22,6 +28,7 @@ export type PartnerNavKey =
   | "reqs"
   | "submissions"
   | "submit"
+  | "team"
   | "messages"
   | "commercials";
 
@@ -30,6 +37,8 @@ interface NavItem {
   label: string;
   href?: string;
   soon?: boolean;
+  /** Rendered only for a partner_admin. */
+  adminOnly?: boolean;
 }
 
 const NAV: NavItem[] = [
@@ -37,6 +46,7 @@ const NAV: NavItem[] = [
   { key: "reqs", label: "Reqs", href: "/reqs" },
   { key: "submissions", label: "Submissions", href: "/submissions" },
   { key: "submit", label: "Submit candidate", href: "/submit" },
+  { key: "team", label: "Team", href: "/team", adminOnly: true },
   { key: "messages", label: "Messages", soon: true },
   { key: "commercials", label: "Commercials", soon: true },
 ];
@@ -50,6 +60,8 @@ export interface PartnerShellProps {
   orgName: string;
   user: PartnerShellUser;
   active?: PartnerNavKey;
+  /** partnerGetMe().role === "partner_admin" — shows the Team entry. */
+  canManageTeam?: boolean;
   children: ReactNode;
 }
 
@@ -97,10 +109,10 @@ function UserChip({ user }: { user: PartnerShellUser }) {
   );
 }
 
-function NavRow({ active }: { active?: PartnerNavKey }) {
+function NavRow({ active, canManageTeam }: { active?: PartnerNavKey; canManageTeam?: boolean }) {
   return (
     <nav className="flex flex-wrap items-center gap-1 border-t border-neutral-200 bg-white px-4 py-2 sm:px-6">
-      {NAV.map((item) => {
+      {NAV.filter((item) => !item.adminOnly || canManageTeam).map((item) => {
         const isActive = active === item.key;
         if (item.soon) {
           return (
@@ -137,7 +149,13 @@ function NavRow({ active }: { active?: PartnerNavKey }) {
   );
 }
 
-export function PartnerShell({ orgName, user, active, children }: PartnerShellProps) {
+export function PartnerShell({
+  orgName,
+  user,
+  active,
+  canManageTeam,
+  children,
+}: PartnerShellProps) {
   return (
     <div className="flex min-h-screen flex-col bg-neutral-50 text-neutral-900">
       <header className="sticky top-0 z-10 bg-white">
@@ -151,7 +169,7 @@ export function PartnerShell({ orgName, user, active, children }: PartnerShellPr
           </div>
           <UserChip user={user} />
         </div>
-        <NavRow active={active} />
+        <NavRow active={active} canManageTeam={canManageTeam} />
       </header>
       <main className="mx-auto w-full max-w-5xl flex-1 px-4 py-6 sm:px-6 sm:py-8">{children}</main>
     </div>

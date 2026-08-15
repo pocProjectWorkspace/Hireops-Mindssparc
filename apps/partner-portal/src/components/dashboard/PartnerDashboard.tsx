@@ -1,10 +1,12 @@
 import type {
   PartnerGetMeOutput,
   PartnerAssignedRequisitionRow,
+  PartnerAttentionItem,
   PartnerSubmissionRow,
   PartnerGetDashboardStatsOutput,
 } from "@hireops/api-types";
 import { Card, Badge, StatTile, EmptyState } from "@/components/ui";
+import { AttentionFeed } from "@/components/dashboard/AttentionFeed";
 import { AssignedReqCard } from "@/components/reqs/AssignedReqCard";
 import { fmtDate } from "@/components/reqs/req-format";
 import { stageLabel, stageTone } from "@/components/submissions/submission-format";
@@ -39,11 +41,13 @@ export function PartnerDashboard({
   reqs,
   submissions,
   stats,
+  attention,
 }: {
   me: PartnerGetMeOutput;
   reqs: PartnerAssignedRequisitionRow[];
   submissions: PartnerSubmissionRow[];
   stats: PartnerGetDashboardStatsOutput;
+  attention: PartnerAttentionItem[];
 }) {
   const today = new Date().toLocaleDateString("en-GB", {
     day: "numeric",
@@ -90,6 +94,11 @@ export function PartnerDashboard({
           tone={stats.placed > 0 ? "positive" : "neutral"}
         />
       </div>
+
+      {/* P1.3 — "needs your attention" (partner-wireflows §3.2). Sits directly
+          under the KPI row, where the wireflow puts it: the tiles say how much,
+          this says what to do next. */}
+      <AttentionFeed items={attention} />
 
       {/* Submissions-by-stage breakdown */}
       {stats.byStage.length > 0 ? (

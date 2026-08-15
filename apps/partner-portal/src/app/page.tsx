@@ -34,10 +34,13 @@ export default async function DashboardPage() {
     throw err;
   }
 
-  const [reqs, submissions, stats] = await Promise.all([
+  const [reqs, submissions, stats, attention] = await Promise.all([
     caller.partnerListAssignedRequisitions(),
     caller.partnerListMySubmissions(),
     caller.partnerGetDashboardStats(),
+    // P1.3 — the "needs your attention" feed. Fetched alongside the other
+    // three so the dashboard stays a single round of parallel reads.
+    caller.partnerGetAttentionFeed(),
   ]);
 
   return (
@@ -45,8 +48,15 @@ export default async function DashboardPage() {
       orgName={me.orgName}
       user={{ label: me.displayName, role: roleLabel(me.role) }}
       active="dashboard"
+      canManageTeam={me.role === "partner_admin"}
     >
-      <PartnerDashboard me={me} reqs={reqs.items} submissions={submissions.items} stats={stats} />
+      <PartnerDashboard
+        me={me}
+        reqs={reqs.items}
+        submissions={submissions.items}
+        stats={stats}
+        attention={attention.items}
+      />
     </PartnerShell>
   );
 }

@@ -65,6 +65,7 @@ import type {
   AssignRequisitionToPartnerOutput,
   ListPartnerOrgClaimsOutput,
   ListPartnerOrgDedupAttemptsOutput,
+  PartnerUserRoleValue,
   ReleaseOwnershipClaimInput,
   ReleaseOwnershipClaimOutput,
 } from "@hireops/api-types";
@@ -566,6 +567,34 @@ export interface InvitePartnerUserArgs extends InvitePartnerUserInput {
 }
 
 /**
+ * The invitation CORE, shared by both callers that can mint one (P1.3):
+ * internal staff through invitePartnerUserForTenant below, and a partner org's
+ * own admin through partnerInviteTeammate (lib/partner-team.ts). Token mint,
+ * conflict rules, row insert, email enqueue and acceptUrl all live here exactly
+ * once, so the two tiers cannot drift on any of them — a partner-issued invite
+ * is redeemed by the very same /accept-invite flow.
+ *
+ * The only thing the two callers differ on is `createdByMembershipId`, and that
+ * is a schema fact rather than a choice: partner_invitations.created_by_membership_id
+ * FKs tenant_user_memberships (fk_partner_invitations_created_by), the table has
+ * no partner-user column and no metadata jsonb, so a partner-issued invitation
+ * stores NULL there. The inviting partner user is still recorded — withAudit
+ * writes the api_audit_logs intent row with ctx.partner resolved — and this
+ * ticket adds no migration.
+ */
+export interface CreatePartnerInvitationArgs {
+  tenantId: string;
+  partnerOrgId: string;
+  email: string;
+  fullName: string;
+  role: PartnerUserRoleValue;
+  /** tenants.display_name — the "who is inviting you" in the email copy. */
+  companyName: string;
+  /** tenant_user_memberships.id, or null when a partner admin issued it. */
+  createdByMembershipId: string | null;
+}
+
+/**
  * Mint a single-use invitation and enqueue the email.
  *
  * CONFLICT (not a silent re-issue) in two cases, because both mean the caller
@@ -577,9 +606,9 @@ export interface InvitePartnerUserArgs extends InvitePartnerUserInput {
  * rolls the invitation row back — an invitation nobody was told about is
  * worse than no invitation.
  */
-export async function invitePartnerUserForTenant(
+export async function createPartnerInvitation(
   db: TenantBoundDb,
-  args: InvitePartnerUserArgs,
+  args: CreatePartnerInvitationArgs,
 ): Promise<InvitePartnerUserOutput> {
   const { tenantId, partnerOrgId } = args;
   const email = normaliseEmail(args.email);
@@ -645,7 +674,7 @@ export async function invitePartnerUserForTenant(
       intendedRole: args.role,
       tokenHash: hashPartnerInviteToken(rawToken),
       expiresAt,
-      createdByMembershipId: args.actorMembershipId,
+      createdByMembershipId: args.createdByMembershipId,
     })
     .returning({ id: partnerInvitations.id });
   if (!inserted) {
@@ -675,6 +704,26 @@ export async function invitePartnerUserForTenant(
   // (single deliverable inbox), so the internal surface has to be able to
   // copy the link out. This response is the last place the raw token exists.
   return { invitationId: inserted.id, expiresAt: expiresAt.toISOString(), acceptUrl };
+}
+
+/**
+ * The INTERNAL-STAFF entry point to the core above (admin / hr_ops). Keeps its
+ * original signature — partnerOrgId is an input here, because internal staff
+ * invite INTO an org they picked — and records the inviting membership.
+ */
+export async function invitePartnerUserForTenant(
+  db: TenantBoundDb,
+  args: InvitePartnerUserArgs,
+): Promise<InvitePartnerUserOutput> {
+  return createPartnerInvitation(db, {
+    tenantId: args.tenantId,
+    partnerOrgId: args.partnerOrgId,
+    email: args.email,
+    fullName: args.fullName,
+    role: args.role,
+    companyName: args.companyName,
+    createdByMembershipId: args.actorMembershipId,
+  });
 }
 
 /**
