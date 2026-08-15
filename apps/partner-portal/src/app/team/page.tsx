@@ -43,7 +43,7 @@ export default async function TeamPage() {
     orgName: me.orgName,
     user: { label: me.displayName, role: roleLabel(me.role) },
     active: "team" as const,
-    canManageTeam: me.role === "partner_admin",
+    isOrgAdmin: me.role === "partner_admin",
   };
 
   if (me.role !== "partner_admin") {

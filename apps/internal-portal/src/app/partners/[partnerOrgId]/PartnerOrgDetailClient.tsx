@@ -3,12 +3,16 @@
 import { useMemo, useState } from "react";
 import Link from "next/link";
 import type {
+  GetPartnerOrgCommercialsOutput,
   GetPartnerOrgOutput,
   ListPartnerOrgClaimsOutput,
   ListPartnerOrgDedupAttemptsOutput,
+  PartnerFeeModelValue,
+  PartnerExclusivityScopeValue,
   PartnerOrgAssignmentRow,
   PartnerOrgClaimRow,
   PartnerOrgDedupAttemptRow,
+  PartnerOrgFeeRow,
   PartnerOrgInvitationRow,
   PartnerOrgUserRow,
   PartnerUserRoleValue,
@@ -36,11 +40,12 @@ import { fmtDate, tierLabel } from "../PartnersClient";
 /**
  * P0.1B — one partner organisation's administration surface.
  *
- * Five blocks, each backed by a real procedure: the org header (with the
- * suspend / restore toggle), the portal users the org already has, the live
- * invitations (issue + revoke), the requisition assignments (assign + end,
- * ended rows kept as history — the internal view is the record), and (P0.3)
- * the ownership claims this partner holds, with the early-release action.
+ * Blocks, each backed by a real procedure: the org header (with the suspend /
+ * restore toggle), the portal users the org already has, the live invitations
+ * (issue + revoke), the requisition assignments (assign + end, ended rows kept
+ * as history — the internal view is the record), (P2.2) the commercial terms
+ * and the fees accrued under them, and (P0.3) the ownership claims this partner
+ * holds, with the early-release action.
  *
  * The invitation accept link is shown exactly once, in a panel, because that
  * is the truth: only the sha256 of the token is persisted, so once this panel
@@ -96,12 +101,14 @@ export function PartnerOrgDetailClient({
   initial,
   initialClaims,
   initialDedupAttempts,
+  initialCommercials,
   requisitionOptions,
 }: {
   partnerOrgId: string;
   initial: GetPartnerOrgOutput;
   initialClaims: ListPartnerOrgClaimsOutput;
   initialDedupAttempts: ListPartnerOrgDedupAttemptsOutput;
+  initialCommercials: GetPartnerOrgCommercialsOutput;
   /** null when the session's roles can't read the requisition list (hr_ops). */
   requisitionOptions: RequisitionSummary[] | null;
 }) {
@@ -226,6 +233,12 @@ export function PartnerOrgDetailClient({
         assignments={assignments}
         requisitionOptions={requisitionOptions}
         onChanged={refresh}
+      />
+
+      <CommercialsSection
+        partnerOrgId={partnerOrgId}
+        orgName={org.name}
+        initialCommercials={initialCommercials}
       />
 
       <ClaimsSection
@@ -495,6 +508,368 @@ function InvitationsSection({
           </Button>
         </div>
       </Card>
+    </section>
+  );
+}
+
+// ─────────────────────── commercial terms (P2.2) ───────────────────────
+
+const FEE_MODEL_OPTIONS = [
+  { value: "percentage_ctc", label: "Percentage of CTC" },
+  { value: "flat_per_hire", label: "Flat fee per hire" },
+];
+
+const EXCLUSIVITY_SCOPE_OPTIONS = [
+  { value: "org_wide", label: "Org-wide" },
+  { value: "req_only", label: "Requisition only" },
+];
+
+const FEE_MODEL_LABELS: Record<PartnerFeeModelValue, string> = {
+  percentage_ctc: "Percentage of CTC",
+  flat_per_hire: "Flat fee per hire",
+};
+
+const EXCLUSIVITY_SCOPE_LABELS: Record<PartnerExclusivityScopeValue, string> = {
+  org_wide: "Org-wide",
+  req_only: "Requisition only",
+};
+
+/** Minor units + ISO currency → a localised money string; null → em dash. */
+function fmtMoney(amountMinor: number | null, currency: string): string {
+  if (amountMinor === null) return "—";
+  try {
+    return new Intl.NumberFormat("en-IN", { style: "currency", currency }).format(
+      amountMinor / 100,
+    );
+  } catch {
+    return `${(amountMinor / 100).toFixed(2)} ${currency}`;
+  }
+}
+
+/** Fee status → badge tone. Only `paid` is settled; `disputed` is a problem. */
+function feeTone(status: PartnerOrgFeeRow["status"]): "success" | "warning" | "info" | "error" {
+  if (status === "paid") return "success";
+  if (status === "payable") return "info";
+  if (status === "disputed") return "error";
+  return "warning";
+}
+
+/**
+ * P2.2 — the commercial terms behind this partner, and the fees they have
+ * accrued under them.
+ *
+ * The one thing this section has to make unmistakable is that saving is NOT an
+ * edit. partner_msa keeps one live row per org; changing terms closes the
+ * current row and opens a new one, and every fee already accrued keeps the
+ * terms frozen on it. A user who believes they corrected a record would
+ * otherwise expect old fees to move, and they never will — so the form says so
+ * above the button, not in a tooltip.
+ *
+ * The empty state is equally literal: with no MSA on file, a hire by this
+ * partner accrues NOTHING. That is the accrual's actual behaviour (it logs
+ * `partner_fee.no_msa` and returns rather than inventing a default percentage),
+ * and a surface that implied otherwise would be the only thing standing between
+ * staff and a missing invoice.
+ */
+function CommercialsSection({
+  partnerOrgId,
+  orgName,
+  initialCommercials,
+}: {
+  partnerOrgId: string;
+  orgName: string;
+  initialCommercials: GetPartnerOrgCommercialsOutput;
+}) {
+  const utils = trpc.useUtils();
+  const query = trpc.getPartnerOrgCommercials.useQuery(
+    { partnerOrgId },
+    { initialData: initialCommercials, staleTime: 5_000, refetchOnWindowFocus: false },
+  );
+  const data = query.data ?? initialCommercials;
+  const { msa, fees, rollups } = data;
+
+  const [editing, setEditing] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+
+  // Form state is strings — these are text inputs, and an empty field has to
+  // stay empty rather than snapping to 0 while it is being typed into.
+  const [feeModel, setFeeModel] = useState<PartnerFeeModelValue>("percentage_ctc");
+  const [feePercent, setFeePercent] = useState("");
+  const [flatFeeMajor, setFlatFeeMajor] = useState("");
+  const [feeCurrency, setFeeCurrency] = useState("INR");
+  const [windowDays, setWindowDays] = useState("90");
+  const [scope, setScope] = useState<PartnerExclusivityScopeValue>("org_wide");
+  const [holdbackPercent, setHoldbackPercent] = useState("25");
+  const [guaranteeDays, setGuaranteeDays] = useState("90");
+
+  const upsert = trpc.upsertPartnerMsa.useMutation({
+    onSuccess: (res) => {
+      setError(null);
+      setEditing(false);
+      setNotice(
+        res.closedMsaId
+          ? "New terms are live. The previous version was closed off — fees already accrued keep the terms they were computed under."
+          : "Terms agreed. Hires this partner sources from now on will accrue a fee.",
+      );
+      void utils.getPartnerOrgCommercials.invalidate({ partnerOrgId });
+    },
+    onError: (err) => setError(friendlyError(err.message)),
+  });
+
+  /** Open the form, pre-filled from the live terms (or the org defaults). */
+  function openForm() {
+    setNotice(null);
+    setError(null);
+    setFeeModel(msa?.feeModel ?? "percentage_ctc");
+    setFeePercent(msa?.feePercent != null ? String(msa.feePercent) : "");
+    setFlatFeeMajor(msa?.flatFeeMinor != null ? String(msa.flatFeeMinor / 100) : "");
+    setFeeCurrency(msa?.feeCurrency ?? "INR");
+    setWindowDays(String(msa?.exclusivityWindowDays ?? 90));
+    setScope(msa?.exclusivityScope ?? "org_wide");
+    setHoldbackPercent(String(msa?.probationHoldbackPercent ?? 25));
+    setGuaranteeDays(String(msa?.replacementGuaranteeDays ?? 90));
+    setEditing(true);
+  }
+
+  const isPercentage = feeModel === "percentage_ctc";
+  const operandFilled = isPercentage ? feePercent.trim() !== "" : flatFeeMajor.trim() !== "";
+  const canSubmit =
+    operandFilled &&
+    /^[A-Za-z]{3}$/.test(feeCurrency.trim()) &&
+    windowDays.trim() !== "" &&
+    holdbackPercent.trim() !== "" &&
+    guaranteeDays.trim() !== "" &&
+    !upsert.isPending;
+
+  function submit() {
+    setError(null);
+    upsert.mutate({
+      partnerOrgId,
+      feeModel,
+      // Only the operand the chosen model uses is sent; the API stores the
+      // other as NULL regardless, and the DB CHECK requires this one.
+      feePercent: isPercentage ? Number(feePercent) : undefined,
+      // Money crosses the wire as minor units — this field is whole currency.
+      flatFeeMinor: isPercentage ? undefined : Math.round(Number(flatFeeMajor) * 100),
+      feeCurrency: feeCurrency.trim().toUpperCase(),
+      exclusivityWindowDays: Number(windowDays),
+      exclusivityScope: scope,
+      probationHoldbackPercent: Number(holdbackPercent),
+      replacementGuaranteeDays: Number(guaranteeDays),
+    });
+  }
+
+  return (
+    <section className="space-y-3">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <h2 className="text-sm font-semibold text-neutral-900">Commercial terms</h2>
+        {editing ? null : (
+          <Button variant="secondary" onClick={openForm}>
+            {msa ? "Change terms" : "Agree terms"}
+          </Button>
+        )}
+      </div>
+
+      {notice ? (
+        <div className="rounded-lg border border-status-success-200 bg-status-success-50 px-4 py-3 text-sm text-status-success-700">
+          {notice}
+        </div>
+      ) : null}
+      {error ? (
+        <div className="rounded-lg border border-status-error-200 bg-status-error-50 px-4 py-3 text-sm text-status-error-700">
+          {error}
+        </div>
+      ) : null}
+
+      {msa ? (
+        <Card className="p-5">
+          <dl className="grid grid-cols-1 gap-4 text-sm sm:grid-cols-4">
+            <Field label="Fee model" value={FEE_MODEL_LABELS[msa.feeModel]} />
+            <Field
+              label="Fee"
+              value={
+                msa.feeModel === "percentage_ctc"
+                  ? `${msa.feePercent ?? 0}% of annual base`
+                  : `${fmtMoney(msa.flatFeeMinor, msa.feeCurrency)} per hire`
+              }
+            />
+            <Field label="Exclusivity window" value={`${msa.exclusivityWindowDays} days`} />
+            <Field
+              label="Exclusivity scope"
+              value={EXCLUSIVITY_SCOPE_LABELS[msa.exclusivityScope]}
+            />
+            <Field label="Probation holdback" value={`${msa.probationHoldbackPercent}%`} />
+            <Field label="Replacement guarantee" value={`${msa.replacementGuaranteeDays} days`} />
+            <Field label="Currency" value={msa.feeCurrency} />
+            <Field label="In force since" value={fmtDate(msa.effectiveFrom)} />
+          </dl>
+        </Card>
+      ) : (
+        <Card>
+          <EmptyState
+            title="No MSA on file"
+            hint={`Fees don't accrue until terms are agreed — a hire ${orgName} sources today would create no fee at all. Agree terms to start the clock.`}
+          />
+        </Card>
+      )}
+
+      {editing ? (
+        <Card className="p-5">
+          <h3 className="text-sm font-semibold text-neutral-900">
+            {msa ? `Change ${orgName}'s terms` : `Agree terms with ${orgName}`}
+          </h3>
+          <p className="mb-4 mt-1 text-xs text-neutral-600">
+            Saving opens a <strong>new terms version</strong> rather than editing this one: the
+            current terms are closed off with today&apos;s date and fees already accrued keep the
+            terms they were computed under. The exclusivity window applies to ownership claims
+            created from the moment it is saved.
+          </p>
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+            <Select
+              label="Fee model"
+              options={FEE_MODEL_OPTIONS}
+              value={feeModel}
+              onValueChange={(v) => setFeeModel(v as PartnerFeeModelValue)}
+            />
+            {isPercentage ? (
+              <Input
+                label="Fee percent"
+                type="number"
+                required
+                value={feePercent}
+                onChange={(e) => setFeePercent(e.target.value)}
+                placeholder="20"
+                hint="Percent of the accepted offer's annual base."
+              />
+            ) : (
+              <Input
+                label={`Flat fee per hire (${feeCurrency.toUpperCase()})`}
+                type="number"
+                required
+                value={flatFeeMajor}
+                onChange={(e) => setFlatFeeMajor(e.target.value)}
+                placeholder="300000"
+                hint="Whole currency units, not paise."
+              />
+            )}
+            <Input
+              label="Currency"
+              required
+              value={feeCurrency}
+              onChange={(e) => setFeeCurrency(e.target.value.toUpperCase())}
+              placeholder="INR"
+              hint="3-letter ISO code."
+            />
+            <Input
+              label="Exclusivity window (days)"
+              type="number"
+              required
+              value={windowDays}
+              onChange={(e) => setWindowDays(e.target.value)}
+              hint="How long an ownership claim on a submitted candidate lasts."
+            />
+            <Select
+              label="Exclusivity scope"
+              options={EXCLUSIVITY_SCOPE_OPTIONS}
+              value={scope}
+              onValueChange={(v) => setScope(v as PartnerExclusivityScopeValue)}
+            />
+            <Input
+              label="Probation holdback (%)"
+              type="number"
+              required
+              value={holdbackPercent}
+              onChange={(e) => setHoldbackPercent(e.target.value)}
+              hint="Share of the fee held back until the guarantee period ends."
+            />
+            <Input
+              label="Replacement guarantee (days)"
+              type="number"
+              required
+              value={guaranteeDays}
+              onChange={(e) => setGuaranteeDays(e.target.value)}
+              hint="Sets each fee's holdback release date, counted from the hire."
+            />
+          </div>
+          <div className="mt-5 flex flex-wrap items-center gap-3">
+            <Button onClick={submit} disabled={!canSubmit}>
+              {upsert.isPending ? "Saving…" : msa ? "Save as new version" : "Agree terms"}
+            </Button>
+            <button
+              type="button"
+              className="text-sm text-neutral-600 hover:underline"
+              onClick={() => {
+                setEditing(false);
+                setError(null);
+              }}
+            >
+              Cancel
+            </button>
+          </div>
+        </Card>
+      ) : null}
+
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+        <StatTile
+          label="Accrued"
+          value={fmtMoney(rollups.accruedMinor, rollups.currency)}
+          hint="In the holdback window"
+        />
+        <StatTile
+          label="Payable"
+          value={fmtMoney(rollups.payableMinor, rollups.currency)}
+          hint="Holdback released, not yet paid"
+        />
+        <StatTile
+          label="Paid"
+          value={fmtMoney(rollups.paidMinor, rollups.currency)}
+          hint="Settled with the partner"
+        />
+      </div>
+
+      {fees.length === 0 ? (
+        <p className="text-sm text-neutral-500">
+          No fees have accrued for this partner. One is created automatically when a candidate they
+          sourced accepts an offer, provided terms are on file at that moment.
+        </p>
+      ) : (
+        <TableShell>
+          <Thead>
+            <Th>Candidate</Th>
+            <Th>Requisition</Th>
+            <Th>Fee</Th>
+            <Th>Status</Th>
+            <Th>Holdback release</Th>
+            <Th>Hired</Th>
+          </Thead>
+          <Tbody>
+            {fees.map((f) => (
+              <Tr key={f.feeId}>
+                <Td className="font-medium text-neutral-900">{f.candidateName ?? "—"}</Td>
+                <Td label="Requisition">{f.requisitionTitle ?? "—"}</Td>
+                <Td label="Fee">
+                  <span>
+                    {fmtMoney(f.feeMinor, f.feeCurrency)}
+                    <span className="block text-xs text-neutral-500">
+                      {f.feeModel === "percentage_ctc"
+                        ? `${f.feePercent ?? 0}% of base`
+                        : f.feeModel === "flat_per_hire"
+                          ? "Flat per hire"
+                          : "Terms not recorded"}
+                    </span>
+                  </span>
+                </Td>
+                <Td label="Status">
+                  <Badge tone={feeTone(f.status)}>{humanize(f.status)}</Badge>
+                </Td>
+                <Td label="Holdback release">{fmtDate(f.holdbackReleaseAt)}</Td>
+                <Td label="Hired">{fmtDate(f.hiredAt)}</Td>
+              </Tr>
+            ))}
+          </Tbody>
+        </TableShell>
+      )}
     </section>
   );
 }

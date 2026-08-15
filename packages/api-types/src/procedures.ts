@@ -4182,6 +4182,181 @@ export const releaseOwnershipClaimOutputSchema = z.object({
 export type ReleaseOwnershipClaimInput = z.infer<typeof releaseOwnershipClaimInputSchema>;
 export type ReleaseOwnershipClaimOutput = z.infer<typeof releaseOwnershipClaimOutputSchema>;
 
+// ────── P2.2 — partner commercials (the MSA and the fees it accrues) ──────
+//
+// The commercial half of the partner relationship. `partner_msa` holds the
+// agreed terms, ONE live row per org: changing terms closes the old row
+// (effective_to) and opens a new one, never an in-place update, so a fee
+// accrued under last year's percentage still points at the row it was computed
+// from. `partner_fees` holds one accrual per partner-sourced HIRE, with those
+// terms frozen into msa_snapshot at accrual time.
+//
+// TWO audiences, deliberately different payloads:
+//   - INTERNAL staff (getPartnerOrgCommercials) see the live MSA, every fee
+//     row, the msa_id behind each and the operational notes.
+//   - The PARTNER (partnerGetCommercials) sees their fee rows and, per row,
+//     the fee terms it was computed under — that is their own contract, so it
+//     is theirs to read. No msa_id (nothing to correlate against), no notes
+//     (an internal field, written about them rather than for them).
+//
+// Enums mirror the DB CHECKs verbatim — the same restatement discipline the
+// partner enums above follow, because api-types never imports from
+// @hireops/db: packages/db/src/schema/partner-msa.ts + partner-fees.ts.
+//
+// Money is minor units (paise) as a JSON number, the draftOffer convention:
+// JSON has no bigint and the DB's int8 is comfortably inside
+// Number.MAX_SAFE_INTEGER for any realistic placement fee.
+
+export const partnerFeeModelSchema = z.enum(["percentage_ctc", "flat_per_hire"]);
+export type PartnerFeeModelValue = z.infer<typeof partnerFeeModelSchema>;
+
+export const partnerExclusivityScopeSchema = z.enum(["org_wide", "req_only"]);
+export type PartnerExclusivityScopeValue = z.infer<typeof partnerExclusivityScopeSchema>;
+
+/** accrued → payable (holdback released) → paid; `disputed` is the parking state. */
+export const partnerFeeStatusSchema = z.enum(["accrued", "payable", "paid", "disputed"]);
+export type PartnerFeeStatusValue = z.infer<typeof partnerFeeStatusSchema>;
+
+/**
+ * The LIVE terms as the internal surface renders them. `effectiveTo` is on the
+ * wire even though a live row always has it null: the field is what makes the
+ * close-and-reopen model legible to the client, and a superseded row read from
+ * a stale cache should say so rather than pass as current.
+ */
+export const partnerMsaRowSchema = z.object({
+  msaId: z.string().uuid(),
+  feeModel: partnerFeeModelSchema,
+  /** percent of the accepted offer's annual base; null unless percentage_ctc. */
+  feePercent: z.number().nullable(),
+  /** minor units in feeCurrency; null unless flat_per_hire. */
+  flatFeeMinor: z.number().nullable(),
+  feeCurrency: z.string(),
+  exclusivityWindowDays: z.number().int(),
+  exclusivityScope: partnerExclusivityScopeSchema,
+  probationHoldbackPercent: z.number(),
+  replacementGuaranteeDays: z.number().int(),
+  effectiveFrom: z.string(),
+  effectiveTo: z.string().nullable(),
+});
+export type PartnerMsaRow = z.infer<typeof partnerMsaRowSchema>;
+
+/**
+ * upsertPartnerMsa — agree terms, or change them. There is no "update": the
+ * mutation closes the live row and inserts a new one, which is why the output
+ * reports BOTH ids. The surface says so in as many words, because a user who
+ * thinks they edited a record will not expect old fees to keep old terms.
+ *
+ * The two operand rules restate partner_msa_fee_operand_check. Mirroring the
+ * DB CHECK here is what turns "percentage model, no percent" into a
+ * BAD_REQUEST with a field path instead of a raw 23514 nothing can explain.
+ */
+export const upsertPartnerMsaInputSchema = z
+  .object({
+    partnerOrgId: z.string().uuid(),
+    feeModel: partnerFeeModelSchema,
+    // numeric(5,2) in the DB. Above 100% is not a fee arrangement, it's a typo.
+    feePercent: z.number().min(0.01).max(100).nullable().optional(),
+    flatFeeMinor: z.number().int().positive().max(Number.MAX_SAFE_INTEGER).nullable().optional(),
+    feeCurrency: z
+      .string()
+      .regex(/^[A-Z]{3}$/, "Expected a 3-letter ISO currency code")
+      .default("INR"),
+    exclusivityWindowDays: z.number().int().min(1).max(365),
+    exclusivityScope: partnerExclusivityScopeSchema.default("org_wide"),
+    probationHoldbackPercent: z.number().min(0).max(100),
+    replacementGuaranteeDays: z.number().int().min(0).max(365),
+  })
+  .refine((v) => v.feeModel !== "percentage_ctc" || v.feePercent != null, {
+    message: "A percentage-of-CTC MSA needs a fee percent.",
+    path: ["feePercent"],
+  })
+  .refine((v) => v.feeModel !== "flat_per_hire" || v.flatFeeMinor != null, {
+    message: "A flat-per-hire MSA needs a flat fee amount.",
+    path: ["flatFeeMinor"],
+  });
+export type UpsertPartnerMsaInput = z.infer<typeof upsertPartnerMsaInputSchema>;
+/** The terms half of the input — what the lib takes, org id supplied separately. */
+export type PartnerMsaTermsInput = Omit<UpsertPartnerMsaInput, "partnerOrgId">;
+
+export const upsertPartnerMsaOutputSchema = z.object({
+  msaId: z.string().uuid(),
+  effectiveFrom: z.string(),
+  /** The row this one superseded, or null when the org had no terms on file. */
+  closedMsaId: z.string().uuid().nullable(),
+});
+export type UpsertPartnerMsaOutput = z.infer<typeof upsertPartnerMsaOutputSchema>;
+
+/**
+ * One accrued fee, as the PARTNER sees it. `candidateName` is the same
+ * name-only privacy join the claims read uses (nullable for the same reason);
+ * the fee terms are lifted out of that row's frozen msa_snapshot, not out of
+ * today's MSA, so a row keeps saying what it was actually computed under.
+ */
+export const partnerFeeRowSchema = z.object({
+  feeId: z.string().uuid(),
+  candidateName: z.string().nullable(),
+  requisitionTitle: z.string().nullable(),
+  feeMinor: z.number(),
+  feeCurrency: z.string(),
+  status: partnerFeeStatusSchema,
+  holdbackReleaseAt: z.string().nullable(),
+  hiredAt: z.string(),
+  // ── frozen terms, from msa_snapshot ──
+  feeModel: partnerFeeModelSchema.nullable(),
+  feePercent: z.number().nullable(),
+  flatFeeMinor: z.number().nullable(),
+});
+export type PartnerFeeRow = z.infer<typeof partnerFeeRowSchema>;
+
+/** The same row for INTERNAL staff, plus the two fields the partner wire omits. */
+export const partnerOrgFeeRowSchema = partnerFeeRowSchema.extend({
+  msaId: z.string().uuid().nullable(),
+  notes: z.string().nullable(),
+});
+export type PartnerOrgFeeRow = z.infer<typeof partnerOrgFeeRowSchema>;
+
+/**
+ * The three money totals both surfaces show. `disputed` is deliberately in
+ * NEITHER total: a disputed fee is precisely the amount the two parties do not
+ * agree on, so rolling it into "accrued" would state a number as settled that
+ * isn't. Those rows are still in the table below the chips.
+ *
+ * `currency` is the org's — one currency per org is the POC reality (fee rows
+ * inherit it from the MSA), so the totals are a plain sum.
+ */
+export const partnerFeeRollupsSchema = z.object({
+  accruedMinor: z.number(),
+  payableMinor: z.number(),
+  paidMinor: z.number(),
+  currency: z.string(),
+});
+export type PartnerFeeRollups = z.infer<typeof partnerFeeRollupsSchema>;
+
+export const getPartnerOrgCommercialsInputSchema = z.object({
+  partnerOrgId: z.string().uuid(),
+});
+export const getPartnerOrgCommercialsOutputSchema = z.object({
+  /** null when no terms have ever been agreed — fees don't accrue until they are. */
+  msa: partnerMsaRowSchema.nullable(),
+  fees: z.array(partnerOrgFeeRowSchema),
+  rollups: partnerFeeRollupsSchema,
+});
+export type GetPartnerOrgCommercialsInput = z.infer<typeof getPartnerOrgCommercialsInputSchema>;
+export type GetPartnerOrgCommercialsOutput = z.infer<typeof getPartnerOrgCommercialsOutputSchema>;
+
+/**
+ * partnerGetCommercials — the partner's own fee ledger. No input: the org is
+ * ctx.partner.partnerOrgId, exactly as on every other partnerProcedure. No
+ * `msa` field either — the live agreement is a document their commercial
+ * contact holds, and echoing today's terms next to rows accrued under older
+ * ones would invite exactly the wrong reading.
+ */
+export const partnerGetCommercialsOutputSchema = z.object({
+  fees: z.array(partnerFeeRowSchema),
+  rollups: partnerFeeRollupsSchema,
+});
+export type PartnerGetCommercialsOutput = z.infer<typeof partnerGetCommercialsOutputSchema>;
+
 // ────── P0.2 — partner invitation acceptance (the redeem half) ──────
 //
 // The PARTNER-side counterpart to invitePartnerUser above: the invitee opens

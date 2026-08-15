@@ -524,6 +524,12 @@ import {
   // P0.5 — the dedup-attempt history behind a partner attribution dispute.
   listPartnerOrgDedupAttemptsInputSchema,
   listPartnerOrgDedupAttemptsOutputSchema,
+  // P2.2 — partner commercials (the MSA, and the fees accrued under it).
+  getPartnerOrgCommercialsInputSchema,
+  getPartnerOrgCommercialsOutputSchema,
+  upsertPartnerMsaInputSchema,
+  upsertPartnerMsaOutputSchema,
+  partnerGetCommercialsOutputSchema,
   // P0.2 — partner invitation acceptance (public redeem half).
   getPartnerInvitationPreviewInputSchema,
   getPartnerInvitationPreviewOutputSchema,
@@ -1057,6 +1063,14 @@ import {
   getPartnerAttentionFeed,
   revokePartnerInvitationForOrg,
 } from "../lib/partner-team";
+// P2.2 — partner commercials. The MSA (internal-only) and the fees it accrues
+// (read by both tiers, with different projections — see the lib).
+import {
+  getLivePartnerMsa,
+  getPartnerOrgCommercials,
+  listPartnerFeesForOrg,
+  upsertPartnerMsa,
+} from "../lib/partner-commercials";
 // The FROZEN JD-skill-vs-parsed-skills matcher, extracted verbatim from
 // buildRequisitionInsights (LD-2A). Shared by the Insights skill-gap chart and
 // the per-hire upskilling suggestions so the two can never drift apart.
@@ -3086,12 +3100,16 @@ const PUBLIC_APPLY_ACCEPTING_STATUSES = new Set<string>(["approved", "posted"]);
 const PARSER_CONFIDENCE_SCORING_FLOOR = 0.5;
 
 /**
- * Partner ownership-claim exclusivity window. 90 days per partner-msa's
- * `exclusivity_window_days` default for empanelled partners
+ * Partner ownership-claim exclusivity window, the FALLBACK. 90 days per
+ * partner-msa's `exclusivity_window_days` default for empanelled partners
  * (partner-data-model.md) and the wireflows' consent copy ("The 90-day
- * exclusivity window starts now"). Reading the real per-org window from
- * partner_msa is a commercials concern (out of PARTNER-02 scope) — the
- * Wave-1 empanelled default is the honest stand-in.
+ * exclusivity window starts now").
+ *
+ * P2.2 made the per-org window real: partnerSubmitCandidate reads the live
+ * partner_msa first and only falls back to this constant when the org has no
+ * agreed terms on file. Keep the two in step — this number is what an
+ * un-contracted partner gets, and the same 90 the partner_msa column defaults
+ * to, so the fallback and a default MSA behave identically.
  */
 const PARTNER_CLAIM_WINDOW_DAYS = 90;
 
@@ -15175,11 +15193,17 @@ export const appRouter = router({
             requestId: ctx.requestId,
           });
 
-          // The ownership claim — 90-day exclusivity window from now. The
-          // partial-unique index is the race guard: a concurrent claim for the
-          // same person makes this INSERT throw, rolling the whole tx back.
+          // The ownership claim — the exclusivity window runs from now. P2.2
+          // closes the loop PARTNER_CLAIM_WINDOW_DAYS' own comment left open
+          // ("reading the real per-org window from partner_msa is a
+          // commercials concern"): the live MSA now IS available, so its
+          // exclusivity_window_days is the window when the org has agreed
+          // terms, and the hardcoded 90 is what an org without an MSA still
+          // gets. Read inside this tx, so a window agreed a second ago applies.
+          const liveMsa = await getLivePartnerMsa(db, tenantId, partnerOrgId);
+          const claimWindowDays = liveMsa?.exclusivityWindowDays ?? PARTNER_CLAIM_WINDOW_DAYS;
           const claimedAt = new Date();
-          const expiresAt = new Date(claimedAt.getTime() + PARTNER_CLAIM_WINDOW_DAYS * 86_400_000);
+          const expiresAt = new Date(claimedAt.getTime() + claimWindowDays * 86_400_000);
           let claimId: string;
           try {
             claimId = await db
@@ -15619,6 +15643,30 @@ export const appRouter = router({
         throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "partner ctx.db missing" });
       }
       return getPartnerAttentionFeed(db, ctx.partner.tenantId, ctx.partner.partnerOrgId);
+    }),
+
+  /**
+   * partnerGetCommercials (P2.2) — the org's own fee ledger: what has accrued
+   * on their hires, what is payable, what has been paid, and the terms each row
+   * was computed under.
+   *
+   * partner_admin ONLY (wireflows §3.11 — commercials are org-admin business,
+   * the same rule /team follows), and the identical FORBIDDEN
+   * 'partner_admin_only' the three team procedures answer. The org is
+   * ctx.partner.partnerOrgId, never an input, so this can only ever read the
+   * caller's own org. What it does NOT carry is the MSA itself: the terms
+   * document is internal-staff scope, and the per-row frozen snapshot is the
+   * partner-visible part of it.
+   */
+  partnerGetCommercials: partnerProcedure
+    .output(partnerGetCommercialsOutputSchema)
+    .query(async ({ ctx }) => {
+      const db = ctx.db;
+      if (!db) {
+        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "partner ctx.db missing" });
+      }
+      requirePartnerAdmin(ctx.partner.role);
+      return listPartnerFeesForOrg(db, ctx.partner.tenantId, ctx.partner.partnerOrgId);
     }),
 
   // ─────────────── CAND-01 — candidate accounts (Wave C) ───────────────
@@ -16998,6 +17046,59 @@ export const appRouter = router({
       const tenantId = ctx.tenantId;
       return withAudit("ownership_claim_release", ctx, input, () =>
         releaseOwnershipClaimForTenant(db, tenantId, input),
+      );
+    }),
+
+  // ═══════ P2.2 — partner commercials (the internal half) ═══════
+  //
+  // The MSA is an INTERNAL-STAFF artefact: partner_msa carries only a
+  // tenant_isolation policy and no partner-facing read, because the terms
+  // document belongs to the commercial relationship, not to the portal. What
+  // the partner sees is the DERIVED fee rows (partnerGetCommercials, further
+  // up), which is why the two payloads differ.
+  //
+  // Same gate and disciplines as the P0.1A block: PARTNER_ADMIN_ROLES, explicit
+  // tenant_id predicate on every statement, logic in
+  // apps/api/src/lib/partner-commercials.ts.
+
+  /**
+   * getPartnerOrgCommercials — one org's live terms, every fee accrued under
+   * any terms, and the three totals. NOT_FOUND for another tenant's org, the
+   * same answer getPartnerOrg gives.
+   */
+  getPartnerOrgCommercials: protectedProcedure
+    .input(getPartnerOrgCommercialsInputSchema)
+    .output(getPartnerOrgCommercialsOutputSchema)
+    .query(async ({ ctx, input }) => {
+      requireAnyRole(ctx, PARTNER_ADMIN_ROLES, "Partner administration is admin / hr_ops only");
+      const db = requireDb(ctx);
+      if (!ctx.tenantId) {
+        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
+      }
+      return getPartnerOrgCommercials(db, ctx.tenantId, input.partnerOrgId);
+    }),
+
+  /**
+   * upsertPartnerMsa — agree terms, or change them. Named "upsert" for the
+   * caller's mental model only: the write is close-and-reopen (the old row gets
+   * an effective_to, a new row is inserted), never an in-place edit, so fees
+   * already accrued keep the terms they were computed under. The output names
+   * both rows for exactly that reason.
+   */
+  upsertPartnerMsa: protectedProcedure
+    .input(upsertPartnerMsaInputSchema)
+    .output(upsertPartnerMsaOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      requireAnyRole(ctx, PARTNER_ADMIN_ROLES, "Partner administration is admin / hr_ops only");
+      const db = requireDb(ctx);
+      if (!ctx.tenantId) {
+        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
+      }
+      const tenantId = ctx.tenantId;
+      const actorMembershipId = await resolveActorMembership(db, ctx);
+      const { partnerOrgId, ...terms } = input;
+      return withAudit("partner_msa_upsert", ctx, input, () =>
+        upsertPartnerMsa(db, { tenantId, partnerOrgId, actorMembershipId, input: terms }),
       );
     }),
 

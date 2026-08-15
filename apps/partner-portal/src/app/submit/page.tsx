@@ -39,7 +39,7 @@ export default async function SubmitPage() {
       orgName={me.orgName}
       user={{ label: me.displayName, role: roleLabel(me.role) }}
       active="submit"
-      canManageTeam={me.role === "partner_admin"}
+      isOrgAdmin={me.role === "partner_admin"}
     >
       <SubmitCandidateForm reqs={reqs.items} />
     </PartnerShell>

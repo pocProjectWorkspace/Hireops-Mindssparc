@@ -48,7 +48,7 @@ export default async function DashboardPage() {
       orgName={me.orgName}
       user={{ label: me.displayName, role: roleLabel(me.role) }}
       active="dashboard"
-      canManageTeam={me.role === "partner_admin"}
+      isOrgAdmin={me.role === "partner_admin"}
     >
       <PartnerDashboard
         me={me}

@@ -27,6 +27,7 @@ import { enqueueNotification } from "@hireops/notifications";
 import type { Logger } from "@hireops/observability";
 import { createOnboardingCaseForApplication } from "./onboarding-case";
 import { enqueuePartnerStageChangedEmail } from "./partner-stage-email";
+import { accruePartnerFeeOnHire } from "./partner-commercials";
 
 /** postgres.js tagged-template client (same shape as ctx.sql / poolSql). */
 type PgSqlClient = typeof poolSql;
@@ -100,6 +101,18 @@ export async function runOfferAcceptSideEffects(
     { log },
     { tenantId, applicationId, toStage: "offer_accepted" },
   );
+
+  // P2.2 — accrue the sourcing partner's placement fee for this hire.
+  //
+  // Sits immediately after the partner email because it answers the same
+  // question about the same event, and shares its posture exactly: it decides
+  // everything itself (is a partner even attached, are there agreed terms), it
+  // is idempotent (one fee per application, enforced by a unique index), and it
+  // NEVER throws — the acceptance above is already committed and durable, and
+  // no commercial bookkeeping may unwind it. A direct application costs one
+  // SELECT; a partner org with no live MSA accrues nothing and says so in the
+  // log rather than inventing terms.
+  await accruePartnerFeeOnHire(sql, { tenantId, applicationId, offerId, log });
 
   await enqueueWorkdayHire(sql, { offerId, tenantId, applicationId, log });
 

@@ -1,4 +1,5 @@
 import type {
+  GetPartnerOrgCommercialsOutput,
   GetPartnerOrgOutput,
   ListPartnerOrgClaimsOutput,
   ListPartnerOrgDedupAttemptsOutput,
@@ -96,6 +97,12 @@ export default async function PartnerOrgDetailPage({
   const initialDedupAttempts: ListPartnerOrgDedupAttemptsOutput =
     await caller.listPartnerOrgDedupAttempts({ partnerOrgId });
 
+  // P2.2 — the MSA and the fees accrued under it. Same gate, same
+  // already-ruled-out NOT_FOUND, so it is prefetched flat like the two above.
+  const initialCommercials: GetPartnerOrgCommercialsOutput = await caller.getPartnerOrgCommercials({
+    partnerOrgId,
+  });
+
   let requisitionOptions: RequisitionSummary[] | null = null;
   try {
     const reqs = await caller.listRequisitionSummaries({ limit: 100 });
@@ -117,6 +124,7 @@ export default async function PartnerOrgDetailPage({
         initial={initial}
         initialClaims={initialClaims}
         initialDedupAttempts={initialDedupAttempts}
+        initialCommercials={initialCommercials}
         requisitionOptions={requisitionOptions}
       />
     </AppShell>
