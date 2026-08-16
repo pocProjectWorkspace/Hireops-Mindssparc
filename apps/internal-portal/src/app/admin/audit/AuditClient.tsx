@@ -25,6 +25,7 @@ import {
 } from "@/components/ui";
 import { trpc } from "@/lib/trpc-client";
 import { humanizeSentence } from "@/lib/labels";
+import { buildCsv, downloadCsv } from "@/lib/csv";
 
 // Derive the row type from the procedure output, relaxing the two jsonb
 // columns to optional — zod infers `unknown` fields as required on the
@@ -161,10 +162,10 @@ export function AuditClient({ initial }: { initial: ListAuditEventsOutput }) {
         ...(actionFilter ? { action: actionFilter } : {}),
       });
       const filtered = (res.items as AuditEventRow[]).filter(refine);
-      const csv = buildCsv(filtered);
+      const csv = buildAuditCsv(filtered);
       downloadCsv(
-        csv,
         `audit-log-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-")}.csv`,
+        csv,
       );
       setExportNote(
         `Exported ${filtered.length.toLocaleString()} event${filtered.length === 1 ? "" : "s"}` +
@@ -484,7 +485,11 @@ function FilterChip({
   );
 }
 
-// ─────────────────────────── CSV helpers ───────────────────────────
+// ─────────────────────────── CSV export ───────────────────────────
+//
+// Quoting, assembly and the download itself live in `@/lib/csv` (shared
+// with the /reports catalog since R0.4); only the audit-specific column
+// list and row mapping stay here.
 
 const CSV_HEADERS = [
   "created_at",
@@ -499,16 +504,10 @@ const CSV_HEADERS = [
   "changed_columns",
 ] as const;
 
-/** RFC-4180 field quoting: wrap in quotes, double any embedded quote. */
-function csvField(value: string): string {
-  if (/[",\n\r]/.test(value)) return `"${value.replace(/"/g, '""')}"`;
-  return value;
-}
-
-function buildCsv(rows: AuditEventRow[]): string {
-  const lines = [CSV_HEADERS.join(",")];
-  for (const r of rows) {
-    const cells = [
+function buildAuditCsv(rows: AuditEventRow[]): string {
+  return buildCsv(
+    CSV_HEADERS,
+    rows.map((r) => [
       r.created_at,
       auditEventSeverity(r.action, r.entity_type),
       r.action,
@@ -519,23 +518,8 @@ function buildCsv(rows: AuditEventRow[]): string {
       r.source,
       r.request_id ?? "",
       (r.changed_columns ?? []).join("; "),
-    ];
-    lines.push(cells.map((c) => csvField(String(c))).join(","));
-  }
-  return lines.join("\r\n");
-}
-
-function downloadCsv(csv: string, filename: string): void {
-  if (typeof window === "undefined") return;
-  const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = filename;
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-  URL.revokeObjectURL(url);
+    ]),
+  );
 }
 
 /** snake_case → "Sentence case". */

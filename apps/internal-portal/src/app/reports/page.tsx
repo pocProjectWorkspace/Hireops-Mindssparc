@@ -27,6 +27,16 @@ export const dynamic = "force-dynamic"; // Role-gated + reads live requisition/a
 
 const READ_ROLES = ["admin", "hr_head", "hr_ops"];
 
+// R0.4 drill-down gates. The catalog's readers are a WIDER set than either
+// drill-down target's, so the links are role-checked here rather than shown
+// to everyone and failing on arrival:
+//   - /requisitions/[id] reads getRequisitionDetail (REQUISITION_READ_ROLES);
+//   - /triage renders off listCandidates (same set) and has no role notice of
+//     its own, so hr_ops would land on an error boundary.
+// Both mirror the target's gate intersected with this page's readers.
+const REQUISITION_DETAIL_ROLES = ["admin", "hr_head", "hiring_manager", "recruiter"];
+const TRIAGE_ROLES = ["admin", "hr_head", "hiring_manager", "recruiter"];
+
 export default async function ReportsHubPage() {
   const session = await requireAuth();
   const isAdmin = session.roles.includes("admin");
@@ -69,6 +79,8 @@ export default async function ReportsHubPage() {
         initialProductivity={initialProductivity}
         initialPipeline={initialPipeline}
         isAdmin={isAdmin}
+        canOpenRequisitionDetail={session.roles.some((r) => REQUISITION_DETAIL_ROLES.includes(r))}
+        canOpenTriage={session.roles.some((r) => TRIAGE_ROLES.includes(r))}
       />
     </AppShell>
   );

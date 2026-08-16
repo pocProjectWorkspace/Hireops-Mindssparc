@@ -24,6 +24,7 @@ import { PageContainer } from "@/components/nav/PageContainer";
 import { trpc } from "@/lib/trpc-client";
 import { humanizeSentence } from "@/lib/labels";
 import { formatCostMicros } from "@/lib/approval-format";
+import { buildCsv, downloadCsv } from "@/lib/csv";
 
 /**
  * The /reports catalog (R0.2, filled out in R0.3) — every report on ONE
@@ -62,6 +63,20 @@ import { formatCostMicros } from "@/lib/approval-format";
  * landing costs no client fetch); any filter change fetches. Calendar
  * dates are widened to whole UTC days — 00:00:00 on `from`, 23:59:59.999
  * on `to` — matching the inclusive bounds the semantic layer applies.
+ *
+ * DELIVERY (R0.4). Each filterable section carries a Download CSV button
+ * that serialises the CURRENT query result client-side (`@/lib/csv`, the
+ * audit console's helpers) — so the file is exactly the rows on screen,
+ * cap included, and a filter change needs no new round trip.
+ *
+ * DRILL-DOWN links out only where a real surface exists AND the viewer can
+ * open it. Two do: a requisition title → /requisitions/[id], and an SLA
+ * stage → /triage?stage=<stage> (the triage feed's URL-backed stage
+ * filter, `useFilterChips`). Both targets are gated to admin + hr_head,
+ * NOT hr_ops — who can read this catalog — so the links render as plain
+ * text for hr_ops rather than walking them into a role notice. The
+ * recruiter column stays plain text throughout: no surface takes a
+ * recruiter query-param filter, and inventing one is a later ticket.
  */
 
 /** Age past which an OPEN requisition is worth chasing. */
@@ -72,11 +87,17 @@ export function ReportsHubClient({
   initialProductivity,
   initialPipeline,
   isAdmin,
+  canOpenRequisitionDetail,
+  canOpenTriage,
 }: {
   initialAging: GetRequisitionAgingReportOutput;
   initialProductivity: GetRecruiterProductivityReportOutput;
   initialPipeline: GetPipelineReportOutput;
   isAdmin: boolean;
+  /** Viewer passes /requisitions/[id]'s own read gate — see the drill-down note. */
+  canOpenRequisitionDetail: boolean;
+  /** Viewer passes listCandidates' read gate, which /triage needs to render. */
+  canOpenTriage: boolean;
 }) {
   const [from, setFrom] = useState("");
   const [to, setTo] = useState("");
@@ -243,6 +264,14 @@ export function ReportsHubClient({
             Anything open past {AGING_HIGHLIGHT_DAYS} days is flagged.
           </>
         }
+        actions={
+          <DownloadCsvButton
+            disabled={aging.rows.length === 0}
+            onClick={() =>
+              downloadCsv(`requisition-aging-${csvDateStamp()}.csv`, buildAgingCsv(aging))
+            }
+          />
+        }
       >
         {aging.rows.length === 0 ? (
           <Card padded={false}>
@@ -298,7 +327,18 @@ export function ReportsHubClient({
               <Tbody>
                 {aging.rows.map((r) => (
                   <Tr key={r.requisitionId}>
-                    <Td label="Requisition">{r.title}</Td>
+                    <Td label="Requisition">
+                      {canOpenRequisitionDetail ? (
+                        <Link
+                          href={`/requisitions/${r.requisitionId}`}
+                          className="text-brand-700 hover:underline"
+                        >
+                          {r.title}
+                        </Link>
+                      ) : (
+                        r.title
+                      )}
+                    </Td>
                     <Td label="Business unit">{r.businessUnitName}</Td>
                     <Td label="Status">
                       <Badge tone={statusTone(r.status)} pill>
@@ -346,6 +386,17 @@ export function ReportsHubClient({
             work on applications assigned to them, over when the application arrived — so the two
             halves answer different questions on purpose.
           </>
+        }
+        actions={
+          <DownloadCsvButton
+            disabled={productivity.rows.length === 0}
+            onClick={() =>
+              downloadCsv(
+                `recruiter-productivity-${csvDateStamp()}.csv`,
+                buildProductivityCsv(productivity),
+              )
+            }
+          />
         }
       >
         {productivity.rows.length === 0 ? (
@@ -401,6 +452,13 @@ export function ReportsHubClient({
             live SLA standing: a breach is an application still sitting in a thresholded stage past
             the tenant&apos;s limit — a snapshot of right now, not a history.
           </>
+        }
+        actions={
+          <DownloadCsvButton
+            onClick={() =>
+              downloadCsv(`pipeline-speed-${csvDateStamp()}.csv`, buildPipelineCsv(pipeline))
+            }
+          />
         }
       >
         <div className="mb-4 grid grid-cols-2 gap-4 sm:grid-cols-4">
@@ -459,7 +517,19 @@ export function ReportsHubClient({
                 <Tbody>
                   {pipeline.slaBreaches.map((s) => (
                     <Tr key={s.stage}>
-                      <Td label="Stage">{humanizeSentence(s.stage)}</Td>
+                      <Td label="Stage">
+                        {canOpenTriage ? (
+                          <Link
+                            href={`/triage?stage=${s.stage}`}
+                            className="text-brand-700 hover:underline"
+                            title="Open the triage feed filtered to this stage"
+                          >
+                            {humanizeSentence(s.stage)}
+                          </Link>
+                        ) : (
+                          humanizeSentence(s.stage)
+                        )}
+                      </Td>
                       <Td numeric label="Threshold (h)">
                         {s.thresholdHours.toLocaleString()}
                       </Td>
@@ -653,19 +723,155 @@ const controlCls =
 function ReportSection({
   title,
   blurb,
+  actions,
   children,
 }: {
   title: string;
   blurb: ReactNode;
+  /** Right-aligned header slot — the section's Download CSV button. */
+  actions?: ReactNode;
   children: ReactNode;
 }) {
   return (
     <section className="mb-10 last:mb-0">
-      <h2 className="text-sm font-semibold uppercase tracking-wide text-neutral-600">{title}</h2>
+      <div className="flex flex-wrap items-start justify-between gap-2">
+        <h2 className="text-sm font-semibold uppercase tracking-wide text-neutral-600">{title}</h2>
+        {actions ? <div className="shrink-0">{actions}</div> : null}
+      </div>
       <p className="mb-3 mt-1 max-w-3xl text-xs text-neutral-500">{blurb}</p>
       {children}
     </section>
   );
+}
+
+/**
+ * The section-header export control. Pill styling from `controlCls` (the
+ * same language as the filter bar), and it exports the CURRENT filtered
+ * data straight from the already-fetched query result — see `@/lib/csv`
+ * for why there is no server round trip.
+ */
+function DownloadCsvButton({
+  onClick,
+  disabled,
+  label = "Download CSV",
+}: {
+  onClick: () => void;
+  disabled?: boolean;
+  label?: string;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      className={`${controlCls} font-medium hover:bg-neutral-50 disabled:cursor-not-allowed disabled:text-neutral-400 disabled:hover:bg-white`}
+    >
+      {label}
+    </button>
+  );
+}
+
+/** Today as YYYY-MM-DD in UTC — the axis the whole catalog reports on. */
+function csvDateStamp(): string {
+  return new Date().toISOString().slice(0, 10);
+}
+
+/** A nullable number for a CSV cell: null → empty, never "—". */
+function csvNumber(value: number | null): string {
+  return value === null ? "" : String(value);
+}
+
+const AGING_CSV_HEADERS = [
+  "title",
+  "business_unit",
+  "status",
+  "recruiter",
+  "openings",
+  "raised_at",
+  "days_open",
+] as const;
+
+/**
+ * Exactly the rows on screen — so when the server capped the list, the
+ * file is capped too and the on-screen note is the only place that says
+ * so. Nothing is appended to the CSV.
+ */
+function buildAgingCsv(aging: GetRequisitionAgingReportOutput): string {
+  return buildCsv(
+    AGING_CSV_HEADERS,
+    aging.rows.map((r) => [
+      r.title,
+      r.businessUnitName,
+      r.status,
+      r.recruiterName ?? "",
+      String(r.openings),
+      r.createdAt,
+      String(r.daysOpen),
+    ]),
+  );
+}
+
+const PRODUCTIVITY_CSV_HEADERS = [
+  "recruiter",
+  "reqs_owned",
+  "applications",
+  "interviews_scheduled",
+  "offers_extended",
+  "hires",
+] as const;
+
+function buildProductivityCsv(productivity: GetRecruiterProductivityReportOutput): string {
+  return buildCsv(
+    PRODUCTIVITY_CSV_HEADERS,
+    productivity.rows.map((r) => [
+      r.recruiterName ?? "Unnamed recruiter",
+      String(r.reqsOwned),
+      String(r.applications),
+      String(r.interviewsScheduled),
+      String(r.offersExtended),
+      String(r.hires),
+    ]),
+  );
+}
+
+const PIPELINE_CSV_HEADERS = ["section", "item", "metric", "value"] as const;
+
+/**
+ * ONE pipeline CSV rather than a button per card.
+ *
+ * The section renders six datasets (time to fill, funnel, SLA, time in
+ * stage, source mix, offers) with incompatible column sets; six buttons
+ * would swamp the header and picking two of the six would be arbitrary.
+ * So it exports long-format — section, item, metric, value — which holds
+ * all six losslessly, pivots in one step in a spreadsheet, and keeps the
+ * catalog's "one export per section" rhythm. Nulls export as empty cells.
+ */
+function buildPipelineCsv(pipeline: GetPipelineReportOutput): string {
+  const rows: string[][] = [
+    ["time_to_fill", "", "median_days", csvNumber(pipeline.timeToFill.medianDays)],
+    ["time_to_fill", "", "p90_days", csvNumber(pipeline.timeToFill.p90Days)],
+    ["time_to_fill", "", "hires", String(pipeline.timeToFill.hires)],
+  ];
+  for (const f of pipeline.funnel) {
+    rows.push(["funnel", f.stage, "applications_in_stage", String(f.count)]);
+  }
+  for (const s of pipeline.slaBreaches) {
+    rows.push(["sla", s.stage, "threshold_hours", String(s.thresholdHours)]);
+    rows.push(["sla", s.stage, "in_stage", String(s.totalInStage)]);
+    rows.push(["sla", s.stage, "breached", String(s.breachedCount)]);
+  }
+  for (const s of pipeline.timeInStage) {
+    rows.push(["time_in_stage", s.stage, "median_days", csvNumber(s.medianDays)]);
+  }
+  for (const s of pipeline.sourceMix) {
+    rows.push(["source_mix", s.source, "applications", String(s.applications)]);
+    rows.push(["source_mix", s.source, "hires", String(s.hires)]);
+  }
+  rows.push(["offers", "", "drafted", String(pipeline.offers.drafted)]);
+  rows.push(["offers", "", "extended", String(pipeline.offers.extended)]);
+  rows.push(["offers", "", "accepted", String(pipeline.offers.accepted)]);
+  rows.push(["offers", "", "declined", String(pipeline.offers.declined)]);
+  return buildCsv(PIPELINE_CSV_HEADERS, rows);
 }
 
 function totalOf(aging: GetRequisitionAgingReportOutput): number {
