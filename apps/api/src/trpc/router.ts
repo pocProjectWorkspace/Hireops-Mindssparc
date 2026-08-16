@@ -138,6 +138,9 @@ import { getHeadcountVsPlanReport } from "../lib/reports/headcount-vs-plan";
 import { getApprovalAnalyticsReport } from "../lib/reports/approval-analytics";
 // R1.3 sponsor pack — the partner / agency scorecard (#7).
 import { getPartnerScorecardReport } from "../lib/reports/partner-scorecard";
+// R1.2 sponsor pack — interview & scorecard health (#9), onboarding readiness (#19).
+import { getInterviewHealthReport } from "../lib/reports/interview-health";
+import { getOnboardingReadinessReport } from "../lib/reports/onboarding-readiness";
 import {
   getIrisAction,
   listIrisActions,
@@ -396,6 +399,11 @@ import {
   // R1.3 — partner / agency scorecard (catalog #7).
   getPartnerScorecardReportInputSchema,
   getPartnerScorecardReportOutputSchema,
+  // R1.2 — interview & scorecard health (#9), onboarding readiness (#19).
+  getInterviewHealthReportInputSchema,
+  getInterviewHealthReportOutputSchema,
+  getOnboardingReadinessReportInputSchema,
+  getOnboardingReadinessReportOutputSchema,
   getHrMetricsOutputSchema,
   listJdLibraryInputSchema,
   listJdLibraryOutputSchema,
@@ -7022,7 +7030,15 @@ export const appRouter = router({
         if (existing) {
           await db
             .update(interviews)
-            .set({ status: "cancelled", updatedAt: new Date() })
+            // R1.2 — stamp WHEN the round was cancelled, not just that it was
+            // (migration 0115). COALESCE rather than a bare now(): the row was
+            // selected as non-cancelled, so this is a genuine transition INTO
+            // the status, but a stamp must never be movable by a later write.
+            .set({
+              status: "cancelled",
+              cancelledAt: dsql`COALESCE(${interviews.cancelledAt}, now())`,
+              updatedAt: new Date(),
+            })
             .where(eq(interviews.id, existing.id));
           cancelledInterviewId = existing.id;
         }
@@ -7060,7 +7076,15 @@ export const appRouter = router({
         }
         await db
           .update(interviews)
-          .set({ status: "cancelled", updatedAt: new Date() })
+          // R1.2 / 0115 — the cancellation timestamp the interview-health
+          // report reads. The early return above already makes this a
+          // transition INTO cancelled; COALESCE makes it un-overwritable
+          // regardless, so a re-cancel can never move the recorded moment.
+          .set({
+            status: "cancelled",
+            cancelledAt: dsql`COALESCE(${interviews.cancelledAt}, now())`,
+            updatedAt: new Date(),
+          })
           .where(eq(interviews.id, row.id));
 
         // POLISH-01 (Item B) — candidate-facing cancellation email (warm, no
@@ -7930,7 +7954,16 @@ export const appRouter = router({
 
         await db
           .update(interviews)
-          .set({ status: "completed", updatedAt: new Date() })
+          // R1.2 / 0115 — the completion timestamp every interview cycle time
+          // is measured from (median hours to feedback on catalog report #9).
+          // The status guard above only lets a `scheduled` round through, so
+          // this is always a transition INTO completed; COALESCE keeps the
+          // first stamp authoritative even so.
+          .set({
+            status: "completed",
+            completedAt: dsql`COALESCE(${interviews.completedAt}, now())`,
+            updatedAt: new Date(),
+          })
           .where(eq(interviews.id, input.interviewId));
 
         const stageCtx = interviewStageContext(iv.scorecardTemplate);
@@ -10772,6 +10805,108 @@ export const appRouter = router({
       const filters: ReportFilters = input;
 
       return getPartnerScorecardReport(db, ctx.tenantId, filters);
+    }),
+
+  // ───────── getInterviewHealthReport (catalog #9 · R1.2) ─────────
+  //
+  // "Are we running the interviews we book, and does anyone write them up?" —
+  // the fourth sponsor question, and one the platform could not answer at all
+  // before migration 0115 gave interviews a completed_at / cancelled_at.
+  // Funnel + completion rate, median hours from completion to a submitted
+  // scorecard, scorecard coverage over the completed rounds with the ten
+  // panelists who owe the most, and the same picture per round.
+  //
+  // All the SQL lives in lib/reports/interview-health.ts; this procedure is
+  // the gate + the display-name join. THE definitions to know: the period
+  // bounds scheduled_start (interviews DUE in the window, so the funnel reads
+  // as one sentence); the completion rate's denominator is resolved
+  // interviews only, never still-scheduled ones; and the feedback median is
+  // per SUBMITTED SCORECARD, with pre-0115 rows carrying a backfilled
+  // completed_at that makes them an approximation — stated on the surface.
+  //
+  // Names come from resolveMembershipNames (ctx.sql, service-role):
+  // public.users is self-only under RLS, so resolving them inside the
+  // tenant-bound query would return the caller's own name and nulls for
+  // every other panelist. Read-only, no withAudit (matches the catalog).
+  getInterviewHealthReport: protectedProcedure
+    .input(getInterviewHealthReportInputSchema)
+    .output(getInterviewHealthReportOutputSchema)
+    .query(async ({ ctx, input }) => {
+      requireAnyRole(
+        ctx,
+        REPORTS_READ_ROLES,
+        "Reports access requires the admin, hr_head or hr_ops role",
+      );
+      const db = requireDb(ctx);
+      if (!ctx.tenantId) {
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: "protected procedure missing tenantId",
+        });
+      }
+      const tenantId = ctx.tenantId;
+      const filters: ReportFilters = input;
+
+      const report = await getInterviewHealthReport(db, tenantId, filters);
+      const names = await resolveMembershipNames(
+        ctx,
+        tenantId,
+        report.scorecardCompletion.laggards.map((l) => l.membershipId),
+      );
+
+      return {
+        totals: report.totals,
+        scorecardCompletion: {
+          interviewsCompleted: report.scorecardCompletion.interviewsCompleted,
+          expectedScorecards: report.scorecardCompletion.expectedScorecards,
+          submittedScorecards: report.scorecardCompletion.submittedScorecards,
+          completionRate: report.scorecardCompletion.completionRate,
+          laggards: report.scorecardCompletion.laggards.map((l) => ({
+            ...l,
+            panelistName: names.get(l.membershipId) ?? null,
+          })),
+        },
+        byRound: report.byRound,
+      };
+    }),
+
+  // ──────── getOnboardingReadinessReport (catalog #19 · R1.2) ────────
+  //
+  // "Who starts soon, and what is still missing?" — the last of the sponsor
+  // pack, and the only catalog report that looks PAST the hire: every other
+  // surface stops at offer_accepted. One row per ACTIVE onboarding case with
+  // its task, document, BGV and IT-provisioning standing, plus the case mix
+  // and the fortnight rollups.
+  //
+  // All the SQL lives in lib/reports/onboarding-readiness.ts; this procedure
+  // is the gate. THE definitions to know: the period bounds
+  // expected_start_date (who LANDS in the window, not whose paperwork opened
+  // in it), daysToStart goes negative for a start date already passed — which
+  // is the finding, not an error — and the rollups are computed over the full
+  // active set so the row cap can never make the tiles wrong.
+  //
+  // No display-name join: candidate names come from `persons`, which is
+  // tenant-scoped rather than self-only, so the tenant-bound read resolves
+  // them itself. Read-only, no withAudit (matches the rest of the catalog).
+  getOnboardingReadinessReport: protectedProcedure
+    .input(getOnboardingReadinessReportInputSchema)
+    .output(getOnboardingReadinessReportOutputSchema)
+    .query(async ({ ctx, input }) => {
+      requireAnyRole(
+        ctx,
+        REPORTS_READ_ROLES,
+        "Reports access requires the admin, hr_head or hr_ops role",
+      );
+      const db = requireDb(ctx);
+      if (!ctx.tenantId) {
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: "protected procedure missing tenantId",
+        });
+      }
+      const filters: ReportFilters = input;
+
+      return getOnboardingReadinessReport(db, ctx.tenantId, filters);
     }),
 
   // ─────────────────────── getHrMetrics (METRICS-01) ───────────────────────

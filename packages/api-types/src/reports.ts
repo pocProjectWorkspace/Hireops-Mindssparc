@@ -552,3 +552,250 @@ export const getPartnerScorecardReportOutputSchema = z.object({
 export type PartnerScorecardRow = z.infer<typeof partnerScorecardRowSchema>;
 export type GetPartnerScorecardReportInput = z.infer<typeof getPartnerScorecardReportInputSchema>;
 export type GetPartnerScorecardReportOutput = z.infer<typeof getPartnerScorecardReportOutputSchema>;
+
+// ─────────── #9 interview & scorecard health ───────────
+
+/**
+ * The interview funnel for the period, and how fast feedback follows it.
+ *
+ * PERIOD AXIS — every count here is windowed on `interviews.scheduled_start`
+ * ("interviews that were due to happen in this window"), NOT on when they
+ * were booked and NOT on when they completed. That is the only axis on which
+ * "scheduled 40, completed 31, cancelled 6" reads as one coherent sentence.
+ * The column is nullable, so an interview with no start time cannot be placed
+ * on the axis and drops out of ANY windowed view; with no window set it is
+ * counted.
+ *
+ * `completionRate` = completed / (completed + cancelled + noShow) — the share
+ * of interviews that REACHED A CONCLUSION and concluded by happening. Still-
+ * scheduled rounds are deliberately NOT in the denominator: a round booked for
+ * next week has not failed, and counting it as a miss would make the rate a
+ * function of how far ahead the tenant books. 1dp; null when nothing in the
+ * window has resolved yet.
+ *
+ * `medianHoursToFeedback` = `interview_feedback.submitted_at` −
+ * `interviews.completed_at`, in HOURS (2dp), over every SUBMITTED SCORECARD
+ * whose interview has a completion stamp — so a three-panelist interview
+ * contributes three observations, not one, and `feedbackPairs` is that
+ * population. Clamped at zero. CAVEAT, stated on the surface too: the
+ * `completed_at` column arrived with migration 0115, which BACKFILLED older
+ * rows as `COALESCE(scheduled_end, updated_at)`. For interviews completed
+ * before 0115 this number is therefore an approximation, and can be
+ * meaningfully wrong where an interview sat un-actioned before someone
+ * flipped its status.
+ */
+export const interviewHealthTotalsSchema = z.object({
+  /** Still `scheduled` — booked, not yet resolved. */
+  scheduled: z.number().int(),
+  completed: z.number().int(),
+  cancelled: z.number().int(),
+  noShow: z.number().int(),
+  /** Every interview in the window, whatever its status. */
+  total: z.number().int(),
+  /** completed / (completed + cancelled + noShow) × 100, 1dp; null over zero. */
+  completionRate: z.number().nullable(),
+  /** Median hours completed_at → scorecard submitted_at, 2dp; null with no pairs. */
+  medianHoursToFeedback: z.number().nullable(),
+  /** Submitted scorecards behind that median — the observation count, not interviews. */
+  feedbackPairs: z.number().int(),
+});
+
+/**
+ * One panelist who owes scorecards.
+ *
+ * DEFINITION — `outstanding` counts COMPLETED interviews in the window where
+ * this membership is on the panel and has no `interview_feedback` row with a
+ * `submitted_at`. A saved-but-unsubmitted draft counts as outstanding, which
+ * is the point: the recruiter cannot read a draft.
+ */
+export const interviewHealthLaggardSchema = z.object({
+  membershipId: z.string().uuid(),
+  /** display_name → email-local-part → null, resolved off the RLS path. */
+  panelistName: z.string().nullable(),
+  outstanding: z.number().int(),
+});
+
+/**
+ * Scorecard coverage over the COMPLETED interviews in the window.
+ *
+ * `expectedScorecards` is one per (completed interview × panelist) — the
+ * panel roster is the expectation, so an interview completed with no panel
+ * expects nothing and cannot drag the rate down. `submittedScorecards` counts
+ * those slots with a `submitted_at`. The rate is 1dp, null when nothing was
+ * expected.
+ */
+export const interviewHealthScorecardCompletionSchema = z.object({
+  interviewsCompleted: z.number().int(),
+  expectedScorecards: z.number().int(),
+  submittedScorecards: z.number().int(),
+  /** submitted / expected × 100, 1dp; null when nothing was expected. */
+  completionRate: z.number().nullable(),
+  /** Worst ten by outstanding count, then name-stable by membership id. */
+  laggards: z.array(interviewHealthLaggardSchema),
+});
+
+/**
+ * One interview round, by its `round_name` — the plan's own label ("Tech
+ * screen", "HR round"). Free text on the interview, not an enum, so the rows
+ * are whatever the tenant's plans call their rounds; busiest first.
+ */
+export const interviewHealthRoundRowSchema = z.object({
+  roundName: z.string(),
+  total: z.number().int(),
+  scheduled: z.number().int(),
+  completed: z.number().int(),
+  cancelled: z.number().int(),
+  noShow: z.number().int(),
+  /** Same definition as the headline median, over this round's pairs only. */
+  medianHoursToFeedback: z.number().nullable(),
+});
+
+/**
+ * Filters honoured: period (bounding `interviews.scheduled_start`),
+ * businessUnitId and requisitionId — both resolved through the interview's
+ * OWN `requisition_id` (denormalised on the row) → positions, so no
+ * application join is needed and a BU filter means exactly what it means on
+ * the aging report.
+ *
+ * recruiterMembershipId / source / stage are N/A and ignored: an interview
+ * has a panel, not a recruiter; source and stage are application attributes,
+ * and applying them here would silently redefine the funnel (an interview
+ * belongs to the round it was booked for, not to wherever the application has
+ * since moved).
+ */
+export const getInterviewHealthReportInputSchema = reportFiltersSchema;
+
+export const getInterviewHealthReportOutputSchema = z.object({
+  totals: interviewHealthTotalsSchema,
+  scorecardCompletion: interviewHealthScorecardCompletionSchema,
+  /** Busiest round first, then name A→Z. Uncapped — rounds are a small set. */
+  byRound: z.array(interviewHealthRoundRowSchema),
+});
+
+export type InterviewHealthTotals = z.infer<typeof interviewHealthTotalsSchema>;
+export type InterviewHealthLaggard = z.infer<typeof interviewHealthLaggardSchema>;
+export type InterviewHealthScorecardCompletion = z.infer<
+  typeof interviewHealthScorecardCompletionSchema
+>;
+export type InterviewHealthRoundRow = z.infer<typeof interviewHealthRoundRowSchema>;
+export type GetInterviewHealthReportInput = z.infer<typeof getInterviewHealthReportInputSchema>;
+export type GetInterviewHealthReportOutput = z.infer<typeof getInterviewHealthReportOutputSchema>;
+
+// ─────────── #19 onboarding readiness ───────────
+
+/**
+ * One ACTIVE onboarding case — a hire the tenant has not yet landed.
+ *
+ * "Active" means status pre_boarding / day_zero / in_progress. A completed or
+ * cancelled case still appears in `byStatus` (it is part of the mix) but not
+ * in this list, which exists to answer "who starts soon and what is missing".
+ *
+ * `daysToStart` is `expected_start_date − CURRENT_DATE` in whole days, so it
+ * is NEGATIVE for a start date that has already passed while the case is
+ * still open — an overdue start, which is the finding. Null when the case has
+ * no expected start date.
+ *
+ * The four readiness pairs, each stated because a "3 / 5" is meaningless
+ * without its denominator:
+ *   - TASKS — `tasksTotal` counts onboarding tasks that are still work
+ *     (everything except cancelled and skipped); `tasksDone` counts
+ *     `completed`. `overdueTasks` counts unfinished tasks past `due_at`.
+ *   - DOCUMENTS — `docsTotal` is every upload on the case; `docsVerified`
+ *     those at `verified`. A rejected or resubmit_required upload stays in
+ *     the denominator: it is a document the case still needs.
+ *   - BGV — `bgvStatus` is the LATEST `bgv_runs` row by `initiated_at`, or
+ *     null when no check was ever raised. One case can have several runs (a
+ *     re-run after a failure); the latest is the one that describes the case
+ *     now.
+ *   - IT — `itTotal` counts provisioning requests except cancelled ones;
+ *     `itProvisioned` those at `provisioned`.
+ */
+export const onboardingReadinessRowSchema = z.object({
+  caseId: z.string().uuid(),
+  /** persons.full_name via the case's candidate; null when the person is unnamed. */
+  candidateName: z.string().nullable(),
+  /** onboarding_cases.status — text + CHECK, not an enum type. */
+  status: z.string(),
+  /** A `date` column — plain YYYY-MM-DD, not an instant. Null when unset. */
+  expectedStartDate: z.string().nullable(),
+  /** Whole days from today to the start date; NEGATIVE means already overdue. */
+  daysToStart: z.number().int().nullable(),
+  tasksDone: z.number().int(),
+  tasksTotal: z.number().int(),
+  /** Unfinished tasks past their due_at — the row's warning trigger. */
+  overdueTasks: z.number().int(),
+  docsVerified: z.number().int(),
+  docsTotal: z.number().int(),
+  /** Latest bgv_runs status for the case; null when no check was raised. */
+  bgvStatus: z.string().nullable(),
+  itProvisioned: z.number().int(),
+  itTotal: z.number().int(),
+});
+
+/** Case counts by lifecycle status, zero-filled across the CHECK's five values. */
+export const onboardingReadinessStatusCountSchema = z.object({
+  status: z.string(),
+  count: z.number().int(),
+});
+
+/**
+ * The "what needs attention this fortnight" numbers, computed over the FULL
+ * filtered set of ACTIVE cases — so they stay correct when the row list is
+ * capped.
+ *
+ * `startingWithin14Days` counts active cases whose expected start falls
+ * between today and today + 14 days INCLUSIVE. A start date already in the
+ * past is NOT counted here — it is not "starting soon", it is late, and
+ * `overdueStart` is where it lands instead.
+ *
+ * `bgvInProgress` / `bgvFailed` count CASES by their LATEST run's status
+ * (initiated + in_progress; failed), never runs — a case that failed and was
+ * re-run is in flight, not failed.
+ */
+export const onboardingReadinessRollupsSchema = z.object({
+  activeCases: z.number().int(),
+  startingWithin14Days: z.number().int(),
+  /** Active cases whose expected start date has already passed. */
+  overdueStart: z.number().int(),
+  casesWithOverdueTasks: z.number().int(),
+  bgvInProgress: z.number().int(),
+  bgvFailed: z.number().int(),
+});
+
+/**
+ * Filters honoured: period, bounding `onboarding_cases.expected_start_date`
+ * — the axis the question is actually asked on ("who lands this month"), not
+ * when the case was opened. It is a `date` column, so the ISO bounds are
+ * narrowed to UTC calendar days; a case with NO expected start date cannot be
+ * placed on that axis and drops out of any windowed view.
+ *
+ * businessUnitId resolves through the case's application → requisition →
+ * position. `onboarding_cases.application_id` is NOT NULL (every case is
+ * opened from an accepted offer), so the chain always resolves and no case is
+ * silently dropped by the join.
+ *
+ * requisitionId / recruiterMembershipId / source / stage are N/A and ignored:
+ * the hire has left the pipeline, so its stage and source describe history,
+ * and the recruiter who sourced them does not own their onboarding.
+ */
+export const getOnboardingReadinessReportInputSchema = reportFiltersSchema;
+
+export const getOnboardingReadinessReportOutputSchema = z.object({
+  /** Zero-filled across all five case statuses, in lifecycle order. */
+  byStatus: z.array(onboardingReadinessStatusCountSchema),
+  /** Active cases, soonest start first, undated last. Capped; see `truncated`. */
+  rows: z.array(onboardingReadinessRowSchema),
+  rollups: onboardingReadinessRollupsSchema,
+  /** True when the row cap trimmed the list — the rollups are still complete. */
+  truncated: z.boolean(),
+});
+
+export type OnboardingReadinessRow = z.infer<typeof onboardingReadinessRowSchema>;
+export type OnboardingReadinessStatusCount = z.infer<typeof onboardingReadinessStatusCountSchema>;
+export type OnboardingReadinessRollups = z.infer<typeof onboardingReadinessRollupsSchema>;
+export type GetOnboardingReadinessReportInput = z.infer<
+  typeof getOnboardingReadinessReportInputSchema
+>;
+export type GetOnboardingReadinessReportOutput = z.infer<
+  typeof getOnboardingReadinessReportOutputSchema
+>;

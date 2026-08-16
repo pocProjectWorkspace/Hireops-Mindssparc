@@ -10,6 +10,9 @@ import type {
   GetApprovalAnalyticsReportOutput,
   GetPartnerScorecardReportOutput,
   PartnerScorecardRow,
+  GetInterviewHealthReportOutput,
+  GetOnboardingReadinessReportOutput,
+  OnboardingReadinessRow,
 } from "@hireops/api-types";
 import {
   Badge,
@@ -63,6 +66,22 @@ import { buildCsv, downloadCsv } from "@/lib/csv";
  * and claims) take no window at all. The section blurb says so; the recruiter
  * filter does not apply to an agency.
  *
+ * INTERVIEW & SCORECARD HEALTH and ONBOARDING READINESS (R1.2) close the
+ * pack, and each moves the shared period onto its OWN clock — which is the
+ * only way either question reads honestly:
+ *   - interviews are windowed on when the round was DUE (scheduled_start), so
+ *     "booked 40, ran 31, 6 cancelled" is one sentence about one population;
+ *     the completion rate's denominator is resolved rounds only. The median
+ *     hours to feedback rests on `interviews.completed_at`, which arrived in
+ *     migration 0115 and was BACKFILLED for older rows — the section says so
+ *     under the tiles rather than presenting an approximation as a fact.
+ *   - onboarding is windowed on the EXPECTED START DATE ("who lands in this
+ *     window"), and its day counter goes negative for a start date that has
+ *     already passed with the case still open. Those rows are toned as
+ *     warnings because they are the point of the report.
+ * Neither takes the recruiter filter: an interview has a panel, and a hire in
+ * onboarding has left the recruiter's desk.
+ *
  * GOVERNANCE is the deliberate exception. Its two sections reuse the
  * EXISTING admin procedures (getAiUsageSummary, listAuditEvents) rather
  * than rebuilding /admin/costs and /admin/audit here — they are catalog
@@ -114,6 +133,8 @@ export function ReportsHubClient({
   initialHeadcount,
   initialApprovals,
   initialPartners,
+  initialInterviewHealth,
+  initialOnboarding,
   isAdmin,
   canOpenRequisitionDetail,
   canOpenTriage,
@@ -124,6 +145,8 @@ export function ReportsHubClient({
   initialHeadcount: GetHeadcountVsPlanReportOutput;
   initialApprovals: GetApprovalAnalyticsReportOutput;
   initialPartners: GetPartnerScorecardReportOutput;
+  initialInterviewHealth: GetInterviewHealthReportOutput;
+  initialOnboarding: GetOnboardingReadinessReportOutput;
   isAdmin: boolean;
   /** Viewer passes /requisitions/[id]'s own read gate — see the drill-down note. */
   canOpenRequisitionDetail: boolean;
@@ -178,6 +201,16 @@ export function ReportsHubClient({
     refetchOnWindowFocus: false,
     staleTime: 5_000,
   });
+  const interviewHealthQuery = trpc.getInterviewHealthReport.useQuery(input, {
+    initialData: isUnfiltered ? initialInterviewHealth : undefined,
+    refetchOnWindowFocus: false,
+    staleTime: 5_000,
+  });
+  const onboardingQuery = trpc.getOnboardingReadinessReport.useQuery(input, {
+    initialData: isUnfiltered ? initialOnboarding : undefined,
+    refetchOnWindowFocus: false,
+    staleTime: 5_000,
+  });
 
   // Governance (admin only) — deliberately OUTSIDE the shared filter bar;
   // see the file header. `enabled` gates the calls so non-admins never fire
@@ -197,13 +230,17 @@ export function ReportsHubClient({
   const headcount = headcountQuery.data ?? initialHeadcount;
   const approvals = approvalsQuery.data ?? initialApprovals;
   const partners = partnersQuery.data ?? initialPartners;
+  const interviewHealth = interviewHealthQuery.data ?? initialInterviewHealth;
+  const onboarding = onboardingQuery.data ?? initialOnboarding;
   const isFetching =
     agingQuery.isFetching ||
     productivityQuery.isFetching ||
     pipelineQuery.isFetching ||
     headcountQuery.isFetching ||
     approvalsQuery.isFetching ||
-    partnersQuery.isFetching;
+    partnersQuery.isFetching ||
+    interviewHealthQuery.isFetching ||
+    onboardingQuery.isFetching;
 
   // Options come from the unfiltered prefetch and never change — see the
   // file header for why they aren't a separate list procedure.
@@ -242,10 +279,13 @@ export function ReportsHubClient({
   return (
     <PageContainer>
       <p className="mb-4 max-w-3xl text-sm text-neutral-600">
-        The reporting catalog. Every report below answers its question over the same period,
-        business unit and recruiter — set them once in the filter bar and the whole page moves
-        together. Numbers come from live requisition, application, interview and offer records; no
-        snapshots or overnight rollups.
+        The reporting catalog — eight reports on one filter bar, from the requisitions being raised
+        through to the hires being onboarded. Every one answers its question over the same period,
+        business unit and recruiter: set them once in the filter bar and the whole page moves
+        together. Where a report reads the period against a different clock — the hire date, the
+        interview date, the expected start date — it says so on itself. Numbers come from live
+        requisition, application, interview, offer and onboarding records; no snapshots or overnight
+        rollups.
       </p>
 
       <section
@@ -1040,6 +1080,323 @@ export function ReportsHubClient({
         )}
       </ReportSection>
 
+      <ReportSection
+        title="Interview & scorecard health"
+        blurb={
+          <>
+            Whether the interviews we book actually run, and whether the panel ever writes them up.
+            The period bounds when a round was <em>due</em> — its scheduled start — so the counts
+            below all describe the same set of interviews. The completion rate is measured against
+            rounds that <em>resolved</em>: a round still on the calendar is not a miss and is left
+            out of the denominator. Business unit and requisition narrow the set through the
+            interview&apos;s own requisition; the recruiter filter does not apply to a panel.
+          </>
+        }
+        actions={
+          <DownloadCsvButton
+            disabled={interviewHealth.totals.total === 0}
+            onClick={() =>
+              downloadCsv(
+                `interview-health-${csvDateStamp()}.csv`,
+                buildInterviewHealthCsv(interviewHealth),
+              )
+            }
+          />
+        }
+      >
+        {interviewHealth.totals.total === 0 ? (
+          <Card padded={false}>
+            <EmptyState
+              title={isUnfiltered ? "No interviews yet" : "No interviews scheduled in this period"}
+              hint="Interviews appear here as soon as a round is booked against a requisition."
+            />
+          </Card>
+        ) : (
+          <>
+            <div className="mb-4 grid grid-cols-2 gap-4 sm:grid-cols-4">
+              <StatTile
+                label="Interviews scheduled"
+                value={interviewHealth.totals.total.toLocaleString()}
+                tone="accent"
+              />
+              <StatTile
+                label="Completed"
+                value={interviewHealth.totals.completed.toLocaleString()}
+              />
+              <StatTile
+                label="Completion rate"
+                value={formatPct(interviewHealth.totals.completionRate)}
+              />
+              <StatTile
+                label="Median hours to feedback"
+                value={formatHours(interviewHealth.totals.medianHoursToFeedback)}
+              />
+            </div>
+
+            <p className="mb-4 text-xs text-neutral-500">
+              {interviewHealth.totals.scheduled.toLocaleString()} still scheduled ·{" "}
+              {interviewHealth.totals.cancelled.toLocaleString()} cancelled ·{" "}
+              {interviewHealth.totals.noShow.toLocaleString()} no-show. The feedback median is taken
+              over {interviewHealth.totals.feedbackPairs.toLocaleString()} submitted{" "}
+              {interviewHealth.totals.feedbackPairs === 1 ? "scorecard" : "scorecards"}, timed from
+              the moment the interview was marked complete — interviews completed before that
+              timestamp existed carry a backfilled value, so older periods are an approximation.
+            </p>
+
+            <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
+              <Card>
+                <h3 className="mb-3 text-xs font-semibold uppercase tracking-wide text-neutral-500">
+                  Scorecard coverage — completed interviews
+                </h3>
+                {interviewHealth.scorecardCompletion.expectedScorecards === 0 ? (
+                  <p className="text-sm text-neutral-500">
+                    No completed interview in this period had a panel to write it up.
+                  </p>
+                ) : (
+                  <>
+                    <DataBar
+                      label="Submitted"
+                      labelClassName="w-24 text-neutral-700"
+                      pct={interviewHealth.scorecardCompletion.completionRate ?? 0}
+                      value={`${interviewHealth.scorecardCompletion.submittedScorecards.toLocaleString()} / ${interviewHealth.scorecardCompletion.expectedScorecards.toLocaleString()}`}
+                    />
+                    <p className="mt-2 text-xs text-neutral-500">
+                      {formatPct(interviewHealth.scorecardCompletion.completionRate)} of the
+                      scorecards expected across{" "}
+                      {interviewHealth.scorecardCompletion.interviewsCompleted.toLocaleString()}{" "}
+                      completed{" "}
+                      {interviewHealth.scorecardCompletion.interviewsCompleted === 1
+                        ? "interview"
+                        : "interviews"}
+                      . One is expected per panelist; a saved draft does not count as submitted.
+                    </p>
+                  </>
+                )}
+
+                {interviewHealth.scorecardCompletion.laggards.length > 0 ? (
+                  <div className="mt-4">
+                    <TableShell>
+                      <Thead>
+                        <Th>Panelist</Th>
+                        <Th numeric>Outstanding</Th>
+                      </Thead>
+                      <Tbody>
+                        {interviewHealth.scorecardCompletion.laggards.map((l) => (
+                          <Tr key={l.membershipId}>
+                            <Td label="Panelist">{l.panelistName ?? "Unnamed panelist"}</Td>
+                            <Td numeric label="Outstanding">
+                              <Badge tone="warning" pill>
+                                {l.outstanding.toLocaleString()}
+                              </Badge>
+                            </Td>
+                          </Tr>
+                        ))}
+                      </Tbody>
+                    </TableShell>
+                    <p className="mt-2 text-xs text-neutral-500">
+                      Ten at most, worst first — panelists on a completed interview who have
+                      submitted nothing for it.
+                    </p>
+                  </div>
+                ) : null}
+              </Card>
+
+              <Card>
+                <h3 className="mb-3 text-xs font-semibold uppercase tracking-wide text-neutral-500">
+                  By round — volume and write-up speed
+                </h3>
+                <TableShell>
+                  <Thead>
+                    <Th>Round</Th>
+                    <Th numeric>Total</Th>
+                    <Th numeric>Completed</Th>
+                    <Th numeric>Cancelled</Th>
+                    <Th numeric>No-show</Th>
+                    <Th numeric>Median hours</Th>
+                  </Thead>
+                  <Tbody>
+                    {interviewHealth.byRound.map((r) => (
+                      <Tr key={r.roundName}>
+                        <Td label="Round">{r.roundName}</Td>
+                        <Td numeric label="Total">
+                          {r.total.toLocaleString()}
+                        </Td>
+                        <Td numeric label="Completed">
+                          {r.completed.toLocaleString()}
+                        </Td>
+                        <Td numeric label="Cancelled">
+                          {r.cancelled.toLocaleString()}
+                        </Td>
+                        <Td numeric label="No-show">
+                          {r.noShow > 0 ? (
+                            <Badge tone="warning" pill>
+                              {r.noShow.toLocaleString()}
+                            </Badge>
+                          ) : (
+                            <span className="text-neutral-400">0</span>
+                          )}
+                        </Td>
+                        <Td numeric label="Median hours">
+                          {formatHours(r.medianHoursToFeedback)}
+                        </Td>
+                      </Tr>
+                    ))}
+                  </Tbody>
+                </TableShell>
+                <p className="mt-2 text-xs text-neutral-500">
+                  Round names come from the interview plan, so they are whatever your plans call
+                  them — a renamed round starts its own row rather than merging with its history.
+                </p>
+              </Card>
+            </div>
+          </>
+        )}
+      </ReportSection>
+
+      <ReportSection
+        title="Onboarding readiness"
+        blurb={
+          <>
+            The hires that have been made but not yet landed. The period bounds the{" "}
+            <em>expected start date</em> — who arrives in this window, not whose paperwork opened in
+            it — and the business unit narrows through the requisition they were hired against. Days
+            counts down to the start date and goes negative once it has passed with the case still
+            open; those rows are flagged. Only active cases are listed; completed and cancelled ones
+            still count in the mix below.
+          </>
+        }
+        actions={
+          <DownloadCsvButton
+            disabled={onboarding.rows.length === 0}
+            onClick={() =>
+              downloadCsv(
+                `onboarding-readiness-${csvDateStamp()}.csv`,
+                buildOnboardingCsv(onboarding),
+              )
+            }
+          />
+        }
+      >
+        {onboarding.rollups.activeCases === 0 ? (
+          <Card padded={false}>
+            <EmptyState
+              title={isUnfiltered ? "No onboarding in flight" : "No hires start in this period"}
+              hint="A case opens automatically when a candidate accepts their offer."
+            />
+          </Card>
+        ) : (
+          <>
+            <div className="mb-4 grid grid-cols-2 gap-4 sm:grid-cols-4">
+              <StatTile
+                label="Starting within 14 days"
+                value={onboarding.rollups.startingWithin14Days.toLocaleString()}
+                tone="accent"
+              />
+              <StatTile
+                label="Cases with overdue tasks"
+                value={onboarding.rollups.casesWithOverdueTasks.toLocaleString()}
+              />
+              <StatTile
+                label="BGV in flight"
+                value={onboarding.rollups.bgvInProgress.toLocaleString()}
+              />
+              <StatTile
+                label="Start date passed"
+                value={onboarding.rollups.overdueStart.toLocaleString()}
+              />
+            </div>
+
+            <div className="mb-4 flex flex-wrap gap-2">
+              {onboarding.byStatus.map((s) => (
+                <span
+                  key={s.status}
+                  className={
+                    s.count === 0
+                      ? "inline-flex items-center gap-1.5 rounded-full border border-neutral-200 px-2.5 py-1 text-xs text-neutral-400"
+                      : "inline-flex items-center gap-1.5 rounded-full border border-neutral-300 bg-white px-2.5 py-1 text-xs text-neutral-700"
+                  }
+                >
+                  <span className="font-medium">{humanizeSentence(s.status)}</span>
+                  <span className="tabular-nums">{s.count}</span>
+                </span>
+              ))}
+            </div>
+
+            <TableShell>
+              <Thead>
+                <Th>Candidate</Th>
+                <Th>Status</Th>
+                <Th numeric>Starts</Th>
+                <Th numeric>Days</Th>
+                <Th numeric>Tasks</Th>
+                <Th numeric>Documents</Th>
+                <Th>BGV</Th>
+                <Th numeric>IT</Th>
+              </Thead>
+              <Tbody>
+                {onboarding.rows.map((r) => (
+                  <Tr key={r.caseId}>
+                    <Td label="Candidate">{r.candidateName ?? "Unnamed candidate"}</Td>
+                    <Td label="Status">
+                      <Badge tone={onboardingStatusTone(r.status)} pill>
+                        {humanizeSentence(r.status)}
+                      </Badge>
+                    </Td>
+                    <Td numeric label="Starts">
+                      {r.expectedStartDate ? formatDay(r.expectedStartDate) : "—"}
+                    </Td>
+                    <Td numeric label="Days">
+                      <span
+                        className={
+                          isOnboardingLate(r) ? "font-semibold text-status-warning-800" : undefined
+                        }
+                      >
+                        {formatDaysToStart(r.daysToStart)}
+                      </span>
+                    </Td>
+                    <Td numeric label="Tasks">
+                      <span
+                        className={
+                          r.overdueTasks > 0 ? "font-semibold text-status-warning-800" : undefined
+                        }
+                      >
+                        {formatRatio(r.tasksDone, r.tasksTotal)}
+                      </span>
+                    </Td>
+                    <Td numeric label="Documents">
+                      {formatRatio(r.docsVerified, r.docsTotal)}
+                    </Td>
+                    <Td label="BGV">
+                      {r.bgvStatus ? (
+                        <Badge tone={bgvTone(r.bgvStatus)} pill>
+                          {humanizeSentence(r.bgvStatus)}
+                        </Badge>
+                      ) : (
+                        <span className="text-neutral-400">Not started</span>
+                      )}
+                    </Td>
+                    <Td numeric label="IT">
+                      {formatRatio(r.itProvisioned, r.itTotal)}
+                    </Td>
+                  </Tr>
+                ))}
+              </Tbody>
+            </TableShell>
+            <p className="mt-2 text-xs text-neutral-500">
+              {onboarding.truncated ? (
+                <>
+                  Showing the {onboarding.rows.length.toLocaleString()} soonest starts. The tiles
+                  above still count every active case in range.{" "}
+                </>
+              ) : null}
+              Tasks and IT count work that is still owed — cancelled and skipped items are out of
+              both denominators. Documents count what has been uploaded, not what the hire&apos;s
+              geography requires, so an empty case reads 0 / 0. BGV shows the latest run.
+            </p>
+          </>
+        )}
+      </ReportSection>
+
       {isAdmin ? (
         <ReportSection
           title="Governance"
@@ -1423,6 +1780,102 @@ function buildPartnerCsv(partners: GetPartnerScorecardReportOutput): string {
   );
 }
 
+const INTERVIEW_HEALTH_CSV_HEADERS = ["section", "item", "metric", "value"] as const;
+
+/**
+ * LONG format — section, item, metric, value — for the same reason the
+ * pipeline and approval exports use it: three datasets (the funnel totals,
+ * the scorecard laggards, the per-round table) with incompatible column
+ * sets, one button. Nulls export as empty cells.
+ */
+function buildInterviewHealthCsv(health: GetInterviewHealthReportOutput): string {
+  const rows: string[][] = [
+    ["totals", "", "scheduled", String(health.totals.scheduled)],
+    ["totals", "", "completed", String(health.totals.completed)],
+    ["totals", "", "cancelled", String(health.totals.cancelled)],
+    ["totals", "", "no_show", String(health.totals.noShow)],
+    ["totals", "", "total", String(health.totals.total)],
+    ["totals", "", "completion_rate_pct", csvNumber(health.totals.completionRate)],
+    ["totals", "", "median_hours_to_feedback", csvNumber(health.totals.medianHoursToFeedback)],
+    ["totals", "", "feedback_pairs", String(health.totals.feedbackPairs)],
+    [
+      "scorecards",
+      "",
+      "interviews_completed",
+      String(health.scorecardCompletion.interviewsCompleted),
+    ],
+    ["scorecards", "", "expected", String(health.scorecardCompletion.expectedScorecards)],
+    ["scorecards", "", "submitted", String(health.scorecardCompletion.submittedScorecards)],
+    ["scorecards", "", "completion_rate_pct", csvNumber(health.scorecardCompletion.completionRate)],
+  ];
+  for (const l of health.scorecardCompletion.laggards) {
+    // The membership id is the fallback label — a null display name must not
+    // collapse two different panelists onto one CSV row.
+    rows.push(["laggards", l.panelistName ?? l.membershipId, "outstanding", String(l.outstanding)]);
+  }
+  for (const r of health.byRound) {
+    rows.push(["by_round", r.roundName, "total", String(r.total)]);
+    rows.push(["by_round", r.roundName, "scheduled", String(r.scheduled)]);
+    rows.push(["by_round", r.roundName, "completed", String(r.completed)]);
+    rows.push(["by_round", r.roundName, "cancelled", String(r.cancelled)]);
+    rows.push(["by_round", r.roundName, "no_show", String(r.noShow)]);
+    rows.push([
+      "by_round",
+      r.roundName,
+      "median_hours_to_feedback",
+      csvNumber(r.medianHoursToFeedback),
+    ]);
+  }
+  return buildCsv(INTERVIEW_HEALTH_CSV_HEADERS, rows);
+}
+
+const ONBOARDING_CSV_HEADERS = [
+  "candidate",
+  "case_id",
+  "status",
+  "expected_start_date",
+  "days_to_start",
+  "tasks_done",
+  "tasks_total",
+  "overdue_tasks",
+  "docs_verified",
+  "docs_total",
+  "bgv_status",
+  "it_provisioned",
+  "it_total",
+] as const;
+
+/**
+ * WIDE format — one row per case — like the partner scorecard and unlike the
+ * two long-format exports: the section is already one rectangular table, so
+ * long format would be strictly worse to read and to pivot.
+ *
+ * `case_id` rides along even though the table has no column for it: it is
+ * the only stable key for a case, and two hires can share a name. Exactly
+ * the rows on screen, cap included — the on-screen note is the only place
+ * that says the list was capped.
+ */
+function buildOnboardingCsv(onboarding: GetOnboardingReadinessReportOutput): string {
+  return buildCsv(
+    ONBOARDING_CSV_HEADERS,
+    onboarding.rows.map((r) => [
+      r.candidateName ?? "",
+      r.caseId,
+      r.status,
+      r.expectedStartDate ?? "",
+      csvNumber(r.daysToStart),
+      String(r.tasksDone),
+      String(r.tasksTotal),
+      String(r.overdueTasks),
+      String(r.docsVerified),
+      String(r.docsTotal),
+      r.bgvStatus ?? "",
+      String(r.itProvisioned),
+      String(r.itTotal),
+    ]),
+  );
+}
+
 /**
  * One agency's accrued fees. `feesCurrency` is null exactly when nothing
  * accrued in range, which reads as an em dash rather than a misleading
@@ -1501,6 +1954,67 @@ function formatDays(days: number | null): string {
 function formatHours(hours: number | null): string {
   if (hours === null) return "—";
   return hours.toLocaleString(undefined, { maximumFractionDigits: 1 });
+}
+
+/**
+ * A readiness pair as "3 / 5". An empty denominator reads "—" rather than
+ * "0 / 0": nothing has been raised, which is not the same as nothing done.
+ */
+function formatRatio(done: number, total: number): string {
+  if (total === 0) return "—";
+  return `${done.toLocaleString()} / ${total.toLocaleString()}`;
+}
+
+/**
+ * The countdown to a start date. Negative is the interesting case — the day
+ * has come and gone with the case still open — so it reads "12 late" rather
+ * than "-12", which a reader can mistake for a formatting bug.
+ */
+function formatDaysToStart(days: number | null): string {
+  if (days === null) return "—";
+  if (days < 0) return `${Math.abs(days).toLocaleString()} late`;
+  if (days === 0) return "today";
+  return days.toLocaleString();
+}
+
+/** A case whose start date has passed while it is still open — the warning tone. */
+function isOnboardingLate(row: OnboardingReadinessRow): boolean {
+  return row.daysToStart !== null && row.daysToStart < 0;
+}
+
+/** Onboarding case status → badge tone. Five values (CHECK constraint). */
+function onboardingStatusTone(
+  status: string,
+): "neutral" | "info" | "success" | "warning" | "error" {
+  switch (status) {
+    case "completed":
+      return "success";
+    case "in_progress":
+    case "day_zero":
+      return "info";
+    case "cancelled":
+      return "error";
+    default:
+      return "neutral";
+  }
+}
+
+/**
+ * Latest BGV run status → badge tone. `failed` is an error the People Ops
+ * lead has to act on; a finished check is a success; everything else is
+ * simply in flight.
+ */
+function bgvTone(status: string): "neutral" | "info" | "success" | "warning" | "error" {
+  switch (status) {
+    case "completed":
+      return "success";
+    case "failed":
+      return "error";
+    case "cancelled":
+      return "neutral";
+    default:
+      return "info";
+  }
 }
 
 /** null → "—"; otherwise a 1-decimal percentage, e.g. "112.5%". */
