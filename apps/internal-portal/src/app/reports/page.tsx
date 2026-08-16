@@ -12,17 +12,19 @@ export const dynamic = "force-dynamic"; // Role-gated + reads live requisition/a
  * One page, one filter bar, many reports: the point of the catalog is
  * that every report resolves "this period, this business unit, this
  * recruiter" through the SAME server-side semantic layer, instead of each
- * analytics surface hand-rolling its own WHERE clauses. Two reports ship
- * here — requisition status & aging, and recruiter productivity, the two
- * the reporting build plan rates as genuinely missing. The existing
+ * analytics surface hand-rolling its own WHERE clauses. Requisition aging
+ * and recruiter productivity shipped first (the two the reporting build
+ * plan rates as genuinely missing), then pipeline & speed (R0.3), then the
+ * sponsor pack — headcount vs plan and the approval cycle (R1.1), each of
+ * which honours a narrower slice of the shared bar and says so on itself.
+ * Every report is server-prefetched unfiltered here. The existing
  * persona surfaces (/metrics, /insights, /hr-analytics, /admin/reports)
  * are untouched; they re-home into this catalog in a later ticket.
  *
  * Gated to admin + hr_head + hr_ops, matching the REPORTS_READ_ROLES set
- * on both procedures. A direct hit by another role gets a calm in-shell
- * notice rather than a bare 403. Both reports are server-prefetched
- * unfiltered so the page lands with data and the default view costs no
- * client fetch.
+ * every catalog procedure applies. A direct hit by another role gets a
+ * calm in-shell notice rather than a bare 403. The prefetch is unfiltered
+ * so the page lands with data and the default view costs no client fetch.
  */
 
 const READ_ROLES = ["admin", "hr_head", "hr_ops"];
@@ -60,11 +62,14 @@ export default async function ReportsHubPage() {
   }
 
   const caller = createServerTRPCCaller(session);
-  const [initialAging, initialProductivity, initialPipeline] = await Promise.all([
-    caller.getRequisitionAgingReport({}),
-    caller.getRecruiterProductivityReport({}),
-    caller.getPipelineReport({}),
-  ]);
+  const [initialAging, initialProductivity, initialPipeline, initialHeadcount, initialApprovals] =
+    await Promise.all([
+      caller.getRequisitionAgingReport({}),
+      caller.getRecruiterProductivityReport({}),
+      caller.getPipelineReport({}),
+      caller.getHeadcountVsPlanReport({}),
+      caller.getApprovalAnalyticsReport({}),
+    ]);
 
   return (
     <AppShell
@@ -78,6 +83,8 @@ export default async function ReportsHubPage() {
         initialAging={initialAging}
         initialProductivity={initialProductivity}
         initialPipeline={initialPipeline}
+        initialHeadcount={initialHeadcount}
+        initialApprovals={initialApprovals}
         isAdmin={isAdmin}
         canOpenRequisitionDetail={session.roles.some((r) => REQUISITION_DETAIL_ROLES.includes(r))}
         canOpenTriage={session.roles.some((r) => TRIAGE_ROLES.includes(r))}

@@ -275,3 +275,180 @@ export type PipelineOfferFunnel = z.infer<typeof pipelineOfferFunnelSchema>;
 export type PipelineSlaBreachRow = z.infer<typeof pipelineSlaBreachRowSchema>;
 export type GetPipelineReportInput = z.infer<typeof getPipelineReportInputSchema>;
 export type GetPipelineReportOutput = z.infer<typeof getPipelineReportOutputSchema>;
+
+// ─────────── #17 headcount vs plan ───────────
+
+/**
+ * One approved headcount envelope, against what hiring actually happened
+ * inside it.
+ *
+ * The envelope model is deliberately THIN (business unit × period ×
+ * planned headcount — no role families), so this report says exactly what
+ * the data supports: how many requisitions were raised against the
+ * envelope, how many openings they asked for, and how many of those turned
+ * into hires.
+ *
+ * `utilisationPct` = openingsRequested / plannedHeadcount × 100, to one
+ * decimal, and it can exceed 100 — an over-committed envelope is the point
+ * of the report, not an error. It is null only when the envelope plans
+ * zero headcount, which the DB's CHECK should prevent anyway.
+ */
+export const headcountEnvelopeRowSchema = z.object({
+  envelopeId: z.string().uuid(),
+  businessUnitId: z.string().uuid(),
+  businessUnitName: z.string(),
+  /** `date` columns — plain YYYY-MM-DD calendar days, not instants. */
+  periodStart: z.string(),
+  periodEnd: z.string(),
+  plannedHeadcount: z.number().int(),
+  /** headcount_envelopes.status — draft | approved | closed (text + CHECK). */
+  status: z.string(),
+  /** Requisitions pointing at this envelope, over the envelope's WHOLE life. */
+  reqsRaised: z.number().int(),
+  /** SUM(number_of_openings) over those requisitions. */
+  openingsRequested: z.number().int(),
+  /** Applications on those requisitions now at offer_accepted. */
+  hires: z.number().int(),
+  /** openingsRequested / plannedHeadcount × 100, 1dp; null when planned = 0. */
+  utilisationPct: z.number().nullable(),
+});
+
+/** The same five measures summed across every envelope in range. */
+export const headcountVsPlanTotalsSchema = z.object({
+  envelopes: z.number().int(),
+  plannedHeadcount: z.number().int(),
+  reqsRaised: z.number().int(),
+  openingsRequested: z.number().int(),
+  hires: z.number().int(),
+  utilisationPct: z.number().nullable(),
+});
+
+/**
+ * Hiring that is NOT against any envelope — requisitions with a null
+ * `headcount_envelope_id`. The honest counterpart to the table: a tenant
+ * can look 60% utilised and still be hiring hard outside the plan.
+ *
+ * Deliberately count + openings only, with no row list: the interesting
+ * fact is the size of the gap, and the requisitions themselves are already
+ * listed in full on the aging report.
+ */
+export const headcountUnplannedSchema = z.object({
+  reqsRaised: z.number().int(),
+  openingsRequested: z.number().int(),
+});
+
+/**
+ * Filters honoured: businessUnitId (the ENVELOPE's business unit) and
+ * period. The period test is an OVERLAP, not containment: an envelope is
+ * in range when `period_start <= to AND period_end >= from`, so a
+ * quarter's envelope shows up for any window that touches it.
+ *
+ * The unplanned figure has no envelope period to overlap, so it uses the
+ * requisition axis instead — requisitions RAISED in the window
+ * (`requisitions.created_at`), in the same business unit. The two halves
+ * therefore answer "which plans touch this window" and "what was raised
+ * off-plan in this window"; that asymmetry is stated on the surface.
+ *
+ * requisitionId / recruiterMembershipId / source / stage are N/A — an
+ * envelope is a budget line, not an application or a recruiter's work —
+ * and are ignored rather than guessed at.
+ */
+export const getHeadcountVsPlanReportInputSchema = reportFiltersSchema;
+
+export const getHeadcountVsPlanReportOutputSchema = z.object({
+  /** Newest period first, then business unit A→Z. */
+  envelopes: z.array(headcountEnvelopeRowSchema),
+  totals: headcountVsPlanTotalsSchema,
+  unplanned: headcountUnplannedSchema,
+});
+
+export type HeadcountEnvelopeRow = z.infer<typeof headcountEnvelopeRowSchema>;
+export type HeadcountVsPlanTotals = z.infer<typeof headcountVsPlanTotalsSchema>;
+export type HeadcountUnplanned = z.infer<typeof headcountUnplannedSchema>;
+export type GetHeadcountVsPlanReportInput = z.infer<typeof getHeadcountVsPlanReportInputSchema>;
+export type GetHeadcountVsPlanReportOutput = z.infer<typeof getHeadcountVsPlanReportOutputSchema>;
+
+// ─────────── #18 approval cycle analytics ───────────
+
+/** Requests by lifecycle status, zero-filled across the enum. */
+export const approvalStatusCountSchema = z.object({
+  status: z.string(),
+  count: z.number().int(),
+});
+
+/**
+ * How long approvals take, end to end.
+ *
+ * DEFINITION — a request is DECIDED when `decided_at` is stamped, whatever
+ * terminal status it landed in (approved, rejected, cancelled, expired);
+ * turnaround is requested_at → decided_at in HOURS. Both percentiles are
+ * null when nothing in range has been decided.
+ *
+ * `oldestPendingHours` is measured against now(), so it keeps growing —
+ * it is the "what is stuck right now" number, not a historical one.
+ */
+export const approvalTurnaroundSchema = z.object({
+  medianHours: z.number().nullable(),
+  p90Hours: z.number().nullable(),
+  decidedCount: z.number().int(),
+  pendingCount: z.number().int(),
+  oldestPendingHours: z.number().nullable(),
+});
+
+/**
+ * One approver's typical response time.
+ *
+ * DEFINITION — a decision's clock starts at the END OF THE PREVIOUS STEP,
+ * not at the request: the step's start is the previous decision on the
+ * same request (ordered by step_index, then decided_at) and, for the first
+ * decision, the request's `requested_at`. That is the chain's own
+ * semantics — an approver at step 2 is not accountable for step 1's wait.
+ * Durations are clamped at zero so an out-of-order history cannot produce
+ * a negative.
+ *
+ * External approvers (`approver_external_ref`, no membership) have no
+ * membership to attribute or name, and are excluded.
+ */
+export const approvalApproverRowSchema = z.object({
+  approverMembershipId: z.string().uuid(),
+  /** display_name → email-local-part → null, resolved off the RLS path. */
+  approverName: z.string().nullable(),
+  decisions: z.number().int(),
+  medianHours: z.number(),
+});
+
+/** Request volume + end-to-end median per subject type, zero-filled. */
+export const approvalSubjectTypeRowSchema = z.object({
+  subjectType: z.string(),
+  requests: z.number().int(),
+  /** Median requested→decided hours; null when nothing here is decided. */
+  medianHours: z.number().nullable(),
+});
+
+/**
+ * Filters honoured: period ONLY, bounding `approval_requests.requested_at`
+ * (inclusive both ends). businessUnitId is N/A — a request points at an
+ * opaque `subject_id` with no business-unit join that holds across all
+ * four subject types — as are requisitionId / recruiterMembershipId /
+ * source / stage. All are ignored rather than half-applied.
+ */
+export const getApprovalAnalyticsReportInputSchema = reportFiltersSchema;
+
+export const getApprovalAnalyticsReportOutputSchema = z.object({
+  /** Zero-filled across all five statuses, in lifecycle order. */
+  byStatus: z.array(approvalStatusCountSchema),
+  turnaround: approvalTurnaroundSchema,
+  /** Slowest first; at most ten rows. */
+  bottleneckApprovers: z.array(approvalApproverRowSchema),
+  /** Zero-filled across all four subject types, in enum order. */
+  bySubjectType: z.array(approvalSubjectTypeRowSchema),
+});
+
+export type ApprovalStatusCount = z.infer<typeof approvalStatusCountSchema>;
+export type ApprovalTurnaround = z.infer<typeof approvalTurnaroundSchema>;
+export type ApprovalApproverRow = z.infer<typeof approvalApproverRowSchema>;
+export type ApprovalSubjectTypeRow = z.infer<typeof approvalSubjectTypeRowSchema>;
+export type GetApprovalAnalyticsReportInput = z.infer<typeof getApprovalAnalyticsReportInputSchema>;
+export type GetApprovalAnalyticsReportOutput = z.infer<
+  typeof getApprovalAnalyticsReportOutputSchema
+>;

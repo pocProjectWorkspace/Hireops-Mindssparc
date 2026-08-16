@@ -133,6 +133,9 @@ import { getRecruiterProductivityReport } from "../lib/reports/recruiter-product
 // R0.3 catalog fill — the pipeline & speed report (funnel/TTF/stage/source/
 // offers over the R0.1 measures, plus the live SLA-breach table).
 import { getPipelineReport } from "../lib/reports/pipeline-report";
+// R1.1 sponsor pack — headcount vs plan (#17) and approval cycle analytics (#18).
+import { getHeadcountVsPlanReport } from "../lib/reports/headcount-vs-plan";
+import { getApprovalAnalyticsReport } from "../lib/reports/approval-analytics";
 import {
   getIrisAction,
   listIrisActions,
@@ -383,6 +386,11 @@ import {
   // R0.3 — pipeline & speed (catalog #2/#3/#4/#6/#10).
   getPipelineReportInputSchema,
   getPipelineReportOutputSchema,
+  // R1.1 — sponsor pack (catalog #17 headcount vs plan, #18 approval cycle).
+  getHeadcountVsPlanReportInputSchema,
+  getHeadcountVsPlanReportOutputSchema,
+  getApprovalAnalyticsReportInputSchema,
+  getApprovalAnalyticsReportOutputSchema,
   getHrMetricsOutputSchema,
   listJdLibraryInputSchema,
   listJdLibraryOutputSchema,
@@ -10626,6 +10634,98 @@ export const appRouter = router({
       const filters: ReportFilters = input;
 
       return getPipelineReport(db, ctx.tenantId, filters);
+    }),
+
+  // ───────── getHeadcountVsPlanReport (catalog #17 · R1.1) ─────────
+  //
+  // "We approved a budget. What did we actually raise against it?" — the
+  // first half of the sponsor pack. Per envelope: requisitions raised,
+  // openings requested, hires, and utilisation against the plan; plus the
+  // rollup and the off-plan (null headcount_envelope_id) requisitions,
+  // which is the number a sponsor actually reacts to.
+  //
+  // All the SQL lives in lib/reports/headcount-vs-plan.ts; this procedure
+  // is the gate. Period semantics differ by half and are documented on
+  // both the wire schema and the surface: an ENVELOPE is in range when its
+  // period OVERLAPS the window; an UNPLANNED requisition is in range when
+  // it was RAISED in it. Filters: period + BU only — recruiter, source,
+  // stage and requisitionId have no meaning against a budget line.
+  // Read-only, no withAudit (matches the rest of the catalog).
+  getHeadcountVsPlanReport: protectedProcedure
+    .input(getHeadcountVsPlanReportInputSchema)
+    .output(getHeadcountVsPlanReportOutputSchema)
+    .query(async ({ ctx, input }) => {
+      requireAnyRole(
+        ctx,
+        REPORTS_READ_ROLES,
+        "Reports access requires the admin, hr_head or hr_ops role",
+      );
+      const db = requireDb(ctx);
+      if (!ctx.tenantId) {
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: "protected procedure missing tenantId",
+        });
+      }
+      const filters: ReportFilters = input;
+
+      return getHeadcountVsPlanReport(db, ctx.tenantId, filters);
+    }),
+
+  // ──────── getApprovalAnalyticsReport (catalog #18 · R1.1) ────────
+  //
+  // "How long do our approvals take, and who is the hold-up?" — the second
+  // half of the sponsor pack: the request mix by status and subject type,
+  // median/P90 turnaround in hours, what is pending and for how long, and
+  // the ten slowest approvers.
+  //
+  // All the SQL lives in lib/reports/approval-analytics.ts; this procedure
+  // is the gate + the display-name join. THE definition to know: an
+  // approver's clock starts at the END OF THE PREVIOUS STEP (the previous
+  // decision on that request), not at the request — an approver at step 2
+  // is not accountable for step 1's wait. Filters: period only (bounding
+  // requested_at); BU cannot be resolved from an opaque subject_id and is
+  // ignored.
+  //
+  // Names come from resolveMembershipNames (ctx.sql, service-role):
+  // public.users is self-only under RLS, so resolving them inside the
+  // tenant-bound query would return the caller's own name and nulls for
+  // every other approver.
+  getApprovalAnalyticsReport: protectedProcedure
+    .input(getApprovalAnalyticsReportInputSchema)
+    .output(getApprovalAnalyticsReportOutputSchema)
+    .query(async ({ ctx, input }) => {
+      requireAnyRole(
+        ctx,
+        REPORTS_READ_ROLES,
+        "Reports access requires the admin, hr_head or hr_ops role",
+      );
+      const db = requireDb(ctx);
+      if (!ctx.tenantId) {
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: "protected procedure missing tenantId",
+        });
+      }
+      const tenantId = ctx.tenantId;
+      const filters: ReportFilters = input;
+
+      const report = await getApprovalAnalyticsReport(db, tenantId, filters);
+      const names = await resolveMembershipNames(
+        ctx,
+        tenantId,
+        report.bottleneckApprovers.map((a) => a.approverMembershipId),
+      );
+
+      return {
+        byStatus: report.byStatus,
+        turnaround: report.turnaround,
+        bottleneckApprovers: report.bottleneckApprovers.map((a) => ({
+          ...a,
+          approverName: names.get(a.approverMembershipId) ?? null,
+        })),
+        bySubjectType: report.bySubjectType,
+      };
     }),
 
   // ─────────────────────── getHrMetrics (METRICS-01) ───────────────────────

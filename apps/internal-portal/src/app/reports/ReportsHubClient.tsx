@@ -6,6 +6,8 @@ import type {
   GetRequisitionAgingReportOutput,
   GetRecruiterProductivityReportOutput,
   GetPipelineReportOutput,
+  GetHeadcountVsPlanReportOutput,
+  GetApprovalAnalyticsReportOutput,
 } from "@hireops/api-types";
 import {
   Badge,
@@ -37,6 +39,18 @@ import { buildCsv, downloadCsv } from "@/lib/csv";
  * requisition aging, recruiter productivity (R0.2) and pipeline & speed
  * (R0.3 — funnel, time to fill, time in stage, source mix, offers and the
  * live SLA-breach table, all off the R0.1 measures).
+ *
+ * THE SPONSOR PACK (R1.1) adds two more: headcount vs plan and the
+ * approval cycle. Both honour a NARROWER slice of the shared bar than the
+ * three above, and each says so on itself rather than quietly ignoring a
+ * control the reader just moved:
+ *   - headcount takes period + business unit. The period is an OVERLAP
+ *     test on the envelope's own period, not a containment test, and the
+ *     off-plan number is windowed on when the requisition was raised.
+ *   - the approval cycle takes period only; an approval request points at
+ *     an opaque subject id, so there is no business unit to filter on.
+ * Neither takes the recruiter filter — a budget line and an approval
+ * chain have no recruiter.
  *
  * GOVERNANCE is the deliberate exception. Its two sections reuse the
  * EXISTING admin procedures (getAiUsageSummary, listAuditEvents) rather
@@ -86,6 +100,8 @@ export function ReportsHubClient({
   initialAging,
   initialProductivity,
   initialPipeline,
+  initialHeadcount,
+  initialApprovals,
   isAdmin,
   canOpenRequisitionDetail,
   canOpenTriage,
@@ -93,6 +109,8 @@ export function ReportsHubClient({
   initialAging: GetRequisitionAgingReportOutput;
   initialProductivity: GetRecruiterProductivityReportOutput;
   initialPipeline: GetPipelineReportOutput;
+  initialHeadcount: GetHeadcountVsPlanReportOutput;
+  initialApprovals: GetApprovalAnalyticsReportOutput;
   isAdmin: boolean;
   /** Viewer passes /requisitions/[id]'s own read gate — see the drill-down note. */
   canOpenRequisitionDetail: boolean;
@@ -132,6 +150,16 @@ export function ReportsHubClient({
     refetchOnWindowFocus: false,
     staleTime: 5_000,
   });
+  const headcountQuery = trpc.getHeadcountVsPlanReport.useQuery(input, {
+    initialData: isUnfiltered ? initialHeadcount : undefined,
+    refetchOnWindowFocus: false,
+    staleTime: 5_000,
+  });
+  const approvalsQuery = trpc.getApprovalAnalyticsReport.useQuery(input, {
+    initialData: isUnfiltered ? initialApprovals : undefined,
+    refetchOnWindowFocus: false,
+    staleTime: 5_000,
+  });
 
   // Governance (admin only) — deliberately OUTSIDE the shared filter bar;
   // see the file header. `enabled` gates the calls so non-admins never fire
@@ -148,8 +176,14 @@ export function ReportsHubClient({
   const aging = agingQuery.data ?? initialAging;
   const productivity = productivityQuery.data ?? initialProductivity;
   const pipeline = pipelineQuery.data ?? initialPipeline;
+  const headcount = headcountQuery.data ?? initialHeadcount;
+  const approvals = approvalsQuery.data ?? initialApprovals;
   const isFetching =
-    agingQuery.isFetching || productivityQuery.isFetching || pipelineQuery.isFetching;
+    agingQuery.isFetching ||
+    productivityQuery.isFetching ||
+    pipelineQuery.isFetching ||
+    headcountQuery.isFetching ||
+    approvalsQuery.isFetching;
 
   // Options come from the unfiltered prefetch and never change — see the
   // file header for why they aren't a separate list procedure.
@@ -619,6 +653,256 @@ export function ReportsHubClient({
         </div>
       </ReportSection>
 
+      <ReportSection
+        title="Headcount vs plan"
+        blurb={
+          <>
+            Approved headcount envelopes against the hiring actually raised inside them. An envelope
+            counts every requisition pointing at it, over the envelope&apos;s whole period — so
+            utilisation is the plan&apos;s story, not the window&apos;s. The period bounds which
+            envelopes appear (any envelope whose period overlaps it) and the business unit narrows
+            them; the recruiter filter does not apply to a budget line.
+          </>
+        }
+        actions={
+          <DownloadCsvButton
+            disabled={headcount.envelopes.length === 0 && headcount.unplanned.reqsRaised === 0}
+            onClick={() =>
+              downloadCsv(`headcount-vs-plan-${csvDateStamp()}.csv`, buildHeadcountCsv(headcount))
+            }
+          />
+        }
+      >
+        {headcount.envelopes.length === 0 ? (
+          <Card padded={false}>
+            <EmptyState
+              title={
+                isUnfiltered
+                  ? "No headcount envelopes yet"
+                  : "No headcount envelopes overlap this period"
+              }
+              hint="An envelope is an approved budget for one business unit over one period. Requisitions raised without one appear below."
+            />
+          </Card>
+        ) : (
+          <>
+            <div className="mb-4 grid grid-cols-2 gap-4 sm:grid-cols-4">
+              <StatTile
+                label="Planned headcount"
+                value={headcount.totals.plannedHeadcount.toLocaleString()}
+                tone="accent"
+              />
+              <StatTile
+                label="Openings requested"
+                value={headcount.totals.openingsRequested.toLocaleString()}
+              />
+              <StatTile label="Hires" value={headcount.totals.hires.toLocaleString()} />
+              <StatTile
+                label="Off-plan requisitions"
+                value={headcount.unplanned.reqsRaised.toLocaleString()}
+              />
+            </div>
+
+            <TableShell>
+              <Thead>
+                <Th>Business unit</Th>
+                <Th>Period</Th>
+                <Th>Status</Th>
+                <Th numeric>Planned</Th>
+                <Th numeric>Requested</Th>
+                <Th numeric>Utilisation</Th>
+                <Th numeric>Hires</Th>
+              </Thead>
+              <Tbody>
+                {headcount.envelopes.map((e) => (
+                  <Tr key={e.envelopeId}>
+                    <Td label="Business unit">{e.businessUnitName}</Td>
+                    <Td label="Period">{formatPeriod(e.periodStart, e.periodEnd)}</Td>
+                    <Td label="Status">
+                      <Badge tone={envelopeStatusTone(e.status)} pill>
+                        {humanizeSentence(e.status)}
+                      </Badge>
+                    </Td>
+                    <Td numeric label="Planned">
+                      {e.plannedHeadcount.toLocaleString()}
+                    </Td>
+                    <Td numeric label="Requested">
+                      {e.openingsRequested.toLocaleString()}
+                    </Td>
+                    <Td numeric label="Utilisation">
+                      <span
+                        className={
+                          e.utilisationPct !== null && e.utilisationPct > 100
+                            ? "font-semibold text-status-warning-800"
+                            : undefined
+                        }
+                      >
+                        {formatPct(e.utilisationPct)}
+                      </span>
+                    </Td>
+                    <Td numeric label="Hires">
+                      {e.hires.toLocaleString()}
+                    </Td>
+                  </Tr>
+                ))}
+              </Tbody>
+            </TableShell>
+          </>
+        )}
+
+        <p className="mt-3 text-xs text-neutral-500">
+          {headcount.unplanned.reqsRaised === 0 ? (
+            <>Every requisition raised in this period sits against an approved envelope.</>
+          ) : (
+            <>
+              <span className="font-medium text-status-warning-800">
+                Off plan: {headcount.unplanned.reqsRaised.toLocaleString()}{" "}
+                {headcount.unplanned.reqsRaised === 1 ? "requisition" : "requisitions"} (
+                {headcount.unplanned.openingsRequested.toLocaleString()}{" "}
+                {headcount.unplanned.openingsRequested === 1 ? "opening" : "openings"})
+              </span>{" "}
+              raised in this period against no envelope at all. These are counted by when they were
+              raised, not by an envelope period, and are not in the table above.
+            </>
+          )}
+        </p>
+      </ReportSection>
+
+      <ReportSection
+        title="Approval cycle"
+        blurb={
+          <>
+            How long approvals take and where they stall. A request counts as decided whenever it
+            reached a terminal state — approved, rejected, cancelled or expired. An approver&apos;s
+            clock starts at the end of the previous step, not when the request was raised, so nobody
+            carries the queue ahead of them. The period bounds when the request was raised; business
+            unit and recruiter do not apply.
+          </>
+        }
+        actions={
+          <DownloadCsvButton
+            disabled={approvalTotal(approvals) === 0}
+            onClick={() =>
+              downloadCsv(`approval-cycle-${csvDateStamp()}.csv`, buildApprovalCsv(approvals))
+            }
+          />
+        }
+      >
+        {approvalTotal(approvals) === 0 ? (
+          <Card padded={false}>
+            <EmptyState
+              title={
+                isUnfiltered ? "No approval requests yet" : "No approval requests in this period"
+              }
+              hint="Requests appear here as soon as a headcount envelope, requisition, JD or offer enters an approval chain."
+            />
+          </Card>
+        ) : (
+          <>
+            <div className="mb-4 grid grid-cols-2 gap-4 sm:grid-cols-4">
+              <StatTile
+                label="Median hours to decide"
+                value={formatHours(approvals.turnaround.medianHours)}
+                tone="accent"
+              />
+              <StatTile label="P90 hours" value={formatHours(approvals.turnaround.p90Hours)} />
+              <StatTile
+                label="Pending"
+                value={approvals.turnaround.pendingCount.toLocaleString()}
+              />
+              <StatTile
+                label="Oldest pending (h)"
+                value={formatHours(approvals.turnaround.oldestPendingHours)}
+              />
+            </div>
+
+            <div className="mb-4 flex flex-wrap gap-2">
+              {approvals.byStatus.map((s) => (
+                <span
+                  key={s.status}
+                  className={
+                    s.count === 0
+                      ? "inline-flex items-center gap-1.5 rounded-full border border-neutral-200 px-2.5 py-1 text-xs text-neutral-400"
+                      : "inline-flex items-center gap-1.5 rounded-full border border-neutral-300 bg-white px-2.5 py-1 text-xs text-neutral-700"
+                  }
+                >
+                  <span className="font-medium">{humanizeSentence(s.status)}</span>
+                  <span className="tabular-nums">{s.count}</span>
+                </span>
+              ))}
+            </div>
+
+            <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
+              <Card>
+                <h3 className="mb-3 text-xs font-semibold uppercase tracking-wide text-neutral-500">
+                  Slowest approvers — median hours per decision
+                </h3>
+                {approvals.bottleneckApprovers.length === 0 ? (
+                  <p className="text-sm text-neutral-500">
+                    No decisions have been recorded against these requests yet.
+                  </p>
+                ) : (
+                  <TableShell>
+                    <Thead>
+                      <Th>Approver</Th>
+                      <Th numeric>Decisions</Th>
+                      <Th numeric>Median hours</Th>
+                    </Thead>
+                    <Tbody>
+                      {approvals.bottleneckApprovers.map((a) => (
+                        <Tr key={a.approverMembershipId}>
+                          <Td label="Approver">{a.approverName ?? "Unnamed approver"}</Td>
+                          <Td numeric label="Decisions">
+                            {a.decisions.toLocaleString()}
+                          </Td>
+                          <Td numeric label="Median hours">
+                            {formatHours(a.medianHours)}
+                          </Td>
+                        </Tr>
+                      ))}
+                    </Tbody>
+                  </TableShell>
+                )}
+                <p className="mt-2 text-xs text-neutral-500">
+                  Ten slowest at most. External approvers have no membership to attribute and are
+                  not listed.
+                </p>
+              </Card>
+
+              <Card>
+                <h3 className="mb-3 text-xs font-semibold uppercase tracking-wide text-neutral-500">
+                  By subject — what goes through approval
+                </h3>
+                <TableShell>
+                  <Thead>
+                    <Th>Subject</Th>
+                    <Th numeric>Requests</Th>
+                    <Th numeric>Median hours</Th>
+                  </Thead>
+                  <Tbody>
+                    {approvals.bySubjectType.map((s) => (
+                      <Tr key={s.subjectType}>
+                        <Td label="Subject">{humanizeSentence(s.subjectType)}</Td>
+                        <Td numeric label="Requests">
+                          {s.requests.toLocaleString()}
+                        </Td>
+                        <Td numeric label="Median hours">
+                          {formatHours(s.medianHours)}
+                        </Td>
+                      </Tr>
+                    ))}
+                  </Tbody>
+                </TableShell>
+                <p className="mt-2 text-xs text-neutral-500">
+                  End to end, request raised → decided. Pending requests count in the volume but not
+                  in the median.
+                </p>
+              </Card>
+            </div>
+          </>
+        )}
+      </ReportSection>
+
       {isAdmin ? (
         <ReportSection
           title="Governance"
@@ -874,6 +1158,91 @@ function buildPipelineCsv(pipeline: GetPipelineReportOutput): string {
   return buildCsv(PIPELINE_CSV_HEADERS, rows);
 }
 
+const HEADCOUNT_CSV_HEADERS = [
+  "row_type",
+  "business_unit",
+  "period_start",
+  "period_end",
+  "status",
+  "planned_headcount",
+  "reqs_raised",
+  "openings_requested",
+  "utilisation_pct",
+  "hires",
+] as const;
+
+/**
+ * One row per envelope plus a FINAL `unplanned` row, rather than a second
+ * button for two numbers. The leading `row_type` column says which is
+ * which, so a filter on it recovers either half; the unplanned row leaves
+ * the plan-shaped cells (period, status, planned, utilisation, hires)
+ * empty because it has no envelope to describe — an empty cell is honest
+ * where a zero would read as "planned nothing, hired nobody".
+ */
+function buildHeadcountCsv(headcount: GetHeadcountVsPlanReportOutput): string {
+  const rows: string[][] = headcount.envelopes.map((e) => [
+    "envelope",
+    e.businessUnitName,
+    e.periodStart,
+    e.periodEnd,
+    e.status,
+    String(e.plannedHeadcount),
+    String(e.reqsRaised),
+    String(e.openingsRequested),
+    csvNumber(e.utilisationPct),
+    String(e.hires),
+  ]);
+  rows.push([
+    "unplanned",
+    "",
+    "",
+    "",
+    "",
+    "",
+    String(headcount.unplanned.reqsRaised),
+    String(headcount.unplanned.openingsRequested),
+    "",
+    "",
+  ]);
+  return buildCsv(HEADCOUNT_CSV_HEADERS, rows);
+}
+
+const APPROVAL_CSV_HEADERS = ["section", "item", "metric", "value"] as const;
+
+/**
+ * Long format — section, item, metric, value — for the same reason the
+ * pipeline export uses it: four datasets (turnaround, status mix,
+ * approvers, subject types) with incompatible column sets, one button.
+ * Nulls export as empty cells.
+ */
+function buildApprovalCsv(approvals: GetApprovalAnalyticsReportOutput): string {
+  const rows: string[][] = [
+    ["turnaround", "", "median_hours", csvNumber(approvals.turnaround.medianHours)],
+    ["turnaround", "", "p90_hours", csvNumber(approvals.turnaround.p90Hours)],
+    ["turnaround", "", "decided_requests", String(approvals.turnaround.decidedCount)],
+    ["turnaround", "", "pending_requests", String(approvals.turnaround.pendingCount)],
+    ["turnaround", "", "oldest_pending_hours", csvNumber(approvals.turnaround.oldestPendingHours)],
+  ];
+  for (const s of approvals.byStatus) {
+    rows.push(["by_status", s.status, "requests", String(s.count)]);
+  }
+  for (const a of approvals.bottleneckApprovers) {
+    const who = a.approverName ?? a.approverMembershipId;
+    rows.push(["approvers", who, "decisions", String(a.decisions)]);
+    rows.push(["approvers", who, "median_hours", String(a.medianHours)]);
+  }
+  for (const s of approvals.bySubjectType) {
+    rows.push(["by_subject_type", s.subjectType, "requests", String(s.requests)]);
+    rows.push(["by_subject_type", s.subjectType, "median_hours", csvNumber(s.medianHours)]);
+  }
+  return buildCsv(APPROVAL_CSV_HEADERS, rows);
+}
+
+/** Requests in range across every status — the section's "is there anything here". */
+function approvalTotal(approvals: GetApprovalAnalyticsReportOutput): number {
+  return approvals.byStatus.reduce((sum, s) => sum + s.count, 0);
+}
+
 function totalOf(aging: GetRequisitionAgingReportOutput): number {
   return aging.byStatus.reduce((sum, s) => sum + s.count, 0);
 }
@@ -886,6 +1255,50 @@ function countOf(aging: GetRequisitionAgingReportOutput, status: string): number
 function formatDays(days: number | null): string {
   if (days === null) return "—";
   return days.toLocaleString(undefined, { maximumFractionDigits: 1 });
+}
+
+/** null → "—"; otherwise a 1-decimal hour count (approvals run in hours). */
+function formatHours(hours: number | null): string {
+  if (hours === null) return "—";
+  return hours.toLocaleString(undefined, { maximumFractionDigits: 1 });
+}
+
+/** null → "—"; otherwise a 1-decimal percentage, e.g. "112.5%". */
+function formatPct(pct: number | null): string {
+  if (pct === null) return "—";
+  return `${pct.toLocaleString(undefined, { maximumFractionDigits: 1 })}%`;
+}
+
+/**
+ * An envelope period. These are `date` columns — plain calendar days —
+ * so they are formatted from their parts rather than parsed as instants
+ * and shifted by the reader's timezone.
+ */
+function formatPeriod(periodStart: string, periodEnd: string): string {
+  return `${formatDay(periodStart)} – ${formatDay(periodEnd)}`;
+}
+
+function formatDay(day: string): string {
+  const d = new Date(`${day}T00:00:00Z`);
+  if (Number.isNaN(d.getTime())) return day;
+  return d.toLocaleDateString(undefined, {
+    timeZone: "UTC",
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+  });
+}
+
+/** Envelope status → badge tone. Only three values exist (CHECK constraint). */
+function envelopeStatusTone(status: string): "neutral" | "info" | "success" | "warning" | "error" {
+  switch (status) {
+    case "approved":
+      return "success";
+    case "closed":
+      return "neutral";
+    default:
+      return "warning";
+  }
 }
 
 /** ISO instant → a short UTC calendar date (the period filter is UTC too). */
