@@ -175,10 +175,13 @@ async function trpcQuery<O>(
   input: unknown,
   token: string,
 ): Promise<TRPCSuccess<O> | TRPCErr> {
-  const res = await app.request(`/trpc/${name}?input=${encodeURIComponent(JSON.stringify(input))}`, {
-    method: "GET",
-    headers: { Authorization: `Bearer ${token}` },
-  });
+  const res = await app.request(
+    `/trpc/${name}?input=${encodeURIComponent(JSON.stringify(input))}`,
+    {
+      method: "GET",
+      headers: { Authorization: `Bearer ${token}` },
+    },
+  );
   return (await res.json()) as TRPCSuccess<O> | TRPCErr;
 }
 
