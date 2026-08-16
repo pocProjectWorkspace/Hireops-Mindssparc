@@ -130,6 +130,9 @@ import type { ReportFilters } from "../lib/reports/dimensions";
 // R0.2 catalog reports — the two genuinely-new P0 reports behind /reports.
 import { getRequisitionAgingReport } from "../lib/reports/requisition-aging";
 import { getRecruiterProductivityReport } from "../lib/reports/recruiter-productivity";
+// R0.3 catalog fill — the pipeline & speed report (funnel/TTF/stage/source/
+// offers over the R0.1 measures, plus the live SLA-breach table).
+import { getPipelineReport } from "../lib/reports/pipeline-report";
 import {
   getIrisAction,
   listIrisActions,
@@ -377,6 +380,9 @@ import {
   getRequisitionAgingReportOutputSchema,
   getRecruiterProductivityReportInputSchema,
   getRecruiterProductivityReportOutputSchema,
+  // R0.3 — pipeline & speed (catalog #2/#3/#4/#6/#10).
+  getPipelineReportInputSchema,
+  getPipelineReportOutputSchema,
   getHrMetricsOutputSchema,
   listJdLibraryInputSchema,
   listJdLibraryOutputSchema,
@@ -10585,6 +10591,41 @@ export const appRouter = router({
           recruiterName: names.get(r.recruiterMembershipId) ?? null,
         })),
       };
+    }),
+
+  // ────── getPipelineReport (catalog #2/#3/#4/#6/#10 · R0.3) ──────
+  //
+  // "Where is the pipeline, and how fast is it moving?" — the funnel,
+  // time to fill, time in stage, source mix and the offer funnel, all
+  // straight off the R0.1 measures (so the catalog cannot disagree with
+  // /admin/reports or /metrics), plus the live per-stage SLA-breach table
+  // that completes plan #4.
+  //
+  // All the SQL lives in lib/reports/pipeline-report.ts; this procedure is
+  // the gate. SLA thresholds are the tenant's RESOLVED map
+  // (settings.slaThresholds over the code defaults, via the shared
+  // resolveSlaThresholds), so an override moves these numbers exactly as
+  // it moves the candidate-list breach filter. Read-only, no withAudit
+  // (matches the rest of the catalog).
+  getPipelineReport: protectedProcedure
+    .input(getPipelineReportInputSchema)
+    .output(getPipelineReportOutputSchema)
+    .query(async ({ ctx, input }) => {
+      requireAnyRole(
+        ctx,
+        REPORTS_READ_ROLES,
+        "Reports access requires the admin, hr_head or hr_ops role",
+      );
+      const db = requireDb(ctx);
+      if (!ctx.tenantId) {
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: "protected procedure missing tenantId",
+        });
+      }
+      const filters: ReportFilters = input;
+
+      return getPipelineReport(db, ctx.tenantId, filters);
     }),
 
   // ─────────────────────── getHrMetrics (METRICS-01) ───────────────────────

@@ -50,9 +50,10 @@ export default async function ReportsHubPage() {
   }
 
   const caller = createServerTRPCCaller(session);
-  const [initialAging, initialProductivity] = await Promise.all([
+  const [initialAging, initialProductivity, initialPipeline] = await Promise.all([
     caller.getRequisitionAgingReport({}),
     caller.getRecruiterProductivityReport({}),
+    caller.getPipelineReport({}),
   ]);
 
   return (
@@ -63,7 +64,12 @@ export default async function ReportsHubPage() {
       active="reports-catalog"
       user={sessionUserChip(session)}
     >
-      <ReportsHubClient initialAging={initialAging} initialProductivity={initialProductivity} />
+      <ReportsHubClient
+        initialAging={initialAging}
+        initialProductivity={initialProductivity}
+        initialPipeline={initialPipeline}
+        isAdmin={isAdmin}
+      />
     </AppShell>
   );
 }

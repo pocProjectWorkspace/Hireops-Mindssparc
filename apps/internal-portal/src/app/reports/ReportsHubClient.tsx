@@ -1,13 +1,16 @@
 "use client";
 
+import Link from "next/link";
 import { useMemo, useState, type ReactNode } from "react";
 import type {
   GetRequisitionAgingReportOutput,
   GetRecruiterProductivityReportOutput,
+  GetPipelineReportOutput,
 } from "@hireops/api-types";
 import {
   Badge,
   Card,
+  DataBar,
   EmptyState,
   StatTile,
   TableShell,
@@ -20,17 +23,29 @@ import {
 import { PageContainer } from "@/components/nav/PageContainer";
 import { trpc } from "@/lib/trpc-client";
 import { humanizeSentence } from "@/lib/labels";
+import { formatCostMicros } from "@/lib/approval-format";
 
 /**
- * The /reports catalog (R0.2) — every report on ONE shared filter bar.
+ * The /reports catalog (R0.2, filled out in R0.3) — every report on ONE
+ * shared filter bar.
  *
  * The catalog's promise is that "requisitions in this period, in this BU,
  * for this recruiter" means the same thing in every section, because all
  * of them take the same `reportFiltersSchema` input and resolve it through
- * the one server-side semantic layer. Two reports ship here (requisition
- * aging, recruiter productivity — the two the build plan rates as
- * genuinely absent); the rest of the catalog re-homes the existing
- * persona surfaces in a later ticket.
+ * the one server-side semantic layer. Three reports ship on that bar:
+ * requisition aging, recruiter productivity (R0.2) and pipeline & speed
+ * (R0.3 — funnel, time to fill, time in stage, source mix, offers and the
+ * live SLA-breach table, all off the R0.1 measures).
+ *
+ * GOVERNANCE is the deliberate exception. Its two sections reuse the
+ * EXISTING admin procedures (getAiUsageSummary, listAuditEvents) rather
+ * than rebuilding /admin/costs and /admin/audit here — they are catalog
+ * entries with a drill-through, not replacements. Two consequences the UI
+ * states out loud rather than papering over:
+ *   - those procedures are admin-gated (USERS_ADMIN_ROLES), so hr_head and
+ *     hr_ops simply do not see the sections;
+ *   - they take no report filters, so the shared bar does NOT move them —
+ *     each carries its own window label ("All time", "Last 30 days").
  *
  * FILTER OPTION LISTS are derived from the UNFILTERED server prefetch and
  * then held constant, deliberately:
@@ -55,9 +70,13 @@ const AGING_HIGHLIGHT_DAYS = 30;
 export function ReportsHubClient({
   initialAging,
   initialProductivity,
+  initialPipeline,
+  isAdmin,
 }: {
   initialAging: GetRequisitionAgingReportOutput;
   initialProductivity: GetRecruiterProductivityReportOutput;
+  initialPipeline: GetPipelineReportOutput;
+  isAdmin: boolean;
 }) {
   const [from, setFrom] = useState("");
   const [to, setTo] = useState("");
@@ -87,10 +106,29 @@ export function ReportsHubClient({
     refetchOnWindowFocus: false,
     staleTime: 5_000,
   });
+  const pipelineQuery = trpc.getPipelineReport.useQuery(input, {
+    initialData: isUnfiltered ? initialPipeline : undefined,
+    refetchOnWindowFocus: false,
+    staleTime: 5_000,
+  });
+
+  // Governance (admin only) — deliberately OUTSIDE the shared filter bar;
+  // see the file header. `enabled` gates the calls so non-admins never fire
+  // an admin-gated procedure just to have it 403.
+  const aiUsageQuery = trpc.getAiUsageSummary.useQuery(
+    {},
+    { enabled: isAdmin, refetchOnWindowFocus: false, staleTime: 30_000 },
+  );
+  const auditQuery = trpc.listAuditEvents.useQuery(
+    { limit: 5 },
+    { enabled: isAdmin, refetchOnWindowFocus: false, staleTime: 30_000 },
+  );
 
   const aging = agingQuery.data ?? initialAging;
   const productivity = productivityQuery.data ?? initialProductivity;
-  const isFetching = agingQuery.isFetching || productivityQuery.isFetching;
+  const pipeline = pipelineQuery.data ?? initialPipeline;
+  const isFetching =
+    agingQuery.isFetching || productivityQuery.isFetching || pipelineQuery.isFetching;
 
   // Options come from the unfiltered prefetch and never change — see the
   // file header for why they aren't a separate list procedure.
@@ -354,6 +392,253 @@ export function ReportsHubClient({
           </TableShell>
         )}
       </ReportSection>
+
+      <ReportSection
+        title="Pipeline & speed"
+        blurb={
+          <>
+            The funnel, hiring speed and channel mix for applications raised in the period, plus the
+            live SLA standing: a breach is an application still sitting in a thresholded stage past
+            the tenant&apos;s limit — a snapshot of right now, not a history.
+          </>
+        }
+      >
+        <div className="mb-4 grid grid-cols-2 gap-4 sm:grid-cols-4">
+          <StatTile
+            label="Median days to hire"
+            value={formatDays(pipeline.timeToFill.medianDays)}
+            tone="accent"
+          />
+          <StatTile label="P90 days to hire" value={formatDays(pipeline.timeToFill.p90Days)} />
+          <StatTile label="Hires" value={pipeline.timeToFill.hires.toLocaleString()} />
+          <StatTile
+            label="Offer acceptance"
+            value={
+              pipeline.offers.extended > 0
+                ? `${Math.round((pipeline.offers.accepted / pipeline.offers.extended) * 100)}%`
+                : "—"
+            }
+          />
+        </div>
+
+        <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
+          <Card>
+            <h3 className="mb-3 text-xs font-semibold uppercase tracking-wide text-neutral-500">
+              Funnel — where applications sit now
+            </h3>
+            <div className="flex flex-col gap-2">
+              {(() => {
+                const max = Math.max(1, ...pipeline.funnel.map((f) => f.count));
+                return pipeline.funnel.map((f) => (
+                  <DataBar
+                    key={f.stage}
+                    label={humanizeSentence(f.stage)}
+                    labelClassName="w-40 text-neutral-700"
+                    pct={(f.count / max) * 100}
+                    value={f.count.toLocaleString()}
+                  />
+                ));
+              })()}
+            </div>
+          </Card>
+
+          <Card>
+            <h3 className="mb-3 text-xs font-semibold uppercase tracking-wide text-neutral-500">
+              SLA hot spots — in-stage past the threshold
+            </h3>
+            {pipeline.slaBreaches.length === 0 ? (
+              <p className="text-sm text-neutral-500">No thresholded stages are configured.</p>
+            ) : (
+              <TableShell>
+                <Thead>
+                  <Th>Stage</Th>
+                  <Th numeric>Threshold (h)</Th>
+                  <Th numeric>In stage</Th>
+                  <Th numeric>Breached</Th>
+                </Thead>
+                <Tbody>
+                  {pipeline.slaBreaches.map((s) => (
+                    <Tr key={s.stage}>
+                      <Td label="Stage">{humanizeSentence(s.stage)}</Td>
+                      <Td numeric label="Threshold (h)">
+                        {s.thresholdHours.toLocaleString()}
+                      </Td>
+                      <Td numeric label="In stage">
+                        {s.totalInStage.toLocaleString()}
+                      </Td>
+                      <Td numeric label="Breached">
+                        {s.breachedCount > 0 ? (
+                          <Badge tone="warning" pill>
+                            {s.breachedCount.toLocaleString()}
+                          </Badge>
+                        ) : (
+                          <span className="text-neutral-400">0</span>
+                        )}
+                      </Td>
+                    </Tr>
+                  ))}
+                </Tbody>
+              </TableShell>
+            )}
+          </Card>
+
+          <Card>
+            <h3 className="mb-3 text-xs font-semibold uppercase tracking-wide text-neutral-500">
+              Time in stage — median days, completed visits
+            </h3>
+            <TableShell>
+              <Thead>
+                <Th>Stage</Th>
+                <Th numeric>Median days</Th>
+              </Thead>
+              <Tbody>
+                {pipeline.timeInStage
+                  .filter((s) => s.medianDays !== null)
+                  .map((s) => (
+                    <Tr key={s.stage}>
+                      <Td label="Stage">{humanizeSentence(s.stage)}</Td>
+                      <Td numeric label="Median days">
+                        {formatDays(s.medianDays)}
+                      </Td>
+                    </Tr>
+                  ))}
+              </Tbody>
+            </TableShell>
+            {pipeline.timeInStage.every((s) => s.medianDays === null) ? (
+              <p className="mt-2 text-sm text-neutral-500">
+                No completed stage visits in this range yet.
+              </p>
+            ) : null}
+          </Card>
+
+          <Card>
+            <h3 className="mb-3 text-xs font-semibold uppercase tracking-wide text-neutral-500">
+              Source mix — volume and hires by channel
+            </h3>
+            {pipeline.sourceMix.length === 0 ? (
+              <p className="text-sm text-neutral-500">No applications in this range.</p>
+            ) : (
+              <TableShell>
+                <Thead>
+                  <Th>Source</Th>
+                  <Th numeric>Applications</Th>
+                  <Th numeric>Hires</Th>
+                </Thead>
+                <Tbody>
+                  {pipeline.sourceMix.map((s) => (
+                    <Tr key={s.source}>
+                      <Td label="Source">{humanizeSentence(s.source)}</Td>
+                      <Td numeric label="Applications">
+                        {s.applications.toLocaleString()}
+                      </Td>
+                      <Td numeric label="Hires">
+                        {s.hires.toLocaleString()}
+                      </Td>
+                    </Tr>
+                  ))}
+                </Tbody>
+              </TableShell>
+            )}
+            <p className="mt-3 text-xs text-neutral-500">
+              Offers: {pipeline.offers.drafted.toLocaleString()} drafted ·{" "}
+              {pipeline.offers.extended.toLocaleString()} extended ·{" "}
+              {pipeline.offers.accepted.toLocaleString()} accepted ·{" "}
+              {pipeline.offers.declined.toLocaleString()} declined
+            </p>
+          </Card>
+        </div>
+      </ReportSection>
+
+      {isAdmin ? (
+        <ReportSection
+          title="Governance"
+          blurb={
+            <>
+              Catalog entries for the compliance and AI-spend stories — drill through for the full
+              consoles. These are admin-only and are <em>not</em> affected by the filters above.
+            </>
+          }
+        >
+          <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
+            <Card>
+              <div className="mb-3 flex items-baseline justify-between">
+                <h3 className="text-xs font-semibold uppercase tracking-wide text-neutral-500">
+                  AI usage &amp; cost
+                </h3>
+                <span className="text-xs text-neutral-400">All time</span>
+              </div>
+              {aiUsageQuery.data ? (
+                <>
+                  <div className="mb-3 grid grid-cols-3 gap-4">
+                    <StatTile
+                      label="Calls"
+                      value={aiUsageQuery.data.totals.calls.toLocaleString()}
+                    />
+                    <StatTile
+                      label="Spend"
+                      value={formatCostMicros(aiUsageQuery.data.totals.cost_micros)}
+                      tone="accent"
+                    />
+                    <StatTile
+                      label="Failures"
+                      value={aiUsageQuery.data.totals.failures.toLocaleString()}
+                    />
+                  </div>
+                  <ul className="mb-3 flex flex-col gap-1">
+                    {aiUsageQuery.data.byFeature.slice(0, 3).map((f) => (
+                      <li key={f.feature} className="flex justify-between text-sm">
+                        <span className="text-neutral-700">{humanizeSentence(f.feature)}</span>
+                        <span className="tabular-nums text-neutral-500">
+                          {formatCostMicros(f.cost_micros)}
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                </>
+              ) : (
+                <p className="mb-3 text-sm text-neutral-500">Loading usage…</p>
+              )}
+              <Link
+                href="/admin/costs"
+                className="text-sm font-medium text-brand-600 hover:underline"
+              >
+                Open AI costs →
+              </Link>
+            </Card>
+
+            <Card>
+              <div className="mb-3 flex items-baseline justify-between">
+                <h3 className="text-xs font-semibold uppercase tracking-wide text-neutral-500">
+                  Compliance &amp; audit
+                </h3>
+                <span className="text-xs text-neutral-400">Most recent events</span>
+              </div>
+              {auditQuery.data ? (
+                <ul className="mb-3 flex flex-col gap-1">
+                  {auditQuery.data.items.map((e) => (
+                    <li key={e.id} className="flex justify-between gap-3 text-sm">
+                      <span className="min-w-0 truncate text-neutral-700">
+                        {humanizeSentence(e.entity_type)} · {e.action}
+                      </span>
+                      <span className="shrink-0 tabular-nums text-neutral-500">
+                        {formatDate(e.created_at)}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <p className="mb-3 text-sm text-neutral-500">Loading events…</p>
+              )}
+              <Link
+                href="/admin/audit"
+                className="text-sm font-medium text-brand-600 hover:underline"
+              >
+                Open audit console →
+              </Link>
+            </Card>
+          </div>
+        </ReportSection>
+      ) : null}
     </PageContainer>
   );
 }

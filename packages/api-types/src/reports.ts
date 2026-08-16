@@ -165,3 +165,113 @@ export type GetRecruiterProductivityReportInput = z.infer<
 export type GetRecruiterProductivityReportOutput = z.infer<
   typeof getRecruiterProductivityReportOutputSchema
 >;
+
+// ─────────── #2/#3/#4/#6/#10 pipeline & speed ───────────
+//
+// ONE report over the R0.1 measures: the funnel (#2), time to fill (#3),
+// time in stage (#4a), source mix (#6) and the offer funnel (#10) — plus
+// SLA breaches (#4b), the half of "stage velocity & SLA" that no measure
+// covered. They ship as one procedure because they answer one question
+// ("where is the pipeline, and how fast is it moving?") over one filtered
+// scope, and splitting them would mean five round trips per filter change.
+//
+// Field names are camelCase here, matching the rest of the catalog — the
+// snake_case on getRecruitmentReport / getHrMetrics is legacy those
+// surfaces keep; nothing on /reports inherits it.
+
+/** One funnel band — applications whose CURRENT stage is `stage`. */
+export const pipelineFunnelBandSchema = z.object({
+  stage: applicationStageSchema,
+  count: z.number().int(),
+});
+
+/** Median / P90 days to hire, and the hire count they are computed over. */
+export const pipelineTimeToFillSchema = z.object({
+  medianDays: z.number().nullable(),
+  p90Days: z.number().nullable(),
+  /** Applications currently at offer_accepted — the percentile population. */
+  hires: z.number().int(),
+});
+
+/**
+ * Median days spent in a stage, over COMPLETED visits only. Null for a
+ * stage nobody has finished passing through — including every terminal
+ * stage, which is never left.
+ */
+export const pipelineStageDurationSchema = z.object({
+  stage: applicationStageSchema,
+  medianDays: z.number().nullable(),
+});
+
+/** One acquisition channel's volume and its hire conversion. */
+export const pipelineSourceMixRowSchema = z.object({
+  source: z.string(),
+  applications: z.number().int(),
+  hires: z.number().int(),
+});
+
+/** Offer lifecycle counts; the invariant extended >= accepted + declined holds. */
+export const pipelineOfferFunnelSchema = z.object({
+  drafted: z.number().int(),
+  extended: z.number().int(),
+  accepted: z.number().int(),
+  declined: z.number().int(),
+});
+
+/**
+ * One stage's SLA standing, RIGHT NOW.
+ *
+ * DEFINITION — an SLA breach is an application whose CURRENT stage has a
+ * threshold and which has been sitting in it (`stage_entered_at`) longer
+ * than that threshold's hours. It is a live snapshot, not a history: an
+ * application that ran late through recruiter_review and has since moved
+ * on does not appear. Thresholds are the tenant's RESOLVED map
+ * (`tenants.settings.slaThresholds` over the code defaults), so a tenant
+ * override genuinely moves these numbers.
+ *
+ * A row is emitted for every stage that HAS a threshold, breached or not
+ * (so the table doesn't reflow as data moves); stages with no threshold —
+ * the four terminals, plus any stage the tenant has disabled — produce no
+ * row at all.
+ */
+export const pipelineSlaBreachRowSchema = z.object({
+  stage: applicationStageSchema,
+  /** The tenant's resolved threshold for this stage, in hours. */
+  thresholdHours: z.number(),
+  /** In-stage applications past the threshold. */
+  breachedCount: z.number().int(),
+  /** In-stage applications in total — the breach's denominator. */
+  totalInStage: z.number().int(),
+});
+
+/**
+ * Filters honoured: ALL of them — every part of this report is an
+ * application-axis measure resolved through `buildApplicationScope`
+ * (period bounds `applications.created_at`). Note what that means for the
+ * SLA rows: the breach test is against `now()`, but the population is
+ * still "applications CREATED in the window", so a narrow period narrows
+ * which live breaches you are looking at rather than back-dating them.
+ */
+export const getPipelineReportInputSchema = reportFiltersSchema;
+
+export const getPipelineReportOutputSchema = z.object({
+  /** Zero-filled across all 11 stages, in canonical enum order. */
+  funnel: z.array(pipelineFunnelBandSchema),
+  timeToFill: pipelineTimeToFillSchema,
+  /** Zero-filled across all 11 stages, in canonical enum order. */
+  timeInStage: z.array(pipelineStageDurationSchema),
+  /** PRESENT channels only (matching /admin/reports), busiest first. */
+  sourceMix: z.array(pipelineSourceMixRowSchema),
+  offers: pipelineOfferFunnelSchema,
+  /** Thresholded stages only, in canonical stage order. */
+  slaBreaches: z.array(pipelineSlaBreachRowSchema),
+});
+
+export type PipelineFunnelBand = z.infer<typeof pipelineFunnelBandSchema>;
+export type PipelineTimeToFill = z.infer<typeof pipelineTimeToFillSchema>;
+export type PipelineStageDuration = z.infer<typeof pipelineStageDurationSchema>;
+export type PipelineSourceMixRow = z.infer<typeof pipelineSourceMixRowSchema>;
+export type PipelineOfferFunnel = z.infer<typeof pipelineOfferFunnelSchema>;
+export type PipelineSlaBreachRow = z.infer<typeof pipelineSlaBreachRowSchema>;
+export type GetPipelineReportInput = z.infer<typeof getPipelineReportInputSchema>;
+export type GetPipelineReportOutput = z.infer<typeof getPipelineReportOutputSchema>;
