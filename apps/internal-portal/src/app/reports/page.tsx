@@ -15,8 +15,9 @@ export const dynamic = "force-dynamic"; // Role-gated + reads live requisition/a
  * analytics surface hand-rolling its own WHERE clauses. Requisition aging
  * and recruiter productivity shipped first (the two the reporting build
  * plan rates as genuinely missing), then pipeline & speed (R0.3), then the
- * sponsor pack — headcount vs plan and the approval cycle (R1.1), each of
- * which honours a narrower slice of the shared bar and says so on itself.
+ * sponsor pack — headcount vs plan and the approval cycle (R1.1) and the
+ * partner / agency scorecard (R1.3), each of which honours a narrower slice
+ * of the shared bar and says so on itself.
  * Every report is server-prefetched unfiltered here. The existing
  * persona surfaces (/metrics, /insights, /hr-analytics, /admin/reports)
  * are untouched; they re-home into this catalog in a later ticket.
@@ -62,14 +63,21 @@ export default async function ReportsHubPage() {
   }
 
   const caller = createServerTRPCCaller(session);
-  const [initialAging, initialProductivity, initialPipeline, initialHeadcount, initialApprovals] =
-    await Promise.all([
-      caller.getRequisitionAgingReport({}),
-      caller.getRecruiterProductivityReport({}),
-      caller.getPipelineReport({}),
-      caller.getHeadcountVsPlanReport({}),
-      caller.getApprovalAnalyticsReport({}),
-    ]);
+  const [
+    initialAging,
+    initialProductivity,
+    initialPipeline,
+    initialHeadcount,
+    initialApprovals,
+    initialPartners,
+  ] = await Promise.all([
+    caller.getRequisitionAgingReport({}),
+    caller.getRecruiterProductivityReport({}),
+    caller.getPipelineReport({}),
+    caller.getHeadcountVsPlanReport({}),
+    caller.getApprovalAnalyticsReport({}),
+    caller.getPartnerScorecardReport({}),
+  ]);
 
   return (
     <AppShell
@@ -85,6 +93,7 @@ export default async function ReportsHubPage() {
         initialPipeline={initialPipeline}
         initialHeadcount={initialHeadcount}
         initialApprovals={initialApprovals}
+        initialPartners={initialPartners}
         isAdmin={isAdmin}
         canOpenRequisitionDetail={session.roles.some((r) => REQUISITION_DETAIL_ROLES.includes(r))}
         canOpenTriage={session.roles.some((r) => TRIAGE_ROLES.includes(r))}

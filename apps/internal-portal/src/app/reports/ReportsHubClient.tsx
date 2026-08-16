@@ -8,6 +8,8 @@ import type {
   GetPipelineReportOutput,
   GetHeadcountVsPlanReportOutput,
   GetApprovalAnalyticsReportOutput,
+  GetPartnerScorecardReportOutput,
+  PartnerScorecardRow,
 } from "@hireops/api-types";
 import {
   Badge,
@@ -26,6 +28,7 @@ import { PageContainer } from "@/components/nav/PageContainer";
 import { trpc } from "@/lib/trpc-client";
 import { humanizeSentence } from "@/lib/labels";
 import { formatCostMicros } from "@/lib/approval-format";
+import { formatFeeMinor } from "@/lib/money";
 import { buildCsv, downloadCsv } from "@/lib/csv";
 
 /**
@@ -51,6 +54,14 @@ import { buildCsv, downloadCsv } from "@/lib/csv";
  *     an opaque subject id, so there is no business unit to filter on.
  * Neither takes the recruiter filter — a budget line and an approval
  * chain have no recruiter.
+ *
+ * THE PARTNER SCORECARD (R1.3) is the third: one row per agency, over the
+ * period and business unit. It reads ONE window against three different
+ * date columns, because its measures genuinely live on different clocks —
+ * submissions on the application date, fees on the HIRE date, duplicate
+ * blocks on the attempt date — and its two "right now" columns (assignments
+ * and claims) take no window at all. The section blurb says so; the recruiter
+ * filter does not apply to an agency.
  *
  * GOVERNANCE is the deliberate exception. Its two sections reuse the
  * EXISTING admin procedures (getAiUsageSummary, listAuditEvents) rather
@@ -102,6 +113,7 @@ export function ReportsHubClient({
   initialPipeline,
   initialHeadcount,
   initialApprovals,
+  initialPartners,
   isAdmin,
   canOpenRequisitionDetail,
   canOpenTriage,
@@ -111,6 +123,7 @@ export function ReportsHubClient({
   initialPipeline: GetPipelineReportOutput;
   initialHeadcount: GetHeadcountVsPlanReportOutput;
   initialApprovals: GetApprovalAnalyticsReportOutput;
+  initialPartners: GetPartnerScorecardReportOutput;
   isAdmin: boolean;
   /** Viewer passes /requisitions/[id]'s own read gate — see the drill-down note. */
   canOpenRequisitionDetail: boolean;
@@ -160,6 +173,11 @@ export function ReportsHubClient({
     refetchOnWindowFocus: false,
     staleTime: 5_000,
   });
+  const partnersQuery = trpc.getPartnerScorecardReport.useQuery(input, {
+    initialData: isUnfiltered ? initialPartners : undefined,
+    refetchOnWindowFocus: false,
+    staleTime: 5_000,
+  });
 
   // Governance (admin only) — deliberately OUTSIDE the shared filter bar;
   // see the file header. `enabled` gates the calls so non-admins never fire
@@ -178,12 +196,14 @@ export function ReportsHubClient({
   const pipeline = pipelineQuery.data ?? initialPipeline;
   const headcount = headcountQuery.data ?? initialHeadcount;
   const approvals = approvalsQuery.data ?? initialApprovals;
+  const partners = partnersQuery.data ?? initialPartners;
   const isFetching =
     agingQuery.isFetching ||
     productivityQuery.isFetching ||
     pipelineQuery.isFetching ||
     headcountQuery.isFetching ||
-    approvalsQuery.isFetching;
+    approvalsQuery.isFetching ||
+    partnersQuery.isFetching;
 
   // Options come from the unfiltered prefetch and never change — see the
   // file header for why they aren't a separate list procedure.
@@ -209,6 +229,10 @@ export function ReportsHubClient({
       .map(([id, name]) => ({ id, name }))
       .sort((a, b) => a.name.localeCompare(b.name));
   }, [initialAging, initialProductivity]);
+
+  // Partner tiles are derived from the full (uncapped) row set — see the
+  // server report for why there is no cap to invalidate them.
+  const partnerTotals = useMemo(() => summarisePartners(partners.rows), [partners.rows]);
 
   const openCount = aging.byStatus
     .filter((s) => !TERMINAL_STATUSES.has(s.status))
@@ -903,6 +927,119 @@ export function ReportsHubClient({
         )}
       </ReportSection>
 
+      <ReportSection
+        title="Partner scorecard"
+        blurb={
+          <>
+            Every partner agency: what it holds right now, what it delivered in the period, and what
+            that cost. The period bounds submissions, both rates and time-to-submit by when the
+            candidate was submitted, and fees by the <em>hire</em> date — a fee belongs to the month
+            the hire happened, not the month the CV arrived. Assignments and claims are live counts
+            and ignore the period entirely. Shortlist rate counts anyone who ever reached
+            shortlisted or beyond, so a good candidate later rejected still counts for the partner
+            who found them. The recruiter filter does not apply to an agency.
+          </>
+        }
+        actions={
+          <DownloadCsvButton
+            disabled={partners.rows.length === 0}
+            onClick={() =>
+              downloadCsv(`partner-scorecard-${csvDateStamp()}.csv`, buildPartnerCsv(partners))
+            }
+          />
+        }
+      >
+        {partners.rows.length === 0 ? (
+          <Card padded={false}>
+            <EmptyState
+              title="No partner activity"
+              hint="Partners appear once they submit. Empanel an agency and assign it a requisition to start the clock."
+            />
+          </Card>
+        ) : (
+          <>
+            <div className="mb-4 grid grid-cols-2 gap-4 sm:grid-cols-4">
+              <StatTile
+                label="Partners with activity"
+                value={partnerTotals.active.toLocaleString()}
+                tone="accent"
+              />
+              <StatTile label="Submissions" value={partnerTotals.submissions.toLocaleString()} />
+              <StatTile label="Hires" value={partnerTotals.hires.toLocaleString()} />
+              <StatTile label="Fees accrued" value={partnerTotals.fees} />
+            </div>
+
+            <TableShell>
+              <Thead>
+                <Th>Partner</Th>
+                <Th>Tier</Th>
+                <Th numeric>Assignments</Th>
+                <Th numeric>Submissions</Th>
+                <Th numeric>Shortlisted</Th>
+                <Th numeric>Hires</Th>
+                <Th numeric>Hire rate</Th>
+                <Th numeric>Dup-blocked</Th>
+                <Th numeric>Days to submit</Th>
+                <Th numeric>Fees accrued</Th>
+              </Thead>
+              <Tbody>
+                {partners.rows.map((r) => (
+                  <Tr key={r.partnerOrgId}>
+                    <Td label="Partner">
+                      <span className={r.active ? undefined : "text-neutral-500"}>{r.orgName}</span>
+                      {r.active ? null : (
+                        <span className="ml-2 text-xs text-neutral-400">suspended</span>
+                      )}
+                    </Td>
+                    <Td label="Tier">
+                      <Badge tone={r.tier === "empanelled" ? "info" : "neutral"} pill>
+                        {humanizeSentence(r.tier)}
+                      </Badge>
+                    </Td>
+                    <Td numeric label="Assignments">
+                      {r.activeAssignments.toLocaleString()}
+                    </Td>
+                    <Td numeric label="Submissions">
+                      {r.submissions.toLocaleString()}
+                    </Td>
+                    <Td numeric label="Shortlisted">
+                      {formatPct(r.shortlistRate)}
+                    </Td>
+                    <Td numeric label="Hires">
+                      {r.hires.toLocaleString()}
+                    </Td>
+                    <Td numeric label="Hire rate">
+                      {formatPct(r.hireRate)}
+                    </Td>
+                    <Td numeric label="Dup-blocked">
+                      {r.duplicateBlocked > 0 ? (
+                        <Badge tone="warning" pill>
+                          {r.duplicateBlocked.toLocaleString()}
+                        </Badge>
+                      ) : (
+                        <span className="text-neutral-400">0</span>
+                      )}
+                    </Td>
+                    <Td numeric label="Days to submit">
+                      {formatDays(r.medianDaysToSubmit)}
+                    </Td>
+                    <Td numeric label="Fees accrued">
+                      {formatPartnerFees(r)}
+                    </Td>
+                  </Tr>
+                ))}
+              </Tbody>
+            </TableShell>
+            <p className="mt-2 text-xs text-neutral-500">
+              Dup-blocked counts submissions the platform refused because another partner already
+              owned the candidate — read it next to submissions, not on its own. Fees exclude
+              disputed rows, matching the commercials ledger. Active partners always appear, at
+              zeros if that is the truth.
+            </p>
+          </>
+        )}
+      </ReportSection>
+
       {isAdmin ? (
         <ReportSection
           title="Governance"
@@ -1236,6 +1373,109 @@ function buildApprovalCsv(approvals: GetApprovalAnalyticsReportOutput): string {
     rows.push(["by_subject_type", s.subjectType, "median_hours", csvNumber(s.medianHours)]);
   }
   return buildCsv(APPROVAL_CSV_HEADERS, rows);
+}
+
+const PARTNER_CSV_HEADERS = [
+  "partner",
+  "tier",
+  "active",
+  "active_assignments",
+  "submissions",
+  "shortlist_rate_pct",
+  "hires",
+  "hire_rate_pct",
+  "duplicate_blocked",
+  "active_claims",
+  "median_days_to_submit",
+  "fees_accrued_minor",
+  "fees_currency",
+] as const;
+
+/**
+ * WIDE format — one row per agency — unlike the pipeline and approval
+ * exports. The scorecard is already one rectangular table on screen, so a
+ * long-format export would be strictly worse to read and to pivot.
+ *
+ * `fees_accrued_minor` exports the raw MINOR units, not the formatted
+ * string: a spreadsheet should get a number it can sum, and the currency
+ * travels in its own column. `active_claims` is exported even though the
+ * table has no room for it — the file is the place for the column that
+ * didn't fit.
+ */
+function buildPartnerCsv(partners: GetPartnerScorecardReportOutput): string {
+  return buildCsv(
+    PARTNER_CSV_HEADERS,
+    partners.rows.map((r) => [
+      r.orgName,
+      r.tier,
+      String(r.active),
+      String(r.activeAssignments),
+      String(r.submissions),
+      csvNumber(r.shortlistRate),
+      String(r.hires),
+      csvNumber(r.hireRate),
+      String(r.duplicateBlocked),
+      String(r.activeClaims),
+      csvNumber(r.medianDaysToSubmit),
+      r.feesAccruedMinor,
+      r.feesCurrency ?? "",
+    ]),
+  );
+}
+
+/**
+ * One agency's accrued fees. `feesCurrency` is null exactly when nothing
+ * accrued in range, which reads as an em dash rather than a misleading
+ * "₹0.00" against a partner that simply has no hires yet.
+ */
+function formatPartnerFees(row: PartnerScorecardRow): string {
+  if (!row.feesCurrency) return "—";
+  return formatFeeMinor(Number(row.feesAccruedMinor), row.feesCurrency);
+}
+
+/**
+ * The four scorecard tiles, rolled up over the full row set.
+ *
+ * "Partners with activity" counts agencies that did SOMETHING in range —
+ * submitted, had a submission blocked, or accrued a fee. It deliberately
+ * excludes an active agency sitting at zeros, which is the whole reason
+ * that row is still on screen.
+ *
+ * The fee total is summed PER CURRENCY. One currency per org is the POC's
+ * commercial reality (a fee inherits it from the org's MSA), so in practice
+ * there is one bucket; if a tenant ever mixes them the tile says "Mixed"
+ * rather than adding rupees to dollars.
+ */
+function summarisePartners(rows: readonly PartnerScorecardRow[]): {
+  active: number;
+  submissions: number;
+  hires: number;
+  fees: string;
+} {
+  let active = 0;
+  let submissions = 0;
+  let hires = 0;
+  const byCurrency = new Map<string, number>();
+
+  for (const r of rows) {
+    const accrued = Number(r.feesAccruedMinor);
+    if (r.submissions > 0 || r.duplicateBlocked > 0 || accrued > 0) active += 1;
+    submissions += r.submissions;
+    hires += r.hires;
+    if (r.feesCurrency && accrued > 0) {
+      byCurrency.set(r.feesCurrency, (byCurrency.get(r.feesCurrency) ?? 0) + accrued);
+    }
+  }
+
+  let fees = "—";
+  if (byCurrency.size > 1) {
+    fees = "Mixed";
+  } else {
+    // Runs exactly once when there is a single currency, never when empty.
+    for (const [currency, total] of byCurrency) fees = formatFeeMinor(total, currency);
+  }
+
+  return { active, submissions, hires, fees };
 }
 
 /** Requests in range across every status — the section's "is there anything here". */

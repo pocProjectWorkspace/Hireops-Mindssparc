@@ -452,3 +452,103 @@ export type GetApprovalAnalyticsReportInput = z.infer<typeof getApprovalAnalytic
 export type GetApprovalAnalyticsReportOutput = z.infer<
   typeof getApprovalAnalyticsReportOutputSchema
 >;
+
+// ─────────── #7 partner / agency scorecard ───────────
+
+/**
+ * One partner organisation's standing: what it holds, what it delivered,
+ * how fast, what it cost, and how much of its volume was refused.
+ *
+ * Every measure's definition, stated once here because the numbers are
+ * meaningless without them:
+ *
+ *   - `submissions` — applications carrying this org's `source_partner_id`,
+ *     over the shared application scope (period bounds
+ *     `applications.created_at`).
+ *   - `shortlistRate` — the share of those submissions that EVER reached
+ *     shortlisted / tech_interview / hr_round / offer_drafted /
+ *     offer_accepted, read from `application_state_transitions` and NOT
+ *     from the current stage: a candidate shortlisted and later rejected
+ *     still counts, because the measure asks whether the partner sent
+ *     someone worth talking to. 1dp; null when there were no submissions.
+ *   - `hires` — those submissions now at `offer_accepted`, the platform's
+ *     one definition of a hire; `hireRate` is hires / submissions, 1dp,
+ *     null over zero submissions.
+ *   - `duplicateBlocked` — `candidate_dedup_attempts` by this org's portal
+ *     users decided `block_active_claim` or `block_in_pipeline`, windowed
+ *     on `attempted_at`. The quality signal: volume alongside blocks is a
+ *     partner farming the pipeline rather than sourcing for it.
+ *   - `activeAssignments` / `activeClaims` — CURRENT state, no window.
+ *   - `feesAccruedMinor` — SUM of `partner_fees.fee_minor` at status
+ *     accrued / payable / paid, windowed on `hired_at` (a fee belongs to
+ *     the month of the HIRE). `disputed` is excluded, exactly as the
+ *     commercials rollups exclude it. Minor units, as a STRING (bigint,
+ *     the `cost_micros` idiom); "0" when nothing accrued, with a null
+ *     `feesCurrency`.
+ *   - `medianDaysToSubmit` — per (org, requisition), the days from the
+ *     org's earliest assignment on that requisition to its first
+ *     submission on it, medianed across pairs (2dp, clamped at zero). Null
+ *     when the org has no assignment-and-submission pair in range.
+ */
+export const partnerScorecardRowSchema = z.object({
+  partnerOrgId: z.string().uuid(),
+  orgName: z.string(),
+  /** partner_orgs.tier — `empanelled` | `ad_hoc`. */
+  tier: z.string(),
+  /** partner_orgs.active. Inactive orgs appear only when they have activity in range. */
+  active: z.boolean(),
+  activeAssignments: z.number().int(),
+  submissions: z.number().int(),
+  /** % of submissions that ever reached shortlisted or beyond, 1dp; null over zero. */
+  shortlistRate: z.number().nullable(),
+  hires: z.number().int(),
+  /** hires / submissions × 100, 1dp; null over zero submissions. */
+  hireRate: z.number().nullable(),
+  duplicateBlocked: z.number().int(),
+  activeClaims: z.number().int(),
+  /** bigint minor units as a string — "0" when nothing accrued in range. */
+  feesAccruedMinor: z.string(),
+  /** ISO currency of the accrued rows; null when there are none. */
+  feesCurrency: z.string().nullable(),
+  /** Median days assignment → first submission, 2dp; null with no pairs. */
+  medianDaysToSubmit: z.number().nullable(),
+});
+
+/**
+ * Filters honoured: period, businessUnitId and requisitionId — each on the
+ * measures that can honestly carry them.
+ *
+ * The period is ONE window read against THREE date columns, because the
+ * measures genuinely live on different clocks: `applications.created_at`
+ * for submissions, both rates and the time-to-submit pairs;
+ * `partner_fees.hired_at` for fees (a fee belongs to the month of the
+ * hire); `candidate_dedup_attempts.attempted_at` for blocks.
+ * `activeAssignments` and `activeClaims` are current-state and take no
+ * window at all.
+ *
+ * businessUnitId narrows every requisition-anchored measure (assignments,
+ * submissions, rates, the median pairs, fees) through requisition →
+ * position. requisitionId narrows those too, plus duplicate blocks via the
+ * `submission_metadata->>'requisitionId'` pointer the submission writers
+ * record. `activeClaims` honours neither: a claim is org↔person and
+ * attributes across requisitions by design, so narrowing it would report a
+ * number that does not mean what the column says.
+ *
+ * recruiterMembershipId / source / stage are N/A and ignored — a partner is
+ * not a recruiter, the source is already pinned by `source_partner_id`, and
+ * a stage filter would silently redefine both rates.
+ */
+export const getPartnerScorecardReportInputSchema = reportFiltersSchema;
+
+export const getPartnerScorecardReportOutputSchema = z.object({
+  /**
+   * Busiest first (submissions desc), then name A→Z. Uncapped — a tenant
+   * empanels tens of agencies. ACTIVE orgs always appear, at zeros if that
+   * is the truth; inactive orgs only when they have activity in range.
+   */
+  rows: z.array(partnerScorecardRowSchema),
+});
+
+export type PartnerScorecardRow = z.infer<typeof partnerScorecardRowSchema>;
+export type GetPartnerScorecardReportInput = z.infer<typeof getPartnerScorecardReportInputSchema>;
+export type GetPartnerScorecardReportOutput = z.infer<typeof getPartnerScorecardReportOutputSchema>;

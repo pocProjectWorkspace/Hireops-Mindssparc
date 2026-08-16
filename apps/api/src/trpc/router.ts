@@ -136,6 +136,8 @@ import { getPipelineReport } from "../lib/reports/pipeline-report";
 // R1.1 sponsor pack — headcount vs plan (#17) and approval cycle analytics (#18).
 import { getHeadcountVsPlanReport } from "../lib/reports/headcount-vs-plan";
 import { getApprovalAnalyticsReport } from "../lib/reports/approval-analytics";
+// R1.3 sponsor pack — the partner / agency scorecard (#7).
+import { getPartnerScorecardReport } from "../lib/reports/partner-scorecard";
 import {
   getIrisAction,
   listIrisActions,
@@ -391,6 +393,9 @@ import {
   getHeadcountVsPlanReportOutputSchema,
   getApprovalAnalyticsReportInputSchema,
   getApprovalAnalyticsReportOutputSchema,
+  // R1.3 — partner / agency scorecard (catalog #7).
+  getPartnerScorecardReportInputSchema,
+  getPartnerScorecardReportOutputSchema,
   getHrMetricsOutputSchema,
   listJdLibraryInputSchema,
   listJdLibraryOutputSchema,
@@ -10726,6 +10731,47 @@ export const appRouter = router({
         })),
         bySubjectType: report.bySubjectType,
       };
+    }),
+
+  // ───────── getPartnerScorecardReport (catalog #7 · R1.3) ─────────
+  //
+  // "Which agencies are actually earning their fee?" — the third sponsor
+  // question, and the one the P2 commercials phase unblocked. One row per
+  // partner org: assignments and claims held, submissions, shortlist rate,
+  // hires, hire rate, duplicate blocks, median days to submit, and fees
+  // accrued.
+  //
+  // All the SQL lives in lib/reports/partner-scorecard.ts; this procedure is
+  // the gate. THE definitions to know: the shortlist rate is EVER-REACHED
+  // (read off application_state_transitions, so a candidate shortlisted and
+  // later rejected still counts), fees are windowed on hired_at rather than
+  // on the application date because a fee belongs to the month of the hire,
+  // and duplicate blocks are the quality signal that stops the table being a
+  // volume league. Active orgs always get a row, at zeros if that is the
+  // truth; inactive ones only when they have activity in range.
+  //
+  // No display-name join: org names come from partner_orgs, which is
+  // tenant-scoped rather than self-only, so the tenant-bound read resolves
+  // them itself. Read-only, no withAudit (matches the rest of the catalog).
+  getPartnerScorecardReport: protectedProcedure
+    .input(getPartnerScorecardReportInputSchema)
+    .output(getPartnerScorecardReportOutputSchema)
+    .query(async ({ ctx, input }) => {
+      requireAnyRole(
+        ctx,
+        REPORTS_READ_ROLES,
+        "Reports access requires the admin, hr_head or hr_ops role",
+      );
+      const db = requireDb(ctx);
+      if (!ctx.tenantId) {
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: "protected procedure missing tenantId",
+        });
+      }
+      const filters: ReportFilters = input;
+
+      return getPartnerScorecardReport(db, ctx.tenantId, filters);
     }),
 
   // ─────────────────────── getHrMetrics (METRICS-01) ───────────────────────

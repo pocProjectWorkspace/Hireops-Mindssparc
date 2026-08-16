@@ -34,6 +34,7 @@ import {
 import { PageContainer } from "@/components/nav/PageContainer";
 import { PageHeader } from "@/components/patterns";
 import { humanize } from "@/lib/labels";
+import { formatFeeMinor } from "@/lib/money";
 import { trpc } from "@/lib/trpc-client";
 import { fmtDate, tierLabel } from "../PartnersClient";
 
@@ -534,18 +535,6 @@ const EXCLUSIVITY_SCOPE_LABELS: Record<PartnerExclusivityScopeValue, string> = {
   req_only: "Requisition only",
 };
 
-/** Minor units + ISO currency → a localised money string; null → em dash. */
-function fmtMoney(amountMinor: number | null, currency: string): string {
-  if (amountMinor === null) return "—";
-  try {
-    return new Intl.NumberFormat("en-IN", { style: "currency", currency }).format(
-      amountMinor / 100,
-    );
-  } catch {
-    return `${(amountMinor / 100).toFixed(2)} ${currency}`;
-  }
-}
-
 /** Fee status → badge tone. Only `paid` is settled; `disputed` is a problem. */
 function feeTone(status: PartnerOrgFeeRow["status"]): "success" | "warning" | "info" | "error" {
   if (status === "paid") return "success";
@@ -691,7 +680,7 @@ function CommercialsSection({
               value={
                 msa.feeModel === "percentage_ctc"
                   ? `${msa.feePercent ?? 0}% of annual base`
-                  : `${fmtMoney(msa.flatFeeMinor, msa.feeCurrency)} per hire`
+                  : `${formatFeeMinor(msa.flatFeeMinor, msa.feeCurrency)} per hire`
               }
             />
             <Field label="Exclusivity window" value={`${msa.exclusivityWindowDays} days`} />
@@ -813,17 +802,17 @@ function CommercialsSection({
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
         <StatTile
           label="Accrued"
-          value={fmtMoney(rollups.accruedMinor, rollups.currency)}
+          value={formatFeeMinor(rollups.accruedMinor, rollups.currency)}
           hint="In the holdback window"
         />
         <StatTile
           label="Payable"
-          value={fmtMoney(rollups.payableMinor, rollups.currency)}
+          value={formatFeeMinor(rollups.payableMinor, rollups.currency)}
           hint="Holdback released, not yet paid"
         />
         <StatTile
           label="Paid"
-          value={fmtMoney(rollups.paidMinor, rollups.currency)}
+          value={formatFeeMinor(rollups.paidMinor, rollups.currency)}
           hint="Settled with the partner"
         />
       </div>
@@ -850,7 +839,7 @@ function CommercialsSection({
                 <Td label="Requisition">{f.requisitionTitle ?? "—"}</Td>
                 <Td label="Fee">
                   <span>
-                    {fmtMoney(f.feeMinor, f.feeCurrency)}
+                    {formatFeeMinor(f.feeMinor, f.feeCurrency)}
                     <span className="block text-xs text-neutral-500">
                       {f.feeModel === "percentage_ctc"
                         ? `${f.feePercent ?? 0}% of base`
