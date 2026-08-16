@@ -73,8 +73,13 @@ interface SlaSqlRow {
  * the code defaults by the shared resolver. Tenant-bound read, so RLS
  * scopes it; a tenant row that somehow isn't visible resolves to the
  * defaults rather than throwing.
+ *
+ * Exported for the executive summary, which needs the SLA half of this
+ * report without its funnel / source / stage-duration halves: `slaBreaches`
+ * is built from the resolved map, so a caller cannot have one without the
+ * other.
  */
-async function loadTenantSlaThresholds(
+export async function loadTenantSlaThresholds(
   db: TenantBoundDb,
   tenantId: string,
 ): Promise<Record<ApplicationStage, number | null>> {

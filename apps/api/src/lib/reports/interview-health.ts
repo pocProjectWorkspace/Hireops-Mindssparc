@@ -265,6 +265,54 @@ function scorecardSlotsCte(tenantId: string): SQL {
 }
 
 /**
+ * DEFINITION — the interview funnel for the period: scheduled / completed /
+ * cancelled / no-show, the completion rate over RESOLVED rounds only, and
+ * how long panelists take to write a round up.
+ *
+ * Split out of `getInterviewHealthReport` (which still calls it, so the two
+ * cannot drift) because the board pack needs ONE of these numbers — the
+ * completion rate — and running the report's other three statements to get
+ * it would triple the cost of a composite page for nothing.
+ *
+ * One statement over the two CTEs, so the counts and the median cannot end
+ * up describing different populations.
+ */
+export async function interviewFunnelTotals(
+  db: TenantBoundDb,
+  tenantId: string,
+  filters: ReportFilters = {},
+): Promise<InterviewHealthTotals> {
+  const totalsRes = await db.execute(dsql`
+    ${scopedInterviewsCte(tenantId, filters)},
+    ${feedbackPairsCte(tenantId)}
+    SELECT
+      (SELECT COUNT(*) FILTER (WHERE status = 'scheduled') FROM scoped)::int AS scheduled,
+      (SELECT COUNT(*) FILTER (WHERE status = 'completed') FROM scoped)::int AS completed,
+      (SELECT COUNT(*) FILTER (WHERE status = 'cancelled') FROM scoped)::int AS cancelled,
+      (SELECT COUNT(*) FILTER (WHERE status = 'no_show') FROM scoped)::int AS no_show,
+      (SELECT COUNT(*) FROM scoped)::int AS total,
+      (SELECT ROUND(percentile_cont(0.5) WITHIN GROUP (ORDER BY hours)::numeric, 2)::float8
+         FROM pairs) AS median_hours_to_feedback,
+      (SELECT COUNT(*) FROM pairs)::int AS feedback_pairs
+  `);
+  const t = asRows<TotalsSqlRow>(totalsRes)[0];
+  const completed = t?.completed ?? 0;
+  const cancelled = t?.cancelled ?? 0;
+  const noShow = t?.no_show ?? 0;
+  return {
+    scheduled: t?.scheduled ?? 0,
+    completed,
+    cancelled,
+    noShow,
+    total: t?.total ?? 0,
+    // Resolved interviews only — see the header for why `scheduled` is out.
+    completionRate: ratePct(completed, completed + cancelled + noShow),
+    medianHoursToFeedback: t?.median_hours_to_feedback ?? null,
+    feedbackPairs: t?.feedback_pairs ?? 0,
+  };
+}
+
+/**
  * DEFINITION — interview & scorecard health: the interview funnel for the
  * period (scheduled / completed / cancelled / no-show and the completion
  * rate), how long panelists take to write an interview up, how much of the
@@ -280,36 +328,8 @@ export async function getInterviewHealthReport(
   const pairs = feedbackPairsCte(tenantId);
   const slots = scorecardSlotsCte(tenantId);
 
-  // 1. The funnel + the headline feedback median. One statement over the two
-  // CTEs so the counts and the median cannot describe different populations.
-  const totalsRes = await db.execute(dsql`
-    ${base},
-    ${pairs}
-    SELECT
-      (SELECT COUNT(*) FILTER (WHERE status = 'scheduled') FROM scoped)::int AS scheduled,
-      (SELECT COUNT(*) FILTER (WHERE status = 'completed') FROM scoped)::int AS completed,
-      (SELECT COUNT(*) FILTER (WHERE status = 'cancelled') FROM scoped)::int AS cancelled,
-      (SELECT COUNT(*) FILTER (WHERE status = 'no_show') FROM scoped)::int AS no_show,
-      (SELECT COUNT(*) FROM scoped)::int AS total,
-      (SELECT ROUND(percentile_cont(0.5) WITHIN GROUP (ORDER BY hours)::numeric, 2)::float8
-         FROM pairs) AS median_hours_to_feedback,
-      (SELECT COUNT(*) FROM pairs)::int AS feedback_pairs
-  `);
-  const t = asRows<TotalsSqlRow>(totalsRes)[0];
-  const completed = t?.completed ?? 0;
-  const cancelled = t?.cancelled ?? 0;
-  const noShow = t?.no_show ?? 0;
-  const totals: InterviewHealthTotals = {
-    scheduled: t?.scheduled ?? 0,
-    completed,
-    cancelled,
-    noShow,
-    total: t?.total ?? 0,
-    // Resolved interviews only — see the header for why `scheduled` is out.
-    completionRate: ratePct(completed, completed + cancelled + noShow),
-    medianHoursToFeedback: t?.median_hours_to_feedback ?? null,
-    feedbackPairs: t?.feedback_pairs ?? 0,
-  };
+  // 1. The funnel + the headline feedback median.
+  const totals = await interviewFunnelTotals(db, tenantId, filters);
 
   // 2. Scorecard coverage over the completed interviews.
   const coverageRes = await db.execute(dsql`

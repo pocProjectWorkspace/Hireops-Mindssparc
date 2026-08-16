@@ -16,3 +16,40 @@ body {
 * {
   box-sizing: border-box;
 }
+
+/**
+ * PRINT — the board pack (R1.4, /reports "Print / save as PDF").
+ *
+ * Opt-in, not global: every rule is scoped to a page that marks one section
+ * with `data-print-region`, so printing any other surface behaves exactly as
+ * it did before. Sections that must not print carry Tailwind's `print:hidden`
+ * themselves — this block only handles the two things a component cannot:
+ *
+ *   1. UN-CLIPPING THE APP SHELL. AppShell is a `h-screen overflow-hidden`
+ *      flex frame with a scrolling <main>, so without this the printout stops
+ *      at the first screenful. `*:has([data-print-region])` selects every
+ *      ANCESTOR of the printed section (the shell frame, the column, <main>,
+ *      PageContainer) and releases the height and the clip.
+ *
+ *   2. DROPPING THE CHROME the printed section does not own: the desktop
+ *      sidebar (<aside>), the page-header row (<header>, which also carries
+ *      the Iris launcher) and the mobile tab bar. The board pack itself uses
+ *      no <aside>/<header>, so nothing inside it is caught by these.
+ */
+@media print {
+  body:has([data-print-region]) {
+    background: #fff;
+  }
+
+  body:has([data-print-region]) *:has([data-print-region]) {
+    height: auto !important;
+    max-height: none !important;
+    overflow: visible !important;
+  }
+
+  body:has([data-print-region]) aside,
+  body:has([data-print-region]) header,
+  body:has([data-print-region]) nav[aria-label="Primary"] {
+    display: none !important;
+  }
+}

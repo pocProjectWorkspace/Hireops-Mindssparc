@@ -187,6 +187,105 @@ function hasActivity(r: ScorecardSqlRow): boolean {
   );
 }
 
+/**
+ * The fee join chain: `partner_fees f → applications fa → requisitions fr →
+ * positions fp`. Every hop exists for the BU / requisition filters; the
+ * aliases are the ones `partnerFeeWhere` writes predicates against, so the
+ * two are always used together.
+ */
+const PARTNER_FEE_FROM = dsql`
+  FROM public.partner_fees f
+  JOIN public.applications fa
+    ON fa.tenant_id = f.tenant_id AND fa.id = f.application_id
+  JOIN public.requisitions fr
+    ON fr.tenant_id = fa.tenant_id AND fr.id = fa.requisition_id
+  JOIN public.positions fp
+    ON fp.tenant_id = fr.tenant_id AND fp.id = fr.position_id
+`;
+
+/**
+ * THE fee predicate — counted statuses only, windowed on `hired_at` (a fee
+ * belongs to the month of the HIRE, not of the application), narrowed by BU
+ * and requisition through the join chain above.
+ *
+ * Exported and shared because the scorecard's per-org fee column and the
+ * board pack's agency-spend tile MUST be the same money: two hand-rolled
+ * copies of this predicate is exactly how a catalog starts disagreeing with
+ * itself. recruiterMembershipId / source / stage are ignored here for the
+ * reasons given in the header.
+ */
+export function partnerFeeWhere(tenantId: string, filters: ReportFilters): SQL {
+  const clauses: SQL[] = [
+    dsql`f.tenant_id = ${tenantId}::uuid`,
+    dsql`f.status IN ('accrued', 'payable', 'paid')`,
+  ];
+  if (filters.from) clauses.push(dsql`f.hired_at >= ${filters.from}::timestamptz`);
+  if (filters.to) clauses.push(dsql`f.hired_at <= ${filters.to}::timestamptz`);
+  if (filters.businessUnitId) {
+    clauses.push(dsql`fp.business_unit_id = ${filters.businessUnitId}::uuid`);
+  }
+  if (filters.requisitionId) {
+    clauses.push(dsql`fa.requisition_id = ${filters.requisitionId}::uuid`);
+  }
+  return dsql.join(clauses, dsql` AND `);
+}
+
+/** Tenant-wide agency spend and the fee-bearing hires it was spent on. */
+export interface AgencyFeeRollup {
+  /** SUM(fee_minor) as a bigint string — "0" when nothing accrued in range. */
+  agencySpendMinor: string;
+  /** The accrued rows' currency; null when there are none, "MIXED" across currencies. */
+  currency: string | null;
+  /** COUNT of fee rows in range — one per partner-sourced hire that earned a fee. */
+  agencyHires: number;
+}
+
+/**
+ * DEFINITION — agency spend: the same fee rows the scorecard's
+ * `feesAccruedMinor` column sums (`partnerFeeWhere`), rolled up across every
+ * partner instead of per org, WITH the row count beside them.
+ *
+ * The count matters: it is the divisor for cost-per-agency-hire, and taking
+ * it from the fee table rather than from the scorecard's `hires` column
+ * keeps numerator and denominator on ONE population and ONE clock. The
+ * scorecard's hires are partner-sourced applications windowed on the
+ * APPLICATION date; these are fee-bearing hires windowed on the HIRE date.
+ * Dividing one by the other would silently mix the two.
+ *
+ * `uniq_partner_fees_application` guarantees at most one fee per hire, so
+ * the count cannot double.
+ */
+export async function agencyFeeRollup(
+  db: TenantBoundDb,
+  tenantId: string,
+  filters: ReportFilters = {},
+): Promise<AgencyFeeRollup> {
+  const res = await db.execute(dsql`
+    SELECT
+      COALESCE(SUM(f.fee_minor), 0)::text AS agency_spend_minor,
+      COUNT(*)::int AS agency_hires,
+      COUNT(DISTINCT f.fee_currency)::int AS currencies,
+      MIN(f.fee_currency) AS currency
+    ${PARTNER_FEE_FROM}
+    WHERE ${partnerFeeWhere(tenantId, filters)}
+  `);
+  const row = asRows<{
+    agency_spend_minor: string;
+    agency_hires: number;
+    currencies: number;
+    currency: string | null;
+  }>(res)[0];
+
+  return {
+    agencySpendMinor: row?.agency_spend_minor ?? "0",
+    // One currency per org is the POC's commercial reality (a fee inherits
+    // it from the org's MSA); if a tenant ever mixes them the caller must
+    // not add rupees to dollars, so the sum is labelled rather than named.
+    currency: (row?.currencies ?? 0) > 1 ? "MIXED" : (row?.currency ?? null),
+    agencyHires: row?.agency_hires ?? 0,
+  };
+}
+
 /** The BU join path, requisition side: `… r → positions p`. Aliases match the CTEs below. */
 const POSITION_JOIN = dsql`
   JOIN public.requisitions r
@@ -232,21 +331,6 @@ export async function getPartnerScorecardReport(
   }
   if (filters.requisitionId) {
     assignmentClauses.push(dsql`pa.requisition_id = ${filters.requisitionId}::uuid`);
-  }
-
-  // Fees: windowed on hired_at (see the header), and requisition-anchored
-  // through the application the fee was accrued against.
-  const feeClauses: SQL[] = [
-    dsql`f.tenant_id = ${tenantId}::uuid`,
-    dsql`f.status IN ('accrued', 'payable', 'paid')`,
-  ];
-  if (filters.from) feeClauses.push(dsql`f.hired_at >= ${filters.from}::timestamptz`);
-  if (filters.to) feeClauses.push(dsql`f.hired_at <= ${filters.to}::timestamptz`);
-  if (filters.businessUnitId) {
-    feeClauses.push(dsql`fp.business_unit_id = ${filters.businessUnitId}::uuid`);
-  }
-  if (filters.requisitionId) {
-    feeClauses.push(dsql`fa.requisition_id = ${filters.requisitionId}::uuid`);
   }
 
   // Duplicate blocks: windowed on attempted_at, narrowed by requisition
@@ -319,18 +403,15 @@ export async function getPartnerScorecardReport(
       GROUP BY pu.partner_org_id
     ),
     fees AS (
+      -- Window / status / dimension rules come from the SHARED predicate,
+      -- so this column and the board pack's agency-spend tile are the same
+      -- money by construction.
       SELECT
         f.partner_org_id AS org_id,
         SUM(f.fee_minor)::text AS fees_accrued_minor,
         MIN(f.fee_currency) AS fees_currency
-      FROM public.partner_fees f
-      JOIN public.applications fa
-        ON fa.tenant_id = f.tenant_id AND fa.id = f.application_id
-      JOIN public.requisitions fr
-        ON fr.tenant_id = fa.tenant_id AND fr.id = fa.requisition_id
-      JOIN public.positions fp
-        ON fp.tenant_id = fr.tenant_id AND fp.id = fr.position_id
-      WHERE ${dsql.join(feeClauses, dsql` AND `)}
+      ${PARTNER_FEE_FROM}
+      WHERE ${partnerFeeWhere(tenantId, filters)}
       GROUP BY f.partner_org_id
     ),
     pairs AS (

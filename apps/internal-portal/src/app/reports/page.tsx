@@ -18,7 +18,11 @@ export const dynamic = "force-dynamic"; // Role-gated + reads live requisition/a
  * sponsor pack — headcount vs plan and the approval cycle (R1.1), the
  * partner / agency scorecard (R1.3), and interview & scorecard health plus
  * onboarding readiness (R1.2) — each of which honours a narrower slice
- * of the shared bar and says so on itself.
+ * of the shared bar and says so on itself. The executive summary (R1.4,
+ * catalog #23) is prefetched FIRST and pinned to the top of the client: it
+ * is composed entirely from the other reports' own measures, so it costs
+ * more than any of them and must never be the thing a sponsor scrolls to
+ * find.
  * Every report is server-prefetched unfiltered here. The existing
  * persona surfaces (/metrics, /insights, /hr-analytics, /admin/reports)
  * are untouched; they re-home into this catalog in a later ticket.
@@ -65,6 +69,7 @@ export default async function ReportsHubPage() {
 
   const caller = createServerTRPCCaller(session);
   const [
+    initialExecSummary,
     initialAging,
     initialProductivity,
     initialPipeline,
@@ -74,6 +79,7 @@ export default async function ReportsHubPage() {
     initialInterviewHealth,
     initialOnboarding,
   ] = await Promise.all([
+    caller.getExecutiveSummaryReport({}),
     caller.getRequisitionAgingReport({}),
     caller.getRecruiterProductivityReport({}),
     caller.getPipelineReport({}),
@@ -93,6 +99,7 @@ export default async function ReportsHubPage() {
       user={sessionUserChip(session)}
     >
       <ReportsHubClient
+        initialExecSummary={initialExecSummary}
         initialAging={initialAging}
         initialProductivity={initialProductivity}
         initialPipeline={initialPipeline}

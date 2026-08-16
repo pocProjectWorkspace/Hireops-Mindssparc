@@ -13,6 +13,8 @@ import type {
   GetInterviewHealthReportOutput,
   GetOnboardingReadinessReportOutput,
   OnboardingReadinessRow,
+  GetExecutiveSummaryReportOutput,
+  ExecutiveSummaryAgencyCost,
 } from "@hireops/api-types";
 import {
   Badge,
@@ -82,6 +84,31 @@ import { buildCsv, downloadCsv } from "@/lib/csv";
  * Neither takes the recruiter filter: an interview has a panel, and a hire in
  * onboarding has left the recruiter's desk.
  *
+ * THE EXECUTIVE SUMMARY (R1.4) is pinned ABOVE all of them, because it is
+ * the page a sponsor forwards upward and nobody scrolls to a summary. It
+ * defines nothing: every tile is the number the section below it publishes
+ * for the same filters, so the board pack cannot contradict its own detail.
+ * Three things it says out loud rather than quietly rounding off:
+ *   - AGENCY COST is agency cost, not cost per hire. Partner fees are the
+ *     only hiring spend the platform captures — there is no ad/job-board
+ *     spend and no internal recruiter cost — so the tile is labelled for
+ *     what it is and the note says what a blended number would need.
+ *   - DIVERSITY is not captured at all (no demographic fields; the capture
+ *     decision is legal, not technical), so it prints as an explicit "not
+ *     captured" line. A zero would be a lie and an omission would read as
+ *     an oversight.
+ *   - AI GOVERNANCE is admin-only, because `ai_usage_logs` is admin-only
+ *     everywhere else; hr_head and hr_ops get the note, not the numbers.
+ *
+ * PRINT (R1.4). "Print / save as PDF" is `window.print()` against a print
+ * stylesheet that reduces the page to the board pack: the exec summary
+ * carries `data-print-region`, everything else on the page carries Tailwind
+ * `print:hidden`, and globals.css un-clips the app shell (which is a fixed-
+ * height, overflow-hidden frame — without that the printout stops at one
+ * screen) and drops the chrome. A print-only header line names the active
+ * filter window, so a forwarded PDF cannot be mistaken for all-time
+ * numbers.
+ *
  * GOVERNANCE is the deliberate exception. Its two sections reuse the
  * EXISTING admin procedures (getAiUsageSummary, listAuditEvents) rather
  * than rebuilding /admin/costs and /admin/audit here — they are catalog
@@ -127,6 +154,7 @@ import { buildCsv, downloadCsv } from "@/lib/csv";
 const AGING_HIGHLIGHT_DAYS = 30;
 
 export function ReportsHubClient({
+  initialExecSummary,
   initialAging,
   initialProductivity,
   initialPipeline,
@@ -139,6 +167,7 @@ export function ReportsHubClient({
   canOpenRequisitionDetail,
   canOpenTriage,
 }: {
+  initialExecSummary: GetExecutiveSummaryReportOutput;
   initialAging: GetRequisitionAgingReportOutput;
   initialProductivity: GetRecruiterProductivityReportOutput;
   initialPipeline: GetPipelineReportOutput;
@@ -170,6 +199,11 @@ export function ReportsHubClient({
     [from, to, businessUnitId, recruiterMembershipId],
   );
 
+  const execSummaryQuery = trpc.getExecutiveSummaryReport.useQuery(input, {
+    initialData: isUnfiltered ? initialExecSummary : undefined,
+    refetchOnWindowFocus: false,
+    staleTime: 5_000,
+  });
   const agingQuery = trpc.getRequisitionAgingReport.useQuery(input, {
     // Seed only the unfiltered key — a filtered view must actually fetch.
     initialData: isUnfiltered ? initialAging : undefined,
@@ -224,6 +258,7 @@ export function ReportsHubClient({
     { enabled: isAdmin, refetchOnWindowFocus: false, staleTime: 30_000 },
   );
 
+  const execSummary = execSummaryQuery.data ?? initialExecSummary;
   const aging = agingQuery.data ?? initialAging;
   const productivity = productivityQuery.data ?? initialProductivity;
   const pipeline = pipelineQuery.data ?? initialPipeline;
@@ -233,6 +268,7 @@ export function ReportsHubClient({
   const interviewHealth = interviewHealthQuery.data ?? initialInterviewHealth;
   const onboarding = onboardingQuery.data ?? initialOnboarding;
   const isFetching =
+    execSummaryQuery.isFetching ||
     agingQuery.isFetching ||
     productivityQuery.isFetching ||
     pipelineQuery.isFetching ||
@@ -278,19 +314,19 @@ export function ReportsHubClient({
 
   return (
     <PageContainer>
-      <p className="mb-4 max-w-3xl text-sm text-neutral-600">
-        The reporting catalog — eight reports on one filter bar, from the requisitions being raised
-        through to the hires being onboarded. Every one answers its question over the same period,
-        business unit and recruiter: set them once in the filter bar and the whole page moves
-        together. Where a report reads the period against a different clock — the hire date, the
-        interview date, the expected start date — it says so on itself. Numbers come from live
-        requisition, application, interview, offer and onboarding records; no snapshots or overnight
-        rollups.
+      <p className="mb-4 max-w-3xl text-sm text-neutral-600 print:hidden">
+        The reporting catalog — the executive summary and eight detail reports on one filter bar,
+        from the requisitions being raised through to the hires being onboarded. Every one answers
+        its question over the same period, business unit and recruiter: set them once in the filter
+        bar and the whole page moves together. Where a report reads the period against a different
+        clock — the hire date, the interview date, the expected start date — it says so on itself.
+        Numbers come from live requisition, application, interview, offer and onboarding records; no
+        snapshots or overnight rollups.
       </p>
 
       <section
         aria-label="Report filters"
-        className="mb-8 flex flex-wrap items-center gap-2 rounded-card border border-neutral-200 bg-neutral-50/60 px-3 py-2.5"
+        className="mb-8 flex flex-wrap items-center gap-2 rounded-card border border-neutral-200 bg-neutral-50/60 px-3 py-2.5 print:hidden"
       >
         <span className="text-xs font-medium uppercase tracking-wide text-neutral-400">Period</span>
         <input
@@ -354,7 +390,244 @@ export function ReportsHubClient({
       </section>
 
       <ReportSection
+        title="Executive summary"
+        printRegion
+        blurb={
+          <>
+            The board pack — hiring against plan, how fast we are filling roles, what the agencies
+            cost, and what is running late, on one page. Every number here is the number the section
+            below it publishes for the same filters; this summary computes none of its own. Read the
+            period carefully: each measure reads it on its own clock — applications by when they
+            arrived, the trend by when the hire landed, plans by the period they cover, agency fees
+            by the hire date.
+          </>
+        }
+        actions={
+          <>
+            <PrintButton />
+            <DownloadCsvButton
+              onClick={() =>
+                downloadCsv(
+                  `executive-summary-${csvDateStamp()}.csv`,
+                  buildExecSummaryCsv(execSummary),
+                )
+              }
+            />
+          </>
+        }
+      >
+        {/*
+          Print-only provenance line. A forwarded PDF loses the filter bar,
+          so the paper has to say which window it describes or it reads as
+          all-time.
+        */}
+        <p className="mb-4 hidden text-xs text-neutral-600 print:block">
+          HireOps board pack · {describeFilterWindow(from, to)} ·{" "}
+          {businessUnitId
+            ? (businessUnitOptions.find((b) => b.id === businessUnitId)?.name ??
+              "Selected business unit")
+            : "All business units"}
+        </p>
+
+        <div className="mb-4 grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-6">
+          <StatTile
+            label="Hires"
+            value={execSummary.headline.hires.toLocaleString()}
+            tone="accent"
+          />
+          <StatTile
+            label="Applications"
+            value={execSummary.headline.applications.toLocaleString()}
+          />
+          <StatTile
+            label="Active pipeline"
+            value={execSummary.headline.activePipeline.toLocaleString()}
+          />
+          <StatTile
+            label="Offer acceptance"
+            value={formatPct(execSummary.headline.offerAcceptanceRate)}
+          />
+          <StatTile
+            label="Median days to hire"
+            value={formatDays(execSummary.headline.medianTimeToFill)}
+          />
+          <StatTile
+            label="Oldest open req (days)"
+            value={formatDays(execSummary.headline.oldestOpenReqDays)}
+          />
+        </div>
+
+        <div className="mb-6 grid grid-cols-1 gap-6 lg:grid-cols-2">
+          <Card>
+            <h3 className="mb-3 text-xs font-semibold uppercase tracking-wide text-neutral-500">
+              Hires vs plan
+            </h3>
+            <TableShell>
+              <Thead>
+                <Th>Measure</Th>
+                <Th numeric>Count</Th>
+              </Thead>
+              <Tbody>
+                <Tr>
+                  <Td label="Measure">Planned headcount</Td>
+                  <Td numeric label="Count">
+                    {execSummary.hiresVsPlan.plannedHeadcount.toLocaleString()}
+                  </Td>
+                </Tr>
+                <Tr>
+                  <Td label="Measure">Openings requested</Td>
+                  <Td numeric label="Count">
+                    {execSummary.hiresVsPlan.openingsRequested.toLocaleString()}
+                  </Td>
+                </Tr>
+                <Tr>
+                  <Td label="Measure">Hires</Td>
+                  <Td numeric label="Count">
+                    {execSummary.hiresVsPlan.hires.toLocaleString()}
+                  </Td>
+                </Tr>
+                <Tr>
+                  <Td label="Measure">Off-plan requisitions</Td>
+                  <Td numeric label="Count">
+                    <span
+                      className={
+                        execSummary.hiresVsPlan.unplannedReqs > 0
+                          ? "font-semibold text-status-warning-800"
+                          : undefined
+                      }
+                    >
+                      {execSummary.hiresVsPlan.unplannedReqs.toLocaleString()}
+                    </span>
+                  </Td>
+                </Tr>
+              </Tbody>
+            </TableShell>
+            <p className="mt-2 text-xs text-neutral-500">
+              Openings requested against approved envelopes whose period touches the window;
+              off-plan counts requisitions raised in the window against no envelope at all.
+            </p>
+          </Card>
+
+          <Card>
+            <h3 className="mb-3 text-xs font-semibold uppercase tracking-wide text-neutral-500">
+              Time to fill — median days, by hire month
+            </h3>
+            {execSummary.timeToFillTrend.length === 0 ? (
+              <p className="text-sm text-neutral-500">No months in range.</p>
+            ) : (
+              <div className="flex flex-col gap-1.5">
+                {(() => {
+                  const max = Math.max(
+                    1,
+                    ...execSummary.timeToFillTrend.map((p) => p.medianDays ?? 0),
+                  );
+                  return execSummary.timeToFillTrend.map((p) => (
+                    <DataBar
+                      key={p.month}
+                      label={p.month}
+                      monoLabel
+                      labelClassName="w-16 font-mono text-neutral-600"
+                      pct={((p.medianDays ?? 0) / max) * 100}
+                      meta={`${p.hires.toLocaleString()} ${p.hires === 1 ? "hire" : "hires"}`}
+                      value={formatDays(p.medianDays)}
+                    />
+                  ));
+                })()}
+              </div>
+            )}
+            <p className="mt-3 text-xs text-neutral-500">
+              Bucketed by the month the hire <em>landed</em>, not the month the application arrived
+              — so this line and the median above answer different questions and will not tie out. A
+              month with no hires shows no median rather than a zero.
+            </p>
+          </Card>
+        </div>
+
+        <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
+          <Card>
+            <h3 className="mb-3 text-xs font-semibold uppercase tracking-wide text-neutral-500">
+              Agency cost
+            </h3>
+            <div className="grid grid-cols-3 gap-4">
+              <StatTile label="Agency spend" value={formatAgencyMoney(execSummary.agencyCost)} />
+              <StatTile
+                label="Fee-bearing hires"
+                value={execSummary.agencyCost.agencyHires.toLocaleString()}
+              />
+              <StatTile
+                label="Per agency hire"
+                value={formatAgencyCostPerHire(execSummary.agencyCost)}
+              />
+            </div>
+            <p className="mt-3 text-xs text-neutral-500">
+              This is <strong>agency cost, not cost per hire</strong>. Partner fees are the only
+              hiring spend HireOps captures: accrued, payable and paid fees (disputed excluded),
+              counted in the month of the hire. A blended cost per hire also needs job-board and
+              advertising spend and an internal recruiter cost model — neither is captured by the
+              platform today, so neither is guessed at here.
+            </p>
+          </Card>
+
+          <Card>
+            <h3 className="mb-3 text-xs font-semibold uppercase tracking-wide text-neutral-500">
+              Pipeline health
+            </h3>
+            <div className="grid grid-cols-2 gap-4">
+              <StatTile
+                label="SLA breaches"
+                value={execSummary.pipelineHealth.totalSlaBreaches.toLocaleString()}
+                tone={execSummary.pipelineHealth.totalSlaBreaches > 0 ? "warning" : "neutral"}
+                hint={`across ${execSummary.pipelineHealth.breachedStages.toLocaleString()} ${
+                  execSummary.pipelineHealth.breachedStages === 1 ? "stage" : "stages"
+                }`}
+              />
+              <StatTile
+                label="Interview completion"
+                value={formatPct(execSummary.pipelineHealth.interviewCompletionRate)}
+                hint={`${execSummary.pipelineHealth.interviewsCompleted.toLocaleString()} completed`}
+              />
+            </div>
+            <p className="mt-3 text-xs text-neutral-500">
+              A breach is an application sitting in a thresholded stage past the tenant&apos;s limit
+              right now — a live snapshot, not a history. Interview completion counts rounds that
+              resolved: still-scheduled rounds are not misses and stay out of the denominator.
+            </p>
+          </Card>
+        </div>
+
+        <div className="mt-6 rounded-card border border-neutral-200 bg-neutral-50/60 px-4 py-3">
+          <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-neutral-500">
+            Governance &amp; data gaps
+          </h3>
+          <p className="text-xs text-neutral-600">
+            <span className="font-medium text-neutral-700">AI governance:</span>{" "}
+            {execSummary.aiGovernance ? (
+              <>
+                {execSummary.aiGovernance.calls.toLocaleString()} model{" "}
+                {execSummary.aiGovernance.calls === 1 ? "call" : "calls"} ·{" "}
+                {formatCostMicros(execSummary.aiGovernance.costMicros)} spent ·{" "}
+                {execSummary.aiGovernance.failures.toLocaleString()} failed. Every call is logged
+                with its feature, model and cost.
+              </>
+            ) : (
+              <>
+                admin-only. The AI cost ledger is restricted to administrators, so it is not shown
+                on this pack for your role.
+              </>
+            )}
+          </p>
+          <p className="mt-1.5 text-xs text-neutral-600">
+            <span className="font-medium text-neutral-700">Diversity:</span> not captured. HireOps
+            holds no demographic data — collecting it is a consent and legal decision that has not
+            been taken, so there is nothing to report and nothing has been estimated. The reporting
+            is designed for it and switches on when you ask.
+          </p>
+        </div>
+      </ReportSection>
+
+      <ReportSection
         title="Requisition status & aging"
+        printHidden
         blurb={
           <>
             Every requisition raised in the period, oldest first. An open requisition ages to today;
@@ -477,6 +750,7 @@ export function ReportsHubClient({
 
       <ReportSection
         title="Recruiter productivity"
+        printHidden
         blurb={
           <>
             What each recruiter moved in the period. Requisitions owned counts reqs where they are
@@ -544,6 +818,7 @@ export function ReportsHubClient({
 
       <ReportSection
         title="Pipeline & speed"
+        printHidden
         blurb={
           <>
             The funnel, hiring speed and channel mix for applications raised in the period, plus the
@@ -719,6 +994,7 @@ export function ReportsHubClient({
 
       <ReportSection
         title="Headcount vs plan"
+        printHidden
         blurb={
           <>
             Approved headcount envelopes against the hiring actually raised inside them. An envelope
@@ -834,6 +1110,7 @@ export function ReportsHubClient({
 
       <ReportSection
         title="Approval cycle"
+        printHidden
         blurb={
           <>
             How long approvals take and where they stall. A request counts as decided whenever it
@@ -969,6 +1246,7 @@ export function ReportsHubClient({
 
       <ReportSection
         title="Partner scorecard"
+        printHidden
         blurb={
           <>
             Every partner agency: what it holds right now, what it delivered in the period, and what
@@ -1082,6 +1360,7 @@ export function ReportsHubClient({
 
       <ReportSection
         title="Interview & scorecard health"
+        printHidden
         blurb={
           <>
             Whether the interviews we book actually run, and whether the panel ever writes them up.
@@ -1255,6 +1534,7 @@ export function ReportsHubClient({
 
       <ReportSection
         title="Onboarding readiness"
+        printHidden
         blurb={
           <>
             The hires that have been made but not yet landed. The period bounds the{" "}
@@ -1400,6 +1680,7 @@ export function ReportsHubClient({
       {isAdmin ? (
         <ReportSection
           title="Governance"
+          printHidden
           blurb={
             <>
               Catalog entries for the compliance and AI-spend stories — drill through for the full
@@ -1502,23 +1783,56 @@ function ReportSection({
   title,
   blurb,
   actions,
+  printHidden = false,
+  printRegion = false,
   children,
 }: {
   title: string;
   blurb: ReactNode;
   /** Right-aligned header slot — the section's Download CSV button. */
   actions?: ReactNode;
+  /** Off the printed page: everything except the board pack (R1.4). */
+  printHidden?: boolean;
+  /**
+   * THE printed page. `data-print-region` is what globals.css's print block
+   * keys off to un-clip the app shell around this section; exactly one
+   * section on the page may carry it.
+   */
+  printRegion?: boolean;
   children: ReactNode;
 }) {
   return (
-    <section className="mb-10 last:mb-0">
+    <section
+      className={printHidden ? "mb-10 last:mb-0 print:hidden" : "mb-10 last:mb-0"}
+      {...(printRegion ? { "data-print-region": "board-pack" } : {})}
+    >
       <div className="flex flex-wrap items-start justify-between gap-2">
         <h2 className="text-sm font-semibold uppercase tracking-wide text-neutral-600">{title}</h2>
-        {actions ? <div className="shrink-0">{actions}</div> : null}
+        {/* Controls are screen furniture — they must not print. */}
+        {actions ? <div className="flex shrink-0 gap-2 print:hidden">{actions}</div> : null}
       </div>
       <p className="mb-3 mt-1 max-w-3xl text-xs text-neutral-500">{blurb}</p>
       {children}
     </section>
+  );
+}
+
+/**
+ * "Print / save as PDF" — `window.print()` against the print stylesheet in
+ * globals.css, which reduces the page to the section carrying
+ * `data-print-region`. No PDF library: the browser's own print-to-PDF is
+ * the deliberate choice (reporting build plan §2.4 defers server-side PDF
+ * generation), and it keeps the pack in the reader's own paper size.
+ */
+function PrintButton() {
+  return (
+    <button
+      type="button"
+      onClick={() => window.print()}
+      className={`${controlCls} font-medium hover:bg-neutral-50`}
+    >
+      Print / save as PDF
+    </button>
   );
 }
 
@@ -1557,6 +1871,81 @@ function csvDateStamp(): string {
 /** A nullable number for a CSV cell: null → empty, never "—". */
 function csvNumber(value: number | null): string {
   return value === null ? "" : String(value);
+}
+
+const EXEC_SUMMARY_CSV_HEADERS = ["section", "item", "metric", "value"] as const;
+
+/**
+ * LONG format — section, item, metric, value — for the same reason the
+ * pipeline and approval exports use it, only more so: the board pack is
+ * seven datasets with nothing in common but the filter window.
+ *
+ * Two things ride along that the screen renders as prose, because a
+ * spreadsheet must not silently drop them: the diversity placeholder
+ * (`available = false`) and the AI-governance block's absence for a
+ * non-admin reader (`visibility = admin_only`). Money exports in MINOR
+ * units with its currency in its own row — a number the sheet can sum.
+ */
+function buildExecSummaryCsv(summary: GetExecutiveSummaryReportOutput): string {
+  const rows: string[][] = [
+    ["headline", "", "hires", String(summary.headline.hires)],
+    ["headline", "", "applications", String(summary.headline.applications)],
+    ["headline", "", "active_pipeline", String(summary.headline.activePipeline)],
+    ["headline", "", "offer_acceptance_rate_pct", csvNumber(summary.headline.offerAcceptanceRate)],
+    ["headline", "", "median_time_to_fill_days", csvNumber(summary.headline.medianTimeToFill)],
+    ["headline", "", "oldest_open_req_days", csvNumber(summary.headline.oldestOpenReqDays)],
+    ["hires_vs_plan", "", "planned_headcount", String(summary.hiresVsPlan.plannedHeadcount)],
+    ["hires_vs_plan", "", "openings_requested", String(summary.hiresVsPlan.openingsRequested)],
+    ["hires_vs_plan", "", "hires", String(summary.hiresVsPlan.hires)],
+    ["hires_vs_plan", "", "unplanned_reqs", String(summary.hiresVsPlan.unplannedReqs)],
+  ];
+  for (const p of summary.timeToFillTrend) {
+    rows.push(["time_to_fill_trend", p.month, "median_days", csvNumber(p.medianDays)]);
+    rows.push(["time_to_fill_trend", p.month, "hires", String(p.hires)]);
+  }
+  rows.push(["agency_cost", "", "agency_spend_minor", summary.agencyCost.agencySpendMinor]);
+  rows.push(["agency_cost", "", "currency", summary.agencyCost.currency ?? ""]);
+  rows.push(["agency_cost", "", "agency_hires", String(summary.agencyCost.agencyHires)]);
+  rows.push([
+    "agency_cost",
+    "",
+    "cost_per_agency_hire_minor",
+    summary.agencyCost.costPerAgencyHireMinor ?? "",
+  ]);
+  rows.push([
+    "pipeline_health",
+    "",
+    "sla_breaches",
+    String(summary.pipelineHealth.totalSlaBreaches),
+  ]);
+  rows.push([
+    "pipeline_health",
+    "",
+    "breached_stages",
+    String(summary.pipelineHealth.breachedStages),
+  ]);
+  rows.push([
+    "pipeline_health",
+    "",
+    "interviews_completed",
+    String(summary.pipelineHealth.interviewsCompleted),
+  ]);
+  rows.push([
+    "pipeline_health",
+    "",
+    "interview_completion_rate_pct",
+    csvNumber(summary.pipelineHealth.interviewCompletionRate),
+  ]);
+  if (summary.aiGovernance) {
+    rows.push(["ai_governance", "", "calls", String(summary.aiGovernance.calls)]);
+    rows.push(["ai_governance", "", "cost_micros", summary.aiGovernance.costMicros]);
+    rows.push(["ai_governance", "", "failures", String(summary.aiGovernance.failures)]);
+  } else {
+    rows.push(["ai_governance", "", "visibility", "admin_only"]);
+  }
+  rows.push(["diversity", "", "available", String(summary.diversity.available)]);
+  rows.push(["diversity", "", "reason", summary.diversity.reason]);
+  return buildCsv(EXEC_SUMMARY_CSV_HEADERS, rows);
 }
 
 const AGING_CSV_HEADERS = [
@@ -1874,6 +2263,37 @@ function buildOnboardingCsv(onboarding: GetOnboardingReadinessReportOutput): str
       String(r.itTotal),
     ]),
   );
+}
+
+/**
+ * The board pack's period, in words, for the print-only header line. The
+ * bounds are the raw `<input type="date">` values — whole UTC days, which
+ * is exactly how the server reads them.
+ */
+function describeFilterWindow(from: string, to: string): string {
+  if (!from && !to) return "All time";
+  if (from && to) return `${formatDay(from)} – ${formatDay(to)}`;
+  if (from) return `From ${formatDay(from)}`;
+  return `Up to ${formatDay(to)}`;
+}
+
+/**
+ * Total agency spend. A null currency means nothing accrued in range, which
+ * reads as an em dash rather than a "₹0.00" that implies free hiring;
+ * "MIXED" is the server's flag for a tenant whose fees span currencies,
+ * where a single formatted total would be a lie.
+ */
+function formatAgencyMoney(cost: ExecutiveSummaryAgencyCost): string {
+  if (!cost.currency) return "—";
+  if (cost.currency === "MIXED") return "Mixed";
+  return formatFeeMinor(Number(cost.agencySpendMinor), cost.currency);
+}
+
+/** Spend per fee-bearing agency hire; null (no such hire) reads as an em dash. */
+function formatAgencyCostPerHire(cost: ExecutiveSummaryAgencyCost): string {
+  if (cost.costPerAgencyHireMinor === null || !cost.currency) return "—";
+  if (cost.currency === "MIXED") return "Mixed";
+  return formatFeeMinor(Number(cost.costPerAgencyHireMinor), cost.currency);
 }
 
 /**

@@ -799,3 +799,207 @@ export type GetOnboardingReadinessReportInput = z.infer<
 export type GetOnboardingReadinessReportOutput = z.infer<
   typeof getOnboardingReadinessReportOutputSchema
 >;
+
+// ─────────── #23 executive summary / board pack ───────────
+//
+// The one page a sponsor forwards upward. It DEFINES NOTHING: every
+// number below is produced by the report or measure that owns it
+// (pipeline & speed, requisition aging, headcount vs plan, the partner
+// scorecard, interview health) over the SAME filters, so the board pack
+// and the detail sections underneath it cannot disagree. Where a number
+// does not exist in the platform, this contract says so in the shape
+// rather than shipping a zero — see `diversity` and `agencyCost`.
+
+/**
+ * The six numbers on the top row.
+ *
+ * Each is the OWNING report's number, unchanged:
+ *   - `applications` / `activePipeline` / `hires` are the `applicationTotals`
+ *     measure (every application in the window; those not in a terminal
+ *     stage; those at `offer_accepted`).
+ *   - `medianTimeToFill` is the pipeline report's median days to hire —
+ *     per application, over applications RAISED in the window.
+ *   - `offerAcceptanceRate` is accepted / extended × 100 from the offer
+ *     funnel, 1dp; null when nothing was extended.
+ *   - `oldestOpenReqDays` is the oldest NON-TERMINAL requisition on the
+ *     aging report, over requisitions RAISED in the window; null when
+ *     every requisition in range is closed.
+ */
+export const executiveSummaryHeadlineSchema = z.object({
+  hires: z.number().int(),
+  /** Applications received — "submissions" in sponsor language. */
+  applications: z.number().int(),
+  /** Applications not in a terminal stage — live pipeline. */
+  activePipeline: z.number().int(),
+  /** accepted / extended × 100, 1dp; null when no offer was extended. */
+  offerAcceptanceRate: z.number().nullable(),
+  /** Median days application → hire, 2dp; null with no hires in range. */
+  medianTimeToFill: z.number().nullable(),
+  /** Age of the oldest still-open requisition, 2dp; null when none is open. */
+  oldestOpenReqDays: z.number().nullable(),
+});
+
+/**
+ * Hires against the approved plan — the headcount report's totals, reduced
+ * to the four numbers a board slide carries. `unplannedReqs` is the
+ * off-plan count (requisitions with no headcount envelope), which is the
+ * number a sponsor reacts to; the full envelope table lives in the
+ * headcount section below.
+ */
+export const executiveSummaryHiresVsPlanSchema = z.object({
+  plannedHeadcount: z.number().int(),
+  openingsRequested: z.number().int(),
+  hires: z.number().int(),
+  unplannedReqs: z.number().int(),
+});
+
+/**
+ * One month of the hiring-speed trend.
+ *
+ * DEFINITION — the median days-to-hire of the hires that LANDED in that
+ * calendar month (UTC), where a hire's clock runs from the application's
+ * creation to its earliest `offer_accepted` transition. Zero-filled across
+ * every month the window covers, so the line has no gaps; a month with no
+ * hires reports `hires: 0` and a NULL median (unknown, not zero).
+ *
+ * THE AXIS IS THE HIRE, and that is deliberately NOT the axis of
+ * `headline.medianTimeToFill`: the headline windows on when applications
+ * were RAISED, this windows on when hires LANDED. An application raised in
+ * March and hired in June is in the headline's March window and in this
+ * series' June bucket, so the two are not expected to reconcile.
+ */
+export const timeToFillTrendPointSchema = z.object({
+  /** UTC calendar month, `YYYY-MM`. */
+  month: z.string(),
+  /** Median days to hire for that month's hires, 2dp; null when there were none. */
+  medianDays: z.number().nullable(),
+  hires: z.number().int(),
+});
+
+/**
+ * AGENCY cost — deliberately not "cost per hire".
+ *
+ * The platform captures partner fees (`partner_fees`) and nothing else
+ * that costs money to hire someone: there is no job-board / advertising
+ * spend anywhere in the schema, and no internal recruiter cost model. A
+ * blended cost-per-hire would therefore be a number with two of its three
+ * terms missing, so this contract publishes only the term that exists and
+ * names it for what it is. The surface carries the same caveat in words.
+ *
+ * Both numbers come from ONE population on ONE clock: `partner_fees` rows
+ * at status accrued / payable / paid (disputed excluded, matching the
+ * commercials ledger and the partner scorecard), windowed on `hired_at`
+ * because a fee belongs to the month of the hire. `agencyHires` is
+ * therefore the number of FEE-BEARING hires, not every partner-sourced
+ * hire — a partner hire with no MSA accrues no fee and is not in either
+ * number, which keeps the division honest.
+ */
+export const executiveSummaryAgencyCostSchema = z.object({
+  /** bigint minor units as a string — "0" when nothing accrued in range. */
+  agencySpendMinor: z.string(),
+  /** ISO currency of the accrued rows; null when there are none, "MIXED" if a tenant mixes them. */
+  currency: z.string().nullable(),
+  /** Fee-bearing partner hires in range — the divisor. */
+  agencyHires: z.number().int(),
+  /** spend / hires in minor units, floored, as a string; null when there are no fee-bearing hires. */
+  costPerAgencyHireMinor: z.string().nullable(),
+});
+
+/**
+ * Pipeline health in two sentences: how much is late, and whether the
+ * interviews we book are happening.
+ *
+ * `totalSlaBreaches` / `breachedStages` are rolled up from the pipeline
+ * report's SLA table — a breach is an application sitting in a thresholded
+ * stage past the tenant's limit, RIGHT NOW (a live snapshot, not history).
+ * `interviewCompletionRate` is the interview-health report's rate:
+ * completed / (completed + cancelled + no-show) over interviews DUE in the
+ * window; null when nothing in the window has resolved yet.
+ */
+export const executiveSummaryPipelineHealthSchema = z.object({
+  totalSlaBreaches: z.number().int(),
+  /** How many stages have at least one breach — the spread, not just the volume. */
+  breachedStages: z.number().int(),
+  interviewsCompleted: z.number().int(),
+  /** completed / resolved × 100, 1dp; null when nothing resolved in the window. */
+  interviewCompletionRate: z.number().nullable(),
+});
+
+/**
+ * AI governance — ADMIN ONLY, hence nullable.
+ *
+ * The underlying ledger (`ai_usage_logs`) is admin-gated everywhere else it
+ * surfaces (`getAiUsageSummary` → USERS_ADMIN_ROLES, /admin/costs), and the
+ * board pack is readable by hr_head and hr_ops. Rather than widen that gate
+ * sideways through a composite report, the block is NULL for a non-admin
+ * caller and the surface prints an admin-only note in its place.
+ *
+ * `costMicros` is micro-USD as a string (bigint; JSON cannot carry one),
+ * the same idiom `getAiUsageSummary` uses. The window bounds
+ * `ai_usage_logs.created_at`.
+ */
+export const executiveSummaryAiGovernanceSchema = z.object({
+  calls: z.number().int(),
+  /** Micro-USD (1 USD = 1,000,000) as a decimal string. */
+  costMicros: z.string(),
+  failures: z.number().int(),
+});
+
+/**
+ * Diversity — a TYPED PLACEHOLDER, on the wire on purpose.
+ *
+ * There are zero demographic fields on `persons` / `candidates`: capture is
+ * a legal/consent decision (DPDPA vs EEOC framing differ) that has not been
+ * taken, so the platform cannot report a diversity funnel and must not
+ * imply otherwise. A silent omission would read as "we forgot" and a zero
+ * would be a lie, so the board pack carries an explicit "not captured"
+ * line and this contract already has the shape the real block will slot
+ * into when capture lands.
+ */
+export const executiveSummaryDiversitySchema = z.object({
+  available: z.literal(false),
+  reason: z.literal("not_captured"),
+});
+
+/**
+ * Filters honoured: the whole bar, each part on ITS OWN report's terms —
+ * the board pack cannot honour a filter more or less than the section it
+ * summarises, or the two would disagree. So:
+ *   - the headline and pipeline-health SLA numbers take everything, on the
+ *     application axis (period bounds `applications.created_at`);
+ *   - `oldestOpenReqDays` takes period + BU + recruiter on the REQUISITION
+ *     axis (period bounds `requisitions.created_at`);
+ *   - `hiresVsPlan` takes period + BU, and its period is an OVERLAP test on
+ *     the envelope's own period;
+ *   - `timeToFillTrend` redirects the period onto the HIRE date;
+ *   - `agencyCost` windows on `partner_fees.hired_at` and takes BU +
+ *     requisition;
+ *   - the interview completion rate windows on `interviews.scheduled_start`;
+ *   - `aiGovernance` takes the period only (there is no BU on an LLM call).
+ * Each of those asymmetries is documented on the report that owns it; this
+ * report inherits them rather than re-deciding them.
+ */
+export const getExecutiveSummaryReportInputSchema = reportFiltersSchema;
+
+export const getExecutiveSummaryReportOutputSchema = z.object({
+  headline: executiveSummaryHeadlineSchema,
+  hiresVsPlan: executiveSummaryHiresVsPlanSchema,
+  /** Oldest month first, zero-filled, at most the most recent 36 months. */
+  timeToFillTrend: z.array(timeToFillTrendPointSchema),
+  agencyCost: executiveSummaryAgencyCostSchema,
+  pipelineHealth: executiveSummaryPipelineHealthSchema,
+  /** Null for a non-admin caller — see the block's own note. */
+  aiGovernance: executiveSummaryAiGovernanceSchema.nullable(),
+  /** Always `{ available: false, reason: "not_captured" }` today. */
+  diversity: executiveSummaryDiversitySchema,
+});
+
+export type ExecutiveSummaryHeadline = z.infer<typeof executiveSummaryHeadlineSchema>;
+export type ExecutiveSummaryHiresVsPlan = z.infer<typeof executiveSummaryHiresVsPlanSchema>;
+export type TimeToFillTrendPoint = z.infer<typeof timeToFillTrendPointSchema>;
+export type ExecutiveSummaryAgencyCost = z.infer<typeof executiveSummaryAgencyCostSchema>;
+export type ExecutiveSummaryPipelineHealth = z.infer<typeof executiveSummaryPipelineHealthSchema>;
+export type ExecutiveSummaryAiGovernance = z.infer<typeof executiveSummaryAiGovernanceSchema>;
+export type ExecutiveSummaryDiversity = z.infer<typeof executiveSummaryDiversitySchema>;
+export type GetExecutiveSummaryReportInput = z.infer<typeof getExecutiveSummaryReportInputSchema>;
+export type GetExecutiveSummaryReportOutput = z.infer<typeof getExecutiveSummaryReportOutputSchema>;

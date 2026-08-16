@@ -107,6 +107,16 @@ export interface TimeToFillStats {
  * Note this is time-to-fill measured per APPLICATION, not per requisition
  * — the same definition getRecruitmentReport has always used, lifted
  * verbatim so published numbers do not shift.
+ *
+ * POINT vs TREND — the difference against `timeToFillTrend`, stated on
+ * both measures because reading one for the other is the easy mistake:
+ * this measure buckets NOTHING (one median over the whole scope) and its
+ * period bounds `applications.created_at`, i.e. "of the applications
+ * raised in this window, how long did the ones that got hired take". The
+ * trend buckets by the MONTH OF THE HIRE and windows on the hire event
+ * instead. The two therefore answer different questions and will not
+ * generally agree: an application raised in March and hired in June is in
+ * this measure's March window and in the trend's June bucket.
  */
 export async function timeToFillStats(
   db: TenantBoundDb,
@@ -138,6 +148,178 @@ export async function timeToFillStats(
     FROM hired
   `);
   return asRows<TimeToFillStats>(res)[0] ?? { hires_count: 0, median_days: null, p90_days: null };
+}
+
+// ──────────────────────── time to fill (trend) ────────────────────────
+
+/** One month on the hiring-speed trend line. */
+export interface TimeToFillTrendPoint {
+  /** The hire's calendar month in UTC, `YYYY-MM`. */
+  month: string;
+  /** Median days from application to hire for that month's hires; null when there were none. */
+  medianDays: number | null;
+  hires: number;
+}
+
+/** Months the trend covers when the filter window leaves the axis open. */
+export const TIME_TO_FILL_TREND_DEFAULT_MONTHS = 12;
+
+/**
+ * The longest series this measure will emit. A five-year window is a
+ * legitimate ask, 240 sparkline bars is not; the series keeps the MOST
+ * RECENT months and the surface says so.
+ */
+export const TIME_TO_FILL_TREND_MAX_MONTHS = 36;
+
+/** First instant of `d`'s month, in UTC. */
+function startOfMonthUtc(d: Date): Date {
+  return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1));
+}
+
+/** `d`'s month shifted by `n` months, in UTC (JS normalises the overflow). */
+function addMonthsUtc(d: Date, n: number): Date {
+  return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + n, 1));
+}
+
+/** A UTC instant as the `YYYY-MM` bucket key the SQL's to_char emits. */
+function monthKeyUtc(d: Date): string {
+  return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`;
+}
+
+/**
+ * The window this measure actually reads, resolved from the filter set.
+ * Exported for the report that renders the series so the surface can label
+ * the axis with the same bounds the numbers came from.
+ */
+export interface TimeToFillTrendWindow {
+  /** ISO lower bound on the HIRE timestamp. */
+  from: string;
+  /** ISO upper bound on the HIRE timestamp. */
+  to: string;
+  /** Every `YYYY-MM` bucket in range, oldest first — the zero-fill key set. */
+  months: string[];
+  /** True when TIME_TO_FILL_TREND_MAX_MONTHS trimmed the front of the series. */
+  clamped: boolean;
+}
+
+/**
+ * Resolves the trend's window: `to` defaults to now, `from` defaults to the
+ * first of the month TIME_TO_FILL_TREND_DEFAULT_MONTHS − 1 months before
+ * it, and the whole span is clamped to the most recent
+ * TIME_TO_FILL_TREND_MAX_MONTHS months.
+ *
+ * The bounds are used VERBATIM as the SQL predicate, so a window that opens
+ * or closes mid-month produces a partial first/last bucket rather than a
+ * silently widened one.
+ */
+export function resolveTimeToFillTrendWindow(
+  filters: ReportFilters,
+  opts: { months?: number } = {},
+): TimeToFillTrendWindow {
+  const months = opts.months ?? TIME_TO_FILL_TREND_DEFAULT_MONTHS;
+  const to = filters.to ? new Date(filters.to) : new Date();
+  const defaultFrom = addMonthsUtc(to, -(months - 1));
+  let from = filters.from ? new Date(filters.from) : defaultFrom;
+
+  // Clamp: keep at most MAX months, counted back from `to`'s month.
+  const oldestAllowed = addMonthsUtc(to, -(TIME_TO_FILL_TREND_MAX_MONTHS - 1));
+  const clamped = from.getTime() < oldestAllowed.getTime();
+  if (clamped) from = oldestAllowed;
+
+  const keys: string[] = [];
+  let cursor = startOfMonthUtc(from);
+  const last = startOfMonthUtc(to);
+  while (cursor.getTime() <= last.getTime()) {
+    keys.push(monthKeyUtc(cursor));
+    cursor = addMonthsUtc(cursor, 1);
+  }
+
+  return { from: from.toISOString(), to: to.toISOString(), months: keys, clamped };
+}
+
+/**
+ * DEFINITION — time to fill (TREND): the same per-application days-to-hire
+ * as `timeToFillStats` (application created_at → its EARLIEST
+ * `offer_accepted` transition, for applications currently at
+ * `offer_accepted`), medianed WITHIN THE CALENDAR MONTH OF THE HIRE and
+ * zero-filled across every month the window covers, so the sparkline has no
+ * gaps. A month with no hires reports `hires: 0` and a NULL median — unknown,
+ * not zero.
+ *
+ * THE AXIS IS THE HIRE, NOT THE APPLICATION — the one thing that separates
+ * this from `timeToFillStats`, said out loud on both:
+ *   - `timeToFillStats` buckets nothing and its period bounds
+ *     `applications.created_at`;
+ *   - this measure buckets on, AND windows on, the hire event
+ *     (`application_state_transitions.transitioned_at` into
+ *     `offer_accepted`). "March" here means "the hires that landed in
+ *     March", which is the only reading under which a trend line is a
+ *     trend rather than a cohort study.
+ * So the two do not agree by construction, and neither is wrong.
+ *
+ * Consequences of that choice, stated rather than hidden:
+ *   - `filters.from` / `filters.to` are REDIRECTED onto the hire timestamp
+ *     and dropped before `buildApplicationScope` sees them. Every other
+ *     dimension (BU, requisition, recruiter, source, stage) goes through
+ *     the shared scope unchanged, so "this BU" means what it means
+ *     everywhere else.
+ *   - months are UTC calendar months (`date_trunc(… AT TIME ZONE 'UTC')`),
+ *     matching the UTC day bounds the catalog's date filters already send.
+ *   - a window that opens or closes mid-month yields a partial bucket at
+ *     that end; the bucket is real, its denominator is just smaller.
+ */
+export async function timeToFillTrend(
+  db: TenantBoundDb,
+  tenantId: string,
+  filters: ReportFilters,
+  opts: { months?: number } = {},
+): Promise<TimeToFillTrendPoint[]> {
+  const window = resolveTimeToFillTrendWindow(filters, opts);
+  // The period is honoured on the HIRE axis below, so it must not also
+  // narrow the application axis — see the header.
+  const scope = buildApplicationScope(tenantId, { ...filters, from: undefined, to: undefined });
+
+  const res = await db.execute(dsql`
+    WITH hired AS (
+      SELECT
+        a.id,
+        MIN(t.transitioned_at) AS hired_at,
+        EXTRACT(EPOCH FROM (MIN(t.transitioned_at) - a.created_at)) / 86400.0 AS days_to_hire
+      FROM public.applications a
+      JOIN public.application_state_transitions t
+        ON t.tenant_id = a.tenant_id
+       AND t.application_id = a.id
+       AND t.to_stage = 'offer_accepted'
+      ${scope.join}
+      WHERE ${scope.where}
+        AND a.current_stage = 'offer_accepted'
+      GROUP BY a.id, a.created_at
+    )
+    SELECT
+      to_char(date_trunc('month', hired_at AT TIME ZONE 'UTC'), 'YYYY-MM') AS month,
+      COUNT(*)::int AS hires,
+      ROUND(percentile_cont(0.5) WITHIN GROUP (ORDER BY days_to_hire)::numeric, 2)::float8
+        AS median_days
+    FROM hired
+    WHERE hired_at >= ${window.from}::timestamptz
+      AND hired_at <= ${window.to}::timestamptz
+    GROUP BY date_trunc('month', hired_at AT TIME ZONE 'UTC')
+  `);
+
+  const byMonth = new Map(
+    asRows<{ month: string; hires: number; median_days: number | null }>(res).map((r) => [
+      r.month,
+      r,
+    ]),
+  );
+  return window.months.map((month) => {
+    const hit = byMonth.get(month);
+    return {
+      month,
+      medianDays: hit?.median_days ?? null,
+      hires: hit?.hires ?? 0,
+    };
+  });
 }
 
 // ─────────────────────────── time in stage ───────────────────────────

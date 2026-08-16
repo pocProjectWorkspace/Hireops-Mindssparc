@@ -141,6 +141,8 @@ import { getPartnerScorecardReport } from "../lib/reports/partner-scorecard";
 // R1.2 sponsor pack — interview & scorecard health (#9), onboarding readiness (#19).
 import { getInterviewHealthReport } from "../lib/reports/interview-health";
 import { getOnboardingReadinessReport } from "../lib/reports/onboarding-readiness";
+// R1.4 sponsor pack — the executive summary / board pack (#23).
+import { getExecutiveSummaryReport } from "../lib/reports/executive-summary";
 import {
   getIrisAction,
   listIrisActions,
@@ -404,6 +406,9 @@ import {
   getInterviewHealthReportOutputSchema,
   getOnboardingReadinessReportInputSchema,
   getOnboardingReadinessReportOutputSchema,
+  // R1.4 — executive summary / board pack (#23).
+  getExecutiveSummaryReportInputSchema,
+  getExecutiveSummaryReportOutputSchema,
   getHrMetricsOutputSchema,
   listJdLibraryInputSchema,
   listJdLibraryOutputSchema,
@@ -10907,6 +10912,58 @@ export const appRouter = router({
       const filters: ReportFilters = input;
 
       return getOnboardingReadinessReport(db, ctx.tenantId, filters);
+    }),
+
+  // ───────── getExecutiveSummaryReport (catalog #23 · R1.4) ─────────
+  //
+  // "One page a sponsor can forward upward": hires vs plan, the
+  // time-to-fill trend, what the agencies cost, what is late, the AI spend
+  // under governance, and an explicit line saying diversity is not
+  // captured. It is the catalog's one PURE COMPOSITION — every number is
+  // produced by the report or measure that owns it (see the lib header's
+  // provenance table), so the board pack cannot contradict the detail
+  // sections printed underneath it.
+  //
+  // All the composition lives in lib/reports/executive-summary.ts; this
+  // procedure is the gate and the ONE piece of context the lib cannot
+  // resolve for itself:
+  //
+  //   isAdmin — the AI-governance block reads `ai_usage_logs`, which is
+  //   admin-gated everywhere else it surfaces (getAiUsageSummary,
+  //   /admin/costs) while this report is readable by hr_head and hr_ops.
+  //   Rather than widen that gate sideways through a composite report, the
+  //   block is NULL for a non-admin caller and the surface shows an
+  //   admin-only note. The role SET is the router's business, so the lib
+  //   takes the resolved boolean rather than reading ctx.roles itself.
+  //
+  // THE definitions to know: `agencyCost` is AGENCY spend, not cost per
+  // hire — job-board spend and internal recruiter cost exist nowhere in the
+  // schema, so the honest subset ships with its caveat rather than a
+  // three-term number missing two terms; and the time-to-fill TREND buckets
+  // and windows on the HIRE date, unlike every other period in the catalog,
+  // which is the only reading under which a trend line is a trend.
+  // Read-only, no withAudit (matches the rest of the catalog).
+  getExecutiveSummaryReport: protectedProcedure
+    .input(getExecutiveSummaryReportInputSchema)
+    .output(getExecutiveSummaryReportOutputSchema)
+    .query(async ({ ctx, input }) => {
+      requireAnyRole(
+        ctx,
+        REPORTS_READ_ROLES,
+        "Reports access requires the admin, hr_head or hr_ops role",
+      );
+      const db = requireDb(ctx);
+      if (!ctx.tenantId) {
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: "protected procedure missing tenantId",
+        });
+      }
+      const filters: ReportFilters = input;
+
+      return getExecutiveSummaryReport(db, ctx.tenantId, filters, {
+        isAdmin: ctx.roles.includes("admin"),
+      });
     }),
 
   // ─────────────────────── getHrMetrics (METRICS-01) ───────────────────────
