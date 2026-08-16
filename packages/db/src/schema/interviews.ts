@@ -81,6 +81,15 @@ export const interviews = pgTable(
     durationMinutes: integer("duration_minutes").notNull().default(60),
     mode: text("mode").notNull(),
 
+    // 0115 (R1.2) — the timestamps the interview-health report needs and the
+    // reporting assessment flagged as absent: status said WHAT, never WHEN.
+    // Set by the api when status transitions to completed / cancelled.
+    // Backfilled for pre-0115 rows as an approximation (completed →
+    // COALESCE(scheduled_end, updated_at); cancelled → updated_at) — the
+    // migration says so, reports treat old rows accordingly.
+    completedAt: timestamp("completed_at", { withTimezone: true }),
+    cancelledAt: timestamp("cancelled_at", { withTimezone: true }),
+
     meetingUrl: text("meeting_url"),
     // Calendar-provider / Cal.diy seam — opaque external booking reference.
     externalBookingRef: text("external_booking_ref"),
