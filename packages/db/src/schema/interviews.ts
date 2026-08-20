@@ -4,6 +4,7 @@ import {
   uuid,
   text,
   integer,
+  boolean,
   jsonb,
   timestamp,
   index,
@@ -89,6 +90,14 @@ export const interviews = pgTable(
     // migration says so, reports treat old rows accordingly.
     completedAt: timestamp("completed_at", { withTimezone: true }),
     cancelledAt: timestamp("cancelled_at", { withTimezone: true }),
+
+    // 0116 (N1) — the recruiter's explicit "record this round" intent for the
+    // interview notetaker. DEFAULT false: every existing and every future
+    // round is opt-in. Deliberately SEPARATE from the candidate's consent
+    // (interview_recording_consents, which is per-interview, purpose-scoped
+    // and withdrawable) — the two are independent facts and capture requires
+    // BOTH. Consent is necessary but never sufficient.
+    recordingRequested: boolean("recording_requested").notNull().default(false),
 
     meetingUrl: text("meeting_url"),
     // Calendar-provider / Cal.diy seam — opaque external booking reference.

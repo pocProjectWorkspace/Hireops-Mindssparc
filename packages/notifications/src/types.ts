@@ -42,6 +42,10 @@ export type TemplateKey =
   | "candidate.agent_message"
   | "recruiter.sla_breach_imminent"
   | "recruiter.sla_ops_alert"
+  // R1.5a — the scheduled board-pack digest. "recruiter." is the ops-facing
+  // prefix (as with sla_ops_alert); the actual recipients are the mailboxes an
+  // admin nominated, which need not be HireOps users.
+  | "recruiter.report_digest"
   | "recruiter.offer_accepted"
   | "recruiter.offer_declined"
   | "partner.invitation"

@@ -428,6 +428,37 @@ export const EMAIL_TEMPLATE_CATALOG: Record<TemplateKey, EmailTemplateCatalogEnt
     slots: [],
   },
 
+  // R1.5a — the scheduled digest. The opposite case to sla_ops_alert above: the
+  // six figures are data bindings (never overridable), but the surrounding copy
+  // is real static text, so subject + four slots are genuinely editable.
+  "recruiter.report_digest": {
+    templateKey: "recruiter.report_digest",
+    label: "Scheduled report digest",
+    description:
+      "Sent on the tenant's configured cadence (weekly / monthly) to the mailboxes nominated for report digests. Carries the executive board-pack headline numbers for the period that just closed.",
+    subject: {
+      defaultText: "{companyName} hiring digest — {periodLabel}",
+      tokens: ["companyName", "periodLabel", "cadenceLabel"],
+    },
+    slots: [
+      { slotKey: "heading", label: "Heading", defaultText: "Hiring digest", tokens: [] },
+      {
+        slotKey: "intro",
+        label: "Intro paragraph",
+        defaultText: "Your {cadenceLabel} hiring digest for {companyName}, covering {periodLabel}.",
+        tokens: ["cadenceLabel", "companyName", "periodLabel"],
+      },
+      {
+        slotKey: "dashNote",
+        label: "Em-dash explanation",
+        defaultText:
+          "An em dash means there was nothing to measure in this period — no offer extended, no hire made, or no requisition open. It is not a zero.",
+        tokens: [],
+      },
+      { slotKey: "ctaLabel", label: "Link label", defaultText: "Open reports", tokens: [] },
+    ],
+  },
+
   "recruiter.offer_accepted": {
     templateKey: "recruiter.offer_accepted",
     label: "Offer accepted (recruiter)",
@@ -794,6 +825,22 @@ export const EMAIL_TEMPLATE_SAMPLE_DATA: Record<TemplateKey, Record<string, unkn
     actionUrl: "https://portal.example/triage",
     actionLabel: "Open triage",
     reason: "You are configured as an Email Alerts recipient in System Setup.",
+  },
+  // One null (offer acceptance) on purpose, so the admin's live preview shows
+  // what an em-dash figure actually looks like rather than only the happy path.
+  "recruiter.report_digest": {
+    companyName: "Kyndryl",
+    periodLabel: "10–16 August 2026",
+    cadenceLabel: "weekly",
+    hires: 4,
+    applications: 187,
+    activePipeline: 62,
+    offerAcceptanceRatePct: null,
+    medianTimeToFillDays: 38.5,
+    oldestOpenReqDays: 96.25,
+    actionUrl: "https://portal.example/reports",
+    reason:
+      "You're receiving this because your address is configured to receive report digests (Admin → Report digests).",
   },
   "recruiter.offer_accepted": {
     recruiterName: "Arjun Mehta",

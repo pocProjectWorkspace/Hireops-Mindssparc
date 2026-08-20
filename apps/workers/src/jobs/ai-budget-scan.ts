@@ -118,7 +118,7 @@ export async function aiBudgetScan(log: Logger): Promise<void> {
               "You're receiving this because you're a configured operational alert recipient (Admin → System Setup → Email Alerts) and AI-budget alerts are enabled. This is an alert only — AI features are not blocked.",
           },
           priority: 3,
-          dedupKey: aiBudgetAlertDedupKey(row.tenant_id, yearMonth, pct),
+          dedupKey: aiBudgetAlertDedupKey(row.tenant_id, recipient, yearMonth, pct),
         });
         alertsEnqueued += 1;
       }

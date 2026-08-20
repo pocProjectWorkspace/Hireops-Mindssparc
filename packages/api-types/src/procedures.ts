@@ -2913,6 +2913,81 @@ export const cancelInterviewOutputSchema = z.object({ interviewId: z.string().uu
 export type CancelInterviewInput = z.infer<typeof cancelInterviewInputSchema>;
 export type CancelInterviewOutput = z.infer<typeof cancelInterviewOutputSchema>;
 
+/* ─────────── N2a — interview recording consent (internal side) ─────────── */
+
+/**
+ * The effective recording state for ONE interview: the recruiter's ask, the
+ * candidate's latest consent decision, and the AND of the two.
+ *
+ * `decision: null` means NEVER ASKED — deliberately distinct from 'declined',
+ * and never to be rendered as permission. `canRecord` is the only field a
+ * surface should gate on: consent is necessary but not sufficient, so a UI
+ * that reads `recordingRequested` alone would show a lie.
+ */
+export const recordingConsentDecisionSchema = z.enum(["granted", "declined", "withdrawn"]);
+export type RecordingConsentDecisionValue = z.infer<typeof recordingConsentDecisionSchema>;
+
+export const effectiveRecordingConsentSchema = z.object({
+  decision: recordingConsentDecisionSchema.nullable(),
+  decidedAt: z.string().nullable(),
+  consentVersion: z.string().nullable(),
+  capturedVia: z.string().nullable(),
+  permitted: z.boolean(),
+});
+export type EffectiveRecordingConsentView = z.infer<typeof effectiveRecordingConsentSchema>;
+
+export const interviewRecordingStateSchema = z.object({
+  interviewId: z.string().uuid(),
+  recordingRequested: z.boolean(),
+  consent: effectiveRecordingConsentSchema,
+  canRecord: z.boolean(),
+});
+export type InterviewRecordingState = z.infer<typeof interviewRecordingStateSchema>;
+
+export const getInterviewRecordingStateInputSchema = z.object({
+  interviewId: z.string().uuid(),
+});
+export const getInterviewRecordingStateOutputSchema = interviewRecordingStateSchema;
+export type GetInterviewRecordingStateInput = z.infer<typeof getInterviewRecordingStateInputSchema>;
+export type GetInterviewRecordingStateOutput = z.infer<
+  typeof getInterviewRecordingStateOutputSchema
+>;
+
+/**
+ * Record a WITHDRAWAL on the candidate's behalf. The signed confirm link
+ * expires; the right to withdraw does not — without this, a candidate who
+ * phones in a DPDPA withdrawal after expiry could not be actioned at all.
+ * `reason` is free text for the operator's own record of who asked and how.
+ */
+export const withdrawInterviewRecordingConsentInputSchema = z.object({
+  interviewId: z.string().uuid(),
+  reason: z.string().min(1).max(500),
+});
+export const withdrawInterviewRecordingConsentOutputSchema = interviewRecordingStateSchema;
+export type WithdrawInterviewRecordingConsentInput = z.infer<
+  typeof withdrawInterviewRecordingConsentInputSchema
+>;
+export type WithdrawInterviewRecordingConsentOutput = z.infer<
+  typeof withdrawInterviewRecordingConsentOutputSchema
+>;
+
+/**
+ * The recruiter's "record this round" toggle. Returns the resulting EFFECTIVE
+ * state, not just the flag, so the UI shows the honest answer — turning it on
+ * without consent leaves canRecord false.
+ */
+export const setInterviewRecordingRequestedInputSchema = z.object({
+  interviewId: z.string().uuid(),
+  requested: z.boolean(),
+});
+export const setInterviewRecordingRequestedOutputSchema = interviewRecordingStateSchema;
+export type SetInterviewRecordingRequestedInput = z.infer<
+  typeof setInterviewRecordingRequestedInputSchema
+>;
+export type SetInterviewRecordingRequestedOutput = z.infer<
+  typeof setInterviewRecordingRequestedOutputSchema
+>;
+
 /**
  * Per-panelist feedback state (INT-03). `none` = no interview_feedback row;
  * `draft` = row exists, submitted_at NULL; `submitted` = submitted_at stamped.

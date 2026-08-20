@@ -84,6 +84,12 @@ export * from "./interview-panelists";
 export * from "./interview-feedback";
 // Panel brief real-AI interview prep (PANEL-02)
 export * from "./interview-prep";
+// Interview notetaker — consent → recording → transcript → notes (N1)
+export * from "./interview-recording-consents";
+export * from "./interview-recordings";
+export * from "./interview-transcripts";
+export * from "./interview-notes";
+export * from "./transcript-outbox";
 // Candidate accounts (Wave C, CAND-01)
 export * from "./candidate-accounts";
 // Offboarding pillar (OFFBOARD-01)

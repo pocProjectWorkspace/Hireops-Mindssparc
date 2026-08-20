@@ -8,6 +8,7 @@ export {
 export { StageAdvanced, type StageAdvancedProps } from "./templates/stage-advanced";
 export { SlaBreachImminent, type SlaBreachImminentProps } from "./templates/sla-breach-imminent";
 export { SlaOpsAlert, type SlaOpsAlertProps, type SlaOpsSeverity } from "./templates/sla-ops-alert";
+export { ReportDigest, type ReportDigestProps } from "./templates/report-digest";
 export { OfferExtended, type OfferExtendedProps } from "./templates/offer-extended";
 export {
   InterviewInvitation,

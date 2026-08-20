@@ -9,6 +9,7 @@ import { slaImminentScan } from "./jobs/sla-imminent-scan";
 import { stageStaleScan } from "./jobs/stage-stale-scan";
 import { aiBudgetScan } from "./jobs/ai-budget-scan";
 import { ownershipClaimSweep } from "./jobs/ownership-claim-sweep";
+import { reportDigestScan } from "./jobs/report-digest-scan";
 import { drainWorkdayOutboxOnce } from "./lib/workday-simulation-drain";
 import { drainAiScoreOutboxOnce } from "./lib/ai-score-drain";
 import { drainAgentRunOutboxOnce } from "./lib/agent-run-drain";
@@ -68,6 +69,23 @@ const SCHEDULED_JOBS: ScheduledJob[] = [
     name: "ownership_claim_sweep",
     intervalMs: 15 * 60_000,
     run: ownershipClaimSweep,
+  },
+  {
+    // R1.5a — email opted-in tenants the executive board-pack headline numbers
+    // for the period that just closed (last ISO week / last calendar month).
+    //
+    // 30-min tick, which is far coarser than the thing it is watching for (one
+    // send per week or per month) and deliberately so: the job's only job is to
+    // notice that a period closed and the configured send hour has passed. A
+    // tighter tick would re-read the same closed window for nothing.
+    //
+    // A MISSED TICK SELF-HEALS. The dedup key names the closed PERIOD, not the
+    // tick, so a worker that is down through the send hour still sends on its
+    // next tick — once, because the outbox's (tenant_id, dedup_key) unique
+    // rejects the duplicate. There is no digest table and nothing to reconcile.
+    name: "report_digest_scan",
+    intervalMs: 30 * 60_000,
+    run: reportDigestScan,
   },
 ];
 

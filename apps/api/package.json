@@ -6,7 +6,8 @@
   "main": "./src/index.ts",
   "exports": {
     ".": "./src/index.ts",
-    "./trpc": "./src/trpc/index.ts"
+    "./trpc": "./src/trpc/index.ts",
+    "./reports/executive-summary": "./src/lib/reports/executive-summary.ts"
   },
   "scripts": {
     "build": "tsc --noEmit",

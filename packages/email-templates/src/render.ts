@@ -10,6 +10,7 @@ import {
 import { StageAdvanced, type StageAdvancedProps } from "./templates/stage-advanced";
 import { SlaBreachImminent, type SlaBreachImminentProps } from "./templates/sla-breach-imminent";
 import { SlaOpsAlert, type SlaOpsAlertProps } from "./templates/sla-ops-alert";
+import { ReportDigest, type ReportDigestProps } from "./templates/report-digest";
 import { OfferExtended, type OfferExtendedProps } from "./templates/offer-extended";
 import {
   InterviewInvitation,
@@ -249,6 +250,26 @@ export async function renderTemplate(
         : props.headline;
       return {
         subject,
+        html: await render(element),
+        text: await render(element, { plainText: true }),
+      };
+    }
+    case "recruiter.report_digest": {
+      // R1.5a — the scheduled board-pack digest. Subject carries the period so
+      // a mailbox holding several of these can tell them apart at a glance
+      // without opening any of them.
+      const props = data as unknown as ReportDigestProps;
+      const element = ReportDigest({ ...props, slots });
+      return {
+        subject: resolveSubject(
+          overrides?.subject,
+          {
+            companyName: props.companyName,
+            periodLabel: props.periodLabel,
+            cadenceLabel: props.cadenceLabel,
+          },
+          `${props.companyName} hiring digest — ${props.periodLabel}`,
+        ),
         html: await render(element),
         text: await render(element, { plainText: true }),
       };

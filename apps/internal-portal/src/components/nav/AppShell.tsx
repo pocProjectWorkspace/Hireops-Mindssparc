@@ -145,6 +145,8 @@ export type PortalNavKey =
   | "governance-policy"
   // T4.3 — document retention policy + overdue register
   | "retention-policy"
+  // R1.5b — scheduled report-digest configuration (cadence, recipients, hour)
+  | "report-digests"
   // LD-1B — the L&D catalogue + tracks pushed onto a hire's onboarding case
   | "learning";
 
@@ -604,6 +606,16 @@ export const ADMIN_NAV: NavItem[] = [
   // LD-1B — the L&D catalogue (pointers at learning hosted elsewhere) + the
   // curated tracks a recruiter pushes onto one hire's onboarding case.
   { key: "learning", label: "Learning", href: "/admin/learning", icon: <IconLearning /> },
+  // R1.5b — scheduled report digests (cadence, recipients, UTC send hour). The
+  // saved block drives the report_digest_scan worker. Reuses IconReports (no
+  // dedicated mail/schedule icon exists) — the digest IS the reports pack, on a
+  // schedule, so the shared icon is the honest one.
+  {
+    key: "report-digests",
+    label: "Report digests",
+    href: "/admin/report-digests",
+    icon: <IconReports />,
+  },
 ];
 
 /**
@@ -700,6 +712,7 @@ export const ADMIN_NAV_SECTIONS: NavSection[] = [
       "sla-thresholds",
       "governance-policy",
       "retention-policy",
+      "report-digests",
       "learning",
     ],
   },

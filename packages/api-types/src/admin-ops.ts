@@ -553,10 +553,23 @@ export function crossedAiBudgetThresholds(
   return Array.from(new Set(crossed)).sort((a, b) => a - b);
 }
 
-/** Dedup key for one budget-threshold alert: at most one per (tenant, month, percent).
- * `yearMonth` is YYYY-MM. Mirrors the sla-imminent scan's dedup-key discipline. */
-export function aiBudgetAlertDedupKey(tenantId: string, yearMonth: string, pct: number): string {
-  return `ai_budget:${tenantId}:${yearMonth}:${pct}`;
+/** Dedup key for one budget-threshold alert: at most one per (tenant, RECIPIENT,
+ * month, percent). `yearMonth` is YYYY-MM. Mirrors the sla-imminent scan's
+ * per-recipient dedup-key discipline (`sla_escalation:${rule.recipient}:…`).
+ *
+ * The `recipient` leg is load-bearing. `notification_outbox`'s dedup index is
+ * UNIQUE (tenant_id, dedup_key), so the original recipient-less key let exactly
+ * ONE row per (tenant, month, percent) reach the outbox: a tenant with three
+ * alert recipients had two of them silently absorbed as an expected 23505, and
+ * only the alphabetically-first address was ever alerted. Adding the recipient
+ * is what makes the configured list mean what the admin UI says it means. */
+export function aiBudgetAlertDedupKey(
+  tenantId: string,
+  recipient: string,
+  yearMonth: string,
+  pct: number,
+): string {
+  return `ai_budget:${tenantId}:${recipient}:${yearMonth}:${pct}`;
 }
 
 export const getAiBudgetInputSchema = z.object({});
@@ -586,3 +599,338 @@ export const getAiBudgetStatusOutputSchema = z.object({
   status: aiBudgetStatusSchema,
 });
 export type GetAiBudgetStatusOutput = z.infer<typeof getAiBudgetStatusOutputSchema>;
+
+// ─────────────────── R1.5a — scheduled report digests ───────────────────
+//
+// Per-tenant opt-in for a periodic emailed digest carrying the executive
+// board-pack headline numbers, persisted to tenants.settings.reportDigests (a
+// SIBLING of systemSetup / shortlistDefaults / aiBudget — no new table, no
+// migration).
+//
+// WHY THERE IS NO TABLE. The obvious shape for "email this tenant once per
+// period" is a send-log keyed (tenant, period) so a second attempt can be
+// refused. We already own exactly that guarantee: notification_outbox carries a
+// partial UNIQUE on (tenant_id, dedup_key), so the second insert of
+// `report_digest:<tenantId>:<cadence>:<periodKey>` is rejected with a 23505.
+// THE DEDUP KEY IS THE IDEMPOTENCY MECHANISM. A digest table would only restate
+// it, and would immediately become a second thing that has to agree with the
+// outbox about what was sent.
+//
+// The consequence worth stating out loud: the key names the CLOSED PERIOD, not
+// the tick that noticed it, so a missed tick self-heals. The scan ticks every 30
+// minutes; if the worker is down for the whole first day of a new period, the
+// next tick that comes up computes the same period, builds the same key, and
+// sends — late, exactly once, and correct. Nothing has to remember that a send
+// was owed, and nothing has to be reconciled afterwards.
+//
+// Recipients are plain mailboxes rather than memberships: a digest goes wherever
+// the admin nominates (a sponsor, a distribution list), and those addresses need
+// not be HireOps users at all. That is precisely why the worker runs the report
+// with `isAdmin: false` — see report-digest-scan.ts.
+
+export const REPORT_DIGESTS_VERSION = 1 as const;
+
+export const REPORT_DIGEST_CADENCES = ["weekly", "monthly"] as const;
+export const reportDigestCadenceSchema = z.enum(REPORT_DIGEST_CADENCES);
+export type ReportDigestCadence = z.infer<typeof reportDigestCadenceSchema>;
+
+export const reportDigestsSchema = z.object({
+  version: z.literal(REPORT_DIGESTS_VERSION).default(REPORT_DIGESTS_VERSION),
+  /** Master switch. Off until an admin turns it on — an unconfigured tenant
+   * sends nothing, which is the pre-config behaviour. */
+  enabled: z.boolean().default(false),
+  cadence: reportDigestCadenceSchema.default("weekly"),
+  /** Plain mailboxes (a sponsor, an ops list) — NOT memberships. Max 10. */
+  recipients: z.array(z.string().email()).max(10).default([]),
+  /** UTC hour, on/after the first day of the new period, from which the digest
+   * for the just-closed period may send. Default 07:00Z ≈ 12:30 IST. */
+  sendHourUtc: z.number().int().min(0).max(23).default(7),
+});
+export type ReportDigests = z.infer<typeof reportDigestsSchema>;
+
+export function defaultReportDigests(): ReportDigests {
+  return reportDigestsSchema.parse({});
+}
+
+/**
+ * Merge a raw stored `reportDigests` block (partial / unknown / absent) with
+ * defaults, returning a complete validated config. Malformed / future blocks
+ * fall back to defaults rather than throwing — same discipline as
+ * `resolveAiBudget`, and it matters more here: this is read by a cross-tenant
+ * worker loop, where one tenant's bad JSON must not stop the scan.
+ *
+ * Recipients are lower-cased, deduped and sorted so the list renders
+ * deterministically in the admin UI and the worker enqueues in a stable order
+ * (nice-to-have, not load-bearing — the dedup key is per (tenant, period), so
+ * ordering cannot affect what is sent).
+ */
+export function resolveReportDigests(raw: unknown): ReportDigests {
+  const parsed = reportDigestsSchema.safeParse(raw ?? {});
+  const cfg = parsed.success ? parsed.data : defaultReportDigests();
+  const recipients = Array.from(new Set(cfg.recipients.map((r) => r.trim().toLowerCase()))).sort();
+  return { ...cfg, recipients };
+}
+
+/** Dedup key for one digest: at most one per (tenant, RECIPIENT, cadence, closed
+ * period). `periodKey` is `digestPeriod().periodKey` — `2026-W33` or `2026-07`.
+ * See the block header for why this key IS the idempotency mechanism. Cadence is
+ * in the key so flipping weekly→monthly mid-period cannot collide with a digest
+ * already sent under the old cadence.
+ *
+ * The `recipient` leg is LOAD-BEARING, not decoration. `notification_outbox`'s
+ * dedup index is UNIQUE (tenant_id, dedup_key) — so a key that omits the
+ * recipient lets exactly ONE row per tenant per period reach the outbox and the
+ * other N−1 recipients come back 23505, which the scan absorbs as an expected
+ * "already sent". A tenant configuring three recipients would silently get one
+ * email. This mirrors `sla-imminent-scan`'s per-recipient keys
+ * (`sla_imminent_cfg:${recipient}:…`, `sla_escalation:${rule.recipient}:…`),
+ * which is the correct precedent for a fan-out. `aiBudgetAlertDedupKey` gets
+ * this wrong and is fixed alongside this. */
+export function reportDigestDedupKey(
+  tenantId: string,
+  recipient: string,
+  cadence: ReportDigestCadence,
+  periodKey: string,
+): string {
+  return `report_digest:${tenantId}:${recipient}:${cadence}:${periodKey}`;
+}
+
+/** The closed reporting period a digest covers. `from`/`to` are the inclusive
+ * first and LAST instants (…T23:59:59.999Z), not a half-open range — they are
+ * handed straight to `reportFiltersSchema`, whose bounds are inclusive. */
+export interface DigestPeriod {
+  /** Stable human-readable key: `2026-W33` (ISO week) or `2026-07` (month). */
+  periodKey: string;
+  from: Date;
+  to: Date;
+}
+
+const DAY_MS = 86_400_000;
+
+/**
+ * ISO-8601 week-numbering year + week for a UTC instant.
+ *
+ * The rule that makes this non-obvious: a week belongs to the year that owns its
+ * THURSDAY, so the last days of December can sit in week 1 of the next year and
+ * the first days of January in week 52/53 of the previous one. We therefore
+ * shift to the week's Thursday first and take the year from there, then count
+ * whole weeks from the Thursday of that year's week 1 (the week containing 4
+ * January, by the same rule).
+ */
+function isoWeekParts(d: Date): { isoYear: number; week: number } {
+  const thursday = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
+  // getUTCDay() is Sun=0; re-base to Mon=0 so the arithmetic reads ISO-wise.
+  const dayIndex = (thursday.getUTCDay() + 6) % 7;
+  thursday.setUTCDate(thursday.getUTCDate() - dayIndex + 3);
+  const isoYear = thursday.getUTCFullYear();
+  const week1Thursday = new Date(Date.UTC(isoYear, 0, 4));
+  const week1Index = (week1Thursday.getUTCDay() + 6) % 7;
+  week1Thursday.setUTCDate(week1Thursday.getUTCDate() - week1Index + 3);
+  const week = 1 + Math.round((thursday.getTime() - week1Thursday.getTime()) / (7 * DAY_MS));
+  return { isoYear, week };
+}
+
+/**
+ * The PREVIOUS COMPLETE period for a cadence, entirely in UTC. Pure — the same
+ * `now` always yields the same window, which is what lets the dedup key be
+ * derived rather than recorded.
+ *
+ *   weekly  → the ISO week that just ended: Monday 00:00:00.000Z through the
+ *             following Sunday 23:59:59.999Z. Key `2026-W33`.
+ *   monthly → the previous calendar month, first through last instant. Key
+ *             `2026-07`.
+ *
+ * Never the period `now` is IN: a digest that reported a half-finished week
+ * would be wrong on arrival and would then disagree with the same numbers read
+ * off /reports an hour later.
+ *
+ * UTC throughout, deliberately. The tenant's people read this in IST (or CET, in
+ * the France/Germany GCC targets); picking one of those as the boundary would
+ * make the window silently different per tenant while the report SQL still cut
+ * on UTC timestamps. One clock, stated, is more honest than a friendlier clock
+ * that disagrees with the page.
+ */
+export function digestPeriod(cadence: ReportDigestCadence, now: Date): DigestPeriod {
+  if (cadence === "monthly") {
+    const from = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 1, 1));
+    // First instant of the CURRENT month, minus a millisecond.
+    const to = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1) - 1);
+    const periodKey = `${from.getUTCFullYear()}-${String(from.getUTCMonth() + 1).padStart(2, "0")}`;
+    return { periodKey, from, to };
+  }
+
+  // Monday 00:00Z of the week `now` is in, then step back one week.
+  const mondayThisWeek = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
+  const dayIndex = (now.getUTCDay() + 6) % 7; // Mon=0 … Sun=6
+  const from = new Date(mondayThisWeek - (dayIndex + 7) * DAY_MS);
+  const to = new Date(from.getTime() + 7 * DAY_MS - 1);
+  const { isoYear, week } = isoWeekParts(from);
+  return { periodKey: `${isoYear}-W${String(week).padStart(2, "0")}`, from, to };
+}
+
+/**
+ * May the digest for the just-closed period be sent yet?
+ *
+ * True once `now` is at or past `sendHourUtc` o'clock on the first day of the
+ * CURRENT period (i.e. the instant after the reported period closed, plus the
+ * configured hour) — and it STAYS true for the rest of that period rather than
+ * only during the send hour. That monotone shape is what makes the missed-tick
+ * self-heal in the block header real: a worker that is down all of Monday still
+ * sends Monday's digest on Tuesday, once, because the dedup key is what stops a
+ * second send, not this gate.
+ *
+ * Total by construction: `sendHourUtc` is clamped to 0–23 so a caller that
+ * bypassed the schema still gets a boolean rather than a nonsense instant.
+ */
+export function shouldSendDigest(
+  cadence: ReportDigestCadence,
+  now: Date,
+  sendHourUtc: number,
+): boolean {
+  // digestPeriod always returns the period BEFORE the one `now` sits in, so the
+  // instant after its last one is the current period's first.
+  const currentPeriodStart = digestPeriod(cadence, now).to.getTime() + 1;
+  const hour = Math.min(23, Math.max(0, Math.trunc(sendHourUtc || 0)));
+  return now.getTime() >= currentPeriodStart + hour * 3_600_000;
+}
+
+// ────────── R1.5b — wire contract for the report-digest admin surface ──────────
+//
+// R1.5a deliberately shipped no procedure schemas ("an unused pair of schemas
+// shipped a ticket early is a pair nobody has validated against a real form").
+// This is that form's contract, mirroring the getAiBudget / updateAiBudget pair
+// above field-for-field: an empty-input read that returns the RESOLVED block, and
+// a write that echoes what was persisted.
+
+export const getReportDigestsInputSchema = z.object({});
+export const getReportDigestsOutputSchema = reportDigestsSchema;
+export type GetReportDigestsOutput = z.infer<typeof getReportDigestsOutputSchema>;
+
+export const updateReportDigestsInputSchema = reportDigestsSchema;
+export type UpdateReportDigestsInput = z.infer<typeof updateReportDigestsInputSchema>;
+export const updateReportDigestsOutputSchema = z.object({
+  ok: z.literal(true),
+  reportDigests: reportDigestsSchema,
+});
+export type UpdateReportDigestsOutput = z.infer<typeof updateReportDigestsOutputSchema>;
+
+/**
+ * The "next digest" preview the admin surface renders — the closed period the
+ * next digest will report on, and the instant it may go.
+ *
+ * DERIVED, NEVER STORED. There is no `nextDigestAt` column and there must not be
+ * one: the send instant is a pure function of (cadence, sendHourUtc, now), and
+ * the moment it is also written down it becomes a second thing that has to agree
+ * with `digestPeriod`. Same argument as the block header's "the dedup key IS the
+ * idempotency mechanism".
+ *
+ * It is deliberately NOT a procedure output either, despite being shaped like
+ * one. The preview has to react to the form's UNSAVED state — flipping the
+ * cadence dropdown must visibly flip the previewed period, which is the honesty
+ * check this page exists for — and a server round-trip would either lag that or
+ * force a save first. The schema lives here so the shape is pinned in the shared
+ * package (and could be served by a procedure later without changing a caller),
+ * while `nextDigestPreview` is the one implementation both sides would use.
+ *
+ * Dates cross as ISO strings, matching every other wire shape in this file.
+ */
+export const reportDigestPreviewSchema = z.object({
+  /** `2026-W33` / `2026-07` — the same key that goes in the dedup key. */
+  periodKey: z.string(),
+  /** Inclusive first / last instant of the covered period (ISO 8601, UTC). */
+  from: z.string(),
+  to: z.string(),
+  /** Human label for the period, e.g. "10–16 August 2026" or "July 2026". */
+  label: z.string(),
+  /** ISO instant the send gate opens: period end + 1ms + `sendHourUtc` hours. */
+  sendsAt: z.string(),
+  /**
+   * True when the previewed period has already CLOSED — its numbers are final
+   * and only the send hour is outstanding. False when the period is still
+   * accumulating, i.e. the previous period's digest is already due or sent and
+   * the next one cannot be computed until this window ends.
+   */
+  periodClosed: z.boolean(),
+});
+export type ReportDigestPreview = z.infer<typeof reportDigestPreviewSchema>;
+
+/**
+ * Human period label. Weekly reads as a date range because "week 33" means
+ * nothing to a sponsor; monthly reads as the month name. UTC throughout, matching
+ * the window the numbers are computed over — a label on a different clock from
+ * its own figures is how a digest starts arguing with itself.
+ *
+ * NOTE: `report-digest-scan.ts` (R1.5a) carries a private `formatPeriodLabel`
+ * with exactly this rule, written before this shared one existed. They must stay
+ * identical or the previewed label and the emailed label diverge; collapsing the
+ * worker onto this function is a one-line follow-up left out of R1.5b's fence.
+ */
+export function formatDigestPeriodLabel(
+  cadence: ReportDigestCadence,
+  period: DigestPeriod,
+): string {
+  const fmt = (d: Date, opts: Intl.DateTimeFormatOptions) =>
+    new Intl.DateTimeFormat("en-GB", { timeZone: "UTC", ...opts }).format(d);
+  if (cadence === "monthly") {
+    return fmt(period.from, { month: "long", year: "numeric" });
+  }
+  const sameMonth = period.from.getUTCMonth() === period.to.getUTCMonth();
+  const fromPart = sameMonth
+    ? fmt(period.from, { day: "numeric" })
+    : fmt(period.from, { day: "numeric", month: "long" });
+  return `${fromPart}–${fmt(period.to, { day: "numeric", month: "long", year: "numeric" })}`;
+}
+
+/**
+ * The period `now` sits IN (still accumulating), expressed via `digestPeriod`
+ * rather than a second piece of calendar arithmetic: `digestPeriod` returns the
+ * period BEFORE the one containing its argument, so asking it about an instant
+ * inside the NEXT period yields the current one. One implementation of "what is
+ * a week/month" keeps the preview and the worker on the same boundaries.
+ */
+function currentDigestPeriod(cadence: ReportDigestCadence, now: Date): DigestPeriod {
+  const start = new Date(digestPeriod(cadence, now).to.getTime() + 1);
+  const probe =
+    cadence === "monthly"
+      ? new Date(Date.UTC(start.getUTCFullYear(), start.getUTCMonth() + 1, 1))
+      : new Date(start.getTime() + 7 * DAY_MS);
+  return digestPeriod(cadence, probe);
+}
+
+/**
+ * Which digest goes next, and when — pure, and computed from the same two
+ * functions the worker gates on.
+ *
+ *   send gate NOT yet open → the just-closed period, going at the gate instant
+ *                            (soon; `periodClosed: true` — numbers are final).
+ *   send gate ALREADY open → the just-closed period's digest is due or already
+ *                            enqueued, so the next one covers the period `now`
+ *                            is in, going after it closes (`periodClosed: false`).
+ *
+ * The honest limit, stated because the UI must not overclaim: nothing here reads
+ * `notification_outbox`, so once the gate is open this cannot distinguish "sent
+ * an hour ago" from "the scan tick that sends it hasn't run yet". It shows the
+ * period that is definitely still to come rather than asserting a send already
+ * happened. The scan ticks every 30 minutes, so the ambiguous window is small,
+ * and the dedup key — not this function — is what guarantees exactly-once.
+ */
+export function nextDigestPreview(
+  cadence: ReportDigestCadence,
+  sendHourUtc: number,
+  now: Date,
+): ReportDigestPreview {
+  const gateOpen = shouldSendDigest(cadence, now, sendHourUtc);
+  const period = gateOpen ? currentDigestPeriod(cadence, now) : digestPeriod(cadence, now);
+  const hour = Math.min(23, Math.max(0, Math.trunc(sendHourUtc || 0)));
+  // period end + 1ms is the first instant of the period AFTER the one reported
+  // on; the send hour is measured from there, exactly as shouldSendDigest does.
+  const sendsAt = new Date(period.to.getTime() + 1 + hour * 3_600_000);
+  return {
+    periodKey: period.periodKey,
+    from: period.from.toISOString(),
+    to: period.to.toISOString(),
+    label: formatDigestPeriodLabel(cadence, period),
+    sendsAt: sendsAt.toISOString(),
+    periodClosed: !gateOpen,
+  };
+}

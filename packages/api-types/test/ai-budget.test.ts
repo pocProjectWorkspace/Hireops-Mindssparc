@@ -158,7 +158,20 @@ describe("crossedAiBudgetThresholds", () => {
 });
 
 describe("aiBudgetAlertDedupKey", () => {
-  it("encodes (tenant, month, percent) — one alert per threshold per month", () => {
-    expect(aiBudgetAlertDedupKey("tenant-1", "2026-07", 80)).toBe("ai_budget:tenant-1:2026-07:80");
+  it("encodes (tenant, recipient, month, percent) — one alert per threshold per month", () => {
+    expect(aiBudgetAlertDedupKey("tenant-1", "ops@acme.com", "2026-07", 80)).toBe(
+      "ai_budget:tenant-1:ops@acme.com:2026-07:80",
+    );
+  });
+
+  // Regression: the recipient leg was originally missing, and because
+  // notification_outbox's dedup index is UNIQUE (tenant_id, dedup_key), only
+  // the first of N configured alert recipients ever received a budget alert —
+  // the rest were absorbed as an expected 23505 "already sent".
+  it("distinguishes recipients, so every configured alert recipient is reached", () => {
+    const keys = ["ops@acme.com", "finance@acme.com"].map((r) =>
+      aiBudgetAlertDedupKey("tenant-1", r, "2026-07", 80),
+    );
+    expect(new Set(keys).size).toBe(2);
   });
 });

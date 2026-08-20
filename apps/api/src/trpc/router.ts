@@ -225,6 +225,12 @@ import {
   rescheduleInterviewOutputSchema,
   cancelInterviewInputSchema,
   cancelInterviewOutputSchema,
+  getInterviewRecordingStateInputSchema,
+  getInterviewRecordingStateOutputSchema,
+  withdrawInterviewRecordingConsentInputSchema,
+  withdrawInterviewRecordingConsentOutputSchema,
+  setInterviewRecordingRequestedInputSchema,
+  setInterviewRecordingRequestedOutputSchema,
   listUpcomingInterviewsInputSchema,
   listUpcomingInterviewsOutputSchema,
   type InterviewRow,
@@ -349,6 +355,12 @@ import {
   projectMonthEndSpendMicros,
   deriveAiBudgetStatus,
   type AiBudget,
+  getReportDigestsInputSchema,
+  getReportDigestsOutputSchema,
+  updateReportDigestsInputSchema,
+  updateReportDigestsOutputSchema,
+  resolveReportDigests,
+  type ReportDigests,
   getSlaThresholdsInputSchema,
   getSlaThresholdsOutputSchema,
   updateSlaThresholdsInputSchema,
@@ -994,6 +1006,12 @@ import {
   INTERVIEW_PREP_FEATURE,
 } from "../lib/interview-prep";
 import {
+  CONSENT_VIA_INTERNAL_REVOCATION,
+  canRecordInterview,
+  recordRecordingConsent,
+  setRecordingRequested,
+} from "../lib/interview-recording-consent";
+import {
   buildReqRevisionPrompt,
   reqRevisionJsonSchema,
   REQ_REVISION_PROMPT_VERSION,
@@ -1472,6 +1490,13 @@ const HM_INSIGHTS_ROLES = new Set(["admin", "hiring_manager"]);
 // view, which hr_head also reads). A partner/candidate-less identity is
 // FORBIDDEN. RLS still scopes rows to the tenant on top of these gates.
 const INTERVIEW_MANAGE_ROLES = new Set(["admin", "hiring_manager", "recruiter"]);
+
+// N2a interview-recording consent. The interview-manage roles PLUS hr_ops: a
+// DPDPA withdrawal request phoned or emailed in lands with HR ops at least as
+// often as with the recruiter, and by then the candidate's signed link may
+// long since have expired. Anyone outside this set (hr_head, panel_member, a
+// partner identity) is FORBIDDEN, and RLS scopes rows to the tenant on top.
+const RECORDING_CONSENT_MANAGE_ROLES = new Set([...INTERVIEW_MANAGE_ROLES, "hr_ops"]);
 
 // RECR-01 recruiter dashboard extras. The elevated recruiter landing read
 // (funnel, tasks, follow-ups, insights) is the recruiter's; admin is the
@@ -7127,6 +7152,113 @@ export const appRouter = router({
       });
     }),
 
+  /* ───────── N2a — interview recording consent (internal side) ─────────
+   *
+   * All three procedures are THIN: every rule about what consent means lives
+   * in ../lib/interview-recording-consent.ts, which the unauthenticated
+   * candidate confirm route reads too. A second implementation here is how a
+   * consent gate silently drifts open.
+   *
+   * They run on ctx.sql (the service-role pool) with an EXPLICIT tenant_id
+   * predicate — the lib has to serve the public route as well, which has no
+   * tenant-bound handle. ctx.tenantId comes from the verified JWT, so the
+   * predicate is the same boundary RLS would have drawn.
+   */
+
+  /** The effective recording state for one interview — for N2b's UI. */
+  getInterviewRecordingState: protectedProcedure
+    .input(getInterviewRecordingStateInputSchema)
+    .output(getInterviewRecordingStateOutputSchema)
+    .query(async ({ ctx, input }) => {
+      requireAnyRole(
+        ctx,
+        RECORDING_CONSENT_MANAGE_ROLES,
+        "You don't have access to interview recording consent.",
+      );
+      if (!ctx.tenantId) {
+        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
+      }
+      const state = await canRecordInterview(ctx.sql, ctx.tenantId, input.interviewId);
+      if (!state) throw new TRPCError({ code: "NOT_FOUND", message: "Interview not found" });
+      return state;
+    }),
+
+  /**
+   * Record a withdrawal ON THE CANDIDATE'S BEHALF.
+   *
+   * WHY THIS EXISTS: the candidate's signed confirm link expires; the right
+   * to withdraw consent does not. Without an internal path, an expired link
+   * means a candidate who phones in a DPDPA withdrawal cannot be actioned at
+   * all — which is the realistic operational case, not an edge one.
+   *
+   * The row is stamped captured_via = 'internal_revocation' so the log never
+   * claims the candidate clicked something they didn't. That value REQUIRES
+   * migration 0117 (it widens the 0116 CHECK); until 0117 is applied this
+   * insert fails loudly with 23514 rather than mis-attributing the event.
+   */
+  withdrawInterviewRecordingConsent: protectedProcedure
+    .input(withdrawInterviewRecordingConsentInputSchema)
+    .output(withdrawInterviewRecordingConsentOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      requireAnyRole(
+        ctx,
+        RECORDING_CONSENT_MANAGE_ROLES,
+        "Only recruiters, hiring managers, HR ops and admins can withdraw recording consent.",
+      );
+      return withAudit("withdraw_interview_recording_consent", ctx, input, async () => {
+        if (!ctx.tenantId) {
+          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
+        }
+        const tenantId = ctx.tenantId;
+        // Existence check first: appending a consent row for an interview in
+        // another tenant must be a NOT_FOUND, not a silent write.
+        const before = await canRecordInterview(ctx.sql, tenantId, input.interviewId);
+        if (!before) throw new TRPCError({ code: "NOT_FOUND", message: "Interview not found" });
+
+        await recordRecordingConsent(ctx.sql, {
+          tenantId,
+          interviewId: input.interviewId,
+          decision: "withdrawn",
+          capturedVia: CONSENT_VIA_INTERNAL_REVOCATION,
+          ipAddress: ctx.ipAddress,
+          userAgent: ctx.userAgent,
+        });
+        const after = await canRecordInterview(ctx.sql, tenantId, input.interviewId);
+        if (!after) throw new TRPCError({ code: "NOT_FOUND", message: "Interview not found" });
+        return after;
+      });
+    }),
+
+  /**
+   * The recruiter's "record this round" toggle. It does NOT imply consent:
+   * turning it on when consent is absent or withdrawn simply means recording
+   * still cannot happen, which is why the return is the EFFECTIVE state
+   * (canRecord) rather than an echo of the flag.
+   */
+  setInterviewRecordingRequested: protectedProcedure
+    .input(setInterviewRecordingRequestedInputSchema)
+    .output(setInterviewRecordingRequestedOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      requireAnyRole(
+        ctx,
+        INTERVIEW_MANAGE_ROLES,
+        "Only hiring managers, recruiters and admins can request interview recording.",
+      );
+      return withAudit("set_interview_recording_requested", ctx, input, async () => {
+        if (!ctx.tenantId) {
+          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
+        }
+        const state = await setRecordingRequested(
+          ctx.sql,
+          ctx.tenantId,
+          input.interviewId,
+          input.requested,
+        );
+        if (!state) throw new TRPCError({ code: "NOT_FOUND", message: "Interview not found" });
+        return state;
+      });
+    }),
+
   listUpcomingInterviews: protectedProcedure
     .input(listUpcomingInterviewsInputSchema)
     .output(listUpcomingInterviewsOutputSchema)
@@ -9185,6 +9317,85 @@ export const appRouter = router({
         percentOfBudget,
         status,
       };
+    }),
+
+  // ─────────────────────── getReportDigests (R1.5b) ───────────────────────
+  //
+  // Read the per-tenant scheduled-digest block (settings.reportDigests) resolved
+  // over the defaults (off / weekly / no recipients / 07:00Z). Admin-gated
+  // (USERS_ADMIN_ROLES — the digest goes to arbitrary mailboxes, so who is on
+  // that list is an admin decision). Read-only, no withAudit (matches the other
+  // settings reads). An unconfigured tenant resolves to the disabled default, so
+  // the report_digest_scan worker sends nothing until an admin opts in.
+  getReportDigests: protectedProcedure
+    .input(getReportDigestsInputSchema)
+    .output(getReportDigestsOutputSchema)
+    .query(async ({ ctx }) => {
+      requireAnyRole(ctx, USERS_ADMIN_ROLES, "Report digests are admin-only");
+      const db = requireDb(ctx);
+      if (!ctx.tenantId) {
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: "protected procedure missing tenantId",
+        });
+      }
+      const [row] = await db
+        .select({ settings: tenants.settings })
+        .from(tenants)
+        .where(eq(tenants.id, ctx.tenantId))
+        .limit(1);
+      const settings = (row?.settings ?? {}) as Record<string, unknown>;
+      return resolveReportDigests(settings.reportDigests);
+    }),
+
+  // ─────────────────────── updateReportDigests (R1.5b) ───────────────────────
+  //
+  // Admin write of the scheduled-digest block. Admin-gated + audited — this
+  // configures WHO receives tenant recruitment numbers by email, which is
+  // squarely a governance change. Merges the validated block into
+  // tenants.settings under `reportDigests` via the same atomic top-level jsonb
+  // `||` merge updateAiBudget / updateSystemSetup use — a SIBLING key, preserving
+  // systemSetup / aiBudget / shortlistDefaults / slaThresholds / aiSettings
+  // verbatim. Read-modify-write from the app would lose a concurrent sibling
+  // write; the single-statement merge cannot.
+  //
+  // The saved block DRIVES the report_digest_scan worker (30-min tick) — nothing
+  // here is decorative. `resolveReportDigests` is applied on the way in so the
+  // stored recipients are already lower-cased, deduped and sorted, which keeps
+  // the persisted list byte-identical to what the worker's own resolve produces
+  // and therefore to the addresses the dedup keys are built from.
+  updateReportDigests: protectedProcedure
+    .input(updateReportDigestsInputSchema)
+    .output(updateReportDigestsOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      return withAudit("update_report_digests", ctx, input, async () => {
+        requireAnyRole(ctx, USERS_ADMIN_ROLES, "Report digests are admin-only");
+        if (!ctx.tenantId) {
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: "protected procedure missing tenantId",
+          });
+        }
+        const tenantId = ctx.tenantId;
+        const nextBlock: ReportDigests = resolveReportDigests(input);
+
+        const res = await poolDb.execute(dsql`
+          UPDATE public.tenants
+          SET settings = COALESCE(settings, '{}'::jsonb)
+              || jsonb_build_object('reportDigests', ${JSON.stringify(nextBlock)}::jsonb)
+          WHERE id = ${tenantId}::uuid
+          RETURNING id
+        `);
+        const updated = (res as { rows?: unknown[] }).rows ?? (res as unknown[]);
+        if (updated.length !== 1) {
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: "tenant settings update affected an unexpected number of rows",
+          });
+        }
+
+        return { ok: true as const, reportDigests: nextBlock };
+      });
     }),
 
   // ─────────────────────── getSlaThresholds (T4.1) ───────────────────────

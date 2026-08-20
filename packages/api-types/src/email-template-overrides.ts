@@ -29,6 +29,10 @@ export const emailTemplateKeySchema = z.enum([
   "candidate.agent_message",
   "recruiter.sla_breach_imminent",
   "recruiter.sla_ops_alert",
+  // R1.5a — the scheduled report digest. Unlike sla_ops_alert this one HAS
+  // static copy (heading / intro / CTA label / the dash note), so it is
+  // genuinely overridable; the six figures stay code-owned data bindings.
+  "recruiter.report_digest",
   "recruiter.offer_accepted",
   "recruiter.offer_declined",
   // P0.1A — partner user invitation. Added here (not just to the catalog)
