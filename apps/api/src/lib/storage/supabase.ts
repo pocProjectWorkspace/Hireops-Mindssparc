@@ -9,6 +9,7 @@ import {
   type SignedUrlOpts,
   type StorageClient,
   type StorageObject,
+  type StorageObjectStat,
   type StoragePutOpts,
 } from "./types";
 
@@ -59,6 +60,45 @@ export class SupabaseStorageClient implements StorageClient {
     return {
       buffer: Buffer.from(arrayBuffer),
       contentType: data.type || "application/octet-stream",
+    };
+  }
+
+  /**
+   * Metadata only — no download. Supabase Storage has no HEAD helper in the
+   * JS client, so this goes through `list(prefix, { search })`, which returns
+   * the object's `metadata.size` and `metadata.mimetype` from the bucket's
+   * own catalogue.
+   *
+   * `search` is a SUBSTRING match, not an equality one, so the exact-name
+   * comparison below is load-bearing: without it, statting "audio.webm"
+   * would happily return "audio.webm.bak" and we would enqueue a size that
+   * belongs to a different object.
+   */
+  async stat(key: string): Promise<StorageObjectStat> {
+    const lastSlash = key.lastIndexOf("/");
+    const prefix = lastSlash === -1 ? "" : key.slice(0, lastSlash);
+    const name = lastSlash === -1 ? key : key.slice(lastSlash + 1);
+    const { data, error } = await this.client.storage
+      .from(this.bucket)
+      .list(prefix, { search: name, limit: 100 });
+    if (error) {
+      throw new StorageError(`Supabase stat failed: ${error.message}`, error);
+    }
+    const hit = (data ?? []).find((f) => f.name === name);
+    // An empty list is a missing object, not a transport failure — list()
+    // does not error on a prefix that holds nothing.
+    if (!hit) throw new StorageNotFoundError(key);
+    const meta = (hit.metadata ?? {}) as { size?: unknown; mimetype?: unknown };
+    const size = typeof meta.size === "number" && Number.isFinite(meta.size) ? meta.size : null;
+    if (size === null) {
+      // The row exists but carries no size. Reporting 0 would silently pass
+      // a size check the caller believes it ran, so fail loudly instead.
+      throw new StorageError(`Supabase stat: no size metadata for ${key}`);
+    }
+    return {
+      key,
+      sizeBytes: size,
+      contentType: typeof meta.mimetype === "string" ? meta.mimetype : null,
     };
   }
 

@@ -8,6 +8,7 @@ import { cn } from "@/components/ui/cn";
 import { trpc } from "@/lib/trpc-client";
 import type { InterviewRow, InterviewRecommendation } from "@hireops/api-types";
 import { PageContainer } from "@/components/nav/PageContainer";
+import { InterviewRecordingSection } from "./InterviewRecordingSection";
 
 /**
  * INT-02 / RECR-01 — recruiter interviews surface, elevated to the prototype
@@ -115,6 +116,10 @@ function InterviewCardRow({
   cancelPending: boolean;
 }) {
   const [showDecision, setShowDecision] = useState(false);
+  // N3.4a — collapsed by default, same posture as the decision summary: each
+  // open panel is its own query, and a list of 100 interviews must not fire
+  // 100 recording-state reads to render.
+  const [showRecording, setShowRecording] = useState(false);
   const confirmed = !!iv.candidateConfirmedAt;
   const allFeedbackIn =
     iv.panel.length > 0 && iv.panel.every((p) => p.feedbackState === "submitted");
@@ -177,6 +182,13 @@ function InterviewCardRow({
                 {showDecision ? "Hide decision" : "View decision"}
               </button>
             ) : null}
+            <button
+              type="button"
+              onClick={() => setShowRecording((v) => !v)}
+              className="text-xs font-medium text-brand-700 hover:underline"
+            >
+              {showRecording ? "Hide recording" : "Recording"}
+            </button>
             <a
               href={boardHref}
               className="inline-flex h-8 items-center rounded-button bg-brand-600 px-3 text-xs font-medium text-white transition-colors hover:bg-brand-700"
@@ -198,6 +210,7 @@ function InterviewCardRow({
       </div>
 
       {showDecision ? <DecisionSummary interviewId={iv.id} /> : null}
+      {showRecording ? <InterviewRecordingSection interviewId={iv.id} /> : null}
     </Card>
   );
 }

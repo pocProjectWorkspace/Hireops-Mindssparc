@@ -9,6 +9,7 @@ import {
   type SignedUrlOpts,
   type StorageClient,
   type StorageObject,
+  type StorageObjectStat,
   type StoragePutOpts,
 } from "./types";
 
@@ -70,6 +71,18 @@ export class LocalStorageClient implements StorageClient {
     const got = store.get(this.scope(key));
     if (!got) throw new StorageNotFoundError(key);
     return got;
+  }
+
+  /**
+   * The in-memory tier already holds the bytes, so "without fetching them"
+   * is free here. It still throws StorageNotFoundError on a miss, because a
+   * caller that only ever runs against this tier in tests must meet the same
+   * failure Supabase gives it.
+   */
+  async stat(key: string): Promise<StorageObjectStat> {
+    const got = store.get(this.scope(key));
+    if (!got) throw new StorageNotFoundError(key);
+    return { key, sizeBytes: got.buffer.byteLength, contentType: got.contentType };
   }
 
   async delete(key: string): Promise<void> {

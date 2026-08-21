@@ -55,6 +55,7 @@ export type {
   SignedUrlOpts,
   StorageClient,
   StorageObject,
+  StorageObjectStat,
   StoragePutOpts,
 } from "./types";
 export {

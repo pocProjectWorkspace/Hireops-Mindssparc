@@ -2988,6 +2988,141 @@ export type SetInterviewRecordingRequestedOutput = z.infer<
   typeof setInterviewRecordingRequestedOutputSchema
 >;
 
+/* ─────────── N3.4a — interview media upload (the enqueue producer) ─────────── */
+
+/**
+ * The recording's PROCESSING ladder, mirroring the 0116 CHECK exactly.
+ * `pending` means a row exists but no bytes have landed; the drain defers
+ * those rather than failing them.
+ */
+export const interviewRecordingStatusSchema = z.enum([
+  "pending",
+  "uploaded",
+  "transcribing",
+  "transcribed",
+  "failed",
+]);
+export type InterviewRecordingStatus = z.infer<typeof interviewRecordingStatusSchema>;
+
+/** transcript_outbox.status — the queue's own ladder, not the recording's. */
+export const transcriptQueueStatusSchema = z.enum(["pending", "processing", "completed", "failed"]);
+export type TranscriptQueueStatus = z.infer<typeof transcriptQueueStatusSchema>;
+
+/**
+ * The recording row as a recruiter surface needs it: enough to show where in
+ * the pipeline this round is, and nothing else.
+ *
+ * NO storage key and NO signed URL. The key is an internal address the
+ * browser has no business knowing outside the one upload it was authorised
+ * for, and a read URL is a bearer credential for the audio itself — that is
+ * a deliberate omission, not an oversight.
+ *
+ * `mediaPurgedAt` is a SEPARATE axis from `status` (0118): a healthy 31-day-old
+ * interview is (status 'transcribed', mediaPurgedAt set), which is retention
+ * working, not a failure. A surface that renders the two as one state lies.
+ */
+export const interviewRecordingMediaSchema = z.object({
+  recordingId: z.string().uuid(),
+  source: z.enum(["manual_upload", "vendor_bot"]),
+  status: interviewRecordingStatusSchema,
+  mediaType: z.string().nullable(),
+  sizeBytes: z.number().int().nullable(),
+  durationSeconds: z.number().int().nullable(),
+  uploadedAt: z.string().nullable(),
+  mediaPurgedAt: z.string().nullable(),
+  /** null when nothing has ever been enqueued for this recording. */
+  queueStatus: transcriptQueueStatusSchema.nullable(),
+  /** transcript_outbox.last_error — why the pipeline stalled, if it did. */
+  queueError: z.string().nullable(),
+});
+export type InterviewRecordingMedia = z.infer<typeof interviewRecordingMediaSchema>;
+
+/**
+ * Everything the upload control needs in ONE round trip: the consent/intent
+ * gate, the recording (if any), and the limits the API will enforce anyway.
+ *
+ * The limits are echoed so the browser can refuse a 2GB file before spending
+ * a minute pushing it at storage. They are a COURTESY, not the enforcement —
+ * `startInterviewMediaUpload` re-checks both, and `completeInterviewMediaUpload`
+ * re-checks the size against the object that actually landed.
+ */
+export const getInterviewMediaStateInputSchema = z.object({
+  interviewId: z.string().uuid(),
+});
+export const getInterviewMediaStateOutputSchema = z.object({
+  gate: interviewRecordingStateSchema,
+  recording: interviewRecordingMediaSchema.nullable(),
+  maxBytes: z.number().int().positive(),
+  allowedContentTypes: z.array(z.string()),
+});
+export type GetInterviewMediaStateInput = z.infer<typeof getInterviewMediaStateInputSchema>;
+export type GetInterviewMediaStateOutput = z.infer<typeof getInterviewMediaStateOutputSchema>;
+
+/**
+ * Step 1 of the two-step upload: authorise, then hand back a signed URL the
+ * browser PUTs to directly. The API never sees the bytes — a one-hour panel
+ * recording is two orders of magnitude larger than the multipart resume
+ * routes were sized for.
+ *
+ * `sizeBytes` and `contentType` are the browser's DECLARATION. They are
+ * checked here so an obviously-wrong upload is refused before it starts, and
+ * checked again on complete against the real object, because a declaration
+ * is not evidence.
+ */
+export const startInterviewMediaUploadInputSchema = z.object({
+  interviewId: z.string().uuid(),
+  /** e.g. "audio/webm;codecs=opus" — parameters are stripped server-side. */
+  contentType: z.string().min(1).max(120),
+  sizeBytes: z.number().int().positive(),
+});
+export const startInterviewMediaUploadOutputSchema = z.object({
+  recordingId: z.string().uuid(),
+  /** The object key the URL was minted for. Echoed for correlation/logging. */
+  storageKey: z.string(),
+  /** Treat as a secret. Short-lived, single-object write credential. */
+  uploadUrl: z.string(),
+  method: z.literal("PUT"),
+  /** Supabase hands a token back alongside the URL; null on the local tier. */
+  token: z.string().nullable(),
+  expiresAt: z.string(),
+  provider: z.enum(["supabase", "local"]),
+  /** The normalised type the API stored — what the browser should send. */
+  contentType: z.string(),
+});
+export type StartInterviewMediaUploadInput = z.infer<typeof startInterviewMediaUploadInputSchema>;
+export type StartInterviewMediaUploadOutput = z.infer<typeof startInterviewMediaUploadOutputSchema>;
+
+/**
+ * Step 2: the browser says the PUT finished. The API verifies the object is
+ * really there, stamps the true size, and — the point of the whole ticket —
+ * INSERTs the `transcript_outbox` row that the N3.3 drain has been waiting
+ * for since it was built.
+ *
+ * `enqueued` is false when an outbox row already existed (a double-complete,
+ * absorbed as success). It is NOT an error signal.
+ */
+export const completeInterviewMediaUploadInputSchema = z.object({
+  interviewId: z.string().uuid(),
+  /** Optional hint from the browser's MediaRecorder / <audio> duration. */
+  durationSeconds: z
+    .number()
+    .int()
+    .positive()
+    .max(24 * 60 * 60)
+    .nullable()
+    .optional(),
+});
+export const completeInterviewMediaUploadOutputSchema = z.object({
+  recording: interviewRecordingMediaSchema,
+  enqueued: z.boolean(),
+});
+export type CompleteInterviewMediaUploadInput = z.infer<
+  typeof completeInterviewMediaUploadInputSchema
+>;
+export type CompleteInterviewMediaUploadOutput = z.infer<
+  typeof completeInterviewMediaUploadOutputSchema
+>;
+
 /**
  * Per-panelist feedback state (INT-03). `none` = no interview_feedback row;
  * `draft` = row exists, submitted_at NULL; `submitted` = submitted_at stamped.

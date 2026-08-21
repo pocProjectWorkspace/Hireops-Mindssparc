@@ -231,6 +231,12 @@ import {
   withdrawInterviewRecordingConsentOutputSchema,
   setInterviewRecordingRequestedInputSchema,
   setInterviewRecordingRequestedOutputSchema,
+  getInterviewMediaStateInputSchema,
+  getInterviewMediaStateOutputSchema,
+  startInterviewMediaUploadInputSchema,
+  startInterviewMediaUploadOutputSchema,
+  completeInterviewMediaUploadInputSchema,
+  completeInterviewMediaUploadOutputSchema,
   listUpcomingInterviewsInputSchema,
   listUpcomingInterviewsOutputSchema,
   type InterviewRow,
@@ -1011,6 +1017,11 @@ import {
   recordRecordingConsent,
   setRecordingRequested,
 } from "../lib/interview-recording-consent";
+import {
+  completeUpload as completeInterviewMediaUploadLib,
+  getInterviewMediaState,
+  startUpload as startInterviewMediaUploadLib,
+} from "../lib/interview-media-upload";
 import {
   buildReqRevisionPrompt,
   reqRevisionJsonSchema,
@@ -7256,6 +7267,87 @@ export const appRouter = router({
         );
         if (!state) throw new TRPCError({ code: "NOT_FOUND", message: "Interview not found" });
         return state;
+      });
+    }),
+
+  /* ───────── N3.4a — interview media upload (the enqueue producer) ─────────
+   *
+   * THIN, like the N2a block above: every rule — the consent gate, the media
+   * limits, the re-upload posture, the transcript_outbox INSERT — lives in
+   * ../lib/interview-media-upload.ts. These three do role gating, resolve the
+   * caller's membership, and hand over.
+   *
+   * Role gate is INTERVIEW_MANAGE_ROLES, matching every other interview
+   * MUTATION (and setInterviewRecordingRequested in particular). Deliberately
+   * NOT the wider RECORDING_CONSENT_MANAGE_ROLES: that set exists so HR ops
+   * can action a withdrawal, which is a compliance duty. Attaching media to a
+   * round is running the hiring process, not servicing a data-subject right.
+   */
+
+  /** Gate + recording status + the limits, in one read, for the upload control. */
+  getInterviewMediaState: protectedProcedure
+    .input(getInterviewMediaStateInputSchema)
+    .output(getInterviewMediaStateOutputSchema)
+    .query(async ({ ctx, input }) => {
+      requireAnyRole(ctx, INTERVIEW_MANAGE_ROLES, "You don't have access to interviews.");
+      if (!ctx.tenantId) {
+        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
+      }
+      const state = await getInterviewMediaState(ctx.sql, ctx.tenantId, input.interviewId);
+      if (!state) throw new TRPCError({ code: "NOT_FOUND", message: "Interview not found" });
+      return state;
+    }),
+
+  /** Step 1 — authorise and mint the signed PUT url. The bytes never come here. */
+  startInterviewMediaUpload: protectedProcedure
+    .input(startInterviewMediaUploadInputSchema)
+    .output(startInterviewMediaUploadOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      requireAnyRole(
+        ctx,
+        INTERVIEW_MANAGE_ROLES,
+        "Only hiring managers, recruiters and admins can upload interview recordings.",
+      );
+      return withAudit("start_interview_media_upload", ctx, input, async () => {
+        if (!ctx.tenantId) {
+          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
+        }
+        // requested_by_membership_id is NOT NULL and RESTRICT-FK'd — it is the
+        // provenance leg recording WHO asked for this recording, so there is
+        // no safe fallback if the caller has no membership.
+        const membershipId = await resolveActorMembership(requireDb(ctx), ctx);
+        if (!membershipId) {
+          throw new TRPCError({ code: "FORBIDDEN", message: "No membership in this tenant" });
+        }
+        return startInterviewMediaUploadLib(ctx.sql, {
+          tenantId: ctx.tenantId,
+          interviewId: input.interviewId,
+          contentType: input.contentType,
+          sizeBytes: input.sizeBytes,
+          requestedByMembershipId: membershipId,
+        });
+      });
+    }),
+
+  /** Step 2 — verify the object landed, stamp it, and INSERT the outbox row. */
+  completeInterviewMediaUpload: protectedProcedure
+    .input(completeInterviewMediaUploadInputSchema)
+    .output(completeInterviewMediaUploadOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      requireAnyRole(
+        ctx,
+        INTERVIEW_MANAGE_ROLES,
+        "Only hiring managers, recruiters and admins can upload interview recordings.",
+      );
+      return withAudit("complete_interview_media_upload", ctx, input, async () => {
+        if (!ctx.tenantId) {
+          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
+        }
+        return completeInterviewMediaUploadLib(ctx.sql, {
+          tenantId: ctx.tenantId,
+          interviewId: input.interviewId,
+          durationSeconds: input.durationSeconds ?? null,
+        });
       });
     }),
 

@@ -23,6 +23,28 @@ export interface StorageObject {
 }
 
 /**
+ * Metadata about a stored object WITHOUT its bytes (N3.4a).
+ *
+ * Exists because the upload-complete path has to answer two questions —
+ * "did the object actually land?" and "how big is it really?" — about a file
+ * that may be 250MB. get() answers both, but on the Supabase tier it does so
+ * by downloading the whole thing into the API's heap, which is precisely the
+ * cost the direct-to-storage upload was designed to avoid. Doing it there
+ * would also mean the same bytes cross the wire twice more: once here and
+ * once again when the drain fetches them.
+ *
+ * `sizeBytes` is the vendor's number, not the client's declaration. That
+ * distinction is the reason the method exists: a browser that declares 1MB
+ * and PUTs 500MB must be caught, and only storage can tell us.
+ */
+export interface StorageObjectStat {
+  key: string;
+  sizeBytes: number;
+  /** What storage believes the type is; may differ from what we asked for. */
+  contentType: string | null;
+}
+
+/**
  * TTL policy for signed URLs (N3.2).
  *
  * A signed URL to interview audio is a bearer credential for the most
@@ -131,6 +153,18 @@ export interface StorageClient {
    * callers should treat this as a 404 condition, not a 500.
    */
   get(key: string): Promise<StorageObject>;
+
+  /**
+   * Returns size + type for the object at key WITHOUT fetching it. Throws
+   * StorageNotFoundError if absent, exactly as get() does, so the caller
+   * keeps the same 404-vs-500 distinction.
+   *
+   * This is the existence + size check N3.4a's upload-complete runs before
+   * it enqueues: the browser PUT the bytes out-of-band, so "the client says
+   * it uploaded" is the only other evidence available, and it is not
+   * evidence.
+   */
+  stat(key: string): Promise<StorageObjectStat>;
 
   /**
    * Deletes the object at key. No-op if absent. Used by cleanup paths
