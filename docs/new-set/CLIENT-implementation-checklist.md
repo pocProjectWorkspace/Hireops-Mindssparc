@@ -2,7 +2,7 @@
 
 **Audience:** client project sponsor + IT/security/HR counterparts.
 **Purpose:** everything HireOps needs *from you* to stand up your tenant, in the order we need it.
-**Version:** 1.0 · 18 August 2026
+**Version:** 1.1 · 21 August 2026 (§8 notetaker: proposal → built)
 
 ---
 
@@ -191,20 +191,34 @@ owner** who can adjudicate quality questions. We supply the template; you supply
 
 ---
 
-## 8. Interview notetaker — additional requirements (P4, if in scope)
+## 8. Interview notetaker (P4)
 
-> Not yet built. If adopted, these are prerequisites, and several are legal rather than technical.
+> **Status changed 21 August 2026: this is now built**, not a proposal. The capture
+> pipeline runs end to end — candidate consents on their interview confirmation link,
+> the recruiter uploads the recording their meeting tool produced, it is transcribed,
+> and structured notes are generated. What remains below is **configuration and
+> approvals we need from you**, not development.
+
+**How it works, so the questions below make sense.** Recording requires **two**
+independent facts: the candidate has granted consent for that specific interview, **and**
+the recruiter has explicitly asked for that round to be recorded. Neither alone is
+sufficient, and absence of an answer is never treated as permission. Consent is recorded
+per interview, is purpose-scoped to interview recording only, and is **withdrawable** —
+a withdrawal is a new appended record, never an edit, so the history is auditable.
 
 | # | Item | Blocking | Client response |
 |---|---|---|---|
 | 8.1 | **Jurisdictions where interviews are recorded** — one-party vs two-party consent regimes differ | 🔴 | |
-| 8.2 | **Candidate consent wording**, legally approved | 🔴 | |
-| 8.3 | **Interviewer notification stance** — we disclose to panellists and show a recording indicator; confirm this satisfies your counsel | 🔴 | |
-| 8.4 | **Audio retention period** (separate from transcript retention) | 🔴 | |
+| 8.2 | **Candidate consent wording, legally approved.** We ship clear placeholder copy explicitly marked as awaiting legal review. It is served from the platform with a version stamp, so the wording a candidate actually saw is tied to their stored consent record. **Supplying approved wording is the last blocker on candidate-facing use.** | 🔴 | |
+| 8.3 | **Interviewer notification stance** — our position is disclosure to panellists plus a visible recording indicator, not consent capture from interviewers. Confirm this satisfies your counsel | 🔴 | |
+| 8.4 | **Audio retention — DECIDED: 30 days from interview completion; transcripts and notes retained.** A 90-day hard ceiling from the recording itself covers rounds that never complete (no-shows), so audio cannot be retained indefinitely by accident. Confirm this matches your policy | | |
 | 8.5 | **Who may access recordings/transcripts** — role list | 🔴 | |
-| 8.6 | **ASR vendor approval** — an additional sub-processor receiving interview audio | 🔴 | |
-| 8.7 | **Expected recorded interviews/month** — per-minute billing driver | | |
-| 8.8 | **Behaviour when consent is refused** — our default is: no consent, no recording, interview proceeds normally | | |
+| 8.6 | **ASR sub-processor approval — we have selected AssemblyAI.** They receive interview audio and must be approved alongside the sub-processors in §1.4. If rejected, the adapter is deliberately vendor-swappable | 🔴 | |
+| 8.7 | **ASR data region** — AssemblyAI offers US and EU endpoints. This must match your §1.1 residency answer and is a deliberate configuration choice, not a default | 🔴 | |
+| 8.8 | **Expected recorded interviews per month** — audio is billed **per minute**, so this is the cost driver. Note it is *not* 100% of interviews: consent is genuinely refusable | | |
+| 8.9 | **Behaviour when consent is refused — no consent, no recording, and the interview proceeds normally.** Declining never blocks a candidate from confirming attendance | | |
+| 8.10 | **Storage bucket for interview audio** — audio is the most sensitive artefact the platform holds and carries a retention period documents do not. We recommend a dedicated bucket with its own access policies | | |
+| 8.11 | **Withdrawal after the interview** — a candidate can withdraw consent themselves while their confirmation link is valid. After it expires, withdrawal is actioned by your staff through an audited internal path. Confirm who owns that request | | |
 
 ---
 
@@ -241,6 +255,11 @@ If nothing else moves, these ten unblock the most work:
 9. AI provider, BYO-key decision, and enabled features (7.1–7.3)
 10. Workday scope and direction — or an explicit decision to defer it (6.1)
 
+**And one more, now that the notetaker is built rather than proposed:**
+legally-approved candidate consent wording (8.2). Everything else in the recording
+pipeline is complete and configurable; that wording is the last thing standing between
+it and candidate-facing use.
+
 ---
 
 ## Appendix — what HireOps provides, so you don't scope it twice
@@ -253,8 +272,10 @@ BGV, IT provisioning, assets, learning) · offboarding (exit interviews, asset r
 settlement) · partner/agency portal with commercial terms and fee accrual · a 9-report
 analytics module with CSV export and scheduled digests · the Iris assistant · full audit
 logging, PII access logging, consent capture and retention policy enforcement · 23 admin
-configuration surfaces.
+configuration surfaces · **the interview notetaker** (per-interview withdrawable consent,
+recording upload, transcription and structured notes, with a 30-day audio retention sweep).
 
 **Not built** — requires a scoped work package: SSO/SAML and SCIM · Workday (or any HRMS)
-integration · the interview notetaker · diversity/EEO reporting · quality-of-hire and early
+integration · **the AI first-round interviewer** (assessed and designed; the notetaker
+pipeline it builds on is complete) · diversity/EEO reporting · quality-of-hire and early
 attrition analytics · PDF export (board packs are print-styled pages today).
