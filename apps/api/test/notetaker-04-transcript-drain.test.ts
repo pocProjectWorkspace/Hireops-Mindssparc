@@ -31,6 +31,8 @@
  *
  * Synthetic tenant (n334 namespace, RUN-suffixed slugs/emails) driven by raw
  * poolSql, so it touches no demo data and needs no JWT. REQUIRES migration 0116.
+ * The tenant is seeded with `interview_notes` DISABLED so this file keeps
+ * testing transcription and only transcription — see the seed comment.
  */
 
 import "../src/bootstrap";
@@ -229,9 +231,17 @@ describe("N3.3a — transcript drain worker", () => {
     resetASRClient();
     await mkdir(ASR_FIXTURE_DIR, { recursive: true });
 
+    // interview_notes OFF for this tenant, deliberately. N3.3b bolted note
+    // generation onto the far side of the transcript write, and this file is
+    // scoped to the transcription half — with the switch off the drain does
+    // exactly what N3.3a did (transcript, then a clean completion), so every
+    // assertion below still means what it says. The notes half, including the
+    // fall-through this same switch suppresses, is notetaker-05's subject.
+    const AI_SETTINGS_NO_NOTES = { aiSettings: { interview_notes: { enabled: false } } };
     await poolSql`
-      INSERT INTO public.tenants (id, slug, display_name, primary_region, status)
-      VALUES (${T}, ${`synth-n334-${RUN}`}, ${`Transcript Drain Synth ${RUN}`}, 'ap-northeast-1', 'active')
+      INSERT INTO public.tenants (id, slug, display_name, primary_region, status, settings)
+      VALUES (${T}, ${`synth-n334-${RUN}`}, ${`Transcript Drain Synth ${RUN}`}, 'ap-northeast-1', 'active',
+              ${JSON.stringify(AI_SETTINGS_NO_NOTES)}::jsonb)
     `;
     await poolSql`
       INSERT INTO public.business_units (id, tenant_id, name, slug)
