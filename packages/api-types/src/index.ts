@@ -38,3 +38,4 @@ export * from "./retention-policy";
 export * from "./iris";
 export * from "./learning";
 export * from "./reports";
+export * from "./interview-transcripts";

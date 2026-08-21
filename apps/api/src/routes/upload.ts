@@ -29,8 +29,12 @@ import { createHash, randomUUID } from "node:crypto";
 import type { OptionalAuthVars } from "../middleware/optional-auth";
 import { uploadResumeResponseSchema, type UploadResumeResponse } from "@hireops/api-types";
 import { getStorageClient, StorageError } from "../lib/storage";
+import { MAX_DOCUMENT_BYTES } from "../lib/upload-limits";
 
-const MAX_BYTES = 10 * 1024 * 1024;
+// Shared with the onboarding/candidate document path via lib/upload-limits.
+// Still 10MB: interview media has its own, larger ceiling over there, and
+// this route must not inherit it.
+const MAX_BYTES = MAX_DOCUMENT_BYTES;
 const ALLOWED_TYPES = new Set([
   "application/pdf",
   "application/vnd.openxmlformats-officedocument.wordprocessingml.document",

@@ -59,6 +59,38 @@ export type { UsageLogInput } from "./usage-log";
 
 export { computeCostMicros, getRate } from "./pricing";
 
+// ASR (speech-to-text) — N3.1. Per-audio-minute pricing, hence a second
+// rate table alongside the per-token one; see asr-pricing.ts.
+export { computeASRCostMicros, getASRRate, ASR_USAGE_FEATURE } from "./asr-pricing";
+export type { ASRRate } from "./asr-pricing";
+
+export {
+  getASRClient,
+  resetASRClient,
+  LocalASRClient,
+  DeepgramASRClient,
+  AssemblyAIASRClient,
+  hashTranscribeInput,
+  LOCAL_ASR_MODEL,
+  DEFAULT_DEEPGRAM_MODEL,
+  DEFAULT_ASSEMBLYAI_MODEL,
+  ASSEMBLYAI_US_BASE_URL,
+  ASSEMBLYAI_EU_BASE_URL,
+  resolveAssemblyAIBaseUrl,
+  ASRError,
+  ASRUnsupportedMediaError,
+} from "./asr";
+export type {
+  ASRClient,
+  ASRProvider,
+  ASRResult,
+  ASRSegment,
+  ASRTranscribeOptions,
+  LocalASRClientOpts,
+  DeepgramASRClientOpts,
+  AssemblyAIASRClientOpts,
+} from "./asr";
+
 export { hashCompleteOptions, hashStructuredOptions } from "./local/hash";
 
 export type {

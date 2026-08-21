@@ -13,6 +13,7 @@ import { reportDigestScan } from "./jobs/report-digest-scan";
 import { drainWorkdayOutboxOnce } from "./lib/workday-simulation-drain";
 import { drainAiScoreOutboxOnce } from "./lib/ai-score-drain";
 import { drainAgentRunOutboxOnce } from "./lib/agent-run-drain";
+import { drainTranscriptOutboxOnce } from "./lib/transcript-drain";
 
 /**
  * Worker entrypoint — three concurrent loops:
@@ -37,6 +38,21 @@ const ORPHAN_INTERVAL_MS = 5 * 60_000;
 const WORKDAY_DRAIN_INTERVAL_MS = 5_000;
 const AI_SCORE_DRAIN_INTERVAL_MS = 5_000;
 const AGENT_RUN_DRAIN_INTERVAL_MS = 5_000;
+/**
+ * N3.3a transcript drain — 60s, twelve times slower than every other drain.
+ *
+ * Deliberate. A transcript is not latency-sensitive (nobody is watching a
+ * spinner; the panellist reads it after the interview), and the work itself
+ * takes MINUTES because the ASR vendor is asynchronous — 2–5 minutes expected,
+ * 20 minutes worst case. A 5s tick would poll the same table sixty times
+ * during a single transcription for nothing. 60s adds at most a minute to a
+ * multi-minute job, under 2% of the expected path, and it matches the
+ * scheduler's own cadence. See the lease constants in transcript-drain.ts for
+ * the other half of this: the claim lease is 30 minutes and the orphan sweep
+ * 45, because a premature reclaim gets the same audio transcribed — and
+ * BILLED — twice.
+ */
+const TRANSCRIPT_DRAIN_INTERVAL_MS = 60_000;
 
 const log = createLogger({ base: { service: "workers" } });
 
@@ -188,6 +204,28 @@ async function main() {
       const r = await drainAgentRunOutboxOnce({ log });
       if (r.claimed > 0) {
         log.info(r, "worker.agent_run_drain_pass");
+      }
+    }),
+  );
+
+  // N3.3a transcript drain — media → transcript, transcription only (note
+  // generation is N3.3b). Slow interval + long lease; both are explained at
+  // TRANSCRIPT_DRAIN_INTERVAL_MS above and at the constants in
+  // transcript-drain.ts. Default batch is 1, so a pass claims exactly the row
+  // it is about to work on and the lease clock is the work clock. The orphan
+  // sweep runs inside the same pass rather than in the notification drain's
+  // 5-minute recovery loop, because its threshold (45 min) has nothing to do
+  // with that loop's (5 min).
+  //
+  // This is the 7th startLoop registration, which is the trigger open-question
+  // #26 named for the worker-registry refactor (see the agent-run-drain note
+  // above). Registered ad-hoc here to keep N3.3a to one concern; the refactor
+  // is now owed.
+  loops.push(
+    startLoop("transcript-drain", TRANSCRIPT_DRAIN_INTERVAL_MS, async () => {
+      const r = await drainTranscriptOutboxOnce({ log });
+      if (r.claimed > 0 || r.recovered > 0) {
+        log.info(r, "worker.transcript_drain_pass");
       }
     }),
   );

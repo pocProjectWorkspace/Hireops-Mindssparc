@@ -20,8 +20,11 @@ import {
 } from "@hireops/api-types";
 import type { Logger } from "@hireops/observability";
 import { getStorageClient, StorageError } from "./storage";
+import { MAX_DOCUMENT_BYTES } from "./upload-limits";
 
-const MAX_BYTES = 10 * 1024 * 1024;
+// Same 10MB document ceiling the resume route uses — one constant now, so
+// the notetaker's larger media cap can move without dragging this with it.
+const MAX_BYTES = MAX_DOCUMENT_BYTES;
 // ID documents are commonly scans/photos, so JPEG + PNG join the PDF/DOCX set
 // the resume route allows.
 const ALLOWED_TYPES = new Set([

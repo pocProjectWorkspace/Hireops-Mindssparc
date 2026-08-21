@@ -1,5 +1,6 @@
 import { db as poolDb, aiUsageLogs } from "@hireops/db";
 import type { AIProvider } from "./types";
+import type { ASRProvider } from "./asr/types";
 
 /**
  * Inserts one ai_usage_logs row.
@@ -18,10 +19,20 @@ import type { AIProvider } from "./types";
  */
 export interface UsageLogInput {
   tenantId: string;
-  provider: AIProvider | "local";
+  /**
+   * ASRProvider widens this beyond the LLM providers (N3.1). The column is
+   * free text, so nothing in the database changes; the union exists to stop
+   * a typo becoming a permanently unattributable ledger row.
+   */
+  provider: AIProvider | ASRProvider | "local";
   model: string;
   feature: string;
   actorMembershipId?: string | null;
+  /**
+   * Zero for per-minute-priced calls (ASR). See asr-pricing.ts: those rows
+   * carry a real cost_micros derived from duration, and the zeros mean
+   * "not token-priced", not "unknown".
+   */
   inputTokens: number;
   outputTokens: number;
   costMicros: bigint;

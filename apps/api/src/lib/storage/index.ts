@@ -43,5 +43,24 @@ export function resetStorageClient(): void {
 }
 
 export { LocalStorageClient, SupabaseStorageClient };
-export type { StorageClient, StorageObject, StoragePutOpts } from "./types";
-export { StorageError, StorageNotFoundError } from "./types";
+// Round-trip helpers for the local tier's fake signed URLs (N3.2). They
+// live on the barrel so tests and STORAGE_PROVIDER=local dev code can
+// dereference a minted URL without importing the tier directly.
+export { parseLocalSignedUrl, resolveLocalSignedUrl, writeLocalSignedUploadUrl } from "./local";
+export { SUPABASE_SIGNED_UPLOAD_TTL_SECONDS } from "./supabase";
+export type {
+  SignedUploadUrl,
+  SignedUploadUrlOpts,
+  SignedUrl,
+  SignedUrlOpts,
+  StorageClient,
+  StorageObject,
+  StoragePutOpts,
+} from "./types";
+export {
+  clampSignedUrlTtlSeconds,
+  SIGNED_URL_DEFAULT_TTL_SECONDS,
+  SIGNED_URL_MAX_TTL_SECONDS,
+  StorageError,
+  StorageNotFoundError,
+} from "./types";
