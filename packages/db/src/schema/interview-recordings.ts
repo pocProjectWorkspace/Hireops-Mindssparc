@@ -55,6 +55,14 @@ import { tenantUserMemberships } from "./tenant-user-memberships";
  * interview_recording_consents row for that interview (the candidate's,
  * which is withdrawable). Both, or no recording.
  *
+ * `media_purged_at` (N3.RET / migration 0118) is the MEDIA LIFECYCLE axis,
+ * deliberately kept separate from `status`. The ladder above tracks
+ * PROCESSING and answers "was this transcribed?"; a 'purged' value on it
+ * would overwrite that answer 30 days later for every recording old enough
+ * to matter. The two compose instead: (transcribed, media_purged_at set) is
+ * the healthy steady state of a month-old interview — transcript kept,
+ * audio deleted on schedule. NULL means the bytes are still there.
+ *
  * Tenant-scoped + FORCE RLS + audit trigger: a mutable status on a governed
  * artefact is exactly what the audit log exists for.
  */
@@ -87,6 +95,12 @@ export const interviewRecordings = pgTable(
     requestedByMembershipId: uuid("requested_by_membership_id").notNull(),
 
     uploadedAt: timestamp("uploaded_at", { withTimezone: true }),
+    /**
+     * When the retention sweep deleted the stored object (N3.RET). NULL =
+     * the media is still there. Set together with nulling storage_key, in
+     * one UPDATE, so a row never claims to hold bytes it has purged.
+     */
+    mediaPurgedAt: timestamp("media_purged_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
@@ -96,6 +110,16 @@ export const interviewRecordings = pgTable(
     unique("uniq_interview_recordings_per_interview").on(table.tenantId, table.interviewId),
 
     index("idx_interview_recordings_status").on(table.tenantId, table.status),
+
+    // N3.RET retention sweep. Tenant-agnostic on purpose — the sweep is
+    // cross-tenant and service-role, so the driving question is "which
+    // recordings anywhere still hold purgeable bytes" (the
+    // idx_transcript_outbox_orphan_sweep precedent). Both predicate legs are
+    // IMMUTABLE, which is what makes the partial index legal; created_at
+    // leads because it serves the hard-ceiling half of the sweep directly.
+    index("idx_interview_recordings_media_purge_sweep")
+      .on(table.createdAt)
+      .where(sql`media_purged_at IS NULL AND storage_key IS NOT NULL`),
 
     check(
       "interview_recordings_source_check",

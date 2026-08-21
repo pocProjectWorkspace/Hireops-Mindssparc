@@ -10,6 +10,7 @@ import { stageStaleScan } from "./jobs/stage-stale-scan";
 import { aiBudgetScan } from "./jobs/ai-budget-scan";
 import { ownershipClaimSweep } from "./jobs/ownership-claim-sweep";
 import { reportDigestScan } from "./jobs/report-digest-scan";
+import { interviewMediaPurgeSweep } from "./jobs/interview-media-purge";
 import { drainWorkdayOutboxOnce } from "./lib/workday-simulation-drain";
 import { drainAiScoreOutboxOnce } from "./lib/ai-score-drain";
 import { drainAgentRunOutboxOnce } from "./lib/agent-run-drain";
@@ -102,6 +103,24 @@ const SCHEDULED_JOBS: ScheduledJob[] = [
     name: "report_digest_scan",
     intervalMs: 30 * 60_000,
     run: reportDigestScan,
+  },
+  {
+    // N3.RET — delete interview audio past its retention window. The client's
+    // decision: audio is kept 30 days from interview completion, transcripts
+    // and notes are kept indefinitely. A hard 90-day ceiling from the
+    // recording's own created_at is the backstop for rounds that never reach a
+    // terminal state (no-shows especially — markInterviewNoShow is not stamped
+    // and 0115 added no no_show_at), because without it "we keep audio for 30
+    // days" would be false for exactly the rounds nobody is watching.
+    //
+    // DAILY. Purging is not time-critical and the windows are measured in
+    // weeks, so a tighter tick would re-scan the same rows to no purpose. A
+    // SCHEDULED job rather than a drain loop, like ownership_claim_sweep: this
+    // is a time-based sweep with no queue behind it, and the 8th startLoop is
+    // not a thing to add while the worker-registry refactor is already owed.
+    name: "interview_media_purge",
+    intervalMs: 24 * 60 * 60_000,
+    run: interviewMediaPurgeSweep,
   },
 ];
 

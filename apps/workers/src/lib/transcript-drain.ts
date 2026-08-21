@@ -192,6 +192,12 @@ interface RecordingRow {
   storage_key: string | null;
   media_type: string | null;
   duration_seconds: number | null;
+  /** 0118. Non-null means the audio was deleted ON PURPOSE, ON SCHEDULE — the
+   * retention sweep got here first. Distinguishing that from media that is
+   * merely missing is the whole reason the column exists: one is the system
+   * working, the other is a defect, and an ops dashboard must not see them as
+   * the same red row. */
+  media_purged_at: Date | string | null;
 }
 
 /**
@@ -269,7 +275,8 @@ export async function drainTranscriptOutboxOnce(
 
     try {
       const [recording] = await poolSql<RecordingRow[]>`
-        SELECT id, interview_id, status, storage_key, media_type, duration_seconds
+        SELECT id, interview_id, status, storage_key, media_type, duration_seconds,
+               media_purged_at
         FROM public.interview_recordings
         WHERE tenant_id = ${row.tenant_id} AND id = ${row.recording_id}
       `;
@@ -279,6 +286,52 @@ export async function drainTranscriptOutboxOnce(
         throw new TerminalDrainError(
           `interview_recording ${row.recording_id} not found for tenant ${row.tenant_id}`,
         );
+      }
+
+      // ── 0. Has the audio already been purged? ───────────────────────────
+      // 0118's retention sweep deletes the bytes 30 days after the interview
+      // completes. It deliberately skips recordings with an active outbox row,
+      // so reaching here means the row was enqueued (or re-enqueued) after the
+      // purge — a late manual re-run, most likely.
+      //
+      // This COMPLETES CLEANLY rather than failing. The distinction is the
+      // point of media_purged_at: retention working as designed is not a
+      // defect, and if it failed the row instead, every ops dashboard would
+      // show a red row for a system doing exactly what the client asked for.
+      // Media that is missing WITHOUT this stamp still fails, via
+      // StorageNotFoundError — that one is a real problem and must stay loud.
+      //
+      // Note the ordering: this precedes the status checks because a purged
+      // recording is unreadable whatever its status says. If a transcript
+      // already exists, notes can still be derived from it — the transcript is
+      // retained, so there is real work left to do even with the audio gone.
+      if (recording.media_purged_at) {
+        const existing = await loadTranscript(row.tenant_id, recording.interview_id);
+        if (existing) {
+          const notes = await runNoteGeneration({
+            tenantId: row.tenant_id,
+            interviewId: recording.interview_id,
+            transcript: existing,
+            outboxId: row.id,
+            log: child,
+          });
+          await completeOutbox(
+            row.id,
+            notes.kind === "generated"
+              ? "media purged — notes derived from the retained transcript"
+              : notes.note,
+          );
+          if (notes.kind === "generated") noted += 1;
+          else notesSkipped += 1;
+        } else {
+          await completeOutbox(row.id, "media purged by retention — nothing to transcribe");
+        }
+        skipped += 1;
+        child.info(
+          { recording_status: recording.status, media_purged: true },
+          "transcript.skipped_media_purged",
+        );
+        continue;
       }
 
       // ── 1. Is this recording transcribable? ─────────────────────────────
@@ -295,9 +348,10 @@ export async function drainTranscriptOutboxOnce(
         // sitting in the row below.
         const existing = await loadTranscript(row.tenant_id, recording.interview_id);
         if (!existing) {
-          // 'transcribed' with no transcript row. Not corrupt: 0118's
-          // retention sweep deletes transcripts while the recording row (and
-          // its status) stays. There is nothing left to derive from, and no
+          // 'transcribed' with no transcript row. Genuinely odd — 0118's
+          // retention sweep deletes AUDIO ONLY and never touches
+          // interview_transcripts, so this is not the purge path. Most likely
+          // a manual deletion. There is nothing left to derive from, and no
           // retry produces it — complete cleanly, as N3.3a always did here.
           await completeOutbox(row.id, "recording already transcribed — nothing to do");
           skipped += 1;

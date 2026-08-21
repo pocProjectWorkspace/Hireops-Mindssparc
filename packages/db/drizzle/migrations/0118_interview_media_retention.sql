@@ -1,0 +1,74 @@
+-- =====================================================================
+-- 0118_interview_media_retention.sql — N3.RET (hand-written)
+--
+-- ONE column + ONE partial index: interview_recordings.media_purged_at,
+-- and the index the retention sweep scans.
+--
+-- WHY, AND WHY BEFORE ANY REAL RECORDING EXISTS. The client's decision is
+-- that interview AUDIO is retained for 30 days while TRANSCRIPTS AND NOTES
+-- are kept. Until this migration there was no way to express "the bytes are
+-- gone, on purpose, on schedule" — a purged recording was indistinguishable
+-- from one whose storage_key had simply gone missing, i.e. from a defect.
+-- N3.4 is what starts producing real media; this lands first so that no
+-- recording can ever exist without a purge path behind it.
+--
+-- ─────────────────────────────────────────────────────────────────────
+-- MEDIA LIFECYCLE IS A SEPARATE AXIS FROM THE STATUS LADDER
+-- ─────────────────────────────────────────────────────────────────────
+-- Deliberately NOT a new 'purged' value on interview_recordings.status.
+-- That ladder tracks PROCESSING — pending → uploaded → transcribing →
+-- transcribed, with failed terminal — and it answers exactly one question:
+-- did this recording get transcribed? Overwriting 'transcribed' with
+-- 'purged' 30 days later would make that question permanently unanswerable
+-- for every recording old enough to matter, which is the majority of them,
+-- and it would do so silently.
+--
+-- So media lifecycle gets its own nullable timestamp. The two axes compose
+-- rather than collide: (status='transcribed', media_purged_at=<ts>) is the
+-- steady state of a healthy 31-day-old interview — we transcribed it, we
+-- kept the transcript, we deleted the audio on schedule. And a recording
+-- that never made it, (status='failed', media_purged_at=<ts>), still tells
+-- you WHY the media is missing rather than leaving an ops dashboard to
+-- guess.
+--
+-- Nullable, no default, no backfill: NULL means "the bytes are still
+-- there", which is the truth for every existing row.
+--
+-- ─────────────────────────────────────────────────────────────────────
+-- THE INDEX
+-- ─────────────────────────────────────────────────────────────────────
+-- The sweep is cross-tenant and service-role (the documented worker
+-- posture — see ownership_claim_sweep), so tenant_id does NOT lead: the
+-- driving question is "which recordings anywhere still hold bytes old
+-- enough to purge". idx_transcript_outbox_orphan_sweep is the precedent
+-- for a tenant-agnostic partial sweep index.
+--
+-- The predicate is the whole point. Both legs are IMMUTABLE, so the index
+-- is legal (no now() in a partial-index predicate — the same constraint
+-- that forced ownership_claim_sweep to exist at all), and together they
+-- shrink the scanned set to exactly the purgeable population: rows not yet
+-- purged that actually hold an object. A recording with no storage_key has
+-- nothing to delete and is excluded permanently.
+--
+-- created_at is the ordered key because it serves the HARD-CEILING half of
+-- the sweep directly. The 30-day half joins to interviews.completed_at /
+-- cancelled_at, which the join drives off the recording side anyway.
+--
+-- NOT ADDED, deliberately: nothing for the sweep's "skip anything a drain
+-- is about to read" exclusion. transcript_outbox already carries
+-- uniq_transcript_outbox_per_recording UNIQUE (tenant_id, recording_id)
+-- from 0116, and since there is at most ONE outbox row per recording that
+-- unique serves the NOT EXISTS as a single index probe. A second index
+-- would buy nothing.
+--
+-- The retention WINDOWS themselves are not in the schema — they are
+-- documented constants in the sweep worker
+-- (apps/workers/src/jobs/interview-media-purge.ts), which is also where
+-- the promotion path to a per-tenant setting is written down.
+-- =====================================================================
+
+ALTER TABLE "interview_recordings" ADD COLUMN "media_purged_at" timestamp with time zone;--> statement-breakpoint
+
+CREATE INDEX "idx_interview_recordings_media_purge_sweep"
+ON "interview_recordings" USING btree ("created_at")
+WHERE media_purged_at IS NULL AND storage_key IS NOT NULL;
