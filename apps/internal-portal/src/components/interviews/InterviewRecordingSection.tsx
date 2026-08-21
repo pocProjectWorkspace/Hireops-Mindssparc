@@ -5,6 +5,7 @@ import { Button } from "@hireops/ui";
 import { Badge } from "@/components/ui";
 import { trpc } from "@/lib/trpc-client";
 import type { InterviewRecordingStatus } from "@hireops/api-types";
+import { InterviewNotesView } from "./InterviewNotesView";
 
 /**
  * N3.4a — the recruiter's recording controls for ONE interview round.
@@ -15,9 +16,11 @@ import type { InterviewRecordingStatus } from "@hireops/api-types";
  * across surfaces would let someone see an upload button and have no idea why
  * it is disabled.
  *
- * WHAT THIS DELIBERATELY DOES NOT SHOW: the transcript, or the notes derived
- * from it. That is N3.4b. This surface's job is to get media into the
- * pipeline and let a recruiter watch the pipeline move.
+ * N3.4b adds the OUTPUT half below the controls: the AI notes and the
+ * transcript, via the shared `InterviewNotesView`. Same panel on purpose —
+ * "did the recording work" and "what came out of it" are the same question to
+ * a recruiter, and the empty/in-flight states the view renders are the honest
+ * answer to the first one.
  *
  * The upload is TWO API CALLS AND ONE DIRECT PUT:
  *   start  → a short-lived signed url the browser PUTs the file to itself
@@ -233,6 +236,13 @@ export function InterviewRecordingSection({ interviewId }: { interviewId: string
         Audio is uploaded straight to storage, transcribed by the notetaker worker, and deleted on
         the retention schedule. The transcript and notes are kept.
       </p>
+
+      {/* N3.4b — what came out of the pipeline. Rendered unconditionally: with
+          no recording it says so, which is a better answer than an absent
+          section for a recruiter wondering whether anything happened. */}
+      <div className="mt-3 border-t border-neutral-200 pt-3">
+        <InterviewNotesView interviewId={interviewId} />
+      </div>
     </div>
   );
 }

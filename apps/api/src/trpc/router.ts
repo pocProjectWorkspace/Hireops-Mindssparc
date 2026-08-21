@@ -237,6 +237,8 @@ import {
   startInterviewMediaUploadOutputSchema,
   completeInterviewMediaUploadInputSchema,
   completeInterviewMediaUploadOutputSchema,
+  getInterviewNotesInputSchema,
+  getInterviewNotesOutputSchema,
   listUpcomingInterviewsInputSchema,
   listUpcomingInterviewsOutputSchema,
   type InterviewRow,
@@ -1022,6 +1024,7 @@ import {
   getInterviewMediaState,
   startUpload as startInterviewMediaUploadLib,
 } from "../lib/interview-media-upload";
+import { getInterviewNotes as getInterviewNotesLib } from "../lib/interview-notes-read";
 import {
   buildReqRevisionPrompt,
   reqRevisionJsonSchema,
@@ -1508,6 +1511,22 @@ const INTERVIEW_MANAGE_ROLES = new Set(["admin", "hiring_manager", "recruiter"])
 // long since have expired. Anyone outside this set (hr_head, panel_member, a
 // partner identity) is FORBIDDEN, and RLS scopes rows to the tenant on top.
 const RECORDING_CONSENT_MANAGE_ROLES = new Set([...INTERVIEW_MANAGE_ROLES, "hr_ops"]);
+
+// N3.4b — who may READ a round's transcript + AI notes. The interview-manage
+// roles PLUS panel_member, and the addition is the whole point: the panellists
+// who sat in the room are the primary audience for the notes, and they are
+// deliberately outside INTERVIEW_MANAGE_ROLES (sitting on a panel is not
+// running the round).
+//
+// THIS SET IS THE COARSE FILTER, NOT THE BOUNDARY. A panel_member passes it
+// and then still has to be a panellist ON THAT INTERVIEW — the same
+// per-interview membership check every other panel procedure enforces, done
+// inside ../lib/interview-notes-read.ts so there is one implementation of it.
+// Widening the role set alone would let any panel member in the tenant read
+// every round's transcript, which is the worst thing this feature could do.
+// hr_ops is NOT here: servicing a consent withdrawal is a compliance duty and
+// does not carry a reason to read what the candidate said.
+const INTERVIEW_NOTES_READ_ROLES = new Set([...INTERVIEW_MANAGE_ROLES, "panel_member"]);
 
 // RECR-01 recruiter dashboard extras. The elevated recruiter landing read
 // (funnel, tasks, follow-ups, insights) is the recruiter's; admin is the
@@ -7348,6 +7367,64 @@ export const appRouter = router({
           interviewId: input.interviewId,
           durationSeconds: input.durationSeconds ?? null,
         });
+      });
+    }),
+
+  /* ───────── N3.4b — reading the transcript + the notes ─────────
+   *
+   * THIN, like the block above: the authorisation decision and every query
+   * live in ../lib/interview-notes-read.ts. This wrapper does the coarse role
+   * filter, resolves the caller's membership when the fine-grained check needs
+   * it, and hands over.
+   *
+   * READ-ONLY, and there is no sibling mutation. Transcripts are insert-once
+   * and the notes row is a derived cache the drain owns; regeneration is a
+   * deliberate later ticket, not something to fall into by adding a "refresh"
+   * button next to a read.
+   */
+  getInterviewNotes: protectedProcedure
+    .input(getInterviewNotesInputSchema)
+    .output(getInterviewNotesOutputSchema)
+    .query(async ({ ctx, input }) => {
+      requireAnyRole(
+        ctx,
+        INTERVIEW_NOTES_READ_ROLES,
+        "You don't have access to interview transcripts.",
+      );
+      if (!ctx.tenantId) {
+        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
+      }
+      const hasManageRole = ctx.roles.some((r) => INTERVIEW_MANAGE_ROLES.has(r));
+      // Only resolved for the fine-grained path — a recruiter's read should
+      // not pay for a membership lookup whose answer cannot change the outcome.
+      const membershipId = hasManageRole ? null : await resolveActorMembership(requireDb(ctx), ctx);
+      const tenantId = ctx.tenantId;
+      return getInterviewNotesLib(ctx.sql, {
+        tenantId,
+        interviewId: input.interviewId,
+        hasManageRole,
+        membershipId,
+        // ADR-002 §7 — mirrors getPanelInterviewBrief's record. A transcript is
+        // the candidate's own unedited speech, so reading it is a heavier PII
+        // access than the name/location the brief already logs, not a lighter
+        // one. Fires only after the lib has authorised the read.
+        onPiiRead: (candidateId) => {
+          recordPiiAccess({
+            tenantId,
+            actorUserId: ctx.userId,
+            actorMembershipId: membershipId,
+            actorLabel: "user",
+            entityType: "candidate",
+            entityId: candidateId,
+            fieldsAccessed: [
+              "interview_transcripts.full_text",
+              "interview_transcripts.segments",
+              "interview_notes.summary",
+            ],
+            reason: "get_interview_notes",
+            requestId: ctx.requestId,
+          });
+        },
       });
     }),
 

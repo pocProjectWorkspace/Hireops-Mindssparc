@@ -9,6 +9,7 @@ import type { BadgeTone } from "@/components/ui";
 import { trpc, handleTRPCError } from "@/lib/trpc-client";
 import type { GetPanelInterviewBriefOutput, InterviewRecommendation } from "@hireops/api-types";
 import { BriefContent } from "./BriefContent";
+import { InterviewNotesView } from "@/components/interviews/InterviewNotesView";
 
 /**
  * INT-03 / PANEL-02 — the candidate brief + the scorecard form for one
@@ -25,6 +26,10 @@ import { BriefContent } from "./BriefContent";
  * SEAM (PANEL-02): the scorecard block is deliberately preserved as-is for
  * PANEL-01's parallel scorecard upgrade in the main tree — only the brief
  * content above it was extracted into BriefContent.tsx.
+ *
+ * N3.4b appends a COLLAPSED "Recording notes & transcript" disclosure BELOW
+ * the scorecard. See RecordingNotesDisclosure — the placement is deliberate
+ * and is what keeps AI notes from anchoring the recommendation.
  */
 
 const RECOMMENDATIONS: { value: InterviewRecommendation; label: string; tone: BadgeTone }[] = [
@@ -363,12 +368,68 @@ export function PanelInterviewBrief({
           </div>
         ) : null}
       </Card>
+
+      {/* N3.4b — the recording's transcript + AI notes, as REFERENCE MATERIAL. */}
+      <div className="mt-5">
+        <RecordingNotesDisclosure interviewId={interviewId} />
+      </div>
     </PageContainer>
   );
 }
 
 function SectionTitle({ children }: { children: React.ReactNode }) {
   return <h3 className="mb-3 text-sm font-semibold text-neutral-900">{children}</h3>;
+}
+
+/**
+ * N3.4b — the round's transcript + AI notes on the panellist's own surface.
+ *
+ * PLACEMENT IS THE DESIGN, not a layout choice. Three things about it are
+ * load-bearing and should survive any restyle:
+ *
+ *  1. BELOW the scorecard, after the recommendation buttons. Notes can
+ *     therefore never be the thing a panellist reads on the way to picking
+ *     strong_yes / yes / hold / no — they are consulted, if at all, by
+ *     somebody who has already gone looking.
+ *  2. COLLAPSED, and nothing is fetched until it is opened: the view is not
+ *     mounted while closed, so no request for the transcript is made unless
+ *     the panellist chooses to make one. "Choose to open" is literal here.
+ *  3. NOTHING FLOWS BACK INTO THE FORM. There is no "use these notes" action
+ *     and no field this can write to — contrast "Summarise my notes" above,
+ *     which tidies the panellist's OWN words and is theirs to review. These
+ *     notes are somebody else's (a model's) account of the room.
+ *
+ * The wire shape has no score, rating or recommendation in it, so there is
+ * nothing here that COULD pre-fill a verdict. That is the schema's guarantee
+ * (0116, interviewNotesCardSchema); this placement is the surface honouring
+ * the same stance SessionBoard.tsx takes — assist the panellist, never anchor
+ * them.
+ */
+function RecordingNotesDisclosure({ interviewId }: { interviewId: string }) {
+  const [open, setOpen] = useState(false);
+
+  return (
+    <Card>
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div>
+          <SectionTitle>Recording notes &amp; transcript</SectionTitle>
+          <p className="-mt-2 text-xs text-neutral-500">
+            Reference only, if this round was recorded. AI-written notes and the machine transcript
+            — no score, no recommendation. Your scorecard above is yours.
+          </p>
+        </div>
+        <Button variant="secondary" onClick={() => setOpen((v) => !v)}>
+          {open ? "Hide" : "Open"}
+        </Button>
+      </div>
+
+      {open ? (
+        <div className="mt-4">
+          <InterviewNotesView interviewId={interviewId} />
+        </div>
+      ) : null}
+    </Card>
+  );
 }
 
 function PlainTextArea({

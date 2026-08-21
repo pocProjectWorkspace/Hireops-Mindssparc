@@ -174,6 +174,25 @@ async function loadRecording(
   return row ?? null;
 }
 
+/**
+ * The recording as a READ-ONLY surface needs it (N3.4b's transcript/notes
+ * read). Exported rather than reimplemented over there: `status` and
+ * `mediaPurgedAt` are two independent axes, and a second mapping of them is
+ * exactly how a surface starts reporting "failed" for media that retention
+ * deleted on schedule.
+ *
+ * Returns null when the interview has no recording row — a normal state, not
+ * a missing parent.
+ */
+export async function readRecordingMedia(
+  sql: PgSqlClient,
+  tenantId: string,
+  interviewId: string,
+): Promise<InterviewRecordingMedia | null> {
+  const row = await loadRecording(sql, tenantId, interviewId);
+  return row ? toView(row) : null;
+}
+
 export interface InterviewMediaState {
   gate: RecordingGate;
   recording: InterviewRecordingMedia | null;

@@ -10,6 +10,7 @@ import { jdBiasScanSchema, biasCategorySchema, biasSeveritySchema } from "./bias
 import { skillsMatchResultSchema } from "./panel-prep";
 import { candidateLearningItemSchema } from "./learning";
 import { reportFiltersSchema } from "./reports";
+import { interviewNotesCardSchema, interviewTranscriptCardSchema } from "./interview-transcripts";
 
 /**
  * Input + output schemas for the initial six tRPC procedures (API-01).
@@ -3122,6 +3123,50 @@ export type CompleteInterviewMediaUploadInput = z.infer<
 export type CompleteInterviewMediaUploadOutput = z.infer<
   typeof completeInterviewMediaUploadOutputSchema
 >;
+
+/* ─────────── N3.4b — reading the transcript + the notes ─────────── */
+
+/**
+ * Everything a reader needs about one round's notetaker output, in one round
+ * trip: the derived artefacts (transcript, notes) AND the pipeline state that
+ * explains their absence when they are absent.
+ *
+ * WHY THE RECORDING IS IN HERE. "There are no notes" has six honest causes —
+ * nothing was recorded, the bytes are still uploading, transcription is
+ * queued, transcription is running, transcription FAILED, or the tenant has
+ * note generation switched off — and a surface that cannot tell them apart
+ * shows a blank box for all six. `recording` (with its independent
+ * `mediaPurgedAt` axis) plus `notesEnabled` is exactly what distinguishes
+ * them, which is why this is one procedure rather than a transcript read and
+ * a separate status read that can disagree.
+ *
+ * AUDIO IS NOT HERE, and will not be. No storage key, no signed read url —
+ * same stance as `interviewRecordingMediaSchema`. After the 30-day retention
+ * sweep (0118) the audio is gone and `mediaPurgedAt` is stamped while the
+ * transcript stays; that is retention working, so a surface should say "audio
+ * deleted on schedule, transcript kept" rather than render a broken player.
+ */
+export const getInterviewNotesInputSchema = z.object({
+  interviewId: z.string().uuid(),
+});
+export const getInterviewNotesOutputSchema = z.object({
+  interviewId: z.string().uuid(),
+  /** null when nothing has ever been recorded for this round. */
+  recording: interviewRecordingMediaSchema.nullable(),
+  /** null until the drain has written one. */
+  transcript: interviewTranscriptCardSchema.nullable(),
+  /** null when the transcript exists but notes were skipped or not yet run. */
+  notes: interviewNotesCardSchema.nullable(),
+  /**
+   * The tenant's `interview_notes` AI kill switch. A tenant may legitimately
+   * buy transcripts without notes, so "transcribed, notes null, switch off" is
+   * a CONFIGURED state and not a stall — the only way to say that honestly is
+   * to put the switch on the wire next to the absence it explains.
+   */
+  notesEnabled: z.boolean(),
+});
+export type GetInterviewNotesInput = z.infer<typeof getInterviewNotesInputSchema>;
+export type GetInterviewNotesOutput = z.infer<typeof getInterviewNotesOutputSchema>;
 
 /**
  * Per-panelist feedback state (INT-03). `none` = no interview_feedback row;

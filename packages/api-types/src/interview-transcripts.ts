@@ -100,3 +100,45 @@ export const interviewTranscriptCardSchema = z.object({
   createdAt: z.string().nullable(),
 });
 export type InterviewTranscriptCard = z.infer<typeof interviewTranscriptCardSchema>;
+
+/**
+ * N3.4b — the NOTES as the API hands them to a reader, alongside the
+ * transcript card above because the two are read together and by the same
+ * people.
+ *
+ * The five content fields map 1:1 onto the columns 0116 created, and there is
+ * no sixth: no score, no rating, no recommendation. That omission is repeated
+ * here rather than assumed, because this is the layer a UI reads — if a wire
+ * shape had somewhere to put a verdict, a surface would eventually render one
+ * next to the `strong_yes | yes | hold | no` control the panellist is supposed
+ * to fill in themselves. The table header, the prompt and this schema all say
+ * the same thing on purpose.
+ *
+ * ARRAYS ARE NON-NULL HERE while the columns are nullable. A model that
+ * returned no follow-ups and a row written before a section existed are the
+ * same thing to a reader — "nothing to show" — and making every consumer
+ * handle `null` as well as `[]` buys nothing. `summary` stays nullable
+ * because absent prose is visibly different from empty prose.
+ *
+ * `model` / `promptVersion` / `generatedAt` are the LLM-side provenance and
+ * they are on the wire DELIBERATELY: notes are a derived artefact and the
+ * person reading them has to be able to tell that at a glance, with the
+ * ability to see which model and which prompt revision produced them. They
+ * are nullable because the columns are.
+ */
+export const interviewNotesCardSchema = z.object({
+  interviewId: z.string().uuid(),
+  /** The transcript these notes were derived from — the provenance leg. */
+  transcriptId: z.string().uuid(),
+  summary: z.string().nullable(),
+  keyPoints: z.array(z.string()),
+  topicsCovered: z.array(z.string()),
+  questionsAsked: z.array(z.string()),
+  followUps: z.array(z.string()),
+  /** LLM-side provenance — distinct from the transcript's ASR provenance. */
+  model: z.string().nullable(),
+  promptVersion: z.string().nullable(),
+  generatedAt: z.string().nullable(),
+  // NOTE: no score / rating / recommendation field, deliberately. See above.
+});
+export type InterviewNotesCard = z.infer<typeof interviewNotesCardSchema>;
