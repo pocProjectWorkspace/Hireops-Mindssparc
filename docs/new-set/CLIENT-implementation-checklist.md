@@ -2,7 +2,7 @@
 
 **Audience:** client project sponsor + IT/security/HR counterparts.
 **Purpose:** everything HireOps needs *from you* to stand up your tenant, in the order we need it.
-**Version:** 1.1 · 21 August 2026 (§8 notetaker: proposal → built)
+**Version:** 1.2 · 23 August 2026 (adds §8B — the AI first-round interview, in build)
 
 ---
 
@@ -222,6 +222,47 @@ a withdrawal is a new appended record, never an edit, so the history is auditabl
 
 ---
 
+## 8B. AI first-round interview (P4) — IN BUILD
+
+> **Status: under construction, not yet usable.** Following the August demo you
+> asked for an AI-conducted first round. The schema, the question generation
+> with its approval gate, and the candidate round's backend are built; the
+> candidate and recruiter screens are not. **Nothing here is available to a
+> candidate yet.** It is listed now because several answers below shape what
+> gets built, and are cheaper to give before the screens exist than after.
+
+**How it is designed, so the questions make sense.** The AI round is
+**asynchronous and structured**: the candidate answers a fixed set of questions
+one at a time, by voice or by typing, in their own time. It is **not** a
+real-time conversation, and there is no live voice agent. Questions are
+generated from your job description, skills, knockout criteria and the round's
+scorecard — then **a named human on your team approves them before any candidate
+sees them**. That approval is enforced by the database, not merely by the
+screen.
+
+**The governing commitment: the AI round produces EVIDENCE; a human decides.**
+There is no score, rating, ranking, pass/fail or recommendation anywhere in it —
+not in the questions, not in the output, and there is no column in which to
+store one. The system will not tell you who to reject. This is deliberate and it
+is what keeps the feature the right side of GDPR Art. 22 (no decision based
+solely on automated processing) and the EU AI Act, which classes candidate
+filtering as high-risk. It is also, in our view, the reason it is safe to sell.
+
+| # | Item | Blocking | Client response |
+|---|---|---|---|
+| 8B.1 | **Do you want this at all?** It is a different product from the notetaker — that one sits in on a human round; this one *conducts* the round. Confirm you want both | 🔴 | |
+| 8B.2 | **Which roles / requisitions get an AI first round**, and which must stay human throughout | 🔴 | |
+| 8B.3 | **AI disclosure wording for the candidate**, legally approved — separate from the recording-consent wording at 8.2, because agreeing to be interviewed by an AI is a different thing from agreeing to be recorded. EU AI Act Art. 50 requires the candidate be told they are interacting with an AI | 🔴 | |
+| 8B.4 | **Who approves question sets?** A named role, since it is recorded against every set and is the fact a regulator or a rejected candidate would ask about | 🔴 | |
+| 8B.5 | **How long does a candidate have** to complete the round once invited? Our default is 7 days | | |
+| 8B.6 | **Voice, typed, or both?** We build both — typing is the accessibility answer and the poor-bandwidth answer. Confirm you are content for a candidate to type | | |
+| 8B.7 | **What happens when a candidate declines** the AI round or the recording? The round cannot proceed without consent — confirm the fallback is a human first round, and who arranges it | 🔴 | |
+| 8B.8 | **Who reviews the evidence** and makes the advance/reject call, and at what point in your funnel the AI round sits | 🔴 | |
+| 8B.9 | **Accessibility and adjustments** — your process for a candidate who requests an alternative format. We support typed answers; anything beyond that is your policy | | |
+| 8B.10 | **Expected AI rounds per month** — same per-minute audio billing as 8.8 | | |
+
+---
+
 ## 9. Environments, access & cutover (P5)
 
 | # | Item | Blocking | Client response |
@@ -275,7 +316,10 @@ logging, PII access logging, consent capture and retention policy enforcement ·
 configuration surfaces · **the interview notetaker** (per-interview withdrawable consent,
 recording upload, transcription and structured notes, with a 30-day audio retention sweep).
 
+**In build, not yet usable** — the AI first-round interviewer (§8B): schema, question
+generation with its human approval gate, and the candidate round's backend are done; the
+candidate and recruiter screens are not.
+
 **Not built** — requires a scoped work package: SSO/SAML and SCIM · Workday (or any HRMS)
-integration · **the AI first-round interviewer** (assessed and designed; the notetaker
-pipeline it builds on is complete) · diversity/EEO reporting · quality-of-hire and early
-attrition analytics · PDF export (board packs are print-styled pages today).
+integration · diversity/EEO reporting · quality-of-hire and early attrition analytics ·
+PDF export (board packs are print-styled pages today).
