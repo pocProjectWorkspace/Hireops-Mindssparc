@@ -259,3 +259,49 @@ Buy only if a logo is needed on a screen inside three weeks.
 | AI feature keys | `packages/api-types/src/ai-settings.ts` (12 today; +2) |
 | Interview mode enum | `packages/api-types/src/enums.ts` + three CHECK constraints |
 | Migration | `packages/db/drizzle/migrations/0118_ai_interview.sql` (new) |
+
+---
+
+## Appendix B — per-service environment requirements
+
+**Added 22 August 2026, after a deploy caught a gap no gate could.** The
+`interview_media_purge` sweep shipped, deployed, and errored on its first
+production run: the Railway **workers** service had `SUPABASE_KEK_SECRET` but
+neither `SUPABASE_URL` nor `SUPABASE_SERVICE_ROLE_KEY`, so `getStorageClient()`
+threw. The transcript drain shares that dependency
+(`transcript-drain.ts` mints a signed read URL), so the first recruiter upload
+would have failed at the media fetch and read like an ASR fault rather than a
+missing environment variable.
+
+**Why every gate passed anyway.** Local tiers resolve without credentials —
+`NODE_ENV=test` selects `LocalStorageClient` and `LocalASRClient`, which need no
+keys by design, because that is what makes the suite runnable offline. There is
+no test that can fail on a production env var being absent. So this class of bug
+is invisible until deploy, and the only defence is writing the requirement down
+next to the code that introduces it.
+
+**The rule: when a ticket makes a service reach a new external system, add the
+variable here in the same ticket.** A service is not "deployed" until its env is
+verified, and a job erroring once per interval is easy to miss in logs nobody is
+tailing.
+
+| Service | Needs | Introduced by |
+|---|---|---|
+| `api` | `DATABASE_URL`, `DIRECT_URL`, `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `SUPABASE_KEK_SECRET`, `SIGNED_LINK_SECRET`, `RESEND_API_KEY`, `STORAGE_BUCKET` | pre-existing |
+| `workers` | all of the above **plus** `SUPABASE_URL` + `SUPABASE_SERVICE_ROLE_KEY` for storage | **N3.3a / N3.RET** — the drain fetches media, the purge deletes it |
+| `workers` | `ASSEMBLYAI_API_KEY` (+ optional `ASSEMBLYAI_REGION`) | **N3.1b** — not yet set anywhere; the drain runs on the local tier until it is |
+| `workers` | optional `ASR_PROVIDER` (`assemblyai` default, `deepgram` selectable) | N3.1b — an unrecognised value throws rather than silently billing the other vendor |
+| both | optional `MEDIA_MAX_UPLOAD_BYTES` (250MB default) | N3.2 |
+
+**Two verification lessons from the same incident, both non-obvious:**
+
+1. **`railway variables` truncates.** The table and `--kv` views both cut long
+   values and made a successful `--set` look like it had failed. Use
+   `railway variables --service <name> --json` to confirm what is actually set.
+2. **The absence of an error after a restart is not proof of a fix.** A
+   scheduled job that already ran — including one that ran and *errored* — will
+   not run again until its interval elapses, which for the purge sweep is 24
+   hours. To prove a fix now, backdate its bookkeeping row
+   (`UPDATE scheduled_job_runs SET last_run_at = now() - interval '2 days'
+   WHERE job_name = '<job>'`) and watch the next tick. The healthy line for the
+   purge is `purged=0 failed=0 retention_days=30 hard_ceiling_days=90`.
