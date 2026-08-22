@@ -22,7 +22,16 @@ const PUBLIC_PATHS = new Set<string>(["/login", "/logout", "/privacy", "/candida
 // `/interviews/confirm/` is public (candidate confirm link) while the
 // `/interviews` recruiter list stays auth-gated. `/candidate/activate/` is
 // the set-password page reached from the emailed activation link.
-const PUBLIC_PREFIXES = ["/offer/", "/t/", "/interviews/confirm/", "/candidate/activate/"];
+const PUBLIC_PREFIXES = [
+  "/offer/",
+  "/t/",
+  "/interviews/confirm/",
+  // N4.3b — the AI first round. Same reasoning as the confirm link: the
+  // signed token IS the credential, and a candidate taking a first-round
+  // interview has no account to sign in with.
+  "/interviews/ai/",
+  "/candidate/activate/",
+];
 
 export async function middleware(req: NextRequest) {
   const { pathname } = req.nextUrl;
