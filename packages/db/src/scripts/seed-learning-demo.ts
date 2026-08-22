@@ -661,6 +661,26 @@ async function deleteSeededRows(sql: SqlClient, tid: string): Promise<void> {
        SELECT id FROM public.onboarding_cases WHERE tenant_id = ${tid} AND id::text LIKE ${pfx}
      )
   `;
+  // Release the offboarding back-reference BEFORE deleting the cases it points
+  // at. fk_offboarding_cases_onboarding_case (0059) is ON DELETE RESTRICT, so
+  // without this the whole teardown — and therefore every re-seed — dies with a
+  // 23503 the moment anything links an offboarding case to one of ours. That is
+  // not hypothetical: db:seed:offboard-demo links its cases to onboarding rows
+  // this seed owns, so running the documented seed order twice was enough to
+  // wedge it permanently.
+  //
+  // NULL rather than DELETE, deliberately. The offboarding case belongs to a
+  // DIFFERENT seed; deleting it here would have one seed's teardown silently
+  // destroying another's data. The column is nullable and the FK is compound
+  // (MATCH SIMPLE), so a NULL leg simply stops the constraint applying — the
+  // offboarding case survives, having lost only a pointer to an onboarding
+  // case that is itself about to stop existing.
+  await sql`
+    UPDATE public.offboarding_cases
+       SET onboarding_case_id = NULL
+     WHERE tenant_id = ${tid}
+       AND onboarding_case_id::text LIKE ${pfx}
+  `;
   await sql`DELETE FROM public.onboarding_cases WHERE tenant_id = ${tid} AND id::text LIKE ${pfx}`;
   await sql`DELETE FROM public.learning_skill_map WHERE tenant_id = ${tid} AND id::text LIKE ${pfx}`;
   await sql`DELETE FROM public.learning_track_items WHERE tenant_id = ${tid} AND id::text LIKE ${pfx}`;
