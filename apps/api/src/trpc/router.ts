@@ -246,6 +246,8 @@ import {
   approveAiInterviewQuestionsOutputSchema,
   getAiInterviewSessionInputSchema,
   getAiInterviewSessionOutputSchema,
+  issueAiInterviewSessionInputSchema,
+  issueAiInterviewSessionOutputSchema,
   listUpcomingInterviewsInputSchema,
   listUpcomingInterviewsOutputSchema,
   type InterviewRow,
@@ -1043,6 +1045,7 @@ import {
   generateQuestions as generateAiInterviewQuestionsLib,
   getSession as getAiInterviewSessionLib,
 } from "../lib/ai-interview-questions";
+import { issueSession as issueAiInterviewSessionLib } from "../lib/ai-interview-session";
 import {
   buildReqRevisionPrompt,
   reqRevisionJsonSchema,
@@ -7537,6 +7540,45 @@ export const appRouter = router({
           approvedByMembershipId: membershipId,
         });
         return { session };
+      });
+    }),
+
+  /* ───────── N4.3a — issue the candidate link ─────────
+   *
+   * The irreversible step: after this a signed link exists that a person can
+   * open and answer into. Which is why the two refusals that could not go
+   * anywhere else live behind it —
+   *
+   *   - mode must be 'ai_async'. N4.2 left this open, so questions can
+   *     currently be generated for a `video` round. Generation is a
+   *     discardable draft; ISSUING is the moment the round is put to someone.
+   *   - a cancelled interview cannot be issued.
+   *
+   * Same INTERVIEW_MANAGE_ROLES gate as the rest of the block, and AUDITED
+   * for the same reason approval is: "who sent this candidate an AI round,
+   * and when" is the second half of the question "who approved the questions".
+   * The raw link is in the RESPONSE and must not reach the audit row — the
+   * input, which is all withAudit records, carries only the interview id.
+   */
+  issueAiInterviewSession: protectedProcedure
+    .input(issueAiInterviewSessionInputSchema)
+    .output(issueAiInterviewSessionOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      requireAnyRole(
+        ctx,
+        INTERVIEW_MANAGE_ROLES,
+        "Only hiring managers, recruiters and admins can send an AI interview to a candidate.",
+      );
+      return withAudit("issue_ai_interview_session", ctx, input, async () => {
+        if (!ctx.tenantId) {
+          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
+        }
+        return issueAiInterviewSessionLib(ctx.sql, {
+          tenantId: ctx.tenantId,
+          interviewId: input.interviewId,
+          expiresInDays: input.expiresInDays,
+          portalBaseUrl: process.env.NEXT_PUBLIC_SITE_URL ?? "http://localhost:3002",
+        });
       });
     }),
 

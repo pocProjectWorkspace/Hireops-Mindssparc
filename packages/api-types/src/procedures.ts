@@ -3244,6 +3244,46 @@ export const getAiInterviewSessionOutputSchema = z.object({
 export type GetAiInterviewSessionInput = z.infer<typeof getAiInterviewSessionInputSchema>;
 export type GetAiInterviewSessionOutput = z.infer<typeof getAiInterviewSessionOutputSchema>;
 
+/* ─────────────── N4.3a — issuing the candidate link ───────────────
+ *
+ * `approved → issued`: mint the signed link, store only its SHA-256, set the
+ * deadline. The irreversible step of the whole feature — after this a link
+ * exists that a person can open and answer into — which is why the
+ * `mode = 'ai_async'` guard and the cancelled-round refusal live on it rather
+ * than on generation.
+ */
+
+/**
+ * `expiresInDays` is the candidate's window, and it is the SAME instant the
+ * signed link itself is minted against, so the token's own expiry and the
+ * session's `expires_at` cannot drift into disagreeing. Optional: the default
+ * is a week, which is long enough for a candidate who is working notice and
+ * short enough that an unattended recording link is not left open for a
+ * month. Clamped server-side to [1, 30].
+ */
+export const issueAiInterviewSessionInputSchema = z.object({
+  interviewId: z.string().uuid(),
+  expiresInDays: z.number().int().min(1).max(30).optional(),
+});
+
+/**
+ * `interviewUrl` is the RAW link, and it is on the wire ONCE, here.
+ *
+ * Only the hash is stored (0119), so this response is the only place the
+ * token will ever exist outside the candidate's inbox — and staging Resend is
+ * in test mode, so a recruiter demonstrating the feature has to be able to
+ * copy it by hand. The partner-invitation `acceptUrl` set that precedent for
+ * the same reason. It is a bearer credential for one round: treat it like the
+ * offer link, never log it whole.
+ */
+export const issueAiInterviewSessionOutputSchema = z.object({
+  session: aiInterviewSessionCardSchema,
+  interviewUrl: z.string(),
+  expiresAt: z.string(),
+});
+export type IssueAiInterviewSessionInput = z.infer<typeof issueAiInterviewSessionInputSchema>;
+export type IssueAiInterviewSessionOutput = z.infer<typeof issueAiInterviewSessionOutputSchema>;
+
 /**
  * Per-panelist feedback state (INT-03). `none` = no interview_feedback row;
  * `draft` = row exists, submitted_at NULL; `submitted` = submitted_at stamped.
