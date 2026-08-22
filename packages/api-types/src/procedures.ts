@@ -11,6 +11,7 @@ import { skillsMatchResultSchema } from "./panel-prep";
 import { candidateLearningItemSchema } from "./learning";
 import { reportFiltersSchema } from "./reports";
 import { interviewNotesCardSchema, interviewTranscriptCardSchema } from "./interview-transcripts";
+import { aiInterviewSessionCardSchema } from "./ai-interview";
 
 /**
  * Input + output schemas for the initial six tRPC procedures (API-01).
@@ -3167,6 +3168,81 @@ export const getInterviewNotesOutputSchema = z.object({
 });
 export type GetInterviewNotesInput = z.infer<typeof getInterviewNotesInputSchema>;
 export type GetInterviewNotesOutput = z.infer<typeof getInterviewNotesOutputSchema>;
+
+/* ─────────── N4.2 — AI interview question generation + approval ───────────
+ *
+ * Three procedures, all keyed on the INTERVIEW rather than the session id:
+ * `uniq_ai_interview_sessions_per_interview` means one round has at most one
+ * session, so the interview is the natural handle and a caller never has to
+ * discover a session id before it exists.
+ *
+ * There is no candidate-facing input or output here. The signed-link route,
+ * the disclosure copy and the answer capture are N4.3's; this ticket stops at
+ * the recruiter's review and approval.
+ */
+
+/**
+ * Generate (or REGENERATE) the round's question set.
+ *
+ * Regeneration is legal only while the session is still `draft`. Once a human
+ * has approved it the set is frozen — a candidate may already be looking at
+ * it — and the procedure refuses rather than silently replacing questions
+ * someone put their name to. The database says the same thing through
+ * `ai_interview_sessions_approval_check`.
+ */
+export const generateAiInterviewQuestionsInputSchema = z.object({
+  interviewId: z.string().uuid(),
+});
+export const generateAiInterviewQuestionsOutputSchema = z.object({
+  session: aiInterviewSessionCardSchema,
+});
+export type GenerateAiInterviewQuestionsInput = z.infer<
+  typeof generateAiInterviewQuestionsInputSchema
+>;
+export type GenerateAiInterviewQuestionsOutput = z.infer<
+  typeof generateAiInterviewQuestionsOutputSchema
+>;
+
+/**
+ * The human gate. Stamps the approver, the approval time and the freeze, and
+ * moves `draft → approved` in one statement — the three columns the DB CHECK
+ * requires before a session may reach any state a candidate can see.
+ */
+export const approveAiInterviewQuestionsInputSchema = z.object({
+  interviewId: z.string().uuid(),
+});
+export const approveAiInterviewQuestionsOutputSchema = z.object({
+  session: aiInterviewSessionCardSchema,
+});
+export type ApproveAiInterviewQuestionsInput = z.infer<
+  typeof approveAiInterviewQuestionsInputSchema
+>;
+export type ApproveAiInterviewQuestionsOutput = z.infer<
+  typeof approveAiInterviewQuestionsOutputSchema
+>;
+
+/**
+ * The review read.
+ *
+ * `session` is null when nothing has been generated for the round yet, which
+ * is the normal state of a freshly scheduled AI round rather than an error.
+ * `questionsEnabled` is the tenant's `ai_interview_questions` kill switch,
+ * shipped NEXT TO the absence it explains — the notes read's argument: a
+ * surface that cannot tell "not generated yet" from "generation is switched
+ * off for this tenant" shows the same blank box for both.
+ */
+export const getAiInterviewSessionInputSchema = z.object({
+  interviewId: z.string().uuid(),
+});
+export const getAiInterviewSessionOutputSchema = z.object({
+  interviewId: z.string().uuid(),
+  session: aiInterviewSessionCardSchema.nullable(),
+  /** The round's resolved rubric, available even before a session exists. */
+  rubric: z.array(z.object({ key: z.string(), label: z.string() })),
+  questionsEnabled: z.boolean(),
+});
+export type GetAiInterviewSessionInput = z.infer<typeof getAiInterviewSessionInputSchema>;
+export type GetAiInterviewSessionOutput = z.infer<typeof getAiInterviewSessionOutputSchema>;
 
 /**
  * Per-panelist feedback state (INT-03). `none` = no interview_feedback row;

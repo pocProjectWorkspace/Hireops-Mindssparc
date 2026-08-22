@@ -87,7 +87,7 @@ function featureDefault(): AiFeatureSettings {
  * feedback_summary in PANEL-01, interview_prep in PANEL-02, req_revision in
  * RO-01, iris_assistant in IRIS — one key governs BOTH Iris AI calls
  * (iris_intent + iris_message_draft), interview_notes in the notetaker
- * phase (N1)). */
+ * phase (N1), ai_interview_questions in N4.2). */
 export const AI_FEATURE_KEYS = [
   "ai_scoring",
   "jd_generation",
@@ -101,6 +101,7 @@ export const AI_FEATURE_KEYS = [
   "recruiter_brief",
   "iris_assistant",
   "interview_notes",
+  "ai_interview_questions",
 ] as const;
 export type AiFeatureKey = (typeof AI_FEATURE_KEYS)[number];
 
@@ -181,6 +182,12 @@ export const AI_FEATURE_META: Record<
     description:
       "Summarises an interview's transcript into notes for the panel — a short summary, key points, topics covered, questions asked and suggested follow-ups. It runs ONLY where the candidate has granted recording consent for that round (withdrawable at any time) and the recruiter has explicitly asked for it; both are required. Grounded only in what was actually said — it never scores, never rates, and never produces or pre-fills a hire/no-hire recommendation. Disabling stops notes being generated: recordings and transcripts still process, they simply carry no AI summary, and existing notes are untouched.",
   },
+  ai_interview_questions: {
+    label: "AI interview questions (async first round)",
+    usageFeatures: ["ai_interview_questions"],
+    description:
+      "Drafts the fixed question set for an asynchronous AI first round. Grounded ONLY in the requisition's JD text and skills, its knockout requirements, the round's competency focus, and the round's own scorecard rubric — every question names the rubric criterion it probes, and a set naming a criterion the round does not have is discarded rather than saved. The questions are a DRAFT: nothing is sent to a candidate until a named recruiter approves the set, at which point it freezes. It never scores, never rates, and never writes an 'ideal answer' — questions probe, humans judge. Disabling makes the Generate button refuse with a clear message instead of calling the model; question sets already approved are untouched and still usable.",
+  },
 };
 
 export const aiSettingsSchema = z.object({
@@ -197,6 +204,7 @@ export const aiSettingsSchema = z.object({
   recruiter_brief: aiFeatureSettingsSchema.default(featureDefault),
   iris_assistant: aiFeatureSettingsSchema.default(featureDefault),
   interview_notes: aiFeatureSettingsSchema.default(featureDefault),
+  ai_interview_questions: aiFeatureSettingsSchema.default(featureDefault),
   /**
    * Global deterministic PII redaction. When on, candidate-derived prompt
    * text going into scoring + agent-draft calls has emails / phone numbers /

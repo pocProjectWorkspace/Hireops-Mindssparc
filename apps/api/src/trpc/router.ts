@@ -239,6 +239,13 @@ import {
   completeInterviewMediaUploadOutputSchema,
   getInterviewNotesInputSchema,
   getInterviewNotesOutputSchema,
+  // N4.2 — AI interview question generation + the recruiter approval gate.
+  generateAiInterviewQuestionsInputSchema,
+  generateAiInterviewQuestionsOutputSchema,
+  approveAiInterviewQuestionsInputSchema,
+  approveAiInterviewQuestionsOutputSchema,
+  getAiInterviewSessionInputSchema,
+  getAiInterviewSessionOutputSchema,
   listUpcomingInterviewsInputSchema,
   listUpcomingInterviewsOutputSchema,
   type InterviewRow,
@@ -1031,6 +1038,11 @@ import {
   startUpload as startInterviewMediaUploadLib,
 } from "../lib/interview-media-upload";
 import { getInterviewNotes as getInterviewNotesLib } from "../lib/interview-notes-read";
+import {
+  approveQuestions as approveAiInterviewQuestionsLib,
+  generateQuestions as generateAiInterviewQuestionsLib,
+  getSession as getAiInterviewSessionLib,
+} from "../lib/ai-interview-questions";
 import {
   buildReqRevisionPrompt,
   reqRevisionJsonSchema,
@@ -7431,6 +7443,100 @@ export const appRouter = router({
             requestId: ctx.requestId,
           });
         },
+      });
+    }),
+
+  /* ───────── N4.2 — AI interview questions (generate → review → approve) ─────────
+   *
+   * THIN, like the two blocks above: the prompt, the grounding reads, the
+   * rubric-key validation and every statement live in
+   * ../lib/ai-interview-questions.ts. These three do role gating, resolve the
+   * caller's membership where a name has to go on the record, and hand over.
+   *
+   * Role gate is INTERVIEW_MANAGE_ROLES throughout — the N3.4a argument:
+   * deciding what a candidate is asked is running the hiring process, so it
+   * belongs to whoever manages interviews, not to the wider consent set and
+   * not to panellists. There is deliberately no candidate-facing route here;
+   * the signed link and the answer capture are N4.3's.
+   */
+
+  /** The recruiter's review read: the session (if any), the round's rubric,
+   * and the tenant kill switch next to the absence it explains. */
+  getAiInterviewSession: protectedProcedure
+    .input(getAiInterviewSessionInputSchema)
+    .output(getAiInterviewSessionOutputSchema)
+    .query(async ({ ctx, input }) => {
+      requireAnyRole(ctx, INTERVIEW_MANAGE_ROLES, "You don't have access to interviews.");
+      if (!ctx.tenantId) {
+        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
+      }
+      return getAiInterviewSessionLib(ctx.sql, {
+        tenantId: ctx.tenantId,
+        interviewId: input.interviewId,
+      });
+    }),
+
+  /** Generate or REGENERATE the question set. Refused once the set has been
+   * approved (frozen) — see the lib. Kill-switch checked before any model
+   * call. Audited: this is the call that decides what a candidate is asked. */
+  generateAiInterviewQuestions: protectedProcedure
+    .input(generateAiInterviewQuestionsInputSchema)
+    .output(generateAiInterviewQuestionsOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      requireAnyRole(
+        ctx,
+        INTERVIEW_MANAGE_ROLES,
+        "Only hiring managers, recruiters and admins can prepare AI interview questions.",
+      );
+      return withAudit("generate_ai_interview_questions", ctx, input, async () => {
+        if (!ctx.tenantId) {
+          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
+        }
+        // Nullable, unlike the approval below: this only attributes the AI
+        // spend on the ai_usage_logs row, and a caller with no membership
+        // should not be blocked from a draft over cost attribution.
+        const membershipId = await resolveActorMembership(requireDb(ctx), ctx);
+        const session = await generateAiInterviewQuestionsLib(ctx.sql, {
+          tenantId: ctx.tenantId,
+          interviewId: input.interviewId,
+          actorMembershipId: membershipId,
+          requestId: ctx.requestId,
+        });
+        return { session };
+      });
+    }),
+
+  /** The human gate. Stamps approver + approval time + freeze and moves
+   * draft → approved atomically — the three columns the DB CHECK requires
+   * before a session may reach any state a candidate can see. AUDITED,
+   * deliberately: who approved the questions put to a candidate is exactly
+   * the fact a regulator or a rejected candidate would ask about. */
+  approveAiInterviewQuestions: protectedProcedure
+    .input(approveAiInterviewQuestionsInputSchema)
+    .output(approveAiInterviewQuestionsOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      requireAnyRole(
+        ctx,
+        INTERVIEW_MANAGE_ROLES,
+        "Only hiring managers, recruiters and admins can approve AI interview questions.",
+      );
+      return withAudit("approve_ai_interview_questions", ctx, input, async () => {
+        if (!ctx.tenantId) {
+          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
+        }
+        // NOT nullable here. approved_by_membership_id is the provenance leg
+        // the CHECK insists on and the FK RESTRICTs — there is no safe
+        // fallback for "a human approved this but we don't know who".
+        const membershipId = await resolveActorMembership(requireDb(ctx), ctx);
+        if (!membershipId) {
+          throw new TRPCError({ code: "FORBIDDEN", message: "No membership in this tenant" });
+        }
+        const session = await approveAiInterviewQuestionsLib(ctx.sql, {
+          tenantId: ctx.tenantId,
+          interviewId: input.interviewId,
+          approvedByMembershipId: membershipId,
+        });
+        return { session };
       });
     }),
 
