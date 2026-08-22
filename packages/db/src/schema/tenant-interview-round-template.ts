@@ -76,9 +76,12 @@ export const tenantInterviewRoundTemplate = pgTable(
 
     index("idx_tenant_interview_round_template_tenant").on(table.tenantId),
 
+    // 0119 (N4.1): 'ai_async' — so a tenant's DEFAULT loop can put the
+    // asynchronous AI round in first position. Moves in lockstep with
+    // interview_plans.mode, interviews.mode and interviewModeSchema.
     check(
       "tenant_interview_round_template_mode_check",
-      sql`${table.mode} IN ('video', 'onsite', 'phone')`,
+      sql`${table.mode} IN ('video', 'onsite', 'phone', 'ai_async')`,
     ),
     check(
       "tenant_interview_round_template_scorecard_key_check",

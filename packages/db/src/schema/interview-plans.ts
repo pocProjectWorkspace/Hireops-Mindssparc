@@ -81,7 +81,13 @@ export const interviewPlans = pgTable(
 
     index("idx_interview_plans_requisition").on(table.tenantId, table.requisitionId),
 
-    check("interview_plans_mode_check", sql`${table.mode} IN ('video', 'onsite', 'phone')`),
+    // 0119 (N4.1): 'ai_async' — the asynchronous AI first round, planned like
+    // any other round. Moves in lockstep with interviews.mode,
+    // tenant_interview_round_template.mode and interviewModeSchema.
+    check(
+      "interview_plans_mode_check",
+      sql`${table.mode} IN ('video', 'onsite', 'phone', 'ai_async')`,
+    ),
     // T2.2 / G07: RELAXED from the fixed 4-value set to a lax SHAPE check
     // (snake_case, ≤64) so a tenant-defined scorecard key (tenant_scorecard_
     // template) is accepted. The strict membership guard MOVED to the procedure:

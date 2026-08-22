@@ -42,8 +42,17 @@ export type ApplicationSource = z.infer<typeof applicationSourceSchema>;
  * Interview mode + scorecard template + status (Wave B, INT-01/02). Mirror
  * the text + CHECK constraints on interview_plans / interviews. KEEP IN SYNC
  * with packages/db/src/schema/interview-plans.ts + interviews.ts.
+ *
+ * 'ai_async' (N4.1 / migration 0119) is the asynchronous AI first round: a
+ * fixed question set answered one at a time, by voice with a typed fallback.
+ * It is a MODE and not a separate screening entity, so the round inherits
+ * scheduling, completed_at/cancelled_at and interview-health reporting. The
+ * value is CHECK-constrained in THREE tables (interviews, interview_plans,
+ * tenant_interview_round_template) and this enum is the fourth site — all
+ * four move together, because a widened CHECK with a stale enum here means
+ * the api rejects rows the database accepts.
  */
-export const interviewModeSchema = z.enum(["video", "onsite", "phone"]);
+export const interviewModeSchema = z.enum(["video", "onsite", "phone", "ai_async"]);
 export type InterviewMode = z.infer<typeof interviewModeSchema>;
 
 export const interviewScorecardTemplateSchema = z.enum(["technical", "manager", "hr", "general"]);

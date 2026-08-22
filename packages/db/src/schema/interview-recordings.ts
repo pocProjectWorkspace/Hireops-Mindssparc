@@ -121,9 +121,14 @@ export const interviewRecordings = pgTable(
       .on(table.createdAt)
       .where(sql`media_purged_at IS NULL AND storage_key IS NOT NULL`),
 
+    // 0119 (N4.1) added 'ai_interview': media produced by the candidate's own
+    // browser inside an 'ai_async' round. No vendor and no recruiter upload,
+    // so `vendor` / `vendor_ref` stay NULL for the same reason they do on the
+    // manual path. This is the third ingestion path the discriminator was
+    // written to accept without a migration of the chain behind it.
     check(
       "interview_recordings_source_check",
-      sql`${table.source} IN ('manual_upload', 'vendor_bot')`,
+      sql`${table.source} IN ('manual_upload', 'vendor_bot', 'ai_interview')`,
     ),
     check(
       "interview_recordings_status_check",

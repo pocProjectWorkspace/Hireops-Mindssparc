@@ -124,13 +124,15 @@ export const interviewRecordingConsents = pgTable(
       "interview_recording_consents_purpose_check",
       sql`${table.purpose} = 'interview_recording'`,
     ),
-    // 0117 (N2a) widened this from the single 'candidate_confirm_link'. Note
-    // what it does NOT widen: `decision` is untouched, and the internal path
-    // hard-codes 'withdrawn', so there is still no seam by which staff can
-    // manufacture a GRANT on a candidate's behalf.
+    // 0117 (N2a) widened this from the single 'candidate_confirm_link'; 0119
+    // (N4.1) added 'ai_interview_link' for consent given on the AI round's
+    // entry screen. Note what neither widening touches: `decision` is
+    // unchanged, and the internal path hard-codes 'withdrawn', so there is
+    // still no seam by which staff can manufacture a GRANT on a candidate's
+    // behalf.
     check(
       "interview_recording_consents_captured_via_check",
-      sql`${table.capturedVia} IN ('candidate_confirm_link', 'internal_revocation')`,
+      sql`${table.capturedVia} IN ('candidate_confirm_link', 'internal_revocation', 'ai_interview_link')`,
     ),
 
     foreignKey({

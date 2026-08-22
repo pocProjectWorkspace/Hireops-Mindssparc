@@ -778,6 +778,13 @@
       "when": 1787270400000,
       "tag": "0118_interview_media_retention",
       "breakpoints": true
+    },
+    {
+      "idx": 119,
+      "version": "7",
+      "when": 1787443200000,
+      "tag": "0119_ai_interview",
+      "breakpoints": true
     }
   ]
 }

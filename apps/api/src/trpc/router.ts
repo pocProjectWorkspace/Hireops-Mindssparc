@@ -950,6 +950,12 @@ import {
   getIrisPolicyOutputSchema,
   updateIrisPolicyInputSchema,
   updateIrisPolicyOutputSchema,
+  // N4.1 — the single source of truth for the interview-mode vocabulary.
+  // This file previously restated the union as a literal in ten places; each
+  // copy was a place the vocabulary could silently fall behind the CHECK
+  // constraints and the zod enum, which is exactly what happened when
+  // 'ai_async' was added.
+  type InterviewMode,
 } from "@hireops/api-types";
 import { createClient } from "@supabase/supabase-js";
 import {
@@ -7005,7 +7011,7 @@ export const appRouter = router({
           roundNumber: r.roundNumber,
           roundName: r.roundName,
           durationMinutes: r.durationMinutes,
-          mode: r.mode as "video" | "onsite" | "phone",
+          mode: r.mode as InterviewMode,
           // T2.2 / G07: scorecardTemplate may be a code default OR a tenant custom
           // key — the output schema is a relaxed snake_case string.
           scorecardTemplate: r.scorecardTemplate,
@@ -7681,7 +7687,7 @@ export const appRouter = router({
             roundNumber: iv.roundNumber,
             roundName: iv.roundName,
             status: iv.status as "scheduled" | "completed" | "cancelled" | "no_show",
-            mode: iv.mode as "video" | "onsite" | "phone",
+            mode: iv.mode as InterviewMode,
             scheduledStart: toIsoString(iv.scheduledStart),
             scheduledEnd: toIsoString(iv.scheduledEnd),
             durationMinutes: iv.durationMinutes,
@@ -21555,7 +21561,7 @@ export const appRouter = router({
           roundNumber: r.roundNumber,
           roundName: r.roundName,
           durationMinutes: r.durationMinutes,
-          mode: r.mode as "video" | "onsite" | "phone",
+          mode: r.mode as InterviewMode,
           scorecardTemplate: (r.scorecardTemplate ?? "general") as
             | "technical"
             | "manager"
@@ -24500,7 +24506,7 @@ export const appRouter = router({
           roundNumber: r.roundNumber,
           roundName: r.roundName,
           durationMinutes: r.durationMinutes,
-          mode: r.mode as "video" | "onsite" | "phone",
+          mode: r.mode as InterviewMode,
           scorecardTemplateKey: r.scorecardTemplateKey,
           competencyFocus: Array.isArray(r.competencyFocus) ? (r.competencyFocus as string[]) : [],
         })),
@@ -28687,7 +28693,7 @@ async function buildPanelDashboard(
     roleTitle: r.role_title,
     roundNumber: r.round_number,
     roundName: r.round_name,
-    mode: r.mode as "video" | "onsite" | "phone",
+    mode: r.mode as InterviewMode,
     scheduledStart: toIsoString(r.scheduled_start),
     completedAt: toIsoString(r.completed_at),
     overdue: Boolean(r.overdue),
@@ -29055,7 +29061,7 @@ async function selectInterviewRows(
     scheduledStart: toIsoString(r.scheduledStart),
     scheduledEnd: toIsoString(r.scheduledEnd),
     durationMinutes: r.durationMinutes,
-    mode: r.mode as "video" | "onsite" | "phone",
+    mode: r.mode as InterviewMode,
     meetingUrl: r.meetingUrl,
     candidateConfirmedAt: toIsoString(r.candidateConfirmedAt),
     candidateName: r.candidateName,
@@ -29088,7 +29094,7 @@ async function doScheduleRound(
     scheduledStart: string;
     scheduledEnd?: string;
     durationMinutes?: number;
-    mode?: "video" | "onsite" | "phone";
+    mode?: InterviewMode;
     meetingUrl?: string;
     panelMembershipIds: string[];
     leadMembershipId?: string;
@@ -29156,7 +29162,7 @@ async function doScheduleRound(
     });
   }
 
-  const mode = input.mode ?? (plan.mode as "video" | "onsite" | "phone");
+  const mode = input.mode ?? (plan.mode as InterviewMode);
   const durationMinutes = input.durationMinutes ?? plan.durationMinutes;
   // T2.2 / G07 — RESOLVE the round's scorecard rubric ONCE, here, from the
   // tenant's custom rubrics (falling back to the 4 code defaults) and SNAPSHOT it

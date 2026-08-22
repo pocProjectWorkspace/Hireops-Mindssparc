@@ -136,7 +136,15 @@ export const interviews = pgTable(
       "interviews_status_check",
       sql`${table.status} IN ('scheduled', 'completed', 'cancelled', 'no_show')`,
     ),
-    check("interviews_mode_check", sql`${table.mode} IN ('video', 'onsite', 'phone')`),
+    // 0119 (N4.1) widened this with 'ai_async' — the asynchronous AI first
+    // round. It is a MODE, not a separate screening entity, so the round
+    // inherits scheduling, completed_at/cancelled_at, interview-health
+    // reporting and the media retention sweep unchanged. The same value is
+    // added to interview_plans, tenant_interview_round_template and
+    // interviewModeSchema in the same change — all four constrain the one
+    // vocabulary, and a widened CHECK with a stale zod enum means the api
+    // rejects what the database accepts.
+    check("interviews_mode_check", sql`${table.mode} IN ('video', 'onsite', 'phone', 'ai_async')`),
     // T2.2 / G07: the snapshot key had NO DB CHECK (0055 added it nullable). Add
     // the SAME lax shape guard as interview_plans (NULL allowed) for parity —
     // the column is stamped from the already-validated plan round, so this is
