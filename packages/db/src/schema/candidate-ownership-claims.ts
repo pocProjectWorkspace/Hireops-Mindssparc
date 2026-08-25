@@ -18,9 +18,11 @@ import { applications } from "./applications";
 import { ownershipClaimStatusEnum } from "./ownership-claim-status";
 
 /**
- * The claim-window state machine — 90 days by default (PARTNER_CLAIM_WINDOW_DAYS
- * in the api router), or the org's live MSA exclusivity_window_days once terms
- * are agreed. One active claim per (tenant, person),
+ * The claim-window state machine — the org's live MSA exclusivity_window_days
+ * once terms are agreed, otherwise the tenant fallback
+ * (tenants.settings.partnerDefaults.claimWindowDays, schema default 90 days —
+ * see packages/api-types/src/partner-defaults.ts). One active claim per
+ * (tenant, person),
  * enforced by the partial-unique index. Concurrent submission attempts
  * surface as constraint violations the app turns into "candidate already
  * claimed."

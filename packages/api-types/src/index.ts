@@ -35,6 +35,7 @@ export * from "./comp-bands";
 export * from "./panel-pools";
 export * from "./sla-thresholds";
 export * from "./retention-policy";
+export * from "./partner-defaults";
 export * from "./iris";
 export * from "./learning";
 export * from "./reports";

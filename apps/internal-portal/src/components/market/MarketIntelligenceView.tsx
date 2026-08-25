@@ -73,7 +73,7 @@ export function MarketIntelligenceView({
     ...new Set(rows.map((r) => r.sourceNote.trim()).filter((n) => n.length > 0)),
   ];
   const sourceNotesDiffer = distinctSourceNotes.length > 1;
-  const sourceNote = distinctSourceNotes[0] ?? "Curated benchmark, update quarterly";
+  const sourceNote = distinctSourceNotes[0] ?? "Curated benchmark — update quarterly";
 
   return (
     <>
@@ -236,7 +236,7 @@ function BenchmarkEditForm({ row, onDone }: { row: MarketBenchmarkRow; onDone: (
           .map((s) => s.trim())
           .filter(Boolean)
           .slice(0, 20),
-        sourceNote: sourceNote.trim() || "Curated benchmark, update quarterly",
+        sourceNote: sourceNote.trim() || "Curated benchmark — update quarterly",
       });
       onDone();
     } catch (err) {
