@@ -18,7 +18,9 @@ import { applications } from "./applications";
 import { ownershipClaimStatusEnum } from "./ownership-claim-status";
 
 /**
- * The 6-month-window state machine. One active claim per (tenant, person),
+ * The claim-window state machine — 90 days by default (PARTNER_CLAIM_WINDOW_DAYS
+ * in the api router), or the org's live MSA exclusivity_window_days once terms
+ * are agreed. One active claim per (tenant, person),
  * enforced by the partial-unique index. Concurrent submission attempts
  * surface as constraint violations the app turns into "candidate already
  * claimed."
@@ -31,7 +33,7 @@ import { ownershipClaimStatusEnum } from "./ownership-claim-status";
  * status='active' but expires_at < now() WILL still block a new claim
  * until the background sweep flips status to 'expired'. The sweep is
  * load-bearing now (was a nice-to-have when the index could check
- * expires_at itself). Run frequency: daily is enough for the 6-month
+ * expires_at itself). Run frequency: daily is enough for a months-long
  * window; expiry boundaries don't need to-the-second accuracy.
  *
  * superseded_by_claim_id is the chain pointer: when claim A releases and

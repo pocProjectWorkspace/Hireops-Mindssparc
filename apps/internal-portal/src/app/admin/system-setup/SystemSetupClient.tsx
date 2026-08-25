@@ -22,10 +22,10 @@ import { trpc } from "@/lib/trpc-client";
  * audited, merged into tenants.settings.systemSetup alongside — never over —
  * aiSettings / biasLexicon / scoringWeights).
  *
- * The SLA hours themselves are NOT edited here: they stay hardcoded in
- * @hireops/sla-thresholds. This screen only configures who gets alerted and a
- * simple days→recipient→severity escalation. The full tenant-configurable SLA
- * table is Phase-3 deferred, and the SLA engine is untouched.
+ * The SLA hours themselves are NOT edited here: since T4.1 they are per-tenant
+ * config (tenants.settings.slaThresholds) with their own /admin/sla-thresholds
+ * surface. This screen only configures who gets alerted and a simple
+ * days→recipient→severity escalation.
  */
 
 const inputCls =

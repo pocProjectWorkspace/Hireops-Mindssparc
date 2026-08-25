@@ -9365,9 +9365,9 @@ export const appRouter = router({
   // Admin read of the per-tenant system-setup block (email alerts + simple
   // escalation rules) from tenants.settings.systemSetup, merged over defaults.
   // Admin-gated on the procedure. Read-only, no withAudit (matches the other
-  // settings reads). The SLA hours themselves stay hardcoded in
-  // @hireops/sla-thresholds — this block only configures WHO gets alerted, not
-  // the thresholds (that stays Phase-3 deferred).
+  // settings reads). The SLA hours themselves are tenant-configurable since
+  // T4.1 (tenants.settings.slaThresholds, edited at /admin/sla-thresholds) —
+  // this block only configures WHO gets alerted, not the thresholds.
   getSystemSetup: protectedProcedure
     .input(getSystemSetupInputSchema)
     .output(getSystemSetupOutputSchema)
