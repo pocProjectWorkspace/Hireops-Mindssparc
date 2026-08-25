@@ -2,13 +2,27 @@ import { sql as poolSql, db as poolDb } from "@hireops/db";
 import type { ApplicationStage } from "@hireops/db";
 import { enqueueNotification } from "@hireops/notifications";
 import { SLA_BREACH_STAGES, resolveSlaThresholds } from "@hireops/sla-thresholds";
-import { resolveSystemSetup, type SystemSetup } from "@hireops/api-types";
+import {
+  SLA_IMMINENT_WINDOW_HOURS_DEFAULT,
+  resolveSystemSetup,
+  type SystemSetup,
+} from "@hireops/api-types";
 import type { Logger } from "@hireops/observability";
 
 /**
  * Scan every tenant for applications approaching the per-stage SLA
- * threshold within IMMINENT_WINDOW_HOURS, group by primary_recruiter,
- * enqueue one sla-breach-imminent notification per recruiter.
+ * threshold within that tenant's imminent WINDOW, group by
+ * primary_recruiter, enqueue one sla-breach-imminent notification per
+ * recruiter.
+ *
+ * A4 — the window is no longer a platform constant. It comes from the
+ * tenant's own System Setup block
+ * (`tenants.settings.systemSetup.slaImminentWindowHours`, 1–48 h,
+ * resolver default SLA_IMMINENT_WINDOW_HOURS_DEFAULT = 4). A tenant that
+ * has never touched it — or whose block predates A4, or is corrupt —
+ * resolves to 4 and behaves exactly as before. The window is a LEAD TIME
+ * measured back from each stage's own threshold, which stays in
+ * `tenants.settings.slaThresholds` (/admin/sla-thresholds).
  *
  * Dedup: dedup_key encodes (tenant_id, recruiter_id, date) — at most
  * one alert per recruiter per UTC day. The next day's scan emits a
@@ -17,6 +31,9 @@ import type { Logger } from "@hireops/observability";
  * Admin System Setup consumption (G25/D1): beyond the recruiter's own
  * alert, this scan honours the tenant's `tenants.settings.systemSetup`
  * config (resolveSystemSetup):
+ *   - `slaImminentWindowHours` sets how far ahead of each stage's threshold
+ *     an application counts as imminent (A4, above). This one applies
+ *     unconditionally — it shapes the scan itself, not who is emailed.
  *   - When email alerts are ENABLED and the `sla_breach` alert type is on,
  *     the configured recipients also receive an operational SLA alert
  *     (distinct template, honest ops copy) per recruiter-with-breaches.
@@ -44,8 +61,6 @@ import type { Logger } from "@hireops/observability";
  *     was a "show this back to me" snooze, not an auto-decide)
  */
 
-const IMMINENT_WINDOW_HOURS = 4;
-
 interface RawRow {
   tenant_id: string;
   recruiter_membership_id: string;
@@ -64,19 +79,40 @@ export async function slaImminentScan(log: Logger): Promise<void> {
   // global CASE. Load every tenant's map once for the tick.
   const thresholdsByTenant = await loadSlaThresholdsByTenant();
 
+  // A4 — per-tenant admin System Setup, loaded BEFORE the CASE is composed
+  // because the imminent window (`slaImminentWindowHours`) is now one of its
+  // fields and therefore an input to the SQL. The same map is reused by the
+  // recipient loop and the escalation sweep below. resolveSystemSetup owns
+  // the default-merge — we never re-derive defaults here.
+  const setupByTenant = await loadSystemSetupByTenant();
+
   // Build the SQL CASE: one branch per (tenant, non-null stage). Tenant ids
-  // come from the DB (uuid literals) and stage names from the code enum map —
-  // the same injection profile as the pre-config unsafe interpolation.
+  // come from the DB (uuid literals) and stage names from the code enum map;
+  // the window is an integer clamped by the schema to 1–48 — the same
+  // injection profile as the pre-config unsafe interpolation.
   const thresholdCases: string[] = [];
   for (const [tenantId, thresholds] of thresholdsByTenant) {
+    // A tenant absent from the setup map (or with no override) uses the
+    // platform default window.
+    const windowHours =
+      setupByTenant.get(tenantId)?.slaImminentWindowHours ?? SLA_IMMINENT_WINDOW_HOURS_DEFAULT;
     for (const [stage, hours] of Object.entries(thresholds) as [
       ApplicationStage,
       number | null,
     ][]) {
       if (hours === null) continue;
       // imminent = stage entered between (threshold - window) and threshold hours ago.
+      //
+      // CLAMP: the window is capped at the stage's OWN threshold. Without the
+      // Math.max a tenant whose window exceeds a short stage's SLA would
+      // produce `interval '-2 hours'`, making the lower bound LATER than now()
+      // and flagging every application in that stage from the moment of entry
+      // (and forever after, since the upper bound is the only other guard).
+      // Clamped, the worst case is honest: that stage is "imminent from
+      // entry" — never before entry.
+      const leadFromEntry = Math.max(hours - windowHours, 0);
       thresholdCases.push(
-        `WHEN a.tenant_id = '${tenantId}'::uuid AND a.current_stage = '${stage}' AND a.stage_entered_at < now() - interval '${hours - IMMINENT_WINDOW_HOURS} hours' AND a.stage_entered_at > now() - interval '${hours} hours' THEN true`,
+        `WHEN a.tenant_id = '${tenantId}'::uuid AND a.current_stage = '${stage}' AND a.stage_entered_at < now() - interval '${leadFromEntry} hours' AND a.stage_entered_at > now() - interval '${hours} hours' THEN true`,
       );
     }
   }
@@ -114,12 +150,6 @@ export async function slaImminentScan(log: Logger): Promise<void> {
   const portalBase = process.env.NEXT_PUBLIC_SITE_URL ?? "http://localhost:3002";
   const triageUrl = `${portalBase}/triage`;
   const today = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
-
-  // Per-tenant admin System Setup (email-alert recipients, alert-type
-  // toggles, escalation rules). Loaded once for the whole tick and reused
-  // by both the imminent loop and the escalation sweep. resolveSystemSetup
-  // owns the default-merge — we never re-derive defaults here.
-  const setupByTenant = await loadSystemSetupByTenant();
 
   let cfgRecipientAlerts = 0;
 
@@ -186,7 +216,8 @@ export async function slaImminentScan(log: Logger): Promise<void> {
  * Load every tenant's resolved System Setup config keyed by tenant id.
  * Cross-tenant (service-role poolSql), matching the scan's own reads.
  * resolveSystemSetup merges the stored jsonb over defaults, so malformed
- * or absent blocks degrade to the safe defaults (alerts off, no rules).
+ * or absent blocks degrade to the safe defaults (alerts off, no rules,
+ * the 4-hour default imminent window).
  */
 async function loadSystemSetupByTenant(): Promise<Map<string, SystemSetup>> {
   const rows = await poolSql<{ tenant_id: string; settings: unknown }[]>`
