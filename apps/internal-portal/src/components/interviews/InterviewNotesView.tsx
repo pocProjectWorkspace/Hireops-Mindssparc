@@ -201,7 +201,7 @@ export function InterviewNotesView({ interviewId }: { interviewId: string }) {
             of it, so "audio gone, transcript kept" reads as the normal
             retention outcome it is. */}
         {recording?.mediaPurgedAt && transcript ? (
-          <Badge tone="neutral">Audio deleted after 30 days · transcript kept</Badge>
+          <Badge tone="neutral">Audio deleted per retention policy · transcript kept</Badge>
         ) : null}
         {phase.inFlight ? (
           <Button

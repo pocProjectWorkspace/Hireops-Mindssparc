@@ -186,7 +186,8 @@ export interface StorageClient {
    * on transport failure.
    *
    * RETENTION NOTE (not implemented here): interview audio is a transient
-   * artefact — the client's decision is 30-day retention on media while
+   * artefact — retained per tenant policy (settings.retentionPolicy
+   * .interviewAudioDays, default 30, hard ceiling 90) while
    * transcripts are kept indefinitely. A later ticket adds
    * `media_purged_at` plus a sweep worker; this method will simply start
    * throwing StorageNotFoundError for purged recordings, which is exactly
