@@ -1,20 +1,35 @@
 import { sql as poolSql } from "@hireops/db";
 import { getStorageClient, StorageNotFoundError } from "@hireops/api/storage";
+import {
+  INTERVIEW_AUDIO_HARD_CEILING_DAYS,
+  INTERVIEW_AUDIO_RETENTION_DAYS_DEFAULT,
+  resolveRetentionPolicy,
+} from "@hireops/api-types";
 import type { Logger } from "@hireops/observability";
 
 /**
  * N3.RET — interview-audio retention sweep.
  *
- * The client's decision, and what this job makes true: interview AUDIO is
- * retained for 30 days; TRANSCRIPTS AND NOTES ARE KEPT. Nothing in this file
+ * What this job makes true: interview AUDIO is deleted once it is past its
+ * retention window; TRANSCRIPTS AND NOTES ARE KEPT. Nothing in this file
  * touches interview_transcripts or interview_notes — the sweep deletes the
  * stored object, nulls storage_key and stamps interview_recordings
  * .media_purged_at (0118), and that is the whole of its blast radius.
  *
+ * A2 — THE RETENTION WINDOW IS PER TENANT. It is no longer the constant this
+ * file used to own. Each tenant's window comes from its own retention policy
+ * (`tenants.settings.retentionPolicy.interviewAudioDays`, 1–90 days, edited at
+ * /admin/retention-policy), resolved through resolveRetentionPolicy so a tenant
+ * that has never touched it — or whose block predates A2, or is corrupt —
+ * resolves to INTERVIEW_AUDIO_RETENTION_DAYS_DEFAULT (30) and purges exactly as
+ * it did before. THE 90-DAY HARD CEILING BELOW STAYS GLOBAL and is deliberately
+ * not configurable (see WINDOW 2 and sweep finding B9): a tenant sets its
+ * number UNDER the platform promise, never above it.
+ *
  * It lands BEFORE N3.4 deliberately. N3.4 is what starts producing real
  * recordings, and no real recording should ever exist without a purge path
- * behind it — otherwise "we keep audio for 30 days" is a claim with nothing
- * enforcing it.
+ * behind it — otherwise a retention promise is a claim with nothing enforcing
+ * it.
  *
  * A SCHEDULED JOB, NOT A DRAIN LOOP. Registered in SCHEDULED_JOBS alongside
  * ownership_claim_sweep: cross-tenant, service-role poolSql, same run-vs-
@@ -38,13 +53,19 @@ type SqlHandle = typeof poolSql;
 
 /**
  * WINDOW 1 — the rule. Retention runs from INTERVIEW COMPLETION, not from
- * when the recording was made: the client's decision is "30 days after the
- * interview", and an interview whose media landed a week late is still the
- * same interview. `interviews.cancelled_at` counts the same as
- * `completed_at` — a cancelled round is over, and its audio has no longer a
- * claim on the tenant's storage than a completed one does.
+ * when the recording was made: the decision is "N days after the interview",
+ * and an interview whose media landed a week late is still the same
+ * interview. `interviews.cancelled_at` counts the same as `completed_at` — a
+ * cancelled round is over, and its audio has no longer a claim on the
+ * tenant's storage than a completed one does.
+ *
+ * N IS PER TENANT (A2). This constant is now only the DEFAULT — what a tenant
+ * with no configured `interviewAudioDays` gets — and it is an alias, not a
+ * second copy: the single source is the schema default in
+ * @hireops/api-types/retention-policy, which is also what bounds the admin
+ * field. The old name is kept because the api retention suite imports it.
  */
-export const INTERVIEW_MEDIA_RETENTION_DAYS = 30;
+export const INTERVIEW_MEDIA_RETENTION_DAYS = INTERVIEW_AUDIO_RETENTION_DAYS_DEFAULT;
 
 /**
  * WINDOW 2 — the backstop, and it matters as much as the rule.
@@ -55,30 +76,33 @@ export const INTERVIEW_MEDIA_RETENTION_DAYS = 30;
  * cancelled_at, and no no_show_at), so GREATEST(completed_at, cancelled_at)
  * is NULL for it forever. A round that is simply abandoned behaves the same
  * way. Under window 1 alone their audio would be kept FOREVER, which would
- * make "we keep audio for 30 days" a false statement about the platform.
+ * make "we delete interview audio" a false statement about the platform.
  *
  * So there is a hard ceiling on the recording's OWN created_at, regardless of
  * what the interview ever did. 90 days is deliberately generous relative to
- * the 30-day rule: it must never be the window that fires for a normally
- * completed interview (that would be the rule failing quietly), only the one
- * that catches rounds the state machine dropped. If a recording is being
- * purged by the ceiling, something upstream did not close the round — the
- * structured log below names which window fired precisely so that shows up.
+ * the default 30-day rule: it must never be the window that fires for a
+ * normally completed interview (that would be the rule failing quietly), only
+ * the one that catches rounds the state machine dropped. If a recording is
+ * being purged by the ceiling, something upstream did not close the round —
+ * the structured log below names which window fired precisely so that shows
+ * up.
+ *
+ * A2 — THIS ONE STAYS GLOBAL. Window 1 became per-tenant; this did not, and
+ * the asymmetry is the point. The ceiling is the platform's promise about
+ * rounds nobody is watching, so a tenant cannot lengthen it — and because the
+ * schema caps `interviewAudioDays` at exactly this number, a tenant cannot
+ * configure a window that would outlive it either. Alias of the schema
+ * constant for the same single-source reason as WINDOW 1.
  */
-export const INTERVIEW_MEDIA_HARD_CEILING_DAYS = 90;
+export const INTERVIEW_MEDIA_HARD_CEILING_DAYS = INTERVIEW_AUDIO_HARD_CEILING_DAYS;
 
 /**
- * PROMOTION PATH (not built, and deliberately not built now). If a tenant
- * ever needs a different retention period, these two numbers become the
- * DEFAULTS of a `tenants.settings.interviewMediaRetention` block resolved
- * over them — the resolveAiBudget / resolveRetentionPolicy house pattern: a
- * versioned zod schema, a `resolve*` that falls back to defaults on a
- * malformed block rather than throwing, and a per-tenant read inside the loop
- * below instead of the two constants. The sweep would then be per-tenant
- * rather than one cross-tenant query. Nothing about the schema or this job
- * blocks that; there is simply no second tenant asking for it, and shipping a
- * configuration surface nobody has requested for a compliance promise that is
- * currently uniform would be inventing a decision the client already made.
+ * PROMOTION PATH — TAKEN, in A2, and it landed where the note above predicted
+ * except for the block name. Window 1 is now the `interviewAudioDays` field of
+ * the EXISTING `tenants.settings.retentionPolicy` block rather than a new
+ * `interviewMediaRetention` sibling: a tenant thinking about "how long do we
+ * keep things" should find one page, not two, and /admin/retention-policy was
+ * already that page. Window 2 was deliberately NOT promoted — see above.
  */
 
 /**
@@ -105,12 +129,21 @@ interface PurgeCandidate {
 export interface InterviewMediaPurgeResult {
   /** Recordings whose media is gone and whose row now says so. */
   purged: number;
-  /** Purged by the 30-day rule (a subset of `purged`). */
+  /** Purged by the tenant's own retention window (a subset of `purged`). */
   byRetentionWindow: number;
   /** Purged by the 90-day backstop (a subset of `purged`) — see WINDOW 2. */
   byHardCeiling: number;
   /** Rows this pass could not purge. Left alone; the next pass retries them. */
   failed: number;
+  /** Tenants whose retention window was resolved for this pass. */
+  tenantsScanned: number;
+  /**
+   * Of those, how many resolved to something OTHER than the platform default.
+   * This is what the pass can honestly say about "the retention window" now
+   * that there is no single one: 0 here means every tenant purged at the
+   * default, which is the pre-A2 behaviour.
+   */
+  tenantsWithCustomRetention: number;
 }
 
 /**
@@ -151,20 +184,34 @@ export interface InterviewMediaPurgeResult {
  * Per-row try/catch, the discipline every other sweep uses: one unreachable
  * bucket or one bad key cannot kill the pass, and the row is simply left for
  * tomorrow.
+ *
+ * A2 — WHY THE QUERY IS COMPOSED RATHER THAN PARAMETERISED. Window 1's day
+ * count is now per tenant, so it cannot be one bound parameter. Every tenant's
+ * resolved window is loaded once per pass and folded into a single SQL CASE
+ * keyed on r.tenant_id — the sla-imminent-scan (T4.1/A4) pattern, one
+ * cross-tenant query rather than one query per tenant. A tenant with no branch
+ * (or none loaded at all) falls to the CASE's ELSE, the platform default, which
+ * is exactly the pre-A2 behaviour. Only the CASE is composed; the batch limit
+ * is still bound.
  */
 export async function purgeExpiredInterviewMedia(
   sql: SqlHandle,
   opts: { limit?: number; log?: Logger } = {},
 ): Promise<InterviewMediaPurgeResult> {
   const limit = opts.limit ?? PURGE_BATCH_LIMIT;
+  const retentionDaysByTenant = await loadInterviewAudioDaysByTenant(sql);
+  // The SQL expression yielding THIS row's tenant's retention window in days.
+  const retentionDaysExpr = buildRetentionDaysExpr(retentionDaysByTenant);
+  const retentionCutoff = `now() - make_interval(days => ${retentionDaysExpr})`;
+  const ceilingCutoff = `now() - make_interval(days => ${INTERVIEW_MEDIA_HARD_CEILING_DAYS})`;
 
-  const candidates = await sql<PurgeCandidate[]>`
+  const candidates = await sql.unsafe<PurgeCandidate[]>(
+    `
     SELECT r.id,
            r.tenant_id::text AS tenant_id,
            r.storage_key,
            CASE
-             WHEN GREATEST(iv.completed_at, iv.cancelled_at)
-                  <= now() - make_interval(days => ${INTERVIEW_MEDIA_RETENTION_DAYS})
+             WHEN GREATEST(iv.completed_at, iv.cancelled_at) <= ${retentionCutoff}
              THEN 'retention_window'
              ELSE 'hard_ceiling'
            END AS reason
@@ -175,9 +222,8 @@ export async function purgeExpiredInterviewMedia(
      WHERE r.media_purged_at IS NULL
        AND r.storage_key IS NOT NULL
        AND (
-             GREATEST(iv.completed_at, iv.cancelled_at)
-               <= now() - make_interval(days => ${INTERVIEW_MEDIA_RETENTION_DAYS})
-          OR r.created_at <= now() - make_interval(days => ${INTERVIEW_MEDIA_HARD_CEILING_DAYS})
+             GREATEST(iv.completed_at, iv.cancelled_at) <= ${retentionCutoff}
+          OR r.created_at <= ${ceilingCutoff}
        )
        AND NOT EXISTS (
              SELECT 1
@@ -187,8 +233,10 @@ export async function purgeExpiredInterviewMedia(
                 AND o.status IN ('pending', 'processing')
        )
      ORDER BY r.created_at
-     LIMIT ${limit}
-  `;
+     LIMIT $1
+  `,
+    [limit],
+  );
 
   const storage = getStorageClient();
   const result: InterviewMediaPurgeResult = {
@@ -196,6 +244,10 @@ export async function purgeExpiredInterviewMedia(
     byRetentionWindow: 0,
     byHardCeiling: 0,
     failed: 0,
+    tenantsScanned: retentionDaysByTenant.size,
+    tenantsWithCustomRetention: [...retentionDaysByTenant.values()].filter(
+      (d) => d !== INTERVIEW_MEDIA_RETENTION_DAYS,
+    ).length,
   };
 
   for (const row of candidates) {
@@ -245,6 +297,66 @@ export async function purgeExpiredInterviewMedia(
 }
 
 /**
+ * A2 — every tenant's RESOLVED interview-audio retention window, in days,
+ * keyed by tenant id. One cross-tenant read per pass (the
+ * loadSystemSetupByTenant / loadSlaThresholdsByTenant shape from
+ * sla-imminent-scan), on the same handle the caller passed in so the api
+ * retention suite drives this code rather than a copy of it.
+ *
+ * resolveRetentionPolicy owns the default-merge and never throws, so an absent
+ * block, a partial pre-A2 block (documents only) and a corrupt one all resolve
+ * to INTERVIEW_MEDIA_RETENTION_DAYS — the value the sweep used to hard-code.
+ * Defaults are never re-derived here.
+ */
+async function loadInterviewAudioDaysByTenant(sql: SqlHandle): Promise<Map<string, number>> {
+  const rows = await sql<{ tenant_id: string; settings: unknown }[]>`
+    SELECT id::text AS tenant_id, settings FROM public.tenants
+  `;
+  const map = new Map<string, number>();
+  for (const r of rows) {
+    const settings = (r.settings ?? {}) as Record<string, unknown>;
+    map.set(r.tenant_id, resolveRetentionPolicy(settings.retentionPolicy).interviewAudioDays);
+  }
+  return map;
+}
+
+/**
+ * A tenant id we are willing to splice into SQL text. The ids come from
+ * `tenants.id` (a uuid column), so this can only fail if the driver hands back
+ * something that is not a uuid — but the sweep composes SQL, and a composed
+ * query gets a guard rather than an assumption. A row that fails it is skipped,
+ * which costs that tenant nothing worse than the platform default window.
+ */
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * Compose the per-tenant retention window as ONE SQL integer expression:
+ *
+ *   CASE r.tenant_id WHEN '<uuid>'::uuid THEN 45 ... ELSE 30 END
+ *
+ * Both sides of every branch are checked before they are spliced: the id
+ * against UUID_RE above, the day count against the same 1..90 bounds the schema
+ * enforces on the write path (a value outside them could only come from a
+ * hand-edited settings row that also somehow passed resolveRetentionPolicy, but
+ * "could only" is not a thing to splice into SQL on).
+ *
+ * With no branches at all — no tenants, or none that survived the guards — this
+ * degrades to the bare default, i.e. exactly the constant the pre-A2 sweep
+ * interpolated.
+ */
+function buildRetentionDaysExpr(daysByTenant: Map<string, number>): string {
+  const branches: string[] = [];
+  for (const [tenantId, days] of daysByTenant) {
+    if (!UUID_RE.test(tenantId)) continue;
+    if (!Number.isInteger(days) || days < 1 || days > INTERVIEW_MEDIA_HARD_CEILING_DAYS) continue;
+    if (days === INTERVIEW_MEDIA_RETENTION_DAYS) continue; // the ELSE already says this
+    branches.push(`WHEN '${tenantId}'::uuid THEN ${days}`);
+  }
+  if (branches.length === 0) return String(INTERVIEW_MEDIA_RETENTION_DAYS);
+  return `CASE r.tenant_id ${branches.join(" ")} ELSE ${INTERVIEW_MEDIA_RETENTION_DAYS} END`;
+}
+
+/**
  * Held apart from the loop only so the catch stays one line and the logger is
  * not threaded through the helper signature. Uses console.warn because
  * purgeExpiredInterviewMedia takes no Logger (the run-vs-helper split keeps
@@ -269,7 +381,13 @@ export async function interviewMediaPurgeSweep(log: Logger): Promise<void> {
       // see WINDOW 2. Worth noticing, not worth failing the pass over.
       by_hard_ceiling: r.byHardCeiling,
       failed: r.failed,
-      retention_days: INTERVIEW_MEDIA_RETENTION_DAYS,
+      // A2 — there is no longer ONE retention window to log, so the pass
+      // reports the default plus how many tenants departed from it. Logging a
+      // single `retention_days` here would now be a lie for every tenant that
+      // configured its own.
+      tenants_scanned: r.tenantsScanned,
+      tenants_with_custom_retention: r.tenantsWithCustomRetention,
+      retention_days_default: INTERVIEW_MEDIA_RETENTION_DAYS,
       hard_ceiling_days: INTERVIEW_MEDIA_HARD_CEILING_DAYS,
     },
     "interview_media_purge.complete",

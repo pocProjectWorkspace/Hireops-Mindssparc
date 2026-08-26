@@ -289,8 +289,10 @@ export async function drainTranscriptOutboxOnce(
       }
 
       // ── 0. Has the audio already been purged? ───────────────────────────
-      // 0118's retention sweep deletes the bytes 30 days after the interview
-      // completes. It deliberately skips recordings with an active outbox row,
+      // 0118's retention sweep deletes the bytes once the interview is past
+      // its tenant's audio-retention window (A2 —
+      // settings.retentionPolicy.interviewAudioDays, 30 days by default,
+      // measured from completion). It skips recordings with an active outbox row,
       // so reaching here means the row was enqueued (or re-enqueued) after the
       // purge — a late manual re-run, most likely.
       //

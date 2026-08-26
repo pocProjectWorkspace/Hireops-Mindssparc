@@ -14,7 +14,8 @@
  *           getRetentionPolicy (admin) returns it + the raw block is in the DB
  *           jsonb; a synthetic sibling tenant is untouched (isolation).
  *   Test 2: resolve-over-defaults — an UNCONFIGURED tenant resolves to
- *           defaultRetentionPolicy() ({overridesByCode:{}, defaultYears:null}).
+ *           defaultRetentionPolicy() ({overridesByCode:{}, defaultYears:null,
+ *           interviewAudioDays:30 — the A2 audio window's platform default).
  *   Test 3: effectiveRetentionYears unit — override > reference > defaultYears >
  *           null (pure helper, no DB).
  *   Test 4: role gating — admin + hr_head can read AND write; recruiter is
@@ -41,6 +42,7 @@ import { createClient } from "@supabase/supabase-js";
 import { app } from "../src/index.js";
 import { sql as poolSql } from "@hireops/db";
 import {
+  INTERVIEW_AUDIO_RETENTION_DAYS_DEFAULT,
   defaultRetentionPolicy,
   resolveRetentionPolicy,
   effectiveRetentionYears,
@@ -134,6 +136,9 @@ function policyWith(partial: Partial<RetentionPolicy>): RetentionPolicy {
   return {
     overridesByCode: partial.overridesByCode ?? base.overridesByCode,
     defaultYears: partial.defaultYears ?? base.defaultYears,
+    // A2 — the block gained an interview-audio window. Defaulted here so these
+    // document-focused cases keep writing a complete, valid policy.
+    interviewAudioDays: partial.interviewAudioDays ?? base.interviewAudioDays,
   };
 }
 
@@ -306,11 +311,18 @@ describe("T4.3 — document retention policy + honest overdue register", () => {
       defaultRetentionPolicy(),
       "resolves to defaultRetentionPolicy()",
     );
-    assert.deepEqual(get.result.data, { overridesByCode: {}, defaultYears: null });
+    assert.deepEqual(get.result.data, {
+      overridesByCode: {},
+      defaultYears: null,
+      interviewAudioDays: INTERVIEW_AUDIO_RETENTION_DAYS_DEFAULT,
+    });
   });
 
   it("Test 3: effectiveRetentionYears — override > reference > defaultYears > null", async () => {
-    const policy: RetentionPolicy = { overridesByCode: { government_id: 3 }, defaultYears: 5 };
+    const policy: RetentionPolicy = policyWith({
+      overridesByCode: { government_id: 3 },
+      defaultYears: 5,
+    });
     // override wins over the reference.
     assert.equal(effectiveRetentionYears("government_id", 7, policy), 3);
     // no override → reference wins over defaultYears.
@@ -318,16 +330,14 @@ describe("T4.3 — document retention policy + honest overdue register", () => {
     // no override, no reference → defaultYears.
     assert.equal(effectiveRetentionYears("misc_code", null, policy), 5);
     // no override, no reference, no defaultYears → null (never overdue).
-    assert.equal(
-      effectiveRetentionYears("misc_code", null, { overridesByCode: {}, defaultYears: null }),
-      null,
-    );
+    assert.equal(effectiveRetentionYears("misc_code", null, defaultRetentionPolicy()), null);
     // an override of 0 is honoured (immediate erasure eligibility), not treated as absent.
     assert.equal(
-      effectiveRetentionYears("government_id", 7, {
-        overridesByCode: { government_id: 0 },
-        defaultYears: null,
-      }),
+      effectiveRetentionYears(
+        "government_id",
+        7,
+        policyWith({ overridesByCode: { government_id: 0 } }),
+      ),
       0,
     );
     // resolveRetentionPolicy over junk falls back to the default, never throws.
