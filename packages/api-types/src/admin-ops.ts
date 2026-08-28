@@ -335,10 +335,31 @@ export type EscalationRule = z.infer<typeof escalationRuleSchema>;
 
 export const SYSTEM_SETUP_VERSION = 1 as const;
 
+/** A4 — how far ahead of a stage's SLA threshold the imminent-breach scan
+ * warns. Platform default 4 h (the pre-config constant that lived in
+ * apps/workers/src/jobs/sla-imminent-scan.ts), tunable 1–48 h per tenant for
+ * alert-fatigue reasons. It is a LEAD TIME, not a threshold: the thresholds
+ * themselves stay in `tenants.settings.slaThresholds` (/admin/sla-thresholds).
+ * The scan clamps the window to each stage's own threshold, so a window wider
+ * than a stage's SLA makes that stage "imminent from entry" and never earlier.
+ */
+export const SLA_IMMINENT_WINDOW_HOURS_DEFAULT = 4 as const;
+export const SLA_IMMINENT_WINDOW_HOURS_MIN = 1 as const;
+export const SLA_IMMINENT_WINDOW_HOURS_MAX = 48 as const;
+
 export const systemSetupSchema = z.object({
   version: z.literal(SYSTEM_SETUP_VERSION).default(SYSTEM_SETUP_VERSION),
   emailAlerts: emailAlertsConfigSchema.default(() => emailAlertsConfigSchema.parse({})),
   escalationRules: z.array(escalationRuleSchema).max(10).default([]),
+  /** Hours before a stage's SLA threshold at which the scan starts alerting.
+   * Defaulted, so blocks stored before A4 resolve to 4 without a version bump
+   * (version bumps are reserved for BREAKING shape changes). */
+  slaImminentWindowHours: z
+    .number()
+    .int()
+    .min(SLA_IMMINENT_WINDOW_HOURS_MIN)
+    .max(SLA_IMMINENT_WINDOW_HOURS_MAX)
+    .default(SLA_IMMINENT_WINDOW_HOURS_DEFAULT),
 });
 export type SystemSetup = z.infer<typeof systemSetupSchema>;
 

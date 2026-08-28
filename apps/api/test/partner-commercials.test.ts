@@ -37,6 +37,7 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { TRPCError } from "@trpc/server";
 import { sql as poolSql } from "@hireops/db";
+import { defaultPartnerDefaults } from "@hireops/api-types";
 import { createLogger } from "@hireops/observability";
 import { appRouter } from "../src/trpc/router";
 import type { HonoTRPCContext } from "../src/trpc/trpc-core";
@@ -330,7 +331,7 @@ describe("P2.2 partner commercials — MSA, claim window, fee accrual", () => {
     assert.equal(unchanged.msa?.msaId, second.msaId, "the live row survived both rejections");
   });
 
-  it("Test 2: the claim window comes from the live MSA, and falls back to 90 without one", async () => {
+  it("Test 2: the claim window comes from the live MSA, and falls back to the tenant default without one", async () => {
     const outA = await makePartnerCaller(PARTNER_ADMIN_A_AUTH).partnerSubmitCandidate(
       submitInput({
         fullName: "Anita Commercials",
@@ -344,7 +345,9 @@ describe("P2.2 partner commercials — MSA, claim window, fee accrual", () => {
     const windowA = daysBetween(new Date().toISOString(), outA.claimExpiresAt);
     assert.equal(windowA, WINDOW_DAYS, "org A's window is its MSA's exclusivity_window_days");
 
-    // Org B has no MSA at all — the hardcoded PARTNER_CLAIM_WINDOW_DAYS stands.
+    // Org B has no MSA at all, and this tenant has never written
+    // settings.partnerDefaults, so the schema default claim window stands (A3
+    // replaced the hard-coded PARTNER_CLAIM_WINDOW_DAYS with that default).
     const outB = await makePartnerCaller(PARTNER_ADMIN_B_AUTH).partnerSubmitCandidate(
       submitInput({
         fullName: "Bala Commercials",
@@ -356,7 +359,11 @@ describe("P2.2 partner commercials — MSA, claim window, fee accrual", () => {
     if (outB.outcome !== "created") return;
     APP_B_ID = outB.applicationId;
     const windowB = daysBetween(new Date().toISOString(), outB.claimExpiresAt);
-    assert.equal(windowB, 90, "no MSA → the 90-day fallback");
+    assert.equal(
+      windowB,
+      defaultPartnerDefaults().claimWindowDays,
+      "no MSA → the tenant partner-defaults claim window",
+    );
   });
 
   it("Test 3: offer-accept accrues the fee once, with the terms frozen; no MSA accrues nothing", async () => {

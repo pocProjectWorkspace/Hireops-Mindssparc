@@ -16,9 +16,9 @@
  * mapped to the real values (`recruiter_review`, `hr_round`, no slot
  * for offer_extended because drafted goes directly to accepted/declined).
  *
- * Tenant-configurable thresholds (e.g. a `tenant_sla_configurations`
- * table) are Phase 3 work — when that lands, this constant becomes the
- * fallback for tenants without a custom config.
+ * Tenant-configurable thresholds LANDED in T4.1 (tenants.settings.slaThresholds
+ * + resolveSlaThresholds below): this constant is the fallback for tenants
+ * without a custom config.
  */
 
 import type { ApplicationStage } from "@hireops/db";

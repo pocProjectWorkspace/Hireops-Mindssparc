@@ -65,9 +65,15 @@ export function MarketIntelligenceView({
   const [editing, setEditing] = useState<string | null>(null);
   const editingRow = editing ? rows.find((r) => r.id === editing) : undefined;
 
-  // The honesty line — every row shares the same curated source in the demo,
-  // so surface the most recent one prominently and note it applies to all.
-  const sourceNote = rows[0]?.sourceNote ?? "Curated benchmark, update quarterly";
+  // The honesty line. Source notes are PER ROW (each row's is editable in the
+  // admin form below), so the header may only name a source when every row
+  // agrees. The moment two rows carry different notes we stop claiming one up
+  // here and print each row's note under its role title instead.
+  const distinctSourceNotes = [
+    ...new Set(rows.map((r) => r.sourceNote.trim()).filter((n) => n.length > 0)),
+  ];
+  const sourceNotesDiffer = distinctSourceNotes.length > 1;
+  const sourceNote = distinctSourceNotes[0] ?? "Curated benchmark — update quarterly";
 
   return (
     <>
@@ -76,8 +82,10 @@ export function MarketIntelligenceView({
         subtitle={
           <>
             Curated salary + hiring benchmarks by role.{" "}
-            <span className="font-medium text-neutral-600">{sourceNote}.</span> These are reference
-            figures maintained by your team, not a live market feed.
+            <span className="font-medium text-neutral-600">
+              {sourceNotesDiffer ? "Sources are noted per benchmark below" : sourceNote}.
+            </span>{" "}
+            These are reference figures maintained by your team, not a live market feed.
           </>
         }
       />
@@ -107,7 +115,14 @@ export function MarketIntelligenceView({
               <Tbody>
                 {rows.map((r) => (
                   <Tr key={r.id}>
-                    <Td className="font-medium text-neutral-900">{r.roleTitle}</Td>
+                    <Td className="font-medium text-neutral-900">
+                      {r.roleTitle}
+                      {sourceNotesDiffer ? (
+                        <span className="mt-0.5 block text-xs font-normal text-neutral-500">
+                          {r.sourceNote}
+                        </span>
+                      ) : null}
+                    </Td>
                     <Td numeric label="Market median">
                       {lpaLabel(r.medianSalaryMinor)}
                     </Td>
@@ -221,7 +236,7 @@ function BenchmarkEditForm({ row, onDone }: { row: MarketBenchmarkRow; onDone: (
           .map((s) => s.trim())
           .filter(Boolean)
           .slice(0, 20),
-        sourceNote: sourceNote.trim() || "Curated benchmark, update quarterly",
+        sourceNote: sourceNote.trim() || "Curated benchmark — update quarterly",
       });
       onDone();
     } catch (err) {

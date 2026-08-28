@@ -10,6 +10,9 @@ import {
   SYSTEM_ALERT_TYPES,
   SYSTEM_ALERT_TYPE_META,
   ESCALATION_SEVERITIES,
+  SLA_IMMINENT_WINDOW_HOURS_DEFAULT,
+  SLA_IMMINENT_WINDOW_HOURS_MIN,
+  SLA_IMMINENT_WINDOW_HOURS_MAX,
 } from "@hireops/api-types";
 import { Button } from "@hireops/ui";
 import { Card, Badge } from "@/components/ui";
@@ -22,10 +25,11 @@ import { trpc } from "@/lib/trpc-client";
  * audited, merged into tenants.settings.systemSetup alongside — never over —
  * aiSettings / biasLexicon / scoringWeights).
  *
- * The SLA hours themselves are NOT edited here: they stay hardcoded in
- * @hireops/sla-thresholds. This screen only configures who gets alerted and a
- * simple days→recipient→severity escalation. The full tenant-configurable SLA
- * table is Phase-3 deferred, and the SLA engine is untouched.
+ * The SLA hours themselves are NOT edited here: since T4.1 they are per-tenant
+ * config (tenants.settings.slaThresholds) with their own /admin/sla-thresholds
+ * surface. This screen configures who gets alerted, how far AHEAD of those
+ * thresholds the warning fires (A4 — slaImminentWindowHours, a lead time, not
+ * a threshold), and a simple days→recipient→severity escalation.
  */
 
 const inputCls =
@@ -48,6 +52,7 @@ export function SystemSetupClient({ initial }: { initial: SystemSetup }) {
   const [recipientsText, setRecipientsText] = useState(initial.emailAlerts.recipients.join(", "));
   const [alertTypes, setAlertTypes] = useState<SystemAlertType[]>(initial.emailAlerts.alertTypes);
   const [rules, setRules] = useState<EscalationRule[]>(initial.escalationRules);
+  const [windowHours, setWindowHours] = useState(initial.slaImminentWindowHours);
 
   const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -70,6 +75,7 @@ export function SystemSetupClient({ initial }: { initial: SystemSetup }) {
       version: 1,
       emailAlerts: { enabled, recipients, alertTypes },
       escalationRules: rules,
+      slaImminentWindowHours: windowHours,
     }),
   );
   const dirty = current !== baseline;
@@ -81,6 +87,7 @@ export function SystemSetupClient({ initial }: { initial: SystemSetup }) {
       setRecipientsText(s.emailAlerts.recipients.join(", "));
       setAlertTypes(s.emailAlerts.alertTypes);
       setRules(s.escalationRules);
+      setWindowHours(s.slaImminentWindowHours);
       setError(null);
       setNotice("System setup saved.");
     },
@@ -104,6 +111,7 @@ export function SystemSetupClient({ initial }: { initial: SystemSetup }) {
       version: 1,
       emailAlerts: { enabled, recipients, alertTypes },
       escalationRules: rules,
+      slaImminentWindowHours: windowHours,
     });
   }
 
@@ -127,8 +135,9 @@ export function SystemSetupClient({ initial }: { initial: SystemSetup }) {
           the SLA scan worker and sent over the real email path (Resend behind config). The wired
           delivery today is <strong>SLA-breach</strong> alerts to the recipients below, plus the
           escalation rules; the other alert types are saved but not yet delivered (their event
-          sources are still being wired). SLA <em>thresholds</em> stay fixed in the platform
-          defaults, this screen configures who gets notified, not the hours.
+          sources are still being wired). The SLA <em>thresholds</em> themselves live on{" "}
+          <strong>Admin → SLA thresholds</strong>; this screen configures who gets notified and how
+          far ahead of a threshold the warning fires.
         </p>
       </div>
 
@@ -231,6 +240,34 @@ export function SystemSetupClient({ initial }: { initial: SystemSetup }) {
                   </span>
                 </div>
               ))}
+            </div>
+          </Card>
+
+          <Card className="p-5">
+            <h3 className="mb-1 text-sm font-semibold text-neutral-900">Warning lead time</h3>
+            <p className="mb-3 text-xs text-neutral-500">
+              Warn this many hours before an SLA breach. The SLA scan flags an application as
+              imminent once it is within this window of its stage&apos;s threshold, so a larger
+              number means earlier — and more — alerts. This is a lead time, not a threshold: the
+              per-stage hours are set on <strong>Admin → SLA thresholds</strong>. If the lead time
+              exceeds a stage&apos;s own threshold, that stage is flagged from the moment an
+              application enters it.
+            </p>
+            <div className="flex items-center gap-3">
+              <input
+                type="number"
+                min={SLA_IMMINENT_WINDOW_HOURS_MIN}
+                max={SLA_IMMINENT_WINDOW_HOURS_MAX}
+                step={1}
+                className={`${inputCls} max-w-[7rem]`}
+                value={windowHours}
+                aria-label="Warning lead time in hours before an SLA breach"
+                onChange={(e) => setWindowHours(clampWindowHours(Number(e.target.value)))}
+              />
+              <span className="text-xs text-neutral-500">
+                hours ({SLA_IMMINENT_WINDOW_HOURS_MIN}–{SLA_IMMINENT_WINDOW_HOURS_MAX}; platform
+                default {SLA_IMMINENT_WINDOW_HOURS_DEFAULT})
+              </span>
             </div>
           </Card>
         </div>
@@ -340,6 +377,7 @@ export function SystemSetupClient({ initial }: { initial: SystemSetup }) {
               setRecipientsText(initial.emailAlerts.recipients.join(", "));
               setAlertTypes(initial.emailAlerts.alertTypes);
               setRules(initial.escalationRules);
+              setWindowHours(initial.slaImminentWindowHours);
               setError(null);
               setNotice(null);
             }}
@@ -385,6 +423,16 @@ function clampDays(n: number): number {
   return Math.max(1, Math.min(90, Math.round(n)));
 }
 
+/** A4 — mirror of the schema's 1–48 integer bound so the field can never post
+ * a value updateSystemSetup would reject. */
+function clampWindowHours(n: number): number {
+  if (Number.isNaN(n)) return SLA_IMMINENT_WINDOW_HOURS_DEFAULT;
+  return Math.max(
+    SLA_IMMINENT_WINDOW_HOURS_MIN,
+    Math.min(SLA_IMMINENT_WINDOW_HOURS_MAX, Math.round(n)),
+  );
+}
+
 /** Normalise for dirty-comparison — sort recipients + alert types so ordering
  * differences don't read as edits. */
 function normalize(s: SystemSetup): unknown {
@@ -393,5 +441,6 @@ function normalize(s: SystemSetup): unknown {
     recipients: [...s.emailAlerts.recipients].sort(),
     alertTypes: [...s.emailAlerts.alertTypes].sort(),
     rules: s.escalationRules,
+    windowHours: s.slaImminentWindowHours,
   };
 }

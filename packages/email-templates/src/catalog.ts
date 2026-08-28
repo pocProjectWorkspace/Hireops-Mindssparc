@@ -820,7 +820,10 @@ export const EMAIL_TEMPLATE_SAMPLE_DATA: Record<TemplateKey, Record<string, unkn
   },
   "recruiter.sla_ops_alert": {
     headline: "3 applications near SLA breach",
-    bodyLine: "Three applications are within 4 hours of breaching their stage SLA.",
+    // A4: the imminent window is per-tenant config
+    // (systemSetup.slaImminentWindowHours), so the preview must not name a
+    // fixed number of hours — the real bodyLine the SLA scan sends doesn't.
+    bodyLine: "Three applications are approaching their stage-SLA threshold.",
     severity: "high",
     actionUrl: "https://portal.example/triage",
     actionLabel: "Open triage",

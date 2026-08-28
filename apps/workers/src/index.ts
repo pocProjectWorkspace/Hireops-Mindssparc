@@ -105,13 +105,17 @@ const SCHEDULED_JOBS: ScheduledJob[] = [
     run: reportDigestScan,
   },
   {
-    // N3.RET — delete interview audio past its retention window. The client's
-    // decision: audio is kept 30 days from interview completion, transcripts
-    // and notes are kept indefinitely. A hard 90-day ceiling from the
+    // N3.RET / A2 — delete interview audio past its retention window.
+    // Transcripts and notes are kept indefinitely; only the audio goes. The
+    // window is PER TENANT (tenants.settings.retentionPolicy.interviewAudioDays,
+    // /admin/retention-policy), 1–90 days, defaulting to 30 for a tenant that
+    // has never set it — so an unconfigured deployment behaves exactly as it
+    // did when the 30 was a constant in the job. A hard 90-day ceiling from the
     // recording's own created_at is the backstop for rounds that never reach a
     // terminal state (no-shows especially — markInterviewNoShow is not stamped
-    // and 0115 added no no_show_at), because without it "we keep audio for 30
-    // days" would be false for exactly the rounds nobody is watching.
+    // and 0115 added no no_show_at); that ceiling stays GLOBAL and is not
+    // tenant-configurable, because without it the audio-deletion promise would
+    // be false for exactly the rounds nobody is watching.
     //
     // DAILY. Purging is not time-critical and the windows are measured in
     // weeks, so a tighter tick would re-scan the same rows to no purpose. A

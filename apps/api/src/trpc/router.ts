@@ -547,6 +547,12 @@ import {
   effectiveRetentionYears,
   type RetentionPolicy,
   type OverdueDocumentRow,
+  getPartnerDefaultsInputSchema,
+  getPartnerDefaultsOutputSchema,
+  updatePartnerDefaultsInputSchema,
+  updatePartnerDefaultsOutputSchema,
+  resolvePartnerDefaults,
+  type PartnerDefaults,
   INTERNAL_TENANT_ROLES,
   type ScoringWeights,
   type TenantUserAdminRow,
@@ -3226,20 +3232,6 @@ const PUBLIC_APPLY_ACCEPTING_STATUSES = new Set<string>(["approved", "posted"]);
  * the AI-03 v1 threshold; tunable here, not per-tenant.
  */
 const PARSER_CONFIDENCE_SCORING_FLOOR = 0.5;
-
-/**
- * Partner ownership-claim exclusivity window, the FALLBACK. 90 days per
- * partner-msa's `exclusivity_window_days` default for empanelled partners
- * (partner-data-model.md) and the wireflows' consent copy ("The 90-day
- * exclusivity window starts now").
- *
- * P2.2 made the per-org window real: partnerSubmitCandidate reads the live
- * partner_msa first and only falls back to this constant when the org has no
- * agreed terms on file. Keep the two in step — this number is what an
- * un-contracted partner gets, and the same 90 the partner_msa column defaults
- * to, so the fallback and a default MSA behave identically.
- */
-const PARTNER_CLAIM_WINDOW_DAYS = 90;
 
 /**
  * Decide the scoring fields an application row should carry at insert time,
@@ -9365,9 +9357,11 @@ export const appRouter = router({
   // Admin read of the per-tenant system-setup block (email alerts + simple
   // escalation rules) from tenants.settings.systemSetup, merged over defaults.
   // Admin-gated on the procedure. Read-only, no withAudit (matches the other
-  // settings reads). The SLA hours themselves stay hardcoded in
-  // @hireops/sla-thresholds — this block only configures WHO gets alerted, not
-  // the thresholds (that stays Phase-3 deferred).
+  // settings reads). The SLA hours themselves are tenant-configurable since
+  // T4.1 (tenants.settings.slaThresholds, edited at /admin/sla-thresholds) —
+  // this block configures WHO gets alerted and, since A4, how far AHEAD of a
+  // threshold the imminent scan warns (slaImminentWindowHours), never the
+  // thresholds themselves.
   getSystemSetup: protectedProcedure
     .input(getSystemSetupInputSchema)
     .output(getSystemSetupOutputSchema)
@@ -16086,15 +16080,27 @@ export const appRouter = router({
             requestId: ctx.requestId,
           });
 
-          // The ownership claim — the exclusivity window runs from now. P2.2
-          // closes the loop PARTNER_CLAIM_WINDOW_DAYS' own comment left open
-          // ("reading the real per-org window from partner_msa is a
-          // commercials concern"): the live MSA now IS available, so its
-          // exclusivity_window_days is the window when the org has agreed
-          // terms, and the hardcoded 90 is what an org without an MSA still
-          // gets. Read inside this tx, so a window agreed a second ago applies.
+          // The ownership claim — the exclusivity window runs from now. Two
+          // layers, agreement first: P2.2 made the per-org window real, so an
+          // org WITH agreed terms gets its live partner_msa's
+          // exclusivity_window_days; A3 made the other layer configurable, so
+          // an org WITHOUT an MSA gets the tenant's
+          // settings.partnerDefaults.claimWindowDays (schema default 90 — the
+          // same 90 the partner_msa column defaults to, so an un-contracted
+          // partner and a default MSA still behave identically, and an
+          // unconfigured tenant is byte-identical to the hard-coded constant
+          // this replaced). Both reads happen INSIDE this tx, so terms — or a
+          // tenant default — changed a second ago apply to this submission.
           const liveMsa = await getLivePartnerMsa(db, tenantId, partnerOrgId);
-          const claimWindowDays = liveMsa?.exclusivityWindowDays ?? PARTNER_CLAIM_WINDOW_DAYS;
+          const [tenantSettingsRow] = await db
+            .select({ settings: tenants.settings })
+            .from(tenants)
+            .where(eq(tenants.id, tenantId))
+            .limit(1);
+          const partnerDefaults = resolvePartnerDefaults(
+            ((tenantSettingsRow?.settings ?? {}) as Record<string, unknown>).partnerDefaults,
+          );
+          const claimWindowDays = liveMsa?.exclusivityWindowDays ?? partnerDefaults.claimWindowDays;
           const claimedAt = new Date();
           const expiresAt = new Date(claimedAt.getTime() + claimWindowDays * 86_400_000);
           let claimId: string;
@@ -17993,6 +17999,87 @@ export const appRouter = router({
       return withAudit("partner_msa_upsert", ctx, input, () =>
         upsertPartnerMsa(db, { tenantId, partnerOrgId, actorMembershipId, input: terms }),
       );
+    }),
+
+  // ═════════ A3 — tenant partner defaults (settings.partnerDefaults) ═════════
+  //
+  // The tenant-level counterpart to the per-org MSA above. upsertPartnerMsa
+  // sets the window for an org WITH agreed terms; this pair sets the window
+  // every org WITHOUT an MSA falls back to — the number that used to be the
+  // hard-coded PARTNER_CLAIM_WINDOW_DAYS in this file. An agreed MSA always
+  // wins; see packages/api-types/src/partner-defaults.ts for the precedence,
+  // and partnerSubmitCandidate for the one place it is applied.
+  //
+  // Gated to PARTNER_ADMIN_ROLES ({admin, hr_ops}) — the same set the rest of
+  // partner administration enforces, because whoever empanels partners and
+  // agrees their terms owns this fallback too.
+
+  /**
+   * getPartnerDefaults — the tenant's partner defaults resolved over
+   * defaultPartnerDefaults() (a 90-day claim window), so the admin surface can
+   * prefill. Read-only, no withAudit (matches the other settings reads).
+   */
+  getPartnerDefaults: protectedProcedure
+    .input(getPartnerDefaultsInputSchema)
+    .output(getPartnerDefaultsOutputSchema)
+    .query(async ({ ctx }): Promise<PartnerDefaults> => {
+      requireAnyRole(ctx, PARTNER_ADMIN_ROLES, "Partner administration is admin / hr_ops only");
+      const db = requireDb(ctx);
+      if (!ctx.tenantId) {
+        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
+      }
+      const [row] = await db
+        .select({ settings: tenants.settings })
+        .from(tenants)
+        .where(eq(tenants.id, ctx.tenantId))
+        .limit(1);
+      const settings = (row?.settings ?? {}) as Record<string, unknown>;
+      return resolvePartnerDefaults(settings.partnerDefaults);
+    }),
+
+  /**
+   * updatePartnerDefaults — write the tenant partner defaults. Audited. Merges
+   * the validated block into tenants.settings under `partnerDefaults` via the
+   * same atomic top-level jsonb `||` merge updateSlaThresholds /
+   * updateGovernancePolicy / updateRetentionPolicy use — a SIBLING key, so every
+   * other settings block (ai_provider, branding, aiBudget…) survives verbatim.
+   *
+   * The saved window is REAL config: the next partner submission from an org
+   * with no live MSA computes its claim expiry from this number. It does NOT
+   * touch claims already made — an existing claim keeps the window it was
+   * granted, which is the same rule an MSA change follows.
+   */
+  updatePartnerDefaults: protectedProcedure
+    .input(updatePartnerDefaultsInputSchema)
+    .output(updatePartnerDefaultsOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      return withAudit("update_partner_defaults", ctx, input, async () => {
+        requireAnyRole(ctx, PARTNER_ADMIN_ROLES, "Partner administration is admin / hr_ops only");
+        if (!ctx.tenantId) {
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: "protected procedure missing tenantId",
+          });
+        }
+        const tenantId = ctx.tenantId;
+
+        const res = await poolDb.execute(dsql`
+          UPDATE public.tenants
+          SET settings = COALESCE(settings, '{}'::jsonb)
+              || jsonb_build_object('partnerDefaults', ${JSON.stringify(input)}::jsonb)
+          WHERE id = ${tenantId}::uuid
+          RETURNING id
+        `);
+        const updated = (res as { rows?: unknown[] }).rows ?? (res as unknown[]);
+        if (updated.length !== 1) {
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: "tenant settings update affected an unexpected number of rows",
+          });
+        }
+
+        return { ok: true as const, partnerDefaults: resolvePartnerDefaults(input) };
+      });
     }),
 
   // ═════════ P0.2 — partner invitation acceptance (public redeem) ═════════

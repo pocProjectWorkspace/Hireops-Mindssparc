@@ -126,7 +126,106 @@ export function PartnersClient({ initial }: { initial: ListPartnerOrgsOutput }) 
           </Tbody>
         </TableShell>
       )}
+
+      <PartnerDefaultsCard />
     </PageContainer>
+  );
+}
+
+/**
+ * A3 — the one tenant-level partner default: the ownership-claim exclusivity
+ * window used for orgs that have NO live MSA. Deliberately a modest card at the
+ * foot of the index rather than its own admin page: it is a single number, and
+ * the per-org terms that override it live on each org's Commercials tab.
+ *
+ * No extra role gate here — /partners is already gated to admin / hr_ops by the
+ * page (READ_ROLES in page.tsx), which is the same PARTNER_ADMIN_ROLES set
+ * get/updatePartnerDefaults enforce server-side.
+ */
+function PartnerDefaultsCard() {
+  const utils = trpc.useUtils();
+  const query = trpc.getPartnerDefaults.useQuery({}, { refetchOnWindowFocus: false });
+
+  // `draft` is null until the operator types, so the field prefills from the
+  // query the moment it lands without an effect, and an in-progress edit is
+  // never clobbered by a refetch.
+  const [draft, setDraft] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const saved = query.data?.claimWindowDays ?? null;
+  const value = draft ?? (saved === null ? "" : String(saved));
+  const parsed = Number(value.trim());
+  const valid = value.trim() !== "" && Number.isInteger(parsed) && parsed >= 1 && parsed <= 365;
+  const dirty = saved !== null && value.trim() !== String(saved);
+
+  const update = trpc.updatePartnerDefaults.useMutation({
+    onSuccess: async (res) => {
+      setDraft(null);
+      setError(null);
+      setNotice(
+        `Saved. Partners without an MSA now get a ${res.partnerDefaults.claimWindowDays}-day claim window on their next submission.`,
+      );
+      await utils.getPartnerDefaults.invalidate();
+    },
+    onError: (err) => {
+      setNotice(null);
+      setError(err.message);
+    },
+  });
+
+  return (
+    <Card className="p-5">
+      <h2 className="text-sm font-semibold text-neutral-900">Partner defaults</h2>
+      <p className="mb-4 mt-1 text-xs text-neutral-600">
+        Applies to partners with no agreed MSA. Where an organisation has live terms, its MSA&apos;s
+        exclusivity window wins — set that on the organisation&apos;s Commercials tab. Changing this
+        affects future submissions only; claims already made keep the window they were granted.
+      </p>
+
+      {notice ? (
+        <div className="mb-4 rounded-lg border border-status-success-200 bg-status-success-50 px-4 py-3 text-sm text-status-success-700">
+          {notice}
+        </div>
+      ) : null}
+      {error ? (
+        <div className="mb-4 rounded-lg border border-status-error-200 bg-status-error-50 px-4 py-3 text-sm text-status-error-700">
+          {error}
+        </div>
+      ) : null}
+
+      <div className="flex flex-wrap items-end gap-4">
+        <Input
+          className="w-72"
+          label="Claim window for partners without an MSA (days)"
+          type="number"
+          min={1}
+          max={365}
+          value={value}
+          disabled={query.isLoading}
+          onChange={(e) => {
+            setDraft(e.target.value);
+            setNotice(null);
+            setError(null);
+          }}
+          error={
+            value.trim() !== "" && !valid ? "Enter a whole number of days, 1 to 365." : undefined
+          }
+          hint="Between 1 and 365 days. Default 90."
+        />
+        <Button
+          onClick={() => {
+            if (!valid) return;
+            setNotice(null);
+            setError(null);
+            update.mutate({ claimWindowDays: parsed });
+          }}
+          disabled={!valid || !dirty || update.isPending || query.isLoading}
+        >
+          {update.isPending ? "Saving…" : "Save"}
+        </Button>
+      </div>
+    </Card>
   );
 }
 

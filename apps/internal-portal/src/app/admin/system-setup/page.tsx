@@ -12,9 +12,9 @@ export const dynamic = "force-dynamic"; // Admin-gated + reads live tenant confi
  *   - Email Alerts: enable + recipients + alert types, over the REAL email
  *     path (Resend behind config). Persisted to tenants.settings.systemSetup.
  *   - Escalation Rules (simple): days-threshold → recipient → severity. A
- *     deterministic recipient/severity config, NOT the full tenant-configurable
- *     SLA-threshold table — the SLA hours stay hardcoded in
- *     @hireops/sla-thresholds (Phase-3 deferred). The SLA engine is untouched.
+ *     deterministic recipient/severity config, NOT the SLA-threshold table —
+ *     the SLA hours are per-tenant config since T4.1, edited at
+ *     /admin/sla-thresholds. The SLA engine is untouched.
  *
  * The prototype's Job Portals (sourcing connector) and Analytics/Widgets tabs
  * are DEFERRED — not built here.
