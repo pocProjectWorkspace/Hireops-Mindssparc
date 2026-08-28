@@ -100,15 +100,32 @@ function pick<T>(pool: readonly T[], i: number): T {
 }
 
 // ── memberships (from db:seed:test-users) ────────────────────────────────────
-const MEMBER = {
-  admin: "69a8139c-8bca-4a63-87b2-2cd4983a84ab",
-  hiringManager: "cb9eb9aa-cf33-47b6-be0a-f9a816015e11",
-  hrOps: "664ea7f4-8009-41d2-a145-5c0b5a9b7178",
-  panel: "c2ef7901-7ee9-43e6-9287-494a8944709b",
-  recruiter: "a24d642a-4a02-4074-b25f-0b468a95a832",
+//
+// RESOLVED AT RUNTIME (SOLENIS-MAP). These were hardcoded uuids from the old
+// staging database, which do not exist on any other Supabase project — the seed
+// died on the first FK. The shape is unchanged so every `MEMBER.recruiter` call
+// site below still reads the same; only the source of the ids moved.
+const MEMBER_EMAILS = {
+  admin: "admin1@mindssparc.com",
+  hiringManager: "hiringmanager1@mindssparc.com",
+  hrOps: "hr_ops1@mindssparc.com",
+  panel: "panel1@mindssparc.com",
+  recruiter: "recruiter1@mindssparc.com",
 } as const;
 
-const HYDERABAD_BU = "463ac427-b3d7-443f-ba24-a53ca4c9e51c";
+type MemberKey = keyof typeof MEMBER_EMAILS;
+
+const MEMBER: Record<MemberKey, string> = {
+  admin: "",
+  hiringManager: "",
+  hrOps: "",
+  panel: "",
+  recruiter: "",
+};
+
+/** The Solenis GBS India business unit (seed-solenis-demo). The typo fix-up
+ * below is guarded on the old "GCC - Hyerabad" name, so it is a no-op here. */
+const HYDERABAD_BU = "00000000-0000-4000-9000-010000000001";
 
 type Stage =
   | "application_received"
@@ -356,28 +373,43 @@ interface ReqSpec {
   cohort: Partial<Record<Stage, number>>;
 }
 
+/**
+ * SOLENIS-MAP: the cohort now sits on FOUR Solenis GBS requisitions created by
+ * seed-solenis-demo (`00000000-0000-4000-9000-…`). The old specs pointed at
+ * hardcoded old-staging uuids that do not exist on this database, so the seed
+ * could not run at all. Only the spec constants moved — ids, titles, comp and
+ * skills; the cohort/date/score machinery below is untouched.
+ *
+ * `openings` deliberately MATCHES seed-solenis-demo's `openings` for the same
+ * requisition, so whichever seed runs last, fill rate (hires/openings) stays
+ * sane instead of flipping between 100% and 200%.
+ */
 const REQS: ReqSpec[] = [
   {
-    key: "principal-ai-architect",
-    requisitionId: "44629c7e-8302-4eb9-b7fa-13fc151a5884",
-    positionId: "d51b3be1-e0e8-472b-a4de-986cac7a3f59",
-    jdVersionId: "eae4ee7c-b7c8-4e7c-a5c6-1068c727bdec",
-    roleTitle: "Principal AI Architect",
-    openings: 3,
-    // The req ships as 'draft', which keeps it out of demand-by-dept's open
-    // series entirely — and a draft req is a strange thing to headline a demo.
+    // The hero req — the SDL / Head role from Solenis's own JD pack.
+    key: "sdl-head-automation",
+    requisitionId: "00000000-0000-4000-9000-120000000006",
+    positionId: "", // resolved at runtime from the requisition
+    jdVersionId: "00000000-0000-4000-9000-110000000006",
+    roleTitle: "SDL / Head – Automation and Productivity (GBS)",
+    openings: 1,
     forceStatus: "posted",
-    offerBaseRupees: 9_500_000,
-    bandMaxRupees: 12_000_000,
+    // Leadership band: ₹45–65 LPA (MAJOR rupees).
+    offerBaseRupees: 5_500_000,
+    bandMaxRupees: 6_500_000,
     location: "Hyderabad",
-    seedJdSkills: true,
+    // seed-solenis-demo already writes this JD's skills, so do NOT write them
+    // again — jd_skills has no natural unique key and would duplicate the bars
+    // on the skill-gap panel. The list below mirrors those rows exactly, which
+    // is what the candidate skill pool is drawn from.
+    seedJdSkills: false,
     skills: [
-      { name: "Python", required: true },
-      { name: "Machine Learning", required: true },
-      { name: "Generative AI", required: true },
-      { name: "AWS", required: true },
-      { name: "Kubernetes", required: false },
-      { name: "MLOps", required: false },
+      { name: "Celonis / Process Mining", required: true },
+      { name: "RPA", required: true },
+      { name: "AI / GenAI Adoption", required: true },
+      { name: "Automation Governance", required: true },
+      { name: "SAP", required: true },
+      { name: "Value Realisation", required: true },
     ],
     cohort: {
       application_received: 2,
@@ -387,28 +419,31 @@ const REQS: ReqSpec[] = [
       tech_interview: 3,
       hr_round: 2,
       offer_drafted: 3,
-      offer_accepted: 2,
+      // 1, not 2: this is a single-headcount leadership role, and fill rate is
+      // hires/openings.
+      offer_accepted: 1,
       offer_declined: 1,
       withdrawn: 1,
       recruiter_rejected: 1,
     },
   },
   {
-    key: "senior-backend-engineer",
-    requisitionId: "d5c075d7-582a-4747-b4a1-97b9f538bf31",
-    positionId: "", // resolved at runtime from the requisition
-    jdVersionId: "3ee2ead3-4127-42ca-8a24-d5400fba4eba",
-    roleTitle: "Senior Backend Engineer",
-    openings: 3,
-    offerBaseRupees: 3_600_000,
-    bandMaxRupees: 4_200_000,
-    location: "Bengaluru",
+    key: "sap-plant-accountant",
+    requisitionId: "00000000-0000-4000-9000-120000000003",
+    positionId: "",
+    jdVersionId: "00000000-0000-4000-9000-110000000003",
+    roleTitle: "SAP Plant Accountant",
+    openings: 2,
+    // Band IN12: ₹12–18 LPA.
+    offerBaseRupees: 1_500_000,
+    bandMaxRupees: 1_800_000,
+    location: "Hyderabad",
     skills: [
-      { name: "Java", required: true },
-      { name: "Kafka", required: true },
-      { name: "PostgreSQL", required: true },
-      { name: "Springboot", required: true },
-      { name: "Kubernetes", required: false },
+      { name: "SAP FI/CO", required: true },
+      { name: "Plant Accounting", required: true },
+      { name: "Inventory Valuation", required: true },
+      { name: "Month-End Close", required: true },
+      { name: "IFRS", required: true },
     ],
     cohort: {
       application_received: 1,
@@ -421,21 +456,22 @@ const REQS: ReqSpec[] = [
     },
   },
   {
-    key: "data-platform-engineer",
-    requisitionId: "00000000-0000-4000-8000-00000000a5b3",
+    key: "tableau-analyst",
+    requisitionId: "00000000-0000-4000-9000-120000000004",
     positionId: "",
-    jdVersionId: "00000000-0000-4000-8000-00000000a5b2",
-    roleTitle: "Data Platform Engineer",
+    jdVersionId: "00000000-0000-4000-9000-110000000004",
+    roleTitle: "Tableau Analyst",
     openings: 2,
-    offerBaseRupees: 4_600_000,
-    bandMaxRupees: 5_200_000,
-    location: "Bengaluru",
+    // Band IN12: ₹12–18 LPA.
+    offerBaseRupees: 1_450_000,
+    bandMaxRupees: 1_800_000,
+    location: "Hyderabad",
     skills: [
-      { name: "Java", required: true },
-      { name: "Spring Boot", required: true },
-      { name: "Kafka", required: true },
-      { name: "PostgreSQL", required: true },
-      { name: "Kubernetes", required: false },
+      { name: "Tableau", required: true },
+      { name: "SQL", required: true },
+      { name: "Data Modelling", required: true },
+      { name: "Alteryx", required: true },
+      { name: "Power BI", required: true },
     ],
     cohort: {
       application_received: 1,
@@ -449,22 +485,25 @@ const REQS: ReqSpec[] = [
     },
   },
   {
-    key: "data-engineer",
-    requisitionId: "690814ac-3285-4491-b766-66a37b093a16",
+    key: "non-sap-plant-accountant",
+    requisitionId: "00000000-0000-4000-9000-120000000005",
     positionId: "",
-    jdVersionId: "3ce79a07-c347-45e3-a480-611ee3c29857",
-    roleTitle: "Data Engineer",
+    jdVersionId: "00000000-0000-4000-9000-110000000005",
+    roleTitle: "Non-SAP Plant Accountant",
     openings: 1,
+    // The one CLOSED requisition, so demand-by-department's "filled" series is
+    // non-zero. seed-solenis-demo seeds this req as 'filled' too.
     forceStatus: "filled",
-    offerBaseRupees: 3_200_000,
-    bandMaxRupees: 4_000_000,
-    location: "Bengaluru",
+    // Band IN12: ₹12–18 LPA.
+    offerBaseRupees: 1_400_000,
+    bandMaxRupees: 1_800_000,
+    location: "Hyderabad",
     skills: [
-      { name: "Python", required: true },
-      { name: "SQL", required: true },
-      { name: "Spark", required: true },
-      { name: "Airflow", required: false },
-      { name: "dbt", required: false },
+      { name: "Plant Accounting", required: true },
+      { name: "Cost Accounting", required: true },
+      { name: "Month-End Close", required: true },
+      { name: "Advanced Excel", required: true },
+      { name: "Internal Controls", required: true },
     ],
     cohort: {
       hr_round: 1,
@@ -496,8 +535,8 @@ const REQS: ReqSpec[] = [
  * (COMP_DESK_STAGES) where the KPI reads from.
  */
 const OVER_BAND = new Set([
-  "principal-ai-architect:offer_drafted:0",
-  "senior-backend-engineer:offer_drafted:1",
+  "sdl-head-automation:offer_drafted:0",
+  "sap-plant-accountant:offer_drafted:1",
 ]);
 
 /** Offer status for the Nth application at a given stage — shapes the funnel:
@@ -548,28 +587,35 @@ const SCORECARD_KEYS = ["problem_solving", "technical_depth", "communication", "
 
 /** Curated benchmarks this seed owns. `median_salary_minor` is MINOR units
  * (paise); the Insights panel divides by 100 to meet the positions band, which
- * is MAJOR rupees. Only roles that lack a benchmark row — the other two cohort
- * roles already have one from an earlier seed and are left alone. */
+ * is MAJOR rupees.
+ *
+ * SOLENIS-MAP: retargeted onto two of the four cohort roles. The numbers and the
+ * source note MIRROR seed-solenis-demo's curated rows exactly, so whichever seed
+ * runs last the benchmark table is identical — the upsert converges instead of
+ * the two seeds overwriting each other. */
 const BENCHMARKS = [
   {
-    roleTitle: "Principal AI Architect",
-    medianMinor: "980000000", // ₹98L
-    ttfDays: 68,
+    roleTitle: "SDL / Head – Automation and Productivity (GBS)",
+    medianMinor: "550000000", // ₹55L
+    ttfDays: 75,
     availability: "low",
     demand: "high",
-    rounds: 4,
-    trendingSkills: ["Generative AI", "LLM fine-tuning", "MLOps", "Vector databases"],
+    rounds: 3,
+    trendingSkills: ["Celonis", "GenAI adoption", "Automation CoE", "Value realisation"],
   },
   {
-    roleTitle: "Data Engineer",
-    medianMinor: "340000000", // ₹34L
-    ttfDays: 40,
+    roleTitle: "Non-SAP Plant Accountant",
+    medianMinor: "140000000", // ₹14L
+    ttfDays: 42,
     availability: "medium",
     demand: "medium",
-    rounds: 3,
-    trendingSkills: ["Spark", "Airflow", "dbt", "Lakehouse"],
+    rounds: 2,
+    trendingSkills: ["Cost Accounting", "Month-End Close", "Internal Controls", "Advanced Excel"],
   },
 ] as const;
+
+/** Kept in lockstep with seed-solenis-demo's BENCHMARK_SOURCE_NOTE. */
+const BENCHMARK_SOURCE_NOTE = "Curated benchmark — Solenis GBS pilot, update quarterly";
 
 const BENCHMARK_TITLES = BENCHMARKS.map((b) => b.roleTitle);
 
@@ -609,6 +655,23 @@ async function main(): Promise<void> {
       return;
     }
 
+    // SOLENIS-MAP: resolve the membership ids by email instead of trusting
+    // hardcoded uuids from a database this seed may not be pointed at.
+    for (const key of Object.keys(MEMBER_EMAILS) as MemberKey[]) {
+      const email = MEMBER_EMAILS[key];
+      const [m] = await sql<{ id: string }[]>`
+        SELECT tum.id FROM public.tenant_user_memberships tum
+        JOIN auth.users au ON au.id = tum.user_id
+        WHERE tum.tenant_id = ${tid} AND tum.status = 'active' AND au.email = ${email}
+        LIMIT 1
+      `;
+      if (!m) {
+        console.error(`membership ${email} not found in ${TENANT_SLUG}; run db:seed:test-users.`);
+        process.exit(2);
+      }
+      MEMBER[key] = m.id;
+    }
+
     console.log(`Seeding analytics demo cohort into ${TENANT_SLUG} (${tid})\n`);
 
     // Resolve position ids for the reqs that didn't hardcode one.
@@ -622,16 +685,18 @@ async function main(): Promise<void> {
       r.positionId = row.position_id;
     }
 
-    // The hero req gets fix-ups the others don't (title typo, comp band).
-    const hero = REQS.find((r) => r.key === "principal-ai-architect");
-    if (!hero) throw new Error("the principal-ai-architect spec is missing from REQS");
+    // The hero req gets fix-ups the others don't (title, comp band).
+    const hero = REQS.find((r) => r.key === "sdl-head-automation");
+    if (!hero) throw new Error("the sdl-head-automation spec is missing from REQS");
 
     // ── 1. Fix-ups on pre-existing rows ──────────────────────────────────────
+    // Re-assert the hero position's title + Leadership band (₹45–65 LPA, MAJOR
+    // rupees) so this seed and seed-solenis-demo agree on the same numbers.
     await sql`
       UPDATE public.positions
-         SET title = 'Principal AI Architect',
-             comp_band_min = 8000000,
-             comp_band_max = 12000000,
+         SET title = ${hero.roleTitle},
+             comp_band_min = 4500000,
+             comp_band_max = 6500000,
              comp_currency = 'INR',
              updated_at = now()
        WHERE id = ${hero.positionId} AND tenant_id = ${tid}
@@ -640,7 +705,7 @@ async function main(): Promise<void> {
       UPDATE public.business_units SET name = 'GCC - Hyderabad', updated_at = now()
        WHERE id = ${HYDERABAD_BU} AND tenant_id = ${tid} AND name = 'GCC - Hyerabad'
     `;
-    console.log("  ✓ fixed the 'Archtect' / 'Hyerabad' typos + set the AI-architect comp band");
+    console.log("  ✓ re-asserted the hero position's title + Leadership comp band");
 
     for (const r of REQS) {
       await sql`
@@ -654,7 +719,7 @@ async function main(): Promise<void> {
     }
     console.log(
       "  ✓ reassigned 4 reqs to hiringmanager1, set openings," +
-        " Principal AI -> posted, Data Engineer -> filled",
+        " SDL Head -> posted, Non-SAP Plant Accountant -> filled",
     );
 
     // The six PRE-EXISTING hires carry created_at equal to their own
@@ -704,7 +769,7 @@ async function main(): Promise<void> {
           (${tid}, ${b.roleTitle}, ${b.medianMinor}, 'INR', ${b.ttfDays},
            ${b.availability}, ${b.demand}, ${b.rounds},
            ${JSON.stringify(b.trendingSkills)}::jsonb,
-           'Curated benchmark — update quarterly', now())
+           ${BENCHMARK_SOURCE_NOTE}, now())
         ON CONFLICT (tenant_id, role_title) DO UPDATE SET
           median_salary_minor = EXCLUDED.median_salary_minor,
           ttf_days            = EXCLUDED.ttf_days,
@@ -712,6 +777,7 @@ async function main(): Promise<void> {
           competitor_demand   = EXCLUDED.competitor_demand,
           recommended_rounds  = EXCLUDED.recommended_rounds,
           trending_skills     = EXCLUDED.trending_skills,
+          source_note         = EXCLUDED.source_note,
           updated_at          = now()
       `;
     }
@@ -735,7 +801,7 @@ async function main(): Promise<void> {
         skillN += 1;
       }
     }
-    console.log(`  ✓ ${skillN} JD skills on Principal AI Architect\n`);
+    console.log(`  ✓ ${skillN} JD skills written (seed-solenis-demo owns the cohort JDs' skills)\n`);
 
     // ── 2. The cohort ────────────────────────────────────────────────────────
     const now = Date.now();
