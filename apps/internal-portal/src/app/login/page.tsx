@@ -1,4 +1,5 @@
 import { LoginForm } from "@/components/LoginForm";
+import { PlatformFooter } from "@/components/nav/PlatformFooter";
 import { BrandGlyph } from "@/components/nav/BrandGlyph";
 import { getDeploymentBrand } from "@/lib/brand-env";
 
@@ -110,6 +111,7 @@ export default function LoginPage() {
           {brand.poweredBy ? (
             <p className="mt-10 text-xs text-neutral-400">{brand.poweredBy}</p>
           ) : null}
+          <PlatformFooter className="mt-8 w-full border-0 px-0" />
         </div>
       </section>
     </main>

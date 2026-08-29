@@ -1,4 +1,5 @@
 import { LoginForm } from "@/components/LoginForm";
+import { PlatformFooter } from "@/components/PlatformFooter";
 import { Card } from "@/components/ui";
 import { getDeploymentBrand } from "@/lib/brand-env";
 
@@ -72,6 +73,7 @@ export default function LoginPage() {
         {brand.poweredBy ? (
           <p className="mt-1.5 text-center text-xs text-neutral-400">{brand.poweredBy}</p>
         ) : null}
+        <PlatformFooter centered className="mt-6 border-0 px-0" />
       </div>
     </main>
   );

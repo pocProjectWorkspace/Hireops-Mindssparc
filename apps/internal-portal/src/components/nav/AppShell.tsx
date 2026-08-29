@@ -71,6 +71,7 @@ import {
 } from "./nav-icons";
 import { MobileNav } from "./MobileNav";
 import { BrandWordmark } from "./BrandWordmark";
+import { PlatformFooter } from "./PlatformFooter";
 import { IrisProvider } from "@/components/iris/IrisProvider";
 import { IrisLauncher } from "@/components/iris/IrisLauncher";
 import { OnboardingJourney } from "@/components/onboarding-journey/OnboardingJourney";
@@ -966,7 +967,10 @@ export function AppShell({
           {fill ? (
             <div className="flex min-h-0 flex-1 flex-col pb-16 lg:pb-0">{children}</div>
           ) : (
-            <main className="min-h-0 flex-1 overflow-y-auto pb-16 lg:pb-0">{children}</main>
+            <main className="min-h-0 flex-1 overflow-y-auto pb-16 lg:pb-0">
+          {children}
+          <PlatformFooter className="mt-10" />
+        </main>
           )}
         </div>
         <MobileNav primary={mobilePrimary} more={mobileMore} active={active} user={user} />
@@ -998,7 +1002,10 @@ export function AppShellSkeleton({ title, children }: { title: string; children:
       </aside>
       <div className="flex min-w-0 flex-1 flex-col">
         <PageHeader title={title} />
-        <main className="min-h-0 flex-1 overflow-y-auto pb-16 lg:pb-0">{children}</main>
+        <main className="min-h-0 flex-1 overflow-y-auto pb-16 lg:pb-0">
+          {children}
+          <PlatformFooter className="mt-10" />
+        </main>
       </div>
       {/* Skeletal mobile bottom bar — mirrors the live shell's tab bar. */}
       <div className="fixed inset-x-0 bottom-0 z-40 flex items-stretch border-t border-sidebar-border bg-sidebar pb-[env(safe-area-inset-bottom)] lg:hidden">

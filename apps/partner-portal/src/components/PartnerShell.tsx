@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import { PlatformFooter } from "@/components/PlatformFooter";
 import { cn, Badge } from "@/components/ui";
 
 /**
@@ -168,6 +169,7 @@ export function PartnerShell({ orgName, user, active, isOrgAdmin, children }: Pa
         <NavRow active={active} isOrgAdmin={isOrgAdmin} />
       </header>
       <main className="mx-auto w-full max-w-5xl flex-1 px-4 py-6 sm:px-6 sm:py-8">{children}</main>
+      <PlatformFooter className="mx-auto w-full max-w-5xl" />
     </div>
   );
 }

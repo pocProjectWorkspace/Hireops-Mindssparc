@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import { PlatformFooter } from "@/components/nav/PlatformFooter";
 import { cn } from "@/components/ui";
 import { CandidatePortalChrome } from "./CandidatePortalChrome";
 import type { CandidateNavKey } from "./candidate-nav";
@@ -85,6 +86,7 @@ export function CandidateShell({
           {footer}
         </footer>
       ) : null}
+      <PlatformFooter className={cn("mx-auto w-full", maxW)} />
     </div>
   );
 }
