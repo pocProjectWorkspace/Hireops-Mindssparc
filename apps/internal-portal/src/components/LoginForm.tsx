@@ -8,7 +8,8 @@ import { getSupabaseBrowserClient } from "@/lib/supabase-client";
 /**
  * Email + password login. Wave 1 has no magic-link / SSO / signup —
  * users are provisioned by db:seed:test-users (dev) or admin tooling
- * (later). On success we route to /triage (or the `?from=` path the
+ * (later). On success we route to /dashboard — the persona-aware landing
+ * (DASH-01) that branches per role — (or the `?from=` path the
  * middleware tucked in when it bounced us here).
  */
 export function LoginForm() {
@@ -30,7 +31,7 @@ export function LoginForm() {
         setErrorMsg(error.message);
         return;
       }
-      const dest = searchParams.get("from") ?? "/triage";
+      const dest = searchParams.get("from") ?? "/dashboard";
       router.replace(dest);
       router.refresh();
     } finally {
