@@ -1,5 +1,6 @@
 import { LoginForm } from "@/components/LoginForm";
 import { BrandGlyph } from "@/components/nav/BrandGlyph";
+import { getDeploymentBrand } from "@/lib/brand-env";
 
 // LoginForm uses useSearchParams() for the post-login `?from=` redirect
 // destination — Next refuses to prerender pages that read search params
@@ -13,8 +14,16 @@ export const dynamic = "force-dynamic";
  * HireOps positioning, and a clean sign-in column on the right. The brand panel
  * is desktop-only; on small screens the wordmark sits above the form. Copy is
  * honest — real capabilities, no invented testimonial.
+ *
+ * BRAND-1: the lockup above the form and the optional "Powered by …" line are
+ * DEPLOYMENT-branded, not tenant-branded. This page renders pre-auth, so there
+ * is no session and therefore no tenant to resolve branding from — env vars
+ * (NEXT_PUBLIC_BRAND_LOGO_URL / _BRAND_NAME / _POWERED_BY) are the deliberate
+ * mechanism here. Unset → this page renders exactly as it did before.
  */
 export default function LoginPage() {
+  const brand = getDeploymentBrand();
+
   return (
     <main className="flex min-h-screen bg-white">
       {/* ── Left: branded panel (desktop only) ────────────────────────────── */}
@@ -77,19 +86,30 @@ export default function LoginPage() {
               This column is white, which is the ground the artwork was drawn
               for — the dark brand panel swallowed it. */}
           <div className="mb-9 flex justify-center">
-            <img
-              src="/logo/hireops-lockup.png"
-              alt="HireOps"
-              width={240}
-              height={97}
-              className="h-14 w-auto"
-            />
+            {brand.logoUrl ? (
+              // Plain <img>, not next/image: the configured URL is arbitrary
+              // (often an off-domain CDN asset), which next/image would reject
+              // without a remotePatterns entry per deployment.
+              <img src={brand.logoUrl} alt={brand.name ?? "logo"} className="max-h-10 w-auto" />
+            ) : (
+              <img
+                src="/logo/hireops-lockup.png"
+                alt="HireOps"
+                width={240}
+                height={97}
+                className="h-14 w-auto"
+              />
+            )}
           </div>
 
           <h1 className="text-2xl font-semibold tracking-tight text-neutral-900">Sign in</h1>
           <p className="mt-1.5 mb-8 text-sm text-neutral-500">Internal recruiter access only.</p>
 
           <LoginForm />
+
+          {brand.poweredBy ? (
+            <p className="mt-10 text-xs text-neutral-400">{brand.poweredBy}</p>
+          ) : null}
         </div>
       </section>
     </main>

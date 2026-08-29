@@ -70,7 +70,7 @@ import {
   IconSignOut,
 } from "./nav-icons";
 import { MobileNav } from "./MobileNav";
-import { BrandGlyph } from "./BrandGlyph";
+import { BrandWordmark } from "./BrandWordmark";
 import { IrisProvider } from "@/components/iris/IrisProvider";
 import { IrisLauncher } from "@/components/iris/IrisLauncher";
 import { OnboardingJourney } from "@/components/onboarding-journey/OnboardingJourney";
@@ -768,16 +768,22 @@ export interface AppShellProps {
   children: ReactNode;
 }
 
-/** Product wordmark — indigo mark + text, seated on the sidebar brand block.
+/** The sidebar brand block — the frame only.
  * DESIGN-05: the one place a gradient is permitted (a near-tonal dark wash on
- * the brand header), per the restraint rules. */
+ * the brand header), per the restraint rules.
+ *
+ * BRAND-1: what sits INSIDE the frame is now tenant-resolved (BrandWordmark) —
+ * the signed-in tenant's logo + display name when they have configured
+ * branding, and the HireOps glyph + wordmark exactly as before when they
+ * haven't. The branding itself is resolved once per request in app/layout.tsx
+ * and delivered via TenantBrandingProvider; AppShell deliberately does not
+ * fetch it, because this module is also compiled into the client bundle
+ * (OnboardingJourney imports the nav constants from here) and must stay free
+ * of server-only imports. */
 function Wordmark() {
   return (
     <div className="flex items-center gap-2.5 border-b border-sidebar-border bg-sidebar-brand px-4 py-[1.15rem]">
-      {/* Vector glyph in currentColor, not the colour PNG: the mark's figures
-          are near-black navy and disappear into this dark chrome. */}
-      <BrandGlyph size={28} className="shrink-0 text-white" />
-      <span className="text-base font-semibold tracking-tight text-sidebar-fg">HireOps</span>
+      <BrandWordmark />
     </div>
   );
 }
