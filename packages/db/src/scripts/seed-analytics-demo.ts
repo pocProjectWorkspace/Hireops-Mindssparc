@@ -801,7 +801,9 @@ async function main(): Promise<void> {
         skillN += 1;
       }
     }
-    console.log(`  ✓ ${skillN} JD skills written (seed-solenis-demo owns the cohort JDs' skills)\n`);
+    console.log(
+      `  ✓ ${skillN} JD skills written (seed-solenis-demo owns the cohort JDs' skills)\n`,
+    );
 
     // ── 2. The cohort ────────────────────────────────────────────────────────
     const now = Date.now();

@@ -968,9 +968,9 @@ export function AppShell({
             <div className="flex min-h-0 flex-1 flex-col pb-16 lg:pb-0">{children}</div>
           ) : (
             <main className="min-h-0 flex-1 overflow-y-auto pb-16 lg:pb-0">
-          {children}
-          <PlatformFooter className="mt-10" />
-        </main>
+              {children}
+              <PlatformFooter className="mt-10" />
+            </main>
           )}
         </div>
         <MobileNav primary={mobilePrimary} more={mobileMore} active={active} user={user} />

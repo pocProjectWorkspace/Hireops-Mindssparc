@@ -34,7 +34,7 @@ export const PRIVACY_POLICY: LegalDoc = {
     {
       heading: "Recordings and consent",
       paras: [
-        "Interviews are recorded only with the candidate's explicit consent, given in advance. Consent can be withdrawn at any time, and withdrawing it stops any further processing of the recording. The absence of consent is treated as \"no\" — nothing is recorded by default.",
+        'Interviews are recorded only with the candidate\'s explicit consent, given in advance. Consent can be withdrawn at any time, and withdrawing it stops any further processing of the recording. The absence of consent is treated as "no" — nothing is recorded by default.',
       ],
     },
     {
