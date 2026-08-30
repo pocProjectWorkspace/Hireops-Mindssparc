@@ -15,7 +15,7 @@ import { createServerClient, type CookieOptions } from "@supabase/ssr";
  * indirection that hides which environment is running.
  */
 
-const PUBLIC_PATHS = new Set<string>(["/login", "/logout", "/privacy", "/candidate/login"]);
+const PUBLIC_PATHS = new Set<string>(["/login", "/logout", "/privacy", "/terms", "/candidate/login"]);
 
 // Path prefixes that are always public (candidate-side flows). Each
 // entry must end with "/" so a literal segment match doesn't bleed.
