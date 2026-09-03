@@ -1,31 +1,18 @@
 import { redirect } from "next/navigation";
-import { decodeJwt } from "jose";
 import { createSupabaseServerClient } from "./supabase-server";
+import { readSessionClaims, type AuthSession } from "./session-claims";
+
+export type { AuthSession } from "./session-claims";
+export { sessionUserChip } from "./session-claims";
 
 /**
- * Session shape used internally — flattens the bits we care about so
- * downstream callers don't have to know Supabase's nested response.
+ * Where a signed-in-but-not-internal identity gets sent. It goes through
+ * /logout rather than straight to /login so the candidate/partner cookie is
+ * actually CLEARED on the way — otherwise the caller lands back on the login
+ * form still carrying the session that just bounced them, and every
+ * subsequent internal link bounces again.
  */
-export interface AuthSession {
-  accessToken: string;
-  userId: string;
-  tenantId: string;
-  roles: string[];
-  /** Present when the Supabase JWT carries the standard `email` claim.
-   * Purely for display (the sidebar user chip); never load-bearing. */
-  email?: string;
-}
-
-/**
- * Display label + role for the sidebar user chip. Prefers the email claim;
- * falls back to a generic label. Role is the first membership role,
- * title-cased ("admin" → "Admin"). Pure formatting — no I/O.
- */
-export function sessionUserChip(session: AuthSession): { label: string; role: string } {
-  const primary = session.roles[0] ?? "";
-  const role = primary ? primary.charAt(0).toUpperCase() + primary.slice(1).replace(/_/g, " ") : "";
-  return { label: session.email ?? "Signed in", role };
-}
+const NOT_INTERNAL_EXIT = "/logout?reason=not-internal";
 
 /**
  * Server-component / route-handler auth guard. Returns the session if
@@ -35,6 +22,10 @@ export function sessionUserChip(session: AuthSession): { label: string; role: st
  * The JWT itself carries `tid` / `roles` (custom claims stamped by the
  * Supabase auth hook per FND-15b). Decoding here avoids a DB roundtrip
  * for every server-component render.
+ *
+ * A valid session whose token has no `tid` is a candidate or partner who
+ * signed in at the internal door. That is a routing mistake, not an error:
+ * sign them out and return them to /login with an explanation.
  */
 export async function requireAuth(): Promise<AuthSession> {
   const supabase = createSupabaseServerClient();
@@ -44,7 +35,11 @@ export async function requireAuth(): Promise<AuthSession> {
   if (!session) {
     redirect("/login");
   }
-  return readSessionClaims(session.access_token);
+  const claims = readSessionClaims(session.access_token);
+  if (!claims) {
+    redirect(NOT_INTERNAL_EXIT);
+  }
+  return claims;
 }
 
 /**
@@ -63,7 +58,9 @@ export async function requireAdmin(): Promise<AuthSession> {
 
 /**
  * Variant for pages that prefer to render their own "please log in"
- * affordance instead of redirecting. Returns null when unauthenticated.
+ * affordance instead of redirecting. Returns null when unauthenticated —
+ * and equally when the session belongs to a non-internal identity, so
+ * callers like the chrome branding loader degrade instead of throwing.
  */
 export async function getOptionalSession(): Promise<AuthSession | null> {
   const supabase = createSupabaseServerClient();
@@ -72,29 +69,4 @@ export async function getOptionalSession(): Promise<AuthSession | null> {
   } = await supabase.auth.getSession();
   if (!session) return null;
   return readSessionClaims(session.access_token);
-}
-
-function readSessionClaims(accessToken: string): AuthSession {
-  // We trust the verified-at-issuance JWT — Supabase's auth gateway
-  // signed it. Re-verifying here would require a JWKS roundtrip per
-  // server render, which is the same workload `apps/api`'s
-  // tenantContext middleware performs once per HTTP request. For
-  // server-component reads we trust the cookie + Supabase's session
-  // refresh contract.
-  const raw = decodeJwt(accessToken) as {
-    sub?: string;
-    tid?: string;
-    roles?: string[];
-    email?: string;
-  };
-  if (!raw.sub || !raw.tid) {
-    throw new Error("JWT missing required claims (sub, tid)");
-  }
-  return {
-    accessToken,
-    userId: raw.sub,
-    tenantId: raw.tid,
-    roles: Array.isArray(raw.roles) ? raw.roles : [],
-    email: typeof raw.email === "string" ? raw.email : undefined,
-  };
 }

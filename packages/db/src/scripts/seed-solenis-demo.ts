@@ -284,8 +284,15 @@ const ROLES: RoleSeed[] = [
     seniority: "junior",
     openings: 2,
     status: "posted",
-    skills: ["SAP FI", "Accounts Payable", "Account Reconciliation", "Advanced Excel", "ERP Data Entry"],
-    summary: "Transactional finance support for the GBS record-to-report and purchase-to-pay towers. Hiring manager: Raghu Mehra.",
+    skills: [
+      "SAP FI",
+      "Accounts Payable",
+      "Account Reconciliation",
+      "Advanced Excel",
+      "ERP Data Entry",
+    ],
+    summary:
+      "Transactional finance support for the GBS record-to-report and purchase-to-pay towers. Hiring manager: Raghu Mehra.",
     jdText: `# Accounting Assistant III — Solenis GBS India, Hyderabad
 
 ## About the role
@@ -331,8 +338,15 @@ ${gbsLogistics("IN09", "Raghu Mehra, Finance Tower Lead")}`,
     seniority: "mid",
     openings: 1,
     status: "posted",
-    skills: ["SAP SD", "Order Management", "Stakeholder Management", "Advanced Excel", "Process Documentation"],
-    summary: "Coordinates SAP-enabled business support across order management and master data. Hiring manager: Suman.",
+    skills: [
+      "SAP SD",
+      "Order Management",
+      "Stakeholder Management",
+      "Advanced Excel",
+      "Process Documentation",
+    ],
+    summary:
+      "Coordinates SAP-enabled business support across order management and master data. Hiring manager: Suman.",
     jdText: `# Business Coordinator — Solenis GBS India, Hyderabad
 
 ## About the role
@@ -379,7 +393,8 @@ ${gbsLogistics("IN14", "Suman, Business Support Lead")}`,
     openings: 2,
     status: "posted",
     skills: ["SAP FI/CO", "Plant Accounting", "Inventory Valuation", "Month-End Close", "IFRS"],
-    summary: "Plant-side controlling and inventory accounting in SAP for the manufacturing network. Hiring manager: Raghu Mehra.",
+    summary:
+      "Plant-side controlling and inventory accounting in SAP for the manufacturing network. Hiring manager: Raghu Mehra.",
     jdText: `# SAP Plant Accountant — Solenis GBS India, Hyderabad
 
 ## About the role
@@ -427,7 +442,8 @@ ${gbsLogistics("IN12", "Raghu Mehra, Finance Tower Lead")}`,
     openings: 2,
     status: "posted",
     skills: ["Tableau", "SQL", "Data Modelling", "Alteryx", "Power BI"],
-    summary: "Builds the reporting and visual analytics layer the GBS towers run on. Hiring manager: Chandramouli.",
+    summary:
+      "Builds the reporting and visual analytics layer the GBS towers run on. Hiring manager: Chandramouli.",
     jdText: `# Tableau Analyst — Solenis GBS India, Hyderabad
 
 ## About the role
@@ -475,8 +491,15 @@ ${gbsLogistics("IN12", "Chandramouli, GBS IT & Analytics Lead")}`,
     // requisition for fill-rate and demand-by-department's "filled" series to be
     // non-zero. Flip to "posted" if the client wants all five tracker roles open.
     status: "filled",
-    skills: ["Plant Accounting", "Cost Accounting", "Month-End Close", "Advanced Excel", "Internal Controls"],
-    summary: "Plant accounting for the sites not yet migrated onto SAP. Hiring manager: Raghu Mehra.",
+    skills: [
+      "Plant Accounting",
+      "Cost Accounting",
+      "Month-End Close",
+      "Advanced Excel",
+      "Internal Controls",
+    ],
+    summary:
+      "Plant accounting for the sites not yet migrated onto SAP. Hiring manager: Raghu Mehra.",
     jdText: `# Non-SAP Plant Accountant — Solenis GBS India, Hyderabad
 
 ## About the role
@@ -1133,7 +1156,8 @@ const SOURCE_CHANNELS: SourceSeed[] = [
     label: "Naukri (job board)",
     enabled: true,
     ingestionMode: "connector_pending",
-    notes: "Primary channel (~40% of Solenis GBS applications). Automated ingestion is a connector work package.",
+    notes:
+      "Primary channel (~40% of Solenis GBS applications). Automated ingestion is a connector work package.",
   },
   {
     sourceEnum: "referral",
@@ -1262,54 +1286,326 @@ interface AppSeed {
  */
 const APPLICATIONS: AppSeed[] = [
   // ── Accounting Assistant III (IN09, 6–9 LPA, mid 7.5) — the easy-to-fill role
-  { roleKey: "accounting-assistant-iii", fullName: "Sneha Rathi", stage: "offer_drafted", ageHours: 30, expectedLpa: 8.2, source: "referral", yearsExperience: 4 },
-  { roleKey: "accounting-assistant-iii", fullName: "Manoj Kulkarni", stage: "hr_round", ageHours: 62, expectedLpa: 7.6, source: "job_board", yearsExperience: 5 },
-  { roleKey: "accounting-assistant-iii", fullName: "Divya Prasad", stage: "tech_interview", ageHours: 40, expectedLpa: 7.0, source: "job_board", yearsExperience: 3 },
-  { roleKey: "accounting-assistant-iii", fullName: "Arjun Nair", stage: "shortlisted", ageHours: 8, expectedLpa: 6.8, source: "career_site", yearsExperience: 3 },
-  { roleKey: "accounting-assistant-iii", fullName: "Pooja Deshmukh", stage: "recruiter_review", ageHours: 96, expectedLpa: 7.2, source: "referral", yearsExperience: 4 },
-  { roleKey: "accounting-assistant-iii", fullName: "Harish Bandaru", stage: "application_received", ageHours: 12, expectedLpa: 6.5, source: "job_board", yearsExperience: 2 },
+  {
+    roleKey: "accounting-assistant-iii",
+    fullName: "Sneha Rathi",
+    stage: "offer_drafted",
+    ageHours: 30,
+    expectedLpa: 8.2,
+    source: "referral",
+    yearsExperience: 4,
+  },
+  {
+    roleKey: "accounting-assistant-iii",
+    fullName: "Manoj Kulkarni",
+    stage: "hr_round",
+    ageHours: 62,
+    expectedLpa: 7.6,
+    source: "job_board",
+    yearsExperience: 5,
+  },
+  {
+    roleKey: "accounting-assistant-iii",
+    fullName: "Divya Prasad",
+    stage: "tech_interview",
+    ageHours: 40,
+    expectedLpa: 7.0,
+    source: "job_board",
+    yearsExperience: 3,
+  },
+  {
+    roleKey: "accounting-assistant-iii",
+    fullName: "Arjun Nair",
+    stage: "shortlisted",
+    ageHours: 8,
+    expectedLpa: 6.8,
+    source: "career_site",
+    yearsExperience: 3,
+  },
+  {
+    roleKey: "accounting-assistant-iii",
+    fullName: "Pooja Deshmukh",
+    stage: "recruiter_review",
+    ageHours: 96,
+    expectedLpa: 7.2,
+    source: "referral",
+    yearsExperience: 4,
+  },
+  {
+    roleKey: "accounting-assistant-iii",
+    fullName: "Harish Bandaru",
+    stage: "application_received",
+    ageHours: 12,
+    expectedLpa: 6.5,
+    source: "job_board",
+    yearsExperience: 2,
+  },
 
   // ── Business Coordinator (IN14, 20–28 LPA, mid 24)
-  { roleKey: "business-coordinator", fullName: "Lakshmi Venkatesh", stage: "hr_round", ageHours: 20, expectedLpa: 25.5, source: "referral", yearsExperience: 9 },
-  { roleKey: "business-coordinator", fullName: "Imran Sheikh", stage: "tech_interview", ageHours: 88, expectedLpa: 24.0, source: "job_board", yearsExperience: 8 },
-  { roleKey: "business-coordinator", fullName: "Nandini Rao", stage: "recruiter_review", ageHours: 30, expectedLpa: 22.5, source: "partner_empanelled", yearsExperience: 7 },
-  { roleKey: "business-coordinator", fullName: "Sridhar Gollapudi", stage: "application_received", ageHours: 60, expectedLpa: 26.0, source: "job_board", yearsExperience: 10 },
+  {
+    roleKey: "business-coordinator",
+    fullName: "Lakshmi Venkatesh",
+    stage: "hr_round",
+    ageHours: 20,
+    expectedLpa: 25.5,
+    source: "referral",
+    yearsExperience: 9,
+  },
+  {
+    roleKey: "business-coordinator",
+    fullName: "Imran Sheikh",
+    stage: "tech_interview",
+    ageHours: 88,
+    expectedLpa: 24.0,
+    source: "job_board",
+    yearsExperience: 8,
+  },
+  {
+    roleKey: "business-coordinator",
+    fullName: "Nandini Rao",
+    stage: "recruiter_review",
+    ageHours: 30,
+    expectedLpa: 22.5,
+    source: "partner_empanelled",
+    yearsExperience: 7,
+  },
+  {
+    roleKey: "business-coordinator",
+    fullName: "Sridhar Gollapudi",
+    stage: "application_received",
+    ageHours: 60,
+    expectedLpa: 26.0,
+    source: "job_board",
+    yearsExperience: 10,
+  },
 
   // ── SAP Plant Accountant (IN12, 12–18 LPA, mid 15)
-  { roleKey: "sap-plant-accountant", fullName: "Vikram Reddy", stage: "offer_drafted", ageHours: 140, expectedLpa: 21.0, source: "referral", yearsExperience: 9 },
-  { roleKey: "sap-plant-accountant", fullName: "Anita Joshi", stage: "hr_round", ageHours: 26, expectedLpa: 16.5, source: "job_board", yearsExperience: 8 },
-  { roleKey: "sap-plant-accountant", fullName: "Karthik Subramanian", stage: "tech_interview", ageHours: 96, expectedLpa: 15.0, source: "job_board", yearsExperience: 7 },
-  { roleKey: "sap-plant-accountant", fullName: "Rakesh Patnaik", stage: "shortlisted", ageHours: 16, expectedLpa: 14.2, source: "talent_pool", yearsExperience: 6 },
-  { roleKey: "sap-plant-accountant", fullName: "Bhavana Chidambaram", stage: "recruiter_review", ageHours: 44, expectedLpa: 13.5, source: "career_site", yearsExperience: 6 },
+  {
+    roleKey: "sap-plant-accountant",
+    fullName: "Vikram Reddy",
+    stage: "offer_drafted",
+    ageHours: 140,
+    expectedLpa: 21.0,
+    source: "referral",
+    yearsExperience: 9,
+  },
+  {
+    roleKey: "sap-plant-accountant",
+    fullName: "Anita Joshi",
+    stage: "hr_round",
+    ageHours: 26,
+    expectedLpa: 16.5,
+    source: "job_board",
+    yearsExperience: 8,
+  },
+  {
+    roleKey: "sap-plant-accountant",
+    fullName: "Karthik Subramanian",
+    stage: "tech_interview",
+    ageHours: 96,
+    expectedLpa: 15.0,
+    source: "job_board",
+    yearsExperience: 7,
+  },
+  {
+    roleKey: "sap-plant-accountant",
+    fullName: "Rakesh Patnaik",
+    stage: "shortlisted",
+    ageHours: 16,
+    expectedLpa: 14.2,
+    source: "talent_pool",
+    yearsExperience: 6,
+  },
+  {
+    roleKey: "sap-plant-accountant",
+    fullName: "Bhavana Chidambaram",
+    stage: "recruiter_review",
+    ageHours: 44,
+    expectedLpa: 13.5,
+    source: "career_site",
+    yearsExperience: 6,
+  },
 
   // ── Tableau Analyst (IN12, 12–18 LPA, mid 15)
-  { roleKey: "tableau-analyst", fullName: "Rohit Malhotra", stage: "hr_round", ageHours: 54, expectedLpa: 17.0, source: "job_board", yearsExperience: 7 },
-  { roleKey: "tableau-analyst", fullName: "Swetha Mudumba", stage: "tech_interview", ageHours: 22, expectedLpa: 15.5, source: "referral", yearsExperience: 6 },
-  { roleKey: "tableau-analyst", fullName: "Faisal Ahmed", stage: "shortlisted", ageHours: 34, expectedLpa: 14.0, source: "job_board", yearsExperience: 5 },
-  { roleKey: "tableau-analyst", fullName: "Priyanka Sahoo", stage: "ai_screening", ageHours: 0.3, expectedLpa: 13.8, source: "career_site", yearsExperience: 4 },
-  { roleKey: "tableau-analyst", fullName: "Naveen Chowdary", stage: "application_received", ageHours: 70, expectedLpa: 16.2, source: "partner_empanelled", yearsExperience: 8 },
+  {
+    roleKey: "tableau-analyst",
+    fullName: "Rohit Malhotra",
+    stage: "hr_round",
+    ageHours: 54,
+    expectedLpa: 17.0,
+    source: "job_board",
+    yearsExperience: 7,
+  },
+  {
+    roleKey: "tableau-analyst",
+    fullName: "Swetha Mudumba",
+    stage: "tech_interview",
+    ageHours: 22,
+    expectedLpa: 15.5,
+    source: "referral",
+    yearsExperience: 6,
+  },
+  {
+    roleKey: "tableau-analyst",
+    fullName: "Faisal Ahmed",
+    stage: "shortlisted",
+    ageHours: 34,
+    expectedLpa: 14.0,
+    source: "job_board",
+    yearsExperience: 5,
+  },
+  {
+    roleKey: "tableau-analyst",
+    fullName: "Priyanka Sahoo",
+    stage: "ai_screening",
+    ageHours: 0.3,
+    expectedLpa: 13.8,
+    source: "career_site",
+    yearsExperience: 4,
+  },
+  {
+    roleKey: "tableau-analyst",
+    fullName: "Naveen Chowdary",
+    stage: "application_received",
+    ageHours: 70,
+    expectedLpa: 16.2,
+    source: "partner_empanelled",
+    yearsExperience: 8,
+  },
 
   // ── Non-SAP Plant Accountant (IN12, filled)
-  { roleKey: "non-sap-plant-accountant", fullName: "Meenakshi Iyer", stage: "offer_drafted", ageHours: 48, expectedLpa: 15.8, source: "referral", yearsExperience: 8 },
-  { roleKey: "non-sap-plant-accountant", fullName: "Gopal Krishnan", stage: "hr_round", ageHours: 36, expectedLpa: 14.5, source: "job_board", yearsExperience: 7 },
-  { roleKey: "non-sap-plant-accountant", fullName: "Shalini Bhatt", stage: "tech_interview", ageHours: 12, expectedLpa: 13.9, source: "talent_pool", yearsExperience: 6 },
-  { roleKey: "non-sap-plant-accountant", fullName: "Aravind Sastry", stage: "recruiter_review", ageHours: 80, expectedLpa: 13.0, source: "referral", yearsExperience: 6 },
+  {
+    roleKey: "non-sap-plant-accountant",
+    fullName: "Meenakshi Iyer",
+    stage: "offer_drafted",
+    ageHours: 48,
+    expectedLpa: 15.8,
+    source: "referral",
+    yearsExperience: 8,
+  },
+  {
+    roleKey: "non-sap-plant-accountant",
+    fullName: "Gopal Krishnan",
+    stage: "hr_round",
+    ageHours: 36,
+    expectedLpa: 14.5,
+    source: "job_board",
+    yearsExperience: 7,
+  },
+  {
+    roleKey: "non-sap-plant-accountant",
+    fullName: "Shalini Bhatt",
+    stage: "tech_interview",
+    ageHours: 12,
+    expectedLpa: 13.9,
+    source: "talent_pool",
+    yearsExperience: 6,
+  },
+  {
+    roleKey: "non-sap-plant-accountant",
+    fullName: "Aravind Sastry",
+    stage: "recruiter_review",
+    ageHours: 80,
+    expectedLpa: 13.0,
+    source: "referral",
+    yearsExperience: 6,
+  },
 
   // ── SDL / Head – Automation and Productivity (Leadership, 45–65 LPA, mid 55)
-  { roleKey: "sdl-head-automation", fullName: "Ramesh Iyengar", stage: "hr_round", ageHours: 70, expectedLpa: 58.0, source: "job_board", yearsExperience: 18 },
-  { roleKey: "sdl-head-automation", fullName: "Deepa Varadarajan", stage: "tech_interview", ageHours: 30, expectedLpa: 54.0, source: "referral", yearsExperience: 16 },
-  { roleKey: "sdl-head-automation", fullName: "Ajay Kaushik", stage: "recruiter_review", ageHours: 110, expectedLpa: 61.0, source: "partner_empanelled", yearsExperience: 20 },
+  {
+    roleKey: "sdl-head-automation",
+    fullName: "Ramesh Iyengar",
+    stage: "hr_round",
+    ageHours: 70,
+    expectedLpa: 58.0,
+    source: "job_board",
+    yearsExperience: 18,
+  },
+  {
+    roleKey: "sdl-head-automation",
+    fullName: "Deepa Varadarajan",
+    stage: "tech_interview",
+    ageHours: 30,
+    expectedLpa: 54.0,
+    source: "referral",
+    yearsExperience: 16,
+  },
+  {
+    roleKey: "sdl-head-automation",
+    fullName: "Ajay Kaushik",
+    stage: "recruiter_review",
+    ageHours: 110,
+    expectedLpa: 61.0,
+    source: "partner_empanelled",
+    yearsExperience: 20,
+  },
 
   // ── Transformation & CI Manager (IN14, 20–28 LPA, mid 24)
-  { roleKey: "transformation-ci-manager", fullName: "Sanjana Kapoor", stage: "shortlisted", ageHours: 18, expectedLpa: 25.0, source: "job_board", yearsExperience: 8 },
-  { roleKey: "transformation-ci-manager", fullName: "Prashant Bhosale", stage: "recruiter_review", ageHours: 52, expectedLpa: 23.0, source: "referral", yearsExperience: 7 },
-  { roleKey: "transformation-ci-manager", fullName: "Ritika Sen", stage: "ai_screening", ageHours: 0.6, expectedLpa: 22.0, source: "career_site", yearsExperience: 6 },
-  { roleKey: "transformation-ci-manager", fullName: "Vivek Dandekar", stage: "application_received", ageHours: 26, expectedLpa: 26.5, source: "job_board", yearsExperience: 9 },
+  {
+    roleKey: "transformation-ci-manager",
+    fullName: "Sanjana Kapoor",
+    stage: "shortlisted",
+    ageHours: 18,
+    expectedLpa: 25.0,
+    source: "job_board",
+    yearsExperience: 8,
+  },
+  {
+    roleKey: "transformation-ci-manager",
+    fullName: "Prashant Bhosale",
+    stage: "recruiter_review",
+    ageHours: 52,
+    expectedLpa: 23.0,
+    source: "referral",
+    yearsExperience: 7,
+  },
+  {
+    roleKey: "transformation-ci-manager",
+    fullName: "Ritika Sen",
+    stage: "ai_screening",
+    ageHours: 0.6,
+    expectedLpa: 22.0,
+    source: "career_site",
+    yearsExperience: 6,
+  },
+  {
+    roleKey: "transformation-ci-manager",
+    fullName: "Vivek Dandekar",
+    stage: "application_received",
+    ageHours: 26,
+    expectedLpa: 26.5,
+    source: "job_board",
+    yearsExperience: 9,
+  },
 
   // ── Program & Transformation Lead (Leadership, 45–65 LPA, mid 55)
-  { roleKey: "program-transformation-lead", fullName: "Sundar Ramanathan", stage: "tech_interview", ageHours: 100, expectedLpa: 57.0, source: "job_board", yearsExperience: 17 },
-  { roleKey: "program-transformation-lead", fullName: "Nithya Balasubramanian", stage: "recruiter_review", ageHours: 24, expectedLpa: 52.0, source: "referral", yearsExperience: 14 },
-  { roleKey: "program-transformation-lead", fullName: "Zubin Contractor", stage: "application_received", ageHours: 55, expectedLpa: 60.0, source: "talent_pool", yearsExperience: 19 },
+  {
+    roleKey: "program-transformation-lead",
+    fullName: "Sundar Ramanathan",
+    stage: "tech_interview",
+    ageHours: 100,
+    expectedLpa: 57.0,
+    source: "job_board",
+    yearsExperience: 17,
+  },
+  {
+    roleKey: "program-transformation-lead",
+    fullName: "Nithya Balasubramanian",
+    stage: "recruiter_review",
+    ageHours: 24,
+    expectedLpa: 52.0,
+    source: "referral",
+    yearsExperience: 14,
+  },
+  {
+    roleKey: "program-transformation-lead",
+    fullName: "Zubin Contractor",
+    stage: "application_received",
+    ageHours: 55,
+    expectedLpa: 60.0,
+    source: "talent_pool",
+    yearsExperience: 19,
+  },
 ];
 
 /** AI score band per stage — later stages score higher (stage-appropriate; the
@@ -1403,7 +1699,9 @@ async function main(): Promise<void> {
                         || jsonb_build_object('slaThresholds', ${JSON.stringify(SLA_THRESHOLDS)}::jsonb)
        WHERE id = ${tid}
     `;
-    console.log(`  ✓ tenant identity → "${TENANT_DISPLAY_NAME}" + branding ${BRANDING.primaryColor}`);
+    console.log(
+      `  ✓ tenant identity → "${TENANT_DISPLAY_NAME}" + branding ${BRANDING.primaryColor}`,
+    );
     console.log(
       `  ✓ SLA thresholds → application_received ${SLA_THRESHOLDS.application_received}h, ` +
         `recruiter_review ${SLA_THRESHOLDS.recruiter_review}h, ` +
@@ -1687,7 +1985,9 @@ async function main(): Promise<void> {
         ON CONFLICT (id) DO UPDATE SET status = 'active'
       `;
     }
-    console.log(`  ✓ partner org "${HUDSON_NAME}" (empanelled) + live MSA + ${assignN} assignments`);
+    console.log(
+      `  ✓ partner org "${HUDSON_NAME}" (empanelled) + live MSA + ${assignN} assignments`,
+    );
 
     // ── 12. onboarding document types ──────────────────────────────────────
     for (const d of DOC_TYPES) {
@@ -1819,7 +2119,9 @@ async function main(): Promise<void> {
     }
     console.log(
       `  ✓ ${APPLICATIONS.length} applications + ${transitionN} dated transitions ` +
-        `(${Object.entries(perStage).map(([k, v]) => `${k} ${v}`).join(", ")})`,
+        `(${Object.entries(perStage)
+          .map(([k, v]) => `${k} ${v}`)
+          .join(", ")})`,
     );
 
     console.log("\nSolenis GBS demo mapping seeded.");
@@ -1888,7 +2190,9 @@ async function runUndo(sql: SqlClient, tid: string): Promise<void> {
   `;
   await sql`DELETE FROM public.document_types WHERE code IN ${sql(DOC_TYPE_CODES)}`;
 
-  console.log(`  ✓ removed every ${ID_PREFIX}-* row + the ${ROLE_TITLES.length} Solenis benchmarks`);
+  console.log(
+    `  ✓ removed every ${ID_PREFIX}-* row + the ${ROLE_TITLES.length} Solenis benchmarks`,
+  );
   console.log(
     "  ! NOT reverted (edits to PRE-EXISTING rows, by design):\n" +
       "      - tenants.display_name / settings.branding / settings.slaThresholds\n" +

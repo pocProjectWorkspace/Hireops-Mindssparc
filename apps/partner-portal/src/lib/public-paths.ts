@@ -13,7 +13,14 @@
 // with a Supabase recovery session, but the middleware gate would bounce the
 // recovery redirect before the client can exchange the code, so it stays
 // public and the page itself refuses to render the form without a session.
-const PUBLIC_PATHS = new Set<string>(["/login", "/logout", "/forgot-password", "/reset-password", "/terms", "/privacy"]);
+const PUBLIC_PATHS = new Set<string>([
+  "/login",
+  "/logout",
+  "/forgot-password",
+  "/reset-password",
+  "/terms",
+  "/privacy",
+]);
 
 const PUBLIC_PREFIXES = ["/accept-invite"] as const;
 

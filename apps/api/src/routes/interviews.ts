@@ -559,7 +559,7 @@ interviewsRoutes.post("/ai/:token/start", async (c) => {
     userAgent,
   });
   if (!result.ok) return refusalResponse(c, row, tokenHash, ip, result);
-  return c.json({ ok: true, ...result.value!.view });
+  return c.json({ ok: true, ...result.value.view });
 });
 
 /**
@@ -589,7 +589,7 @@ interviewsRoutes.post("/ai/:token/answer/upload-url", async (c) => {
 
   const result = await createAnswerUploadUrl(poolSql, row, { questionKey, contentType, sizeBytes });
   if (!result.ok) return refusalResponse(c, row, tokenHash, ip, result);
-  return c.json({ ok: true, ...result.value! });
+  return c.json({ ok: true, ...result.value });
 });
 
 /**
@@ -622,7 +622,7 @@ interviewsRoutes.post("/ai/:token/answer", async (c) => {
     endMs: typeof body.endMs === "number" ? body.endMs : null,
   });
   if (!result.ok) return refusalResponse(c, row, tokenHash, ip, result);
-  return c.json({ ok: true, answer: result.value!.answer, ...result.value!.view });
+  return c.json({ ok: true, answer: result.value.answer, ...result.value.view });
 });
 
 /**
@@ -662,7 +662,7 @@ interviewsRoutes.post("/ai/:token/submit", async (c) => {
     null,
   );
 
-  const value = result.value!;
+  const value = result.value;
   return c.json({
     ok: true,
     ...value.view,
