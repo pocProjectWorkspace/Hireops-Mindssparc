@@ -39,8 +39,30 @@ const PUBLIC_PREFIXES = [
   "/candidate/activate/",
 ];
 
+/**
+ * The sourcing-partner portal is a SEPARATE DEPLOYMENT, so /partner/* has no
+ * route here. Without this it fell through to the auth gate and 307'd to the
+ * INTERNAL staff login carrying `?from=/partner/login` — a partner following
+ * the obvious-looking hireops-ai.com/partner/login landed on the wrong door
+ * with nothing telling them so, and their credentials are (correctly) rejected
+ * there. Send them to the real portal instead.
+ */
+const PARTNER_PORTAL_URL =
+  process.env.NEXT_PUBLIC_PARTNER_PORTAL_URL?.trim() || "https://hireops-partner-portal.vercel.app";
+
 export async function middleware(req: NextRequest) {
   const { pathname } = req.nextUrl;
+
+  // /partner and /partner/* → the partner portal. NOT /partners, which is the
+  // internal partner-management surface and stays auth-gated below.
+  if (pathname === "/partner" || pathname.startsWith("/partner/")) {
+    const target = new URL(PARTNER_PORTAL_URL);
+    // Preserve the sub-path so /partner/login lands on the portal's /login.
+    const rest = pathname.slice("/partner".length);
+    target.pathname = rest === "" || rest === "/" ? "/login" : rest;
+    return NextResponse.redirect(target);
+  }
+
   if (PUBLIC_PATHS.has(pathname)) {
     return NextResponse.next();
   }

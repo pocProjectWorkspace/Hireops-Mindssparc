@@ -27,6 +27,9 @@ export function LoginForm() {
     e.preventDefault();
     setErrorMsg(null);
     setSubmitting(true);
+    // Set once the redirect is under way, so `finally` leaves the button in its
+    // pending state instead of flipping it back mid-navigation.
+    let navigating = false;
     try {
       const supabase = getSupabaseBrowserClient();
       const { error } = await supabase.auth.signInWithPassword({ email, password });
@@ -37,8 +40,17 @@ export function LoginForm() {
       const dest = searchParams.get("from") ?? "/";
       router.replace(dest);
       router.refresh();
+      // Deliberately do NOT clear `submitting` here. router.replace() is not
+      // awaited, and on a cold serverless start the destination can take ~15s
+      // to render — clearing it flipped the button back to an enabled "Sign in"
+      // while the navigation was still in flight, so a tester saw the form go
+      // idle with nothing happening and reported login as broken (it wasn't).
+      // The component unmounts when the route changes, so this never leaks.
+      navigating = true;
+      return;
     } finally {
-      setSubmitting(false);
+      // Only the failure paths above land here with the form still mounted.
+      if (!navigating) setSubmitting(false);
     }
   }
 
