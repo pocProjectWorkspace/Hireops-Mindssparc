@@ -3,11 +3,12 @@ name: ci
 # Runs all the gates we run locally:
 #   typecheck, lint, format:check, build (no DB) — in parallel, on every push + PR
 #   test-gate (targeted, ~11min)                 — on PR only; the blocking gate
-#   test-full (full api:test, ~45min)            — on push to main only; post-merge signal
+#   test-full (full api:test, ~75min)            — NIGHTLY + manual; never on a merge
 #   db:lint:rls                                  — on PR + push to main
 #
-# DB-touching jobs are gated by job-level `if:` filters so they fire only on
-# PR + push-to-main, never on bursty per-branch pushes. The bursty trigger
+# DB-touching jobs are gated by job-level `if:` filters so they never fire on
+# bursty per-branch pushes (test-gate: PR only; test-full: nightly/manual only;
+# db:lint:rls: PR + push-to-main). The bursty trigger
 # (`push: branches: ["**"]`) was the most-likely cause of the cumulative
 # back-to-back-pooler-cascade pattern that TEST-INFRA-01 diagnosed —
 # multiple feature-branch pushes in a window queue serially via the ci-db
@@ -20,6 +21,13 @@ on:
     branches: ["**"]
   pull_request:
     branches: [main]
+  # test-full only. 18:00 UTC = 23:30 IST, so it finishes overnight and the
+  # staging reseed (it empties offers + 5 outbox tables) lands in the morning
+  # rather than mid-demo. Weekdays only — a cron on an unchanged repo is the
+  # same waste as the docs-only pushes this trigger change removes.
+  schedule:
+    - cron: "0 18 * * 1-5"
+  workflow_dispatch:
 
 # Reusable env block. The DB-touching jobs additionally pull secrets
 # from the repo-level secrets store; non-DB jobs need none of that.
@@ -30,6 +38,8 @@ env:
 jobs:
   typecheck:
     name: typecheck
+    # Nothing to check on the nightly cron — that run exists for test-full.
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -45,6 +55,8 @@ jobs:
 
   lint:
     name: lint
+    # Nothing to check on the nightly cron — that run exists for test-full.
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -60,6 +72,8 @@ jobs:
 
   format:
     name: format:check
+    # Nothing to check on the nightly cron — that run exists for test-full.
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -75,6 +89,8 @@ jobs:
 
   build:
     name: build
+    # Nothing to check on the nightly cron — that run exists for test-full.
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -106,8 +122,7 @@ jobs:
     # On pull_request only. Runs the targeted set: the agent surface +
     # @hireops/agent-actions pure-function tests. ~11min total, reliable
     # under the DB_POOL_MAX=3 cap. Per TEST-INFRA-01, this is what
-    # actually gates merge — the full suite moves to test-full on
-    # push-to-main.
+    # actually gates merge — the full suite runs nightly as test-full.
     if: github.event_name == 'pull_request'
     concurrency:
       group: ci-db
@@ -133,15 +148,23 @@ jobs:
       - run: pnpm test:gate
 
   test-full:
-    name: api:test (full, post-merge)
+    name: api:test (full, nightly)
     runs-on: ubuntu-latest
-    # On push to main only. Full suite (~45min on cloud Supabase under
+    # NIGHTLY + manual. Full suite (~75min on cloud Supabase under
     # DB_POOL_MAX=3); not blocking PRs because it's slow + occasionally
-    # cascades on the shared Supavisor pooler (TEST-INFRA-01). Treat as
-    # a tripwire on main rather than a gate — a red here is signal to
-    # investigate the merged change against the full suite, not a
-    # rollback trigger by itself.
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    # cascades on the shared Supavisor pooler (TEST-INFRA-01).
+    #
+    # WHY IT IS NOT ON push-to-main any more. It never was a gate — the
+    # comment here used to say so itself ("not a rollback trigger by
+    # itself"), so no decision inside the merge window ever depended on the
+    # result. Attaching it to the merge therefore bought nothing while
+    # charging ~75min of runner time, the ci-db lock (it cancelled
+    # db:lint:rls on 4 Sep 2026), and a wipe of 6 tenant-wide tables in the
+    # staging demo tenant — on EVERY merge, docs-only commits included.
+    # Nightly delivers the same coverage at a time the reseed can be planned
+    # around. Use workflow_dispatch when you want it against a specific
+    # commit.
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     concurrency:
       group: ci-db
       cancel-in-progress: false
@@ -168,9 +191,9 @@ jobs:
   lint-rls:
     name: db:lint:rls
     runs-on: ubuntu-latest
-    # DB-touching, so gated to PR + push-to-main only (mirrors the
-    # test-gate / test-full triggers). Don't run on bursty per-branch
-    # pushes — would compete with the test jobs on the shared pooler.
+    # DB-touching, so gated to PR + push-to-main only. Don't run on bursty
+    # per-branch pushes — would compete with the test jobs on the shared
+    # pooler. Cheap enough (~1min) to stay on the merge, unlike test-full.
     if: github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
     concurrency:
       group: ci-db
