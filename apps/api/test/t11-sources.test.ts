@@ -44,7 +44,11 @@ const TENANT_SLUG = "kyndryl-poc";
 
 // A second, unrelated tenant seeded in the shared DB — used only to prove
 // isolation. It is a synthetic tenant; we insert + remove one row under it.
-const OTHER_TENANT_ID = "00000000-0000-4000-8000-00000a02e001";
+// Owned BY THIS FILE. It used to borrow ad-02-branding's synthetic tenant
+// (…-00000a02e001), which that file deletes in its own afterAll — so whenever
+// ad-02 ran first, Test 5 died on a tenants FK violation. A test may not
+// depend on a fixture another file owns.
+const OTHER_TENANT_ID = "00000000-0000-4000-8000-00000110e001";
 
 // The channel this suite owns. NOT seeded by seed-t11-sources (disjoint).
 const TEST_SOURCE = "whatsapp";
@@ -108,6 +112,15 @@ describe("T1.1 / G04 sourcing-channel registry", () => {
     `;
     if (!t) throw new Error(`tenant ${TENANT_SLUG} not found`);
     tenantId = t.id;
+
+    // The leak probe in Test 5 inserts under a SECOND tenant; create it here so
+    // the row it needs exists no matter which files ran before us.
+    await poolSql`
+      INSERT INTO public.tenants (id, slug, display_name, primary_region, status)
+      VALUES (${OTHER_TENANT_ID}, 'synth-t11-other', 'Synthetic T1.1 Other Tenant',
+              'ap-northeast-1', 'active')
+      ON CONFLICT (id) DO NOTHING
+    `;
   });
 
   afterAll(async () => {
@@ -120,6 +133,7 @@ describe("T1.1 / G04 sourcing-channel registry", () => {
         DELETE FROM public.tenant_application_sources
         WHERE tenant_id = ${OTHER_TENANT_ID} AND source_enum = 'talent_pool'::application_source
       `;
+      await poolSql`DELETE FROM public.tenants WHERE id = ${OTHER_TENANT_ID}`;
     } catch {
       // best-effort — leave residue for the groom sweep rather than fail.
     }

@@ -344,11 +344,25 @@ describe("IRIS-A1 transactional assistant — menu path (honesty)", () => {
     const stray = await requisitionIdByTitle(TITLE);
     assert.equal(stray, irisReqId, "forbidden attempt wrote no new requisition");
 
-    // irisListActions is gated the same way (recruiter cannot list).
-    const list = await trpcQuery("irisListActions", {}, recruiterJwt);
+    // irisListActions is NOT blanket-gated. IRIS-B1.1 replaced the global role
+    // gate with PER-ACTION gating: "No blanket FORBIDDEN — an ineligible
+    // persona simply gets a role-appropriate (possibly empty) menu." So the
+    // honesty check here is not that the recruiter is refused the menu, it is
+    // that the menu it gets EXCLUDES the action it was just forbidden to
+    // execute.
+    const list = await trpcQuery<{
+      actions: { id: string; roles: string[] }[];
+    }>("irisListActions", {}, recruiterJwt);
+    assert.ok(!isErr(list), `recruiter can list iris actions, got ${JSON.stringify(list)}`);
+    const recruiterActions = list.result.data.actions;
+    assert.equal(
+      recruiterActions.some((a) => a.id === "create_requisition_jd"),
+      false,
+      `recruiter's menu must not offer create_requisition_jd, got ${JSON.stringify(recruiterActions.map((a) => a.id))}`,
+    );
     assert.ok(
-      isErr(list) && list.error.data.code === "FORBIDDEN",
-      `recruiter cannot list iris actions, got ${JSON.stringify(list)}`,
+      recruiterActions.every((a) => a.roles.includes("recruiter")),
+      "every action offered to a recruiter lists 'recruiter' among its roles",
     );
 
     // admin CAN list, and the menu contains the whitelisted action.

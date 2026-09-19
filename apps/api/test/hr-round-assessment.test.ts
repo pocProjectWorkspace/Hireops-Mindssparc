@@ -138,6 +138,24 @@ async function cleanup(): Promise<void> {
   }
 }
 
+/**
+ * T2.1 / G05 gates advancement to offer_drafted on three candidate fields —
+ * Expected Salary, Notice Period, Availability Date — and that requirement is a
+ * CODE DEFAULT (MISSING_INFO_FIELDS in apps/api/src/lib/missing-info.ts), not a
+ * tenant setting, so it applies in every environment with or without
+ * candidate_field_policy rows. This file tests the HR-ROUND gate; without these
+ * fields its stage-advance died on the unrelated field-policy gate instead
+ * ("Cannot advance to Offer in preparation: this tenant's candidate-field
+ * policy requires Expected Salary, Notice Period, Availability Date").
+ *
+ * The reader is `c.parsed_skills->>'notice_period_days'`, so parsed_skills has
+ * to be an OBJECT here; it used to be a bare array, on which ->> is always NULL.
+ */
+const EXPECTED_SALARY_PAISE = 250_000_000; // ₹25L
+function parsedSkills(skills: string[]): Record<string, unknown> {
+  return { skills, notice_period_days: 60, availability_date: "2026-12-01" };
+}
+
 async function seedFixtures(): Promise<void> {
   await poolSql`INSERT INTO public.business_units (id, tenant_id, name, slug) VALUES (${BU}, ${tenantId}, 'HROPS BU', 'hrops-bu')`;
   await poolSql`
@@ -162,17 +180,17 @@ async function seedFixtures(): Promise<void> {
   await poolSql`
     INSERT INTO public.candidates (id, tenant_id, person_id, source, consent_version, parsed_skills, years_of_experience)
     VALUES
-      (${CAND_HR}, ${tenantId}, ${PERSON_HR}, 'career_site', 'v1', ${JSON.stringify(["Java", "Kafka"])}::jsonb, 7.0),
-      (${CAND_GATE}, ${tenantId}, ${PERSON_GATE}, 'career_site', 'v1', ${JSON.stringify(["Go", "AWS"])}::jsonb, 8.0),
-      (${CAND_TECH}, ${tenantId}, ${PERSON_TECH}, 'career_site', 'v1', ${JSON.stringify(["Python"])}::jsonb, 5.0)`;
+      (${CAND_HR}, ${tenantId}, ${PERSON_HR}, 'career_site', 'v1', ${JSON.stringify(parsedSkills(["Java", "Kafka"]))}::jsonb, 7.0),
+      (${CAND_GATE}, ${tenantId}, ${PERSON_GATE}, 'career_site', 'v1', ${JSON.stringify(parsedSkills(["Go", "AWS"]))}::jsonb, 8.0),
+      (${CAND_TECH}, ${tenantId}, ${PERSON_TECH}, 'career_site', 'v1', ${JSON.stringify(parsedSkills(["Python"]))}::jsonb, 5.0)`;
   await poolSql`
     INSERT INTO public.applications
       (id, tenant_id, candidate_id, requisition_id, source, current_stage, stage_entered_at, ai_score,
-       assigned_recruiter_membership_id)
+       assigned_recruiter_membership_id, expected_salary_inr_paise)
     VALUES
-      (${APP_HR}, ${tenantId}, ${CAND_HR}, ${REQ}, 'career_site', 'hr_round', now(), 84, ${recruiterMembershipId}),
-      (${APP_GATE}, ${tenantId}, ${CAND_GATE}, ${REQ}, 'career_site', 'hr_round', now(), 88, ${recruiterMembershipId}),
-      (${APP_TECH}, ${tenantId}, ${CAND_TECH}, ${REQ}, 'career_site', 'tech_interview', now(), 79, ${recruiterMembershipId})`;
+      (${APP_HR}, ${tenantId}, ${CAND_HR}, ${REQ}, 'career_site', 'hr_round', now(), 84, ${recruiterMembershipId}, ${EXPECTED_SALARY_PAISE}),
+      (${APP_GATE}, ${tenantId}, ${CAND_GATE}, ${REQ}, 'career_site', 'hr_round', now(), 88, ${recruiterMembershipId}, ${EXPECTED_SALARY_PAISE}),
+      (${APP_TECH}, ${tenantId}, ${CAND_TECH}, ${REQ}, 'career_site', 'tech_interview', now(), 79, ${recruiterMembershipId}, ${EXPECTED_SALARY_PAISE})`;
 }
 
 async function assessmentRowCount(applicationId: string): Promise<number> {

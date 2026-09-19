@@ -144,6 +144,19 @@ async function deleteAgentsByName(name: string): Promise<void> {
     DELETE FROM public.agent_approval_rules
     WHERE agent_id IN (SELECT id FROM public.automation_agents WHERE name = ${name})
   `;
+  // agent_run_actions FK-references agent_actions with ON DELETE RESTRICT, so
+  // any run that ever executed one of this agent's actions PINS that action.
+  // On a shared database those run rows outlive the test that made them (the
+  // live worker drains the outbox too), so deleting agent_actions first fails
+  // with fk_agent_run_actions_action. Clear the runs' action rows first;
+  // agent_approval_requests cascade from them.
+  await poolSql`
+    DELETE FROM public.agent_run_actions
+    WHERE action_id IN (
+      SELECT id FROM public.agent_actions
+      WHERE agent_id IN (SELECT id FROM public.automation_agents WHERE name = ${name})
+    )
+  `;
   await poolSql`
     DELETE FROM public.agent_actions
     WHERE agent_id IN (SELECT id FROM public.automation_agents WHERE name = ${name})
