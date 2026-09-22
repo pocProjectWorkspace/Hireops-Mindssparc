@@ -134,7 +134,12 @@ async function main(): Promise<void> {
     console.log(`  exclusivity:  ${TERMS.exclusivityWindowDays} days, ${TERMS.exclusivityScope}`);
     console.log(`  holdback:     ${TERMS.probationHoldbackPercent}% to end of probation`);
     console.log(`  replacement:  ${TERMS.replacementGuaranteeDays}-day guarantee`);
-    console.log("\nThe portal's Commercials tab now has live terms to render.");
+    console.log(
+      "\nTerms are on file, so a fee now accrues (and computes correctly) when a" +
+        "\ncandidate this partner sourced accepts an offer. Visible on the INTERNAL" +
+        "\npage /partners/<orgId>. The PARTNER's own Commercials tab reads fee rows," +
+        "\nnot the MSA, so it stays empty until such a hire actually happens.",
+    );
   } finally {
     const { sql: poolSql } = await import("../client");
     await poolSql.end({ timeout: 5 });
