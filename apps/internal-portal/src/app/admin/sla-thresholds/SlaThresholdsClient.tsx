@@ -34,7 +34,7 @@ const STAGE_LABELS: Record<SlaNonTerminalStage, string> = {
   ai_screening: "AI screening",
   recruiter_review: "Recruiter review",
   shortlisted: "Shortlisted",
-  tech_interview: "Technical interview",
+  tech_interview: "Panel interview",
   hr_round: "HR round",
   offer_drafted: "Offer drafted",
 };

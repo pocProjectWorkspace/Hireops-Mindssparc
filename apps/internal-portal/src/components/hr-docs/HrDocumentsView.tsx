@@ -29,7 +29,7 @@ const STATUS_OPTIONS: { value: ApplicationDocumentStatus; label: string }[] = [
 ];
 
 const STAGE_LABEL: Record<string, string> = {
-  tech_interview: "Tech interview",
+  tech_interview: "Panel interview",
   hr_round: "HR round",
   offer_drafted: "Offer drafted",
   offer_accepted: "Offer accepted",
@@ -58,7 +58,7 @@ export function HrDocumentsView({ initial }: { initial: ListApplicationDocumentC
     <PageContainer>
       <PageHeader
         title="Documents & verification"
-        subtitle="Pre-offer document collection for candidates between technical interview and offer acceptance. Every document access is PII-logged."
+        subtitle="Pre-offer document collection for candidates between panel interview and offer acceptance. Every document access is PII-logged."
         className="mb-5"
       />
 
@@ -105,7 +105,7 @@ export function HrDocumentsView({ initial }: { initial: ListApplicationDocumentC
           <EmptyState
             className="py-14"
             title="No document requests yet"
-            hint="Documents appear here once you request them from a candidate in the pre-offer window. Candidates in stages Tech interview through Offer accepted are eligible, request document types and they upload from their candidate portal."
+            hint="Documents appear here once you request them from a candidate in the pre-offer window. Candidates in stages Panel interview through Offer accepted are eligible, request document types and they upload from their candidate portal."
           />
         </div>
       ) : (

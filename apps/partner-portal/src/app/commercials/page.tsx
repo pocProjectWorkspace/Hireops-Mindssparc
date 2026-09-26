@@ -201,8 +201,9 @@ export default async function CommercialsPage() {
 
         <p className="text-sm text-neutral-500">
           These figures are the platform&rsquo;s record of what your placements have earned; they
-          are not an invoice. Anything that looks wrong is worth raising with your Kyndryl point of
-          contact — the terms shown against each fee are the ones it was computed from.
+          are not an invoice. Anything that looks wrong is worth raising with your{" "}
+          {me.tenantDisplayName} point of contact — the terms shown against each fee are the ones it
+          was computed from.
         </p>
       </div>
     </PartnerShell>

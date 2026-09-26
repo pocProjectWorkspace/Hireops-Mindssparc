@@ -30,11 +30,12 @@
 import { config as loadDotenv } from "dotenv";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { demoTenantSlug } from "./tenant-slug";
 
 const here = dirname(fileURLToPath(import.meta.url));
 loadDotenv({ path: resolve(here, "../../../../.env") });
 
-const TENANT_SLUG = "kyndryl-poc";
+const TENANT_SLUG = demoTenantSlug();
 const TEST_PASSWORD = "TestPassword123!";
 
 // Demo person E (Priya) — created by db:seed:demo-data. She carries the

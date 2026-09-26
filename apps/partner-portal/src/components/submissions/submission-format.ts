@@ -35,7 +35,7 @@ const STAGE_LABELS: Record<PartnerStageOption, string> = {
   ai_screening: "Screening",
   recruiter_review: "Recruiter review",
   shortlisted: "Shortlisted",
-  tech_interview: "Technical interview",
+  tech_interview: "Panel interview",
   hr_round: "HR round",
   offer_drafted: "Offer in progress",
   offer_accepted: "Offer accepted",
@@ -89,12 +89,15 @@ export interface OwnershipState {
  * see, not the flag (see the note on the partial-unique index in
  * packages/db/src/schema/candidate-ownership-claims.ts).
  */
-export function ownershipState(claim: {
-  status: string;
-  claimedAt: string;
-  expiresAt: string;
-  releasedAt: string | null;
-}): OwnershipState {
+export function ownershipState(
+  claim: {
+    status: string;
+    claimedAt: string;
+    expiresAt: string;
+    releasedAt: string | null;
+  },
+  tenantName: string,
+): OwnershipState {
   const expiry = new Date(claim.expiresAt);
   const lapsedByDate = !Number.isNaN(expiry.getTime()) && expiry.getTime() < Date.now();
 
@@ -105,7 +108,7 @@ export function ownershipState(claim: {
       headline: `Exclusive claim until ${fmtDate(claim.expiresAt)}`,
       detail: `Your organisation has owned this candidate since ${fmtDate(
         claim.claimedAt,
-      )}. No other partner can submit them to Kyndryl while this window is open.`,
+      )}. No other partner can submit them to ${tenantName} while this window is open.`,
     };
   }
 
@@ -124,8 +127,7 @@ export function ownershipState(claim: {
       active: false,
       tone: "warning",
       headline: "Claim superseded",
-      detail:
-        "This claim has been replaced by a later one and no longer confers exclusivity. Fee attribution follows your MSA — contact your Kyndryl point of contact if you expected otherwise.",
+      detail: `This claim has been replaced by a later one and no longer confers exclusivity. Fee attribution follows your MSA — contact your ${tenantName} point of contact if you expected otherwise.`,
     };
   }
 
@@ -135,8 +137,7 @@ export function ownershipState(claim: {
     active: false,
     tone: "warning",
     headline: `Ownership window expired on ${fmtDate(claim.expiresAt)}`,
-    detail:
-      "Your exclusivity window has closed. The candidate stays in the pipeline, but fee attribution now follows your MSA — contact your Kyndryl point of contact.",
+    detail: `Your exclusivity window has closed. The candidate stays in the pipeline, but fee attribution now follows your MSA — contact your ${tenantName} point of contact.`,
   };
 }
 

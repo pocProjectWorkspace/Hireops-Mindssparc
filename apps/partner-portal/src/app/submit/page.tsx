@@ -41,7 +41,7 @@ export default async function SubmitPage() {
       active="submit"
       isOrgAdmin={me.role === "partner_admin"}
     >
-      <SubmitCandidateForm reqs={reqs.items} />
+      <SubmitCandidateForm reqs={reqs.items} tenantName={me.tenantDisplayName} />
     </PartnerShell>
   );
 }

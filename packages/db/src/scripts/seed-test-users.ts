@@ -26,6 +26,7 @@
 import { config as loadDotenv } from "dotenv";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { demoTenantSlug } from "./tenant-slug";
 
 const here = dirname(fileURLToPath(import.meta.url));
 loadDotenv({ path: resolve(here, "../../../../.env") });
@@ -140,7 +141,7 @@ async function main() {
     const [tenant] = await db
       .select({ id: tenants.id, slug: tenants.slug })
       .from(tenants)
-      .where(eq(tenants.slug, "kyndryl-poc"))
+      .where(eq(tenants.slug, demoTenantSlug()))
       .limit(1);
     if (!tenant) {
       console.error("kyndryl-poc tenant not found; run db:migrate first (and seed the tenant).");

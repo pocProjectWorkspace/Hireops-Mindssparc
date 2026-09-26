@@ -87,7 +87,7 @@ export default async function SubmissionDetailPage({ params }: { params: { claim
     throw err;
   }
 
-  const ownership = ownershipState(detail.claim);
+  const ownership = ownershipState(detail.claim, me.tenantDisplayName);
   const snapshotRows = SNAPSHOT_FIELDS.map((f) => ({
     label: f.label,
     value: snapshotValue(detail.submittedSnapshot, f.key),
@@ -153,7 +153,7 @@ export default async function SubmissionDetailPage({ params }: { params: { claim
             <Card padded={false}>
               <EmptyState
                 title="Nothing has moved yet"
-                hint="Stage changes appear here as the Kyndryl team progresses this candidate."
+                hint={`Stage changes appear here as the ${me.tenantDisplayName} team progresses this candidate.`}
               />
             </Card>
           ) : (
@@ -181,7 +181,8 @@ export default async function SubmissionDetailPage({ params }: { params: { claim
               </ol>
               <p className="border-t border-neutral-100 px-4 py-3 text-sm text-neutral-500">
                 Stage and date only. Interview feedback and assessment notes stay internal to
-                Kyndryl — contact your Kyndryl point of contact if you need a debrief.
+                {me.tenantDisplayName} — contact your {me.tenantDisplayName} point of contact if you
+                need a debrief.
               </p>
             </Card>
           )}
@@ -206,8 +207,8 @@ export default async function SubmissionDetailPage({ params }: { params: { claim
             </dl>
             <p className="mt-4 border-t border-neutral-100 pt-3 text-sm text-neutral-500">
               This is the submission as you sent it — it can&apos;t be edited after the fact.
-              Documents (CV, consent record): available on request from your Kyndryl point of
-              contact.
+              Documents (CV, consent record): available on request from your {me.tenantDisplayName}{" "}
+              point of contact.
               {/* Deferred from P1.2 on purpose: downloading the stored CV /
                   consent record needs signed-URL support the partner tier
                   doesn't have yet (the internal portal proxies its downloads
