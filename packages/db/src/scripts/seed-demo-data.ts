@@ -33,6 +33,7 @@
 import { config as loadDotenv } from "dotenv";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { demoTenantSlug } from "./tenant-slug";
 import { createHash, createHmac, randomBytes } from "node:crypto";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -71,7 +72,7 @@ function hashSeedToken(token: string): string {
   return createHash("sha256").update(token).digest("hex");
 }
 
-const TENANT_SLUG = "kyndryl-poc";
+const TENANT_SLUG = demoTenantSlug();
 const RECRUITER_EMAIL = "recruiter1@mindssparc.com";
 const PORTAL_BASE = process.env.NEXT_PUBLIC_SITE_URL ?? "http://localhost:3002";
 

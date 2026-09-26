@@ -29,11 +29,12 @@
 import { config as loadDotenv } from "dotenv";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { demoTenantSlug } from "./tenant-slug";
 
 const here = dirname(fileURLToPath(import.meta.url));
 loadDotenv({ path: resolve(here, "../../../../.env") });
 
-const TENANT_SLUG = "kyndryl-poc";
+const TENANT_SLUG = demoTenantSlug();
 /** Same fixed password as the staff personas — see seed-test-users.ts. */
 const PASSWORD = "TestPassword123!";
 

@@ -3797,6 +3797,7 @@ export const partnerGetMeOutputSchema = z.object({
   partnerOrgId: z.string().uuid(),
   tenantId: z.string().uuid(),
   orgName: z.string(),
+  tenantDisplayName: z.string(),
   displayName: z.string(),
   email: z.string(),
   role: z.enum(["partner_admin", "partner_user"]),

@@ -30,7 +30,7 @@ type StageTab = "all" | HrCaseStage;
 const STAGE_TABS: { key: StageTab; label: string }[] = [
   { key: "all", label: "All" },
   { key: "hr_round", label: "HR round" },
-  { key: "tech_interview", label: "Tech interview" },
+  { key: "tech_interview", label: "Panel interview" },
   { key: "offer_drafted", label: "Offer stage" },
   { key: "offer_accepted", label: "Accepted" },
 ];

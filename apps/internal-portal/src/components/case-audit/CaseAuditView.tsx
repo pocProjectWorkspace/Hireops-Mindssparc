@@ -22,7 +22,7 @@ import { cn } from "@/components/ui/cn";
  */
 
 const STAGE_LABEL: Record<string, string> = {
-  tech_interview: "Tech interview",
+  tech_interview: "Panel interview",
   hr_round: "HR round",
   offer_drafted: "Offer drafted",
   offer_accepted: "Offer accepted",

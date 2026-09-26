@@ -149,7 +149,7 @@ export function PartnerDashboard({
           <Card padded={false}>
             <EmptyState
               title="No requisitions assigned yet"
-              hint="When Kyndryl opens a role to your organisation, it will appear here. Check back soon or contact your Kyndryl point of contact."
+              hint={`When ${me.tenantDisplayName} opens a role to your organisation, it will appear here. Check back soon or contact your ${me.tenantDisplayName} point of contact.`}
             />
           </Card>
         ) : (

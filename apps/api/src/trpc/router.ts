@@ -15598,6 +15598,7 @@ export const appRouter = router({
       partnerOrgId: p.partnerOrgId,
       tenantId: p.tenantId,
       orgName: p.orgName,
+      tenantDisplayName: p.tenantDisplayName,
       displayName: p.displayName,
       email: p.email,
       role: p.role === "partner_admin" ? ("partner_admin" as const) : ("partner_user" as const),
@@ -25241,7 +25242,13 @@ export const appRouter = router({
         overrides.subject = subjectOverride;
       }
       if (Object.keys(slotOverrides).length > 0) overrides.slots = slotOverrides;
-      const sample = EMAIL_TEMPLATE_SAMPLE_DATA[input.templateKey as TemplateKey];
+      const baseSample = EMAIL_TEMPLATE_SAMPLE_DATA[input.templateKey as TemplateKey];
+      // Preview in the admin's own tenant name rather than the neutral
+      // catalog fallback, so the admin sees exactly what would send.
+      const sample =
+        "companyName" in baseSample && ctx.tenantId
+          ? { ...baseSample, companyName: await resolveTenantDisplayName(ctx.tenantId) }
+          : baseSample;
       const rendered = await renderTemplate(
         input.templateKey as TemplateKey,
         sample,

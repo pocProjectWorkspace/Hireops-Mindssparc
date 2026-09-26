@@ -1,4 +1,5 @@
 import { Card } from "@/components/ui";
+import { getDeploymentBrand } from "@/lib/brand-env";
 
 /**
  * Shown when a Supabase identity authenticates but has no active partner_users
@@ -7,6 +8,9 @@ import { Card } from "@/components/ui";
  * row) is turned away. Honest, calm, with a route back out.
  */
 export function NotAPartner({ email }: { email?: string }) {
+  // Rendered for a non-partner identity, so partnerGetMe (and with it the
+  // tenant's display name) is unavailable — fall back to deployment branding.
+  const brandName = getDeploymentBrand().name;
   return (
     <main className="flex min-h-screen flex-col items-center justify-center bg-neutral-50 px-6 py-12">
       <div className="w-full max-w-md">
@@ -34,11 +38,16 @@ export function NotAPartner({ email }: { email?: string }) {
             ) : (
               <>This account isn&apos;t linked to a sourcing-partner organisation.</>
             )}{" "}
-            If you&apos;re a Kyndryl employee or a candidate, please use the portal meant for you.
+            If you&apos;re{" "}
+            {brandName ? `a ${brandName} employee` : "an employee of the hiring organisation"} or a
+            candidate, please use the portal meant for you.
           </p>
           <p className="mt-3 text-sm text-neutral-500">
-            Think this is a mistake? Contact your Kyndryl point of contact to have your partner
-            access provisioned.
+            Think this is a mistake? Contact your{" "}
+            {brandName
+              ? `${brandName} point of contact`
+              : "point of contact at the hiring organisation"}{" "}
+            to have your partner access provisioned.
           </p>
           <div className="mt-6">
             <a

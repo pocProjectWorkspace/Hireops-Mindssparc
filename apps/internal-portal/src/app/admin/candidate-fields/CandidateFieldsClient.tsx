@@ -35,7 +35,7 @@ const NONE = "__none__";
 // (offer_drafted) by default; the full set is offered for flexibility.
 const GATE_STAGE_OPTIONS: { value: ApplicationStage; label: string }[] = [
   { value: "shortlisted", label: "Shortlist" },
-  { value: "tech_interview", label: "Technical interview" },
+  { value: "tech_interview", label: "Panel interview" },
   { value: "hr_round", label: "HR round" },
   { value: "offer_drafted", label: "Offer" },
   { value: "offer_accepted", label: "Offer accepted" },
