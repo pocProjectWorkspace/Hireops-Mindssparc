@@ -4,16 +4,13 @@ import { useEffect, useRef } from "react";
 import type { ListCandidatesOutput } from "@hireops/api-types";
 import { Avatar, Badge, ScoreMeter, cn } from "@/components/ui";
 import type { BadgeTone } from "@/components/ui";
+import { applicationStageLabel } from "@/lib/labels";
 
 // Zod's z.unknown() typing makes the property optional in the inferred
 // type, which the strict Row would otherwise reject. Loosen the prop
 // shape to match what useQuery actually hands us per row.
 type RawRow = ListCandidatesOutput["rows"][number];
 type Row = Omit<RawRow, "aiScoreExplanation"> & { aiScoreExplanation?: unknown };
-
-function stageLabel(stage: string): string {
-  return stage.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
-}
 
 /**
  * Time-in-stage: label + a Badge tone that escalates with SLA pressure.
@@ -90,7 +87,7 @@ export function TriageCard({
         <div className="mt-0.5 flex min-w-0 items-center gap-2">
           <span className="truncate text-xs text-neutral-500">{row.email ?? "—"}</span>
           <Badge tone="neutral" className="shrink-0">
-            {stageLabel(row.stage)}
+            {applicationStageLabel(row.stage)}
           </Badge>
         </div>
       </div>
