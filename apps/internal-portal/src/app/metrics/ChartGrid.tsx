@@ -18,6 +18,7 @@ import {
 } from "recharts";
 import type { GetHrMetricsOutput } from "@hireops/api-types";
 import { Card, EmptyState } from "@/components/ui";
+import { applicationStageLabel } from "@/lib/labels";
 
 /**
  * METRICS-01 — the recharts chart grid for /metrics. Client-only (loaded via
@@ -140,7 +141,7 @@ function ChartTooltip({
 // ─────────────────────────────── 1. pipeline funnel ───────────────────────────────
 
 function PipelineFunnel({ funnel }: { funnel: GetHrMetricsOutput["funnel"] }) {
-  const rows = funnel.map((f) => ({ label: humanize(f.stage), value: f.count }));
+  const rows = funnel.map((f) => ({ label: applicationStageLabel(f.stage), value: f.count }));
   const empty = funnel.every((f) => f.count === 0);
   return (
     <Panel
@@ -187,7 +188,7 @@ function PipelineFunnel({ funnel }: { funnel: GetHrMetricsOutput["funnel"] }) {
 
 function TimeInStage({ timeInStage }: { timeInStage: GetHrMetricsOutput["timeInStage"] }) {
   const rows = timeInStage.map((s) => ({
-    label: humanize(s.stage),
+    label: applicationStageLabel(s.stage),
     value: s.avg_days ?? 0,
     hasData: s.avg_days !== null,
   }));

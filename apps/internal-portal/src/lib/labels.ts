@@ -9,6 +9,8 @@
  * a new acronym's casing.
  */
 
+import { STAGE_LABELS } from "@/components/candidate/candidate-format";
+
 /**
  * Words that render in fixed casing rather than Title Case. Keyed by the
  * lowercased token; the value is the exact display casing. Extend as new
@@ -76,6 +78,29 @@ export function humanizeSentence(value: string | null | undefined): string {
     })
     .join(" ");
 }
+
+/**
+ * Human label for an application stage key; falls back to humanize() for
+ * unknown keys. The single source of stage wording for every internal-portal
+ * surface (e.g. `tech_interview` → "Panel interview"), so a relabel in
+ * STAGE_LABELS reaches badges, filters, charts and reports alike.
+ */
+export function applicationStageLabel(stage: string | null | undefined): string {
+  if (!stage) return "—";
+  return STAFF_STAGE_OVERRIDES[stage] ?? STAGE_LABELS[stage] ?? humanize(stage);
+}
+
+/**
+ * Where the candidate-facing wording in STAGE_LABELS is deliberately soft
+ * ("Not progressing"), staff need the operational word. Everything not listed
+ * here shares the candidate label so both portals tell the same story.
+ */
+const STAFF_STAGE_OVERRIDES: Record<string, string> = {
+  ai_screening: "AI screening",
+  recruiter_review: "Recruiter review",
+  offer_drafted: "Offer drafted",
+  recruiter_rejected: "Rejected",
+};
 
 /**
  * Boolean → a human yes/no label. Defaults "Yes"/"No"; pass custom copy for
