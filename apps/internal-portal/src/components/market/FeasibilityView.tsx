@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { formatBenchmarkCitation } from "@hireops/api-types";
 import type {
   ListRequisitionFeasibilityOutput,
   FeasibilityCard,
@@ -175,6 +176,31 @@ function FeasibilityCardView({
             ) : (
               " · no comp band set"
             )}
+            {c.benchmark.sourceNote ? (
+              <span className="mt-0.5 block text-neutral-500">
+                {"Source: "}
+                {c.benchmark.sourceUrl ? (
+                  <a
+                    href={c.benchmark.sourceUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="text-brand-600 underline"
+                  >
+                    {formatBenchmarkCitation({
+                      sourceNote: c.benchmark.sourceNote,
+                      sourcePublishedOn: c.benchmark.sourcePublishedOn,
+                      sampleN: c.benchmark.sampleN,
+                    })}
+                  </a>
+                ) : (
+                  formatBenchmarkCitation({
+                    sourceNote: c.benchmark.sourceNote,
+                    sourcePublishedOn: c.benchmark.sourcePublishedOn,
+                    sampleN: c.benchmark.sampleN,
+                  })
+                )}
+              </span>
+            ) : null}
           </>
         ) : (
           <>

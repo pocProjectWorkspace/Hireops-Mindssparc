@@ -6,6 +6,7 @@ import {
   bigint,
   integer,
   char,
+  date,
   jsonb,
   timestamp,
   index,
@@ -75,6 +76,12 @@ export const marketBenchmarks = pgTable(
     // curated reference row for a live market feed.
     sourceNote: text("source_note").notNull(),
 
+    // Citation provenance (MI-0a, migration 0120) — all nullable. Unknown stays
+    // NULL and the UI omits that part; never invented. sample_n is CHECK > 0.
+    sourceUrl: text("source_url"),
+    sourcePublishedOn: date("source_published_on", { mode: "string" }),
+    sampleN: integer("sample_n"),
+
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
@@ -96,6 +103,10 @@ export const marketBenchmarks = pgTable(
     check("market_benchmarks_median_check", sql`${table.medianSalaryMinor} >= 0`),
     check("market_benchmarks_ttf_check", sql`${table.ttfDays} >= 0`),
     check("market_benchmarks_rounds_check", sql`${table.recommendedRounds} >= 0`),
+    check(
+      "market_benchmarks_sample_n_positive",
+      sql`${table.sampleN} IS NULL OR ${table.sampleN} > 0`,
+    ),
 
     pgPolicy("tenant_isolation", {
       as: "permissive",

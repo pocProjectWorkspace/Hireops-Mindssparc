@@ -905,6 +905,12 @@ interface BenchmarkSeed {
   competitorDemand: Level;
   recommendedRounds: number;
   trendingSkills: string[];
+  // Citation provenance (MI-0a, migration 0120). Deliberately left undefined on
+  // every row below — a human fills these from the real published guides; the
+  // seed never invents a URL, date or sample size.
+  sourceUrl?: string;
+  sourcePublishedOn?: string;
+  sampleN?: number;
 }
 
 const BENCHMARK_SOURCE_NOTE = "Curated benchmark — Solenis GBS pilot, update quarterly";
@@ -1848,10 +1854,13 @@ async function main(): Promise<void> {
       await sql`
         INSERT INTO public.market_benchmarks
           (tenant_id, role_title, median_salary_minor, currency, ttf_days, availability,
-           competitor_demand, recommended_rounds, trending_skills, source_note, updated_at)
+           competitor_demand, recommended_rounds, trending_skills, source_note,
+           source_url, source_published_on, sample_n, updated_at)
         VALUES (${tid}, ${bm.roleTitle}, ${lpaToPaise(bm.medianLpa)}, 'INR', ${bm.ttfDays},
                 ${bm.availability}, ${bm.competitorDemand}, ${bm.recommendedRounds},
-                ${JSON.stringify(bm.trendingSkills)}::jsonb, ${BENCHMARK_SOURCE_NOTE}, now())
+                ${JSON.stringify(bm.trendingSkills)}::jsonb, ${BENCHMARK_SOURCE_NOTE},
+                ${bm.sourceUrl ?? null}, ${bm.sourcePublishedOn ?? null}::date,
+                ${bm.sampleN ?? null}, now())
         ON CONFLICT (tenant_id, role_title) DO UPDATE SET
           median_salary_minor = EXCLUDED.median_salary_minor,
           currency            = EXCLUDED.currency,
@@ -1861,6 +1870,9 @@ async function main(): Promise<void> {
           recommended_rounds  = EXCLUDED.recommended_rounds,
           trending_skills     = EXCLUDED.trending_skills,
           source_note         = EXCLUDED.source_note,
+          source_url          = EXCLUDED.source_url,
+          source_published_on = EXCLUDED.source_published_on,
+          sample_n            = EXCLUDED.sample_n,
           updated_at          = now()
       `;
     }

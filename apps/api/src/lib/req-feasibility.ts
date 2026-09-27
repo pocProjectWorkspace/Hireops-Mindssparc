@@ -25,9 +25,11 @@
  */
 
 import { z } from "zod";
-import { feasibilityAssessmentSchema } from "@hireops/api-types";
+import { feasibilityAssessmentSchema, formatBenchmarkCitation } from "@hireops/api-types";
 
-export const REQ_FEASIBILITY_PROMPT_VERSION = "hrhead-02-v1";
+// v2 (MI-0b): the benchmark block cites its source (note · published date · N,
+// plus URL when present) and the system prompt forbids un-sourced market figures.
+export const REQ_FEASIBILITY_PROMPT_VERSION = "hrhead-02-v2";
 
 /** Structured-output tool name for the Anthropic forced-tool-use path. */
 export const REQ_FEASIBILITY_SCHEMA_NAME = "requisition_feasibility";
@@ -60,6 +62,11 @@ export interface FeasibilityBenchmarkInput {
   competitorDemand: string;
   recommendedRounds: number;
   trendingSkills: string[];
+  /** Citation provenance (MI-0a) — cited verbatim in the prompt. */
+  sourceNote: string;
+  sourceUrl: string | null;
+  sourcePublishedOn: string | null;
+  sampleN: number | null;
 }
 
 export interface BuildFeasibilityPromptInput {
@@ -104,7 +111,9 @@ export function buildRequisitionFeasibilityPrompt(
     "fabricating numbers. skillsFit and expCompFit are 0–100 integer percentages. " +
     "recommendedSalaryAdjustmentPct is a signed percentage to move the budget toward the " +
     "market median (positive = raise the budget), or null when no change is warranted or " +
-    "no benchmark exists. Return a JSON object only — no prose outside the JSON.";
+    "no benchmark exists. Name the benchmark's source in your recommendation exactly as " +
+    "given; never present a market figure the benchmark does not supply. Return a JSON " +
+    "object only — no prose outside the JSON.";
 
   const skillBullets = input.skills
     .slice(0, SKILL_CAP)
@@ -147,7 +156,9 @@ export function buildRequisitionFeasibilityPrompt(
       `- Trending skills for this role: ${
         b.trendingSkills.slice(0, TRENDING_CAP).join(", ") || "(none listed)"
       }`,
+      `- Source: ${formatBenchmarkCitation(b)}`,
     );
+    if (b.sourceUrl) lines.push(`- Source URL: ${b.sourceUrl}`);
   } else {
     lines.push(
       "MARKET BENCHMARK",
