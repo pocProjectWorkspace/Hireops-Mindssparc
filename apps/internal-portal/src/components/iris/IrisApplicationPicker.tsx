@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { trpc } from "@/lib/trpc-client";
-import { humanizeSentence } from "@/lib/labels";
+import { applicationStageLabel } from "@/lib/labels";
 import type { ApplicationStage } from "@hireops/api-types";
 
 /**
@@ -86,7 +86,7 @@ export function IrisApplicationPicker({
               {value.fullName ?? "(no name on file)"}
             </p>
             <p className="text-xs text-brand-700/80">
-              Current stage: {humanizeSentence(value.stage)}
+              Current stage: {applicationStageLabel(value.stage)}
             </p>
           </div>
           <button
@@ -149,7 +149,7 @@ export function IrisApplicationPicker({
                     ) : null}
                   </span>
                   <span className="shrink-0 text-xs text-neutral-500">
-                    {humanizeSentence(r.currentStage)}
+                    {applicationStageLabel(r.currentStage)}
                   </span>
                 </button>
               </li>

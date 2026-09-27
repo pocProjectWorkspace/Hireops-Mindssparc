@@ -5,6 +5,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { Badge, Button } from "@/components/ui";
 import type { BadgeTone } from "@/components/ui";
 import { trpc } from "@/lib/trpc-client";
+import { applicationStageLabel } from "@/lib/labels";
 
 /**
  * Offer drafting section inside the CandidateDetailDrawer. Three modes:
@@ -95,7 +96,7 @@ export function OfferSection({ applicationId }: OfferSectionProps) {
         <p className="text-sm text-neutral-500">
           {draftable
             ? "No offer yet. Draft one when ready."
-            : `Offers can be drafted from stages: ${[...DRAFTABLE_STAGES].join(", ")}.`}
+            : `Offers can be drafted from stages: ${[...DRAFTABLE_STAGES].map(applicationStageLabel).join(", ")}.`}
         </p>
       ) : null}
 

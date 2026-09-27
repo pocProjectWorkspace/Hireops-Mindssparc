@@ -9,7 +9,7 @@ import { RecommendationChip } from "@/components/patterns";
 import { trpc, handleTRPCError } from "@/lib/trpc-client";
 import type { GetPanelInterviewBriefOutput, GetInterviewPrepOutput } from "@hireops/api-types";
 import { SKILLS_MATCH_AMBER_THRESHOLD } from "@hireops/api-types";
-import { humanize, humanizeSentence } from "@/lib/labels";
+import { applicationStageLabel, humanizeSentence } from "@/lib/labels";
 
 /**
  * PANEL-02 — the candidate BRIEF content for one interview (the read-only
@@ -396,7 +396,7 @@ function statusTone(status: string): BadgeTone {
 }
 
 function humanStage(stage: string): string {
-  return humanize(stage);
+  return applicationStageLabel(stage);
 }
 
 function formatWhen(iso: string | null): string {

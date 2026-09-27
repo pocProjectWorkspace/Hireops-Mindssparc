@@ -16,7 +16,7 @@ import {
 } from "@/components/ui";
 import { PageContainer } from "@/components/nav/PageContainer";
 import { trpc } from "@/lib/trpc-client";
-import { humanizeSentence } from "@/lib/labels";
+import { applicationStageLabel, humanizeSentence } from "@/lib/labels";
 
 /**
  * The admin recruitment report — totals tiles, the pipeline funnel as
@@ -143,7 +143,7 @@ export function ReportsClient({ initial }: { initial: GetRecruitmentReportOutput
                 return (
                   <DataBar
                     key={f.stage}
-                    label={humanize(f.stage)}
+                    label={applicationStageLabel(f.stage)}
                     labelClassName="w-40 text-neutral-700"
                     pct={pct}
                     value={f.current_count.toLocaleString()}
@@ -214,7 +214,7 @@ export function ReportsClient({ initial }: { initial: GetRecruitmentReportOutput
               <Tbody>
                 {stageDurations.map((s) => (
                   <Tr key={s.stage}>
-                    <Td label="Stage">{humanize(s.stage)}</Td>
+                    <Td label="Stage">{applicationStageLabel(s.stage)}</Td>
                     <Td numeric label="Median days in stage">
                       {formatDays(s.median_days)}
                     </Td>
