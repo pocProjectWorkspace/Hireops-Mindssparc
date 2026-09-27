@@ -159,7 +159,7 @@ export function HrRecChip({
 }
 
 const STAGE_META: Record<HrCaseStage, { label: string; cls: string }> = {
-  tech_interview: { label: "Tech interview", cls: "bg-status-info-50 text-status-info-800" },
+  tech_interview: { label: "Panel interview", cls: "bg-status-info-50 text-status-info-800" },
   hr_round: { label: "HR round", cls: "bg-brand-50 text-brand-700" },
   offer_drafted: { label: "Offer stage", cls: "bg-status-warning-50 text-status-warning-800" },
   offer_accepted: { label: "Accepted", cls: "bg-status-positive-50 text-status-positive-700" },

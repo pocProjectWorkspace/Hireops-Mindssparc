@@ -15,7 +15,7 @@ import { renderTemplate } from "../src/render";
 
 const baseData = {
   candidateName: "Anika",
-  companyName: "Kyndryl GCC",
+  companyName: "Your organisation",
   positionTitle: "Senior Backend Engineer",
   body: "Hi Anika,\n\nJust checking in on your application.\n\nBest,",
   subject: "A quick note about your application",

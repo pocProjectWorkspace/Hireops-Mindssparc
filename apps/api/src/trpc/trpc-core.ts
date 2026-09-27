@@ -107,6 +107,7 @@ export interface PartnerContext {
   displayName: string;
   email: string;
   orgName: string;
+  tenantDisplayName: string;
 }
 
 /**
@@ -155,11 +156,12 @@ export const partnerProcedure = t.procedure.use(async ({ ctx, next }) => {
       full_name: string;
       email: string;
       org_name: string;
+      tenant_display_name: string;
     }[]
   >`
     SELECT pu.id AS partner_user_id, pu.partner_org_id, pu.tenant_id,
            t.slug AS tenant_slug, pu.role::text AS role, pu.full_name, pu.email,
-           po.name AS org_name
+           po.name AS org_name, t.display_name AS tenant_display_name
     FROM public.partner_users pu
     JOIN public.tenants t ON t.id = pu.tenant_id
     JOIN public.partner_orgs po ON po.id = pu.partner_org_id AND po.tenant_id = pu.tenant_id
@@ -185,6 +187,7 @@ export const partnerProcedure = t.procedure.use(async ({ ctx, next }) => {
     displayName: p.full_name,
     email: p.email,
     orgName: p.org_name,
+    tenantDisplayName: p.tenant_display_name,
   };
 
   return withTenantContext(

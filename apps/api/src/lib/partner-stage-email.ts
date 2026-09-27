@@ -111,7 +111,7 @@ export const PARTNER_TERMINAL_STAGES = new Set<ApplicationStage>([
  */
 const PARTNER_STAGE_LABELS: Partial<Record<ApplicationStage, string>> = {
   shortlisted: "Shortlisted",
-  tech_interview: "Technical interview",
+  tech_interview: "Panel interview",
   hr_round: "HR round",
   offer_accepted: "Offer accepted",
   offer_declined: "Offer declined",

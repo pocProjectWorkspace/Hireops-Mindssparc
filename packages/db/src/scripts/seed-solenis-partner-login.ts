@@ -44,6 +44,7 @@
 import { config as loadDotenv } from "dotenv";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { demoTenantSlug } from "./tenant-slug";
 // Type-only: erased at compile time, so it cannot disturb the dotenv-before-
 // client.ts import ordering the dynamic imports below exist to preserve.
 import type { SupabaseClient } from "@supabase/supabase-js";
@@ -51,7 +52,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 const here = dirname(fileURLToPath(import.meta.url));
 loadDotenv({ path: resolve(here, "../../../../.env") });
 
-const TENANT_SLUG = "kyndryl-poc";
+const TENANT_SLUG = demoTenantSlug();
 
 /**
  * Host guard, same discipline as seed-solenis-demo.ts but applied to BOTH

@@ -1,6 +1,7 @@
 import { config as loadDotenv } from "dotenv";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { demoTenantSlug } from "./scripts/tenant-slug";
 
 // .env lives at the workspace root — load BEFORE importing client.ts
 const here = dirname(fileURLToPath(import.meta.url));
@@ -15,7 +16,7 @@ async function seed() {
   console.log("Seeding development tenant...");
 
   // Idempotent: only insert if not already present
-  const existing = await db.select().from(tenants).where(eq(tenants.slug, "kyndryl-poc"));
+  const existing = await db.select().from(tenants).where(eq(tenants.slug, demoTenantSlug()));
   if (existing.length > 0) {
     console.log("Tenant kyndryl-poc already exists, skipping seed.");
     return;
@@ -24,7 +25,7 @@ async function seed() {
   const [tenant] = await db
     .insert(tenants)
     .values({
-      slug: "kyndryl-poc",
+      slug: demoTenantSlug(),
       displayName: "NovaChem GCC",
       primaryRegion: "ap-northeast-1", // dev region; production tenant will be ap-south-1
       status: "active",

@@ -67,7 +67,7 @@ export default async function ReqsPage() {
           <Card padded={false}>
             <EmptyState
               title="No requisitions assigned yet"
-              hint="When Kyndryl opens a role to your organisation, it will appear here. Check back soon or contact your Kyndryl point of contact."
+              hint={`When ${me.tenantDisplayName} opens a role to your organisation, it will appear here. Check back soon or contact your ${me.tenantDisplayName} point of contact.`}
             />
           </Card>
         ) : (
@@ -80,8 +80,8 @@ export default async function ReqsPage() {
 
         {reqs.capped ? (
           <p className="text-sm text-neutral-500">
-            Showing the most recent assignments. Contact your Kyndryl point of contact if you expect
-            to see more.
+            Showing the most recent assignments. Contact your {me.tenantDisplayName} point of
+            contact if you expect to see more.
           </p>
         ) : null}
       </div>

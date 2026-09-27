@@ -62,6 +62,9 @@ const NO_SUBJECT_TEMPLATE = "recruiter.sla_ops_alert";
 let recruiterJwt: string;
 let adminJwt: string;
 let tenantId: string;
+// previewEmailTemplate swaps the sample `companyName` for the tenant's display
+// name (SAT-AM-01), so the byte-identical assertions must render with it too.
+let tenantDisplayName: string;
 
 async function signIn(email: string): Promise<string> {
   const supabase = createClient(SUPABASE_URL!, SUPABASE_ANON_KEY!);
@@ -128,11 +131,12 @@ function entry(cat: CatalogOut, key: string): CatalogEntry {
 describe("T1.4 / G09 email/notification copy overrides", () => {
   beforeAll(async () => {
     [recruiterJwt, adminJwt] = await Promise.all([signIn(RECRUITER), signIn(ADMIN)]);
-    const [t] = await poolSql<{ id: string }[]>`
-      SELECT id FROM public.tenants WHERE slug = ${TENANT_SLUG} LIMIT 1
+    const [t] = await poolSql<{ id: string; display_name: string }[]>`
+      SELECT id, display_name FROM public.tenants WHERE slug = ${TENANT_SLUG} LIMIT 1
     `;
     if (!t) throw new Error(`tenant ${TENANT_SLUG} not found`);
     tenantId = t.id;
+    tenantDisplayName = t.display_name;
     // A synthetic second tenant for the isolation probe (Test 7). The FK to
     // tenants is enforced, so the probe row needs a real tenant to hang off;
     // create one idempotently and tear it down in afterAll.
@@ -277,7 +281,7 @@ describe("T1.4 / G09 email/notification copy overrides", () => {
   });
 
   it("Test 4: FALLBACK — preview with no overrides is byte-identical to the default render", async () => {
-    const sample = EMAIL_TEMPLATE_SAMPLE_DATA[TEST_TEMPLATE];
+    const sample = { ...EMAIL_TEMPLATE_SAMPLE_DATA[TEST_TEMPLATE], companyName: tenantDisplayName };
     const def = await renderTemplate(TEST_TEMPLATE, sample);
     const prev = await trpcQuery<PreviewOut>(
       "previewEmailTemplate",
@@ -290,10 +294,10 @@ describe("T1.4 / G09 email/notification copy overrides", () => {
   });
 
   it("Test 5: overrides applied — token interpolation matches the resolved render", async () => {
-    const sample = EMAIL_TEMPLATE_SAMPLE_DATA[TEST_TEMPLATE] as {
-      candidateName: string;
-      positionTitle: string;
-    };
+    const sample = {
+      ...EMAIL_TEMPLATE_SAMPLE_DATA[TEST_TEMPLATE],
+      companyName: tenantDisplayName,
+    } as { candidateName: string; positionTitle: string; companyName: string };
     const subjectOverride = "Your {positionTitle} application — an update";
     const slotOverrides = { greeting: "Dear {candidateName}!" };
 

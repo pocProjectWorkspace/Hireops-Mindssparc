@@ -62,7 +62,10 @@ export default function LoginPage() {
               Partner sign in
             </h1>
             <p className="mt-1 mb-6 text-sm text-neutral-500">
-              Sourcing partner access. Kyndryl employees and candidates sign in elsewhere.
+              Sourcing partner access.{" "}
+              {brand.name
+                ? `${brand.name} employees and candidates sign in elsewhere.`
+                : "Employees of the hiring organisation and candidates sign in elsewhere."}
             </p>
             <LoginForm />
           </div>

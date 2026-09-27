@@ -23,11 +23,12 @@
 import { config as loadDotenv } from "dotenv";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { demoTenantSlug } from "./tenant-slug";
 
 const here = dirname(fileURLToPath(import.meta.url));
 loadDotenv({ path: resolve(here, "../../../../.env") });
 
-const TENANT_SLUG = "kyndryl-poc";
+const TENANT_SLUG = demoTenantSlug();
 
 // t13 namespace (…000013xx — free).
 const REQ_ACTIVE = "00000000-0000-4000-8000-000000001301";

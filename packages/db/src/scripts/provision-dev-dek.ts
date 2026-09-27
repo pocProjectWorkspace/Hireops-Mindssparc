@@ -12,11 +12,12 @@
 import { config as loadDotenv } from "dotenv";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { demoTenantSlug } from "./tenant-slug";
 
 const here = dirname(fileURLToPath(import.meta.url));
 loadDotenv({ path: resolve(here, "../../../../.env") });
 
-const TARGET_TENANT_SLUG = "kyndryl-poc";
+const TARGET_TENANT_SLUG = demoTenantSlug();
 
 async function main(): Promise<void> {
   // Dynamic imports so dotenv loads first; client.ts reads DATABASE_URL at

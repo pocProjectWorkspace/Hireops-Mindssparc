@@ -78,6 +78,7 @@
 import { config as loadDotenv } from "dotenv";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { demoTenantSlug } from "./tenant-slug";
 import type postgres from "postgres";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -86,7 +87,7 @@ loadDotenv({ path: resolve(here, "../../../../.env") });
 const EXECUTE = process.argv.includes("--execute");
 
 // ─────────────── protected constants ───────────────
-const KYNDRYL_SLUG = "kyndryl-poc";
+const KYNDRYL_SLUG = demoTenantSlug();
 // Seed fixture namespace — ids of the form 00000000-0000-4000-8000-00000000a5XX.
 const SEED_A5XX_PREFIX = "00000000-0000-4000-8000-00000000a5";
 const DEMO_AGENT_ID = "00000000-0000-4000-8000-00000000a590";

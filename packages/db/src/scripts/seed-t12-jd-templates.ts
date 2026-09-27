@@ -30,11 +30,12 @@
 import { config as loadDotenv } from "dotenv";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { demoTenantSlug } from "./tenant-slug";
 
 const here = dirname(fileURLToPath(import.meta.url));
 loadDotenv({ path: resolve(here, "../../../../.env") });
 
-const TENANT_SLUG = "kyndryl-poc";
+const TENANT_SLUG = demoTenantSlug();
 
 const LEGAL_CLAUSES = [
   "We are an equal-opportunity employer. We do not discriminate on the basis of caste, religion, gender, gender identity, sexual orientation, disability, age, marital status, or any other protected characteristic.",

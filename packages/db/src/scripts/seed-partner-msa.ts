@@ -1,6 +1,7 @@
 import { config as loadDotenv } from "dotenv";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { demoTenantSlug } from "./tenant-slug";
 
 const here = dirname(fileURLToPath(import.meta.url));
 loadDotenv({ path: resolve(here, "../../../../.env") });
@@ -30,7 +31,7 @@ loadDotenv({ path: resolve(here, "../../../../.env") });
  * Terms below are illustrative demo values, not a real commercial agreement.
  */
 
-const TENANT_SLUG = "kyndryl-poc";
+const TENANT_SLUG = demoTenantSlug();
 
 // partner-demo's org (…a601). This seed deliberately does NOT create an org —
 // if partner-demo hasn't run there is nothing to attach terms to, and silently

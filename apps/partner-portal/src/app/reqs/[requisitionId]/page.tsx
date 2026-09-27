@@ -135,7 +135,7 @@ export default async function RequisitionDetailPage({
             </p>
             <p className="mt-1 text-sm text-neutral-500">
               {req.compBandMin === null && req.compBandMax === null
-                ? "Kyndryl hasn't published a band for this role. Ask your Kyndryl point of contact before setting candidate expectations."
+                ? `${me.tenantDisplayName} hasn't published a band for this role. Ask your ${me.tenantDisplayName} point of contact before setting candidate expectations.`
                 : "Annual base band for this position. Final offers depend on the candidate's assessment outcome."}
             </p>
           </Card>

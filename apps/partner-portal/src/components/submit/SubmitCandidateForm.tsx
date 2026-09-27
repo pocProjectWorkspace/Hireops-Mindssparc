@@ -81,7 +81,13 @@ const fieldSchema = z.object({
 
 type FieldErrors = Partial<Record<keyof z.infer<typeof fieldSchema>, string>>;
 
-export function SubmitCandidateForm({ reqs }: { reqs: PartnerAssignedRequisitionRow[] }) {
+export function SubmitCandidateForm({
+  reqs,
+  tenantName,
+}: {
+  reqs: PartnerAssignedRequisitionRow[];
+  tenantName: string;
+}) {
   const searchParams = useSearchParams();
   const preselectReq = searchParams.get("req");
   const initialReqId = useMemo(() => {
@@ -215,7 +221,7 @@ export function SubmitCandidateForm({ reqs }: { reqs: PartnerAssignedRequisition
   }
 
   if (result) {
-    return <OutcomeCard result={result} onAnother={resetForm} />;
+    return <OutcomeCard result={result} onAnother={resetForm} tenantName={tenantName} />;
   }
 
   if (reqs.length === 0) {
@@ -223,8 +229,8 @@ export function SubmitCandidateForm({ reqs }: { reqs: PartnerAssignedRequisition
       <Card className="flex flex-col gap-2">
         <h2 className="text-base font-semibold text-neutral-900">No requisitions assigned yet</h2>
         <p className="text-sm text-neutral-500">
-          You can submit candidates only against roles Kyndryl has opened to your organisation. None
-          are open right now.
+          You can submit candidates only against roles {tenantName} has opened to your organisation.
+          None are open right now.
         </p>
       </Card>
     );
@@ -380,10 +386,10 @@ export function SubmitCandidateForm({ reqs }: { reqs: PartnerAssignedRequisition
           />
           <span>
             I confirm that I have obtained explicit, DPDPA-compliant consent from this candidate to
-            share their CV and personal details with Kyndryl to evaluate their candidacy; that the
-            candidate has been informed their data may be processed and retained by Kyndryl with
-            rights of access, correction, and erasure; and that the information in this submission
-            is accurate to the best of my knowledge.
+            share their CV and personal details with {tenantName} to evaluate their candidacy; that
+            the candidate has been informed their data may be processed and retained by {tenantName}{" "}
+            with rights of access, correction, and erasure; and that the information in this
+            submission is accurate to the best of my knowledge.
           </span>
         </label>
         {fieldErrors.consentAttested && (
@@ -399,8 +405,8 @@ export function SubmitCandidateForm({ reqs }: { reqs: PartnerAssignedRequisition
             className="mt-1 h-5 w-5 shrink-0 rounded border-neutral-300 text-brand-600 focus:ring-2 focus:ring-brand-500"
           />
           <span>
-            By submitting, I claim ownership of this candidate per Kyndryl&rsquo;s MSA Section 4.2.
-            The 90-day exclusivity window starts now if this submission is accepted.
+            By submitting, I claim ownership of this candidate per {tenantName}&rsquo;s MSA Section
+            4.2. The 90-day exclusivity window starts now if this submission is accepted.
           </span>
         </label>
         {fieldErrors.ownershipAcknowledged && (
@@ -438,16 +444,18 @@ export function SubmitCandidateForm({ reqs }: { reqs: PartnerAssignedRequisition
 function OutcomeCard({
   result,
   onAnother,
+  tenantName,
 }: {
   result: PartnerSubmitCandidateOutput;
   onAnother: () => void;
+  tenantName: string;
 }) {
   if (result.outcome === "created") {
     return (
       <Shell tone="success" heading="Submitted successfully">
         <p className="text-sm text-neutral-700">
-          The candidate is now in Kyndryl&rsquo;s pipeline and will be screened, scored, and triaged
-          like any direct applicant. Your ownership window runs to{" "}
+          The candidate is now in {tenantName}&rsquo;s pipeline and will be screened, scored, and
+          triaged like any direct applicant. Your ownership window runs to{" "}
           <strong>{fmtDate(result.claimExpiresAt)}</strong>.
         </p>
         {result.parseStatus === "parse_failed" && (
