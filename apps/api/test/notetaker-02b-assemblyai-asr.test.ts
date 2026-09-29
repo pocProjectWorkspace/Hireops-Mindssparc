@@ -211,6 +211,7 @@ describe("assemblyai asr adapter (N3.1b)", () => {
       assert.equal(create.bodyJson?.speaker_labels, true);
       assert.deepEqual(create.bodyJson?.speech_models, [DEFAULT_ASSEMBLYAI_MODEL]);
       assert.equal(create.bodyJson?.speech_model, undefined, "the retired scalar is not sent");
+      assert.equal(create.bodyJson?.keyterms_prompt, undefined, "no keyterms → none sent");
       assert.equal(create.bodyJson?.language_code, "en");
 
       // Step 3 — polling the job by id until it settles.
@@ -221,7 +222,7 @@ describe("assemblyai asr adapter (N3.1b)", () => {
       }
 
       assert.equal(res.provider, "assemblyai");
-      assert.equal(res.providerModel, "universal-2");
+      assert.equal(res.providerModel, "universal-3-5-pro");
       assert.equal(res.language, "en");
       // The vendor measured the media; that beats the caller's hint because
       // it is what the invoice is computed from.
@@ -277,19 +278,20 @@ describe("assemblyai asr adapter (N3.1b)", () => {
     const client = fastClient(ASM_TENANT);
     try {
       const res = await client.transcribe(AUDIO, { contentType: "audio/webm" });
-      // 30 minutes of Universal at $0.0045/min = 135,000 micros ($0.135).
-      assert.equal(res.costMicros, computeASRCostMicros("universal-2", 1800));
-      assert.equal(res.costMicros, 135000n);
+      // 30 minutes of Universal-3.5 Pro incl. diarisation + keyterms at
+      // 4,667 micros/min = 140,010 micros (~$0.14).
+      assert.equal(res.costMicros, computeASRCostMicros("universal-3-5-pro", 1800));
+      assert.equal(res.costMicros, 140010n);
 
       const rows = await db.select().from(aiUsageLogs).where(eq(aiUsageLogs.tenantId, ASM_TENANT));
       assert.equal(rows.length, 1, "exactly one ledger row per transcribe(), not one per request");
       const row = rows[0]!;
       assert.equal(row.provider, "assemblyai");
-      assert.equal(row.model, "universal-2");
+      assert.equal(row.model, "universal-3-5-pro");
       assert.equal(row.feature, "asr_transcription");
       assert.equal(row.inputTokens, 0, "zero because ASR is not token-priced");
       assert.equal(row.outputTokens, 0, "zero because ASR is not token-priced");
-      assert.equal(row.costMicros, 135000n, "real money, derived from duration");
+      assert.equal(row.costMicros, 140010n, "real money, derived from duration");
       assert.equal(row.succeeded, true);
 
       // Enough to reconcile this line against an AssemblyAI invoice.

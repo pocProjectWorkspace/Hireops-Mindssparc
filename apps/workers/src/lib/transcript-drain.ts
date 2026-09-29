@@ -65,6 +65,7 @@
 import { randomUUID } from "node:crypto";
 import { sql as poolSql } from "@hireops/db";
 import type { Logger } from "@hireops/observability";
+import { loadInterviewKeyterms } from "./asr-keyterms";
 import { z } from "zod";
 import {
   coerceScorecardCriteria,
@@ -435,8 +436,13 @@ export async function drainTranscriptOutboxOnce(
       // ── 4. Transcribe ───────────────────────────────────────────────────
       const contentType = recording.media_type ?? media.contentType ?? "application/octet-stream";
       const asr = getASRClient(row.tenant_id);
+      // A spelling hint only — a failed lookup transcribes without it.
+      const keyterms = await loadInterviewKeyterms(row.tenant_id, recording.interview_id).catch(
+        () => [],
+      );
       const result = await asr.transcribe(media.buffer, {
         contentType,
+        keyterms,
         ...(recording.duration_seconds !== null
           ? { durationSecondsHint: recording.duration_seconds }
           : {}),

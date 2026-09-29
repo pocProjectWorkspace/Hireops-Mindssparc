@@ -92,6 +92,16 @@ export interface ASRTranscribeOptions {
    */
   feature?: string;
 
+  /**
+   * Domain vocabulary the recording is likely to contain — the employer's
+   * name, the candidate's and panel's names, the role title. Sent to
+   * AssemblyAI as `keyterms_prompt` so proper nouns come back spelled the way
+   * the business spells them ("Solenis", not "Solanas"). A hint, never an
+   * assertion: an empty or absent list sends nothing. Adapters that have no
+   * equivalent ignore it.
+   */
+  keyterms?: string[];
+
   /** Correlation id → ai_usage_logs.request_id. */
   requestId?: string | null;
   /** Actor → ai_usage_logs.actor_membership_id. Usually null (worker-driven). */

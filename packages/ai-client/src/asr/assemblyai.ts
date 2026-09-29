@@ -77,12 +77,44 @@ export const ASSEMBLYAI_US_BASE_URL = "https://api.assemblyai.com";
 export const ASSEMBLYAI_EU_BASE_URL = "https://api.eu.assemblyai.com";
 
 /**
- * AssemblyAI's general-purpose async model. Priced in asr-pricing.ts. Sent as
- * the single entry of `speech_models` on the create call — AssemblyAI retired
- * the scalar `speech_model` parameter (Sep 2026: HTTP 400 "speech_model
- * parameter is deprecated") and the bare "universal" alias with it.
+ * AssemblyAI's async model. Priced in asr-pricing.ts. Sent as the single
+ * entry of `speech_models` on the create call — AssemblyAI retired the scalar
+ * `speech_model` parameter (Sep 2026: HTTP 400 "speech_model parameter is
+ * deprecated") and the bare "universal" alias with it.
+ *
+ * Universal-3.5 Pro rather than Universal-2 because it honours
+ * `keyterms_prompt`: probed 29 Sep 2026 on the same clip with the same term
+ * list, Universal-2 returned "Manish from Solanist gbs" and 3.5 Pro returned
+ * "Maneesh from Solenis GBS". Names are what an employer notices first.
  */
-export const DEFAULT_ASSEMBLYAI_MODEL = "universal-2";
+export const DEFAULT_ASSEMBLYAI_MODEL = "universal-3-5-pro";
+
+/**
+ * AssemblyAI caps a keyterm at six words; longer phrases are refused rather
+ * than truncated, so they are dropped here. The list cap is ours, well under
+ * the vendor's, because every term is billed attention on a short recording.
+ */
+const MAX_KEYTERM_WORDS = 6;
+const MAX_KEYTERM_CHARS = 60;
+const MAX_KEYTERMS = 100;
+
+/** Trim, drop empties / over-long terms, de-duplicate case-insensitively. */
+export function normaliseKeyterms(terms: readonly string[] | undefined): string[] {
+  if (!terms) return [];
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const raw of terms) {
+    const term = raw.replace(/\s+/g, " ").trim();
+    if (!term || term.length > MAX_KEYTERM_CHARS) continue;
+    if (term.split(" ").length > MAX_KEYTERM_WORDS) continue;
+    const key = term.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(term);
+    if (out.length >= MAX_KEYTERMS) break;
+  }
+  return out;
+}
 
 /**
  * Whole-call budget: upload + create + poll. Twenty minutes is generous for
@@ -362,6 +394,7 @@ export class AssemblyAIASRClient implements ASRClient {
     opts: ASRTranscribeOptions,
     ctx: CallContext,
   ): Promise<AssemblyAITranscript> {
+    const keyterms = normaliseKeyterms(opts.keyterms);
     const res = await this.request(
       `${this.baseUrl}/v2/transcript`,
       {
@@ -376,6 +409,7 @@ export class AssemblyAIASRClient implements ASRClient {
           // A one-entry priority list, not the vendor's multi-model fallback:
           // provider_model and the cost row must name the model that ran.
           speech_models: [model],
+          ...(keyterms.length > 0 ? { keyterms_prompt: keyterms } : {}),
           // Both are vendor defaults today. Sent explicitly so a change to
           // those defaults cannot silently degrade the full_text we hand to
           // the summariser prompt.

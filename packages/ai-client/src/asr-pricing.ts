@@ -79,9 +79,15 @@ const DEEPGRAM_ASR_RATES: Record<string, ASRRate> = {
  */
 const ASSEMBLYAI_ASR_RATES: Record<string, ASRRate> = {
   // Universal, their general-purpose async model — $0.27/hr = $0.0045/min.
-  // "universal-2" is the explicit id DEFAULT_ASSEMBLYAI_MODEL now sends (the
-  // bare "universal" alias was retired); same model, same rate.
-  "universal-2": { microsPerMinute: 4500 },
+  // Current list prices (assemblyai.com/pricing, read 29 Sep 2026), each
+  // STACKED with the two add-ons every interview request carries: speaker
+  // diarisation (standard, +$0.02/hr — speaker_labels is always on) and
+  // keyterms prompting (+$0.05/hr). Rounded up to whole micros.
+  // Universal-3.5 Pro — $0.21 + 0.02 + 0.05 = $0.28/hr = $0.0046667/min.
+  // This is what DEFAULT_ASSEMBLYAI_MODEL sends.
+  "universal-3-5-pro": { microsPerMinute: 4667 },
+  // Universal-2 — $0.15 + 0.02 + 0.05 = $0.22/hr = $0.0036667/min.
+  "universal-2": { microsPerMinute: 3667 },
   universal: { microsPerMinute: 4500 },
   // "best" is the legacy alias that now resolves to Universal, so it is
   // priced identically rather than at the older, dearer tier it once meant.
