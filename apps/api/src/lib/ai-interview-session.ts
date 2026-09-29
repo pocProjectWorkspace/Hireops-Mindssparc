@@ -1345,15 +1345,10 @@ export async function recordIntegrityEvents(
     stored.push(parsed);
   }
 
-  // The CTE's FOR UPDATE pins the "before" length to the row version the
-  // UPDATE then writes, so `after - before` is what THIS call added.
+  // The FROM sub-select reads the pre-update length in the same statement, so
+  // `after - before` is what THIS call added. (A FOR UPDATE CTE referenced
+  // only from RETURNING came back NULL here — Test 10 caught it at the cap.)
   const [written] = await sql<{ before: number; after: number }[]>`
-    WITH prev AS (
-      SELECT jsonb_array_length(integrity_events) AS before
-      FROM public.ai_interview_sessions
-      WHERE tenant_id = ${row.tenant_id} AND id = ${row.session_id}
-      FOR UPDATE
-    )
     UPDATE public.ai_interview_sessions
     SET integrity_events = COALESCE(
           (
@@ -1365,8 +1360,13 @@ export async function recordIntegrityEvents(
           '[]'::jsonb
         ),
         updated_at = now()
+    FROM (
+      SELECT jsonb_array_length(integrity_events) AS before
+      FROM public.ai_interview_sessions
+      WHERE tenant_id = ${row.tenant_id} AND id = ${row.session_id}
+    ) AS prev
     WHERE tenant_id = ${row.tenant_id} AND id = ${row.session_id} AND status = 'in_progress'
-    RETURNING (SELECT before FROM prev) AS before, jsonb_array_length(integrity_events) AS after
+    RETURNING prev.before AS before, jsonb_array_length(integrity_events) AS after
   `;
   // No row: the round moved on (submitted / expired) between the load and the
   // write. Nothing was stored, and that is the honest count.
@@ -1416,6 +1416,8 @@ function isUniqueViolation(err: unknown): boolean {
  * the result says so (`recordingId: null`, `enqueued: false`). Enqueueing
  * anyway would spend a drain claim and an ASR call to discover the absence,
  * and would leave a recording row asserting media that does not exist.
+ * (It still gets an `ai_interview_evidence` row — AI-INT-2 — because typed
+ * answers need no transcript; "nothing" above means nothing to TRANSCRIBE.)
  *
  * The session moves to `submitted` FIRST and independently of the enqueue.
  * The candidate has finished either way, and a transient storage or outbox
@@ -1489,6 +1491,19 @@ export async function submitSession(
       }
     }
   }
+
+  // AI-INT-2 — THE EVIDENCE ENQUEUE, for every submitted round (typed-only
+  // rounds included: their evidence needs no transcript). AFTER the transcript
+  // enqueue on purpose: the evidence drain decides "wait for the transcript"
+  // vs "the transcript is not coming" from the transcript_outbox row, so that
+  // row must already exist by the time an evidence row can be claimed. ON
+  // CONFLICT DO NOTHING on the one-row-per-session unique makes a double
+  // submit (the race loser above still reaches here) a no-op.
+  await sql`
+    INSERT INTO public.ai_interview_evidence (tenant_id, session_id, interview_id, status)
+    VALUES (${row.tenant_id}, ${row.session_id}, ${row.interview_id}, 'pending')
+    ON CONFLICT (tenant_id, session_id) DO NOTHING
+  `;
 
   const after = await reloadSession(sql, row);
   const consent = await resolveRecordingConsent(sql, row.tenant_id, row.interview_id);

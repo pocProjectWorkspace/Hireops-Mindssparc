@@ -15,6 +15,7 @@ import { drainWorkdayOutboxOnce } from "./lib/workday-simulation-drain";
 import { drainAiScoreOutboxOnce } from "./lib/ai-score-drain";
 import { drainAgentRunOutboxOnce } from "./lib/agent-run-drain";
 import { drainTranscriptOutboxOnce } from "./lib/transcript-drain";
+import { drainAiInterviewEvidenceOnce } from "./lib/ai-interview-evidence-drain";
 
 /**
  * Worker entrypoint — three concurrent loops:
@@ -54,6 +55,13 @@ const AGENT_RUN_DRAIN_INTERVAL_MS = 5_000;
  * BILLED — twice.
  */
 const TRANSCRIPT_DRAIN_INTERVAL_MS = 60_000;
+/**
+ * AI-INT-2 evidence drain — 30s. A recruiter may open a just-submitted AI
+ * round, so this is quicker than the transcript drain; but a voice round's
+ * evidence waits on that transcript anyway (rows are parked, not spun, while
+ * it lands — see AI_INTERVIEW_EVIDENCE_DEFER_MS), so 5s would buy nothing.
+ */
+const AI_INTERVIEW_EVIDENCE_DRAIN_INTERVAL_MS = 30_000;
 
 const log = createLogger({ base: { service: "workers" } });
 
@@ -249,6 +257,19 @@ async function main() {
       const r = await drainTranscriptOutboxOnce({ log });
       if (r.claimed > 0 || r.recovered > 0) {
         log.info(r, "worker.transcript_drain_pass");
+      }
+    }),
+  );
+
+  // AI-INT-2 evidence drain — submitted AI round → evidence report (evidence
+  // only; no score). The 8th startLoop registration, again ad-hoc: the
+  // worker-registry refactor open-question #26 named at #7 is still owed and
+  // is not this ticket's concern.
+  loops.push(
+    startLoop("ai-interview-evidence-drain", AI_INTERVIEW_EVIDENCE_DRAIN_INTERVAL_MS, async () => {
+      const r = await drainAiInterviewEvidenceOnce({ log });
+      if (r.claimed > 0 || r.retired > 0) {
+        log.info(r, "worker.ai_interview_evidence_drain_pass");
       }
     }),
   );

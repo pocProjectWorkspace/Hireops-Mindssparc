@@ -304,3 +304,162 @@ export const aiInterviewSessionCardSchema = z.object({
   updatedAt: z.string(),
 });
 export type AiInterviewSessionCard = z.infer<typeof aiInterviewSessionCardSchema>;
+
+/* ─────────────────────────── the evidence report ────────────────────────── */
+
+/**
+ * AI-INT-2 (build plan N4.4) — `ai_interview_evidence.evidence` (0121).
+ *
+ * What the candidate SAID in a submitted AI round, organised against the
+ * round's own rubric. Written by the evidence drain in apps/workers, validated
+ * against this schema BEFORE the write, and read by the recruiter review
+ * surface (next ticket).
+ *
+ * ─────────────────────────────────────────────────────────────────────────
+ * NOTE THE ABSENCE — the same one 0121 declares on the table
+ * ─────────────────────────────────────────────────────────────────────────
+ * There is NO score, NO rating, NO rank, NO pass/fail, NO hire/no-hire and NO
+ * recommendation field here, at any depth, and `.strict()` on every object is
+ * what makes that enforceable rather than intended. The vocabularies below
+ * are deliberately DESCRIPTIVE of the words, not EVALUATIVE of the person:
+ *
+ *   relevance — does the answer's content address the question that was asked?
+ *   coverage  — does the answer's content speak to this rubric criterion?
+ *   knockout  — did the candidate state something that confirms or
+ *               contradicts the requirement, or not mention it?
+ *
+ * None of them says whether the answer was GOOD. A human reads the quotes and
+ * decides (build plan §5; GDPR Art. 22; EU AI Act Annex III). A future ticket
+ * must not read the omission as a gap to fill.
+ *
+ * EVERY QUOTE IS VERIFIED. The drain drops any quote that is not a verbatim
+ * substring of that question's answer (under whitespace / case / typographic
+ * punctuation normalisation) before it is stored, and records how many it
+ * dropped in `meta.quotesDropped`. A quote in this column is therefore
+ * something the candidate actually said or typed, not a model's paraphrase.
+ */
+
+export const AI_INTERVIEW_EVIDENCE_VERSION = 1 as const;
+
+export const AI_INTERVIEW_RELEVANCE_VALUES = [
+  "addresses",
+  "partially_addresses",
+  "off_topic",
+  "no_answer",
+] as const;
+export const aiInterviewRelevanceSchema = z.enum(AI_INTERVIEW_RELEVANCE_VALUES);
+export type AiInterviewRelevance = z.infer<typeof aiInterviewRelevanceSchema>;
+
+export const AI_INTERVIEW_COVERAGE_VALUES = ["covered", "partial", "not_covered"] as const;
+export const aiInterviewCoverageSchema = z.enum(AI_INTERVIEW_COVERAGE_VALUES);
+export type AiInterviewCoverage = z.infer<typeof aiInterviewCoverageSchema>;
+
+export const AI_INTERVIEW_KNOCKOUT_STATUS_VALUES = [
+  "confirmed",
+  "contradicted",
+  "not_mentioned",
+] as const;
+export const aiInterviewKnockoutStatusSchema = z.enum(AI_INTERVIEW_KNOCKOUT_STATUS_VALUES);
+export type AiInterviewKnockoutStatus = z.infer<typeof aiInterviewKnockoutStatusSchema>;
+
+/** Length bounds shared by the model-output schema and the stored schema. */
+export const AI_INTERVIEW_EVIDENCE_LIMITS = {
+  relevanceNoteMax: 280,
+  rubricNoteMax: 240,
+  quoteMax: 300,
+  quotesPerRubricMax: 3,
+  summaryMax: 600,
+  knockoutQuestionMax: 1000,
+} as const;
+
+/** One rubric criterion as evidenced by ONE answer. */
+export const aiInterviewRubricEvidenceSchema = z
+  .object({
+    /** `scorecard_criteria_snapshot[].key` — the same vocabulary as a human scorecard. */
+    rubricKey: z.string().min(1).max(64),
+    coverage: aiInterviewCoverageSchema,
+    /** Factual, about the content only. */
+    note: z.string().max(AI_INTERVIEW_EVIDENCE_LIMITS.rubricNoteMax),
+    /** VERBATIM from that question's answer — verified before storage. */
+    quotes: z
+      .array(z.string().min(1).max(AI_INTERVIEW_EVIDENCE_LIMITS.quoteMax))
+      .max(AI_INTERVIEW_EVIDENCE_LIMITS.quotesPerRubricMax),
+  })
+  .strict();
+export type AiInterviewRubricEvidence = z.infer<typeof aiInterviewRubricEvidenceSchema>;
+
+export const aiInterviewQuestionEvidenceSchema = z
+  .object({
+    /** `questions[].key` — q1..qN. */
+    questionKey: z.string().regex(/^q[1-9][0-9]*$/),
+    /** How the answer was given; null when the question was not answered. */
+    answerMode: z.enum(["voice", "typed"]).nullable(),
+    /**
+     * voice only — offset (ms) into the round recording of the first
+     * transcript segment of this answer, for click-to-seek. Null for typed
+     * answers, unanswered questions, and voice answers with no transcript.
+     */
+    answerStartMs: z.number().int().nonnegative().nullable(),
+    /**
+     * true when the answer was spoken but its words could not be recovered
+     * (the transcript failed, or the browser did not report where the answer
+     * sits on the recording). Evidence for that answer is then ABSENT — which
+     * is a fact about the pipeline, never about the candidate.
+     */
+    transcriptUnavailable: z.boolean(),
+    relevance: aiInterviewRelevanceSchema,
+    relevanceNote: z.string().max(AI_INTERVIEW_EVIDENCE_LIMITS.relevanceNoteMax),
+    rubric: z.array(aiInterviewRubricEvidenceSchema),
+  })
+  .strict();
+export type AiInterviewQuestionEvidence = z.infer<typeof aiInterviewQuestionEvidenceSchema>;
+
+export const aiInterviewKnockoutEvidenceSchema = z
+  .object({
+    /** The requisition knockout's `question_text`. Its threshold is never here. */
+    question: z.string().min(1).max(AI_INTERVIEW_EVIDENCE_LIMITS.knockoutQuestionMax),
+    status: aiInterviewKnockoutStatusSchema,
+    /** Verbatim from some answer, or null. Verified before storage. */
+    quote: z.string().min(1).max(AI_INTERVIEW_EVIDENCE_LIMITS.quoteMax).nullable(),
+    /** The answer the quote came from, when known. */
+    questionKey: z
+      .string()
+      .regex(/^q[1-9][0-9]*$/)
+      .nullable(),
+  })
+  .strict();
+export type AiInterviewKnockoutEvidence = z.infer<typeof aiInterviewKnockoutEvidenceSchema>;
+
+export const aiInterviewEvidenceMetaSchema = z
+  .object({
+    /** Quotes the model returned that were NOT verbatim and so were not stored. */
+    quotesDropped: z.number().int().nonnegative(),
+    /** Questions with usable answer text (typed, or a recovered voice answer). */
+    answeredCount: z.number().int().nonnegative(),
+    questionCount: z.number().int().nonnegative(),
+  })
+  .strict();
+export type AiInterviewEvidenceMeta = z.infer<typeof aiInterviewEvidenceMetaSchema>;
+
+/** The whole `ai_interview_evidence.evidence` jsonb. */
+export const aiInterviewEvidenceSchema = z
+  .object({
+    version: z.literal(AI_INTERVIEW_EVIDENCE_VERSION),
+    questions: z.array(aiInterviewQuestionEvidenceSchema),
+    knockouts: z.array(aiInterviewKnockoutEvidenceSchema),
+    /** Factual recap of what was covered. No judgement words. */
+    summary: z.string().max(AI_INTERVIEW_EVIDENCE_LIMITS.summaryMax),
+    meta: aiInterviewEvidenceMetaSchema,
+  })
+  .strict();
+export type AiInterviewEvidence = z.infer<typeof aiInterviewEvidenceSchema>;
+
+/** The `ai_interview_evidence.status` ladder, mirroring its CHECK (0121). */
+export const AI_INTERVIEW_EVIDENCE_STATUSES = [
+  "pending",
+  "processing",
+  "done",
+  "failed",
+  "skipped",
+] as const;
+export type AiInterviewEvidenceStatus = (typeof AI_INTERVIEW_EVIDENCE_STATUSES)[number];

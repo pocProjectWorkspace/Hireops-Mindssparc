@@ -31,14 +31,16 @@
  *   5. A typed answer needs no upload and is stored AS TYPED. The mode
  *      assertion is the point: an evidence report built on typed text must
  *      never later be described as something the candidate said aloud. The
- *      all-typed round then submits with no recording and no outbox row.
+ *      all-typed round then submits with no recording and no outbox row —
+ *      but WITH one pending ai_interview_evidence row (AI-INT-2).
  *   6. A wrong-content-type or oversized upload is refused — including an
  *      object that is over the cap in REALITY while the browser declared a
  *      legal size, which is the only version of the check that means anything.
  *   7. Submit inserts EXACTLY ONE `transcript_outbox` row. This is the AI
  *      round's producer for the pipeline N3.4a built the recruiter-upload
  *      producer for.
- *   8. A double submit absorbs 23505 and does not create a second row — both
+ *   8. A double submit absorbs 23505 and does not create a second row (nor a
+ *      second AI-INT-2 evidence row) — both
  *      the concurrent shape (a caller holding a row it read while the session
  *      was still in progress, which is the only path that reaches the INSERT
  *      twice) and the ordinary double-tap through the route.
@@ -310,6 +312,15 @@ async function outboxRows(recordingId: string): Promise<{ id: string; status: st
   return poolSql<{ id: string; status: string }[]>`
     SELECT id, status FROM public.transcript_outbox
     WHERE tenant_id = ${T} AND recording_id = ${recordingId}
+  `;
+}
+
+/** AI-INT-2 — the evidence rows submit enqueued for a round's session. */
+async function evidenceRows(interviewId: string): Promise<{ id: string; status: string }[]> {
+  return poolSql<{ id: string; status: string }[]>`
+    SELECT e.id, e.status FROM public.ai_interview_evidence e
+    JOIN public.ai_interview_sessions s ON s.tenant_id = e.tenant_id AND s.id = e.session_id
+    WHERE e.tenant_id = ${T} AND s.interview_id = ${interviewId}
   `;
 }
 
@@ -742,6 +753,12 @@ describe("N4.3a — the AI interview candidate surface", () => {
       SELECT count(*)::text AS n FROM public.transcript_outbox WHERE tenant_id = ${T}
     `;
     assert.equal(n, "0", "no voice round has been submitted yet, so the queue is still empty");
+
+    // AI-INT-2 — but the EVIDENCE queue does get a row: typed answers need no
+    // transcript, so an all-typed round still gets its evidence report.
+    const evidence = await evidenceRows(IV_TYPED);
+    assert.equal(evidence.length, 1, "submit enqueues exactly one evidence row");
+    assert.equal(evidence[0]?.status, "pending");
   });
 
   it("Test 6: a wrong content type and an oversized object are both refused", async () => {
@@ -918,6 +935,11 @@ describe("N4.3a — the AI interview candidate surface", () => {
       (await outboxRows(voiceRecordingId)).length,
       1,
       "UNIQUE (tenant_id, recording_id) held and the 23505 was absorbed",
+    );
+    assert.equal(
+      (await evidenceRows(IV_VOICE)).length,
+      1,
+      "AI-INT-2 — the evidence enqueue is ON CONFLICT DO NOTHING: still one row",
     );
 
     // And the ordinary double-tap, through the route, is refused outright.
