@@ -18,6 +18,13 @@ Usage:
   python3 docs/new-set/scripts/solenis-stage-transcript.py upload <interviewId> <file.m4a>
   python3 docs/new-set/scripts/solenis-stage-transcript.py status <interviewId>
 
+AI first round (async AI interview):
+  python3 docs/new-set/scripts/solenis-stage-transcript.py ai-schedule
+  python3 docs/new-set/scripts/solenis-stage-transcript.py ai-generate <interviewId>
+  python3 docs/new-set/scripts/solenis-stage-transcript.py ai-approve <interviewId>
+  python3 docs/new-set/scripts/solenis-stage-transcript.py ai-issue <interviewId> [days]
+  python3 docs/new-set/scripts/solenis-stage-transcript.py ai-status <interviewId>
+
 Runbook: docs/new-set/SOLENIS-staged-transcript-runbook.md
 """
 import json
@@ -134,13 +141,69 @@ def cmd_status(jwt, interview_id):
     print(json.dumps(query(jwt, "getInterviewRecordingState", {"interviewId": interview_id}), indent=2)[:2000])
 
 
+# ── AI first round (N4 + B1) ────────────────────────────────────────────────
+# Arjun Nair · Accounting Assistant III · seeded at stage shortlisted
+AI_APPLICATION_ID = os.environ.get("HIREOPS_AI_APPLICATION_ID", "00000000-0000-4000-9000-220000000003")
+
+
+def cmd_ai_schedule(jwt):
+    r = mutate(
+        jwt,
+        "scheduleInterview",
+        {
+            "applicationId": AI_APPLICATION_ID,
+            "roundNumber": 1,
+            "scheduledStart": "2026-10-06T04:30:00.000Z",  # 10:00 IST Tue 6 Oct
+            "durationMinutes": 30,
+            "mode": "ai_async",
+            "panelMembershipIds": [PANEL_MANEESH],
+            "leadMembershipId": PANEL_MANEESH,
+        },
+    )
+    print(json.dumps(r, indent=2)[:1500])
+    if isinstance(r, dict) and r.get("interviewId"):
+        print("\nINTERVIEW_ID =", r["interviewId"])
+
+
+def cmd_ai_generate(jwt, interview_id):
+    print(json.dumps(mutate(jwt, "generateAiInterviewQuestions", {"interviewId": interview_id}), indent=2)[:3000])
+
+
+def cmd_ai_approve(jwt, interview_id):
+    print(json.dumps(mutate(jwt, "approveAiInterviewQuestions", {"interviewId": interview_id}), indent=2)[:1500])
+
+
+def cmd_ai_issue(jwt, interview_id, days):
+    r = mutate(jwt, "issueAiInterviewSession", {"interviewId": interview_id, "expiresInDays": int(days)})
+    if isinstance(r, dict) and r.get("interviewUrl"):
+        # Shown once — only its hash is stored. Re-issue to get a new one.
+        print("CANDIDATE_URL =", r["interviewUrl"])
+        print("EXPIRES_AT    =", r.get("expiresAt"))
+    else:
+        print(json.dumps(r, indent=2)[:1500])
+
+
+def cmd_ai_status(jwt, interview_id):
+    print(json.dumps(query(jwt, "getAiInterviewSession", {"interviewId": interview_id}), indent=2)[:4000])
+
+
 def main():
     if len(sys.argv) < 2:
         print(__doc__)
         sys.exit(1)
     jwt = signin(RECRUITER, PASSWORD)
     cmd = sys.argv[1]
-    if cmd == "schedule":
+    if cmd == "ai-schedule":
+        cmd_ai_schedule(jwt)
+    elif cmd == "ai-generate":
+        cmd_ai_generate(jwt, sys.argv[2])
+    elif cmd == "ai-approve":
+        cmd_ai_approve(jwt, sys.argv[2])
+    elif cmd == "ai-issue":
+        cmd_ai_issue(jwt, sys.argv[2], sys.argv[3] if len(sys.argv) > 3 else "14")
+    elif cmd == "ai-status":
+        cmd_ai_status(jwt, sys.argv[2])
+    elif cmd == "schedule":
         cmd_schedule(jwt)
     elif cmd == "request-recording":
         cmd_request_recording(jwt, sys.argv[2])

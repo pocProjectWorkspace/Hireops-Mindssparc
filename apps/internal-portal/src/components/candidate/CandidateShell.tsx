@@ -33,14 +33,32 @@ export interface CandidateShellProps {
   /** Public mode: brand shown in the top bar — the employer's name on
    * apply/offer, else the HireOps product wordmark. */
   brand?: string;
-  /** Public mode: content max-width. `xl` (default) for forms/offers; `2xl`. */
-  width?: "xl" | "2xl";
+  /** Public mode: content max-width. `xl` (default) for forms/offers; `2xl`;
+   * `5xl` for two-column task surfaces (the AI interview round). */
+  width?: "xl" | "2xl" | "5xl";
+  /** Public mode: the employer's logo (tenant branding). Falls back to the
+   * initial tile when absent or when the image fails to load. */
+  logoUrl?: string | null;
+  /** Public mode: the employer's brand colour, drawn as a slim accent rule
+   * above the top bar. */
+  accentColor?: string | null;
   footer?: ReactNode;
   children: ReactNode;
 }
 
-function BrandMark({ brand }: { brand: string }) {
+function BrandMark({ brand, logoUrl }: { brand: string; logoUrl?: string | null }) {
   const initial = (brand.trim()[0] ?? "H").toUpperCase();
+  if (logoUrl) {
+    return (
+      <div className="flex min-w-0 items-center gap-3">
+        <img src={logoUrl} alt={brand} className="h-8 w-auto max-w-[160px] object-contain" />
+        <span aria-hidden className="h-6 w-px shrink-0 bg-neutral-200" />
+        <span className="truncate text-sm font-semibold tracking-tight text-neutral-900">
+          {brand}
+        </span>
+      </div>
+    );
+  }
   return (
     <div className="flex items-center gap-2.5">
       <span
@@ -56,11 +74,19 @@ function BrandMark({ brand }: { brand: string }) {
   );
 }
 
+const MAX_W: Record<NonNullable<CandidateShellProps["width"]>, string> = {
+  xl: "max-w-xl",
+  "2xl": "max-w-2xl",
+  "5xl": "max-w-5xl",
+};
+
 export function CandidateShell({
   variant = "public",
   active,
   brand = "HireOps",
   width = "xl",
+  logoUrl,
+  accentColor,
   footer,
   children,
 }: CandidateShellProps) {
@@ -68,12 +94,15 @@ export function CandidateShell({
     return <CandidatePortalChrome active={active}>{children}</CandidatePortalChrome>;
   }
 
-  const maxW = width === "2xl" ? "max-w-2xl" : "max-w-xl";
+  const maxW = MAX_W[width];
   return (
     <div className="flex min-h-screen flex-col bg-neutral-50 text-neutral-900">
+      {accentColor ? (
+        <div aria-hidden className="h-1 w-full" style={{ backgroundColor: accentColor }} />
+      ) : null}
       <header className="border-b border-neutral-200 bg-white">
         <div className={cn("mx-auto flex w-full items-center px-4 py-3.5 sm:px-6", maxW)}>
-          <BrandMark brand={brand} />
+          <BrandMark brand={brand} logoUrl={logoUrl} />
         </div>
       </header>
 
