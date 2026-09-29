@@ -77,10 +77,12 @@ export const ASSEMBLYAI_US_BASE_URL = "https://api.assemblyai.com";
 export const ASSEMBLYAI_EU_BASE_URL = "https://api.eu.assemblyai.com";
 
 /**
- * AssemblyAI's current general-purpose async model. Priced in
- * asr-pricing.ts. Sent as `speech_model` on the create call.
+ * AssemblyAI's general-purpose async model. Priced in asr-pricing.ts. Sent as
+ * the single entry of `speech_models` on the create call — AssemblyAI retired
+ * the scalar `speech_model` parameter (Sep 2026: HTTP 400 "speech_model
+ * parameter is deprecated") and the bare "universal" alias with it.
  */
-export const DEFAULT_ASSEMBLYAI_MODEL = "universal";
+export const DEFAULT_ASSEMBLYAI_MODEL = "universal-2";
 
 /**
  * Whole-call budget: upload + create + poll. Twenty minutes is generous for
@@ -293,7 +295,7 @@ export class AssemblyAIASRClient implements ASRClient {
       language: transcript.language_code ?? language,
       provider: this.provider,
       // AssemblyAI does not echo a resolved build id the way Deepgram's
-      // model_info does, so the requested speech_model is the most specific
+      // model_info does, so the requested speech model is the most specific
       // thing we can honestly stamp on provider_model.
       providerModel: model,
       wordCount: countWords(fullText),
@@ -371,7 +373,9 @@ export class AssemblyAIASRClient implements ASRClient {
           // it there are no utterances and no speaker labels at all.
           speaker_labels: true,
           language_code: toAssemblyAILanguageCode(language),
-          speech_model: model,
+          // A one-entry priority list, not the vendor's multi-model fallback:
+          // provider_model and the cost row must name the model that ran.
+          speech_models: [model],
           // Both are vendor defaults today. Sent explicitly so a change to
           // those defaults cannot silently degrade the full_text we hand to
           // the summariser prompt.

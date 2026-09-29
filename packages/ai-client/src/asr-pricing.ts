@@ -71,7 +71,7 @@ const DEEPGRAM_ASR_RATES: Record<string, ASRRate> = {
 
 /**
  * AssemblyAI async ("pre-recorded") speech-to-text. Keys are the ids we send
- * as `speech_model` on POST /v2/transcript.
+ * in `speech_models` on POST /v2/transcript.
  *
  * Their list price is quoted per HOUR, so each entry carries the conversion
  * explicitly — an hourly figure divided by 60 in someone's head is exactly
@@ -79,7 +79,9 @@ const DEEPGRAM_ASR_RATES: Record<string, ASRRate> = {
  */
 const ASSEMBLYAI_ASR_RATES: Record<string, ASRRate> = {
   // Universal, their general-purpose async model — $0.27/hr = $0.0045/min.
-  // This is what DEFAULT_ASSEMBLYAI_MODEL sends.
+  // "universal-2" is the explicit id DEFAULT_ASSEMBLYAI_MODEL now sends (the
+  // bare "universal" alias was retired); same model, same rate.
+  "universal-2": { microsPerMinute: 4500 },
   universal: { microsPerMinute: 4500 },
   // "best" is the legacy alias that now resolves to Universal, so it is
   // priced identically rather than at the older, dearer tier it once meant.

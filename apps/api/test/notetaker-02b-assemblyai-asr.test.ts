@@ -209,7 +209,8 @@ describe("assemblyai asr adapter (N3.1b)", () => {
       assert.equal(create.method, "POST");
       assert.equal(create.bodyJson?.audio_url, "https://cdn.assemblyai.invalid/upload/xyz");
       assert.equal(create.bodyJson?.speaker_labels, true);
-      assert.equal(create.bodyJson?.speech_model, DEFAULT_ASSEMBLYAI_MODEL);
+      assert.deepEqual(create.bodyJson?.speech_models, [DEFAULT_ASSEMBLYAI_MODEL]);
+      assert.equal(create.bodyJson?.speech_model, undefined, "the retired scalar is not sent");
       assert.equal(create.bodyJson?.language_code, "en");
 
       // Step 3 — polling the job by id until it settles.
@@ -220,7 +221,7 @@ describe("assemblyai asr adapter (N3.1b)", () => {
       }
 
       assert.equal(res.provider, "assemblyai");
-      assert.equal(res.providerModel, "universal");
+      assert.equal(res.providerModel, "universal-2");
       assert.equal(res.language, "en");
       // The vendor measured the media; that beats the caller's hint because
       // it is what the invoice is computed from.
@@ -277,14 +278,14 @@ describe("assemblyai asr adapter (N3.1b)", () => {
     try {
       const res = await client.transcribe(AUDIO, { contentType: "audio/webm" });
       // 30 minutes of Universal at $0.0045/min = 135,000 micros ($0.135).
-      assert.equal(res.costMicros, computeASRCostMicros("universal", 1800));
+      assert.equal(res.costMicros, computeASRCostMicros("universal-2", 1800));
       assert.equal(res.costMicros, 135000n);
 
       const rows = await db.select().from(aiUsageLogs).where(eq(aiUsageLogs.tenantId, ASM_TENANT));
       assert.equal(rows.length, 1, "exactly one ledger row per transcribe(), not one per request");
       const row = rows[0]!;
       assert.equal(row.provider, "assemblyai");
-      assert.equal(row.model, "universal");
+      assert.equal(row.model, "universal-2");
       assert.equal(row.feature, "asr_transcription");
       assert.equal(row.inputTokens, 0, "zero because ASR is not token-priced");
       assert.equal(row.outputTokens, 0, "zero because ASR is not token-priced");
