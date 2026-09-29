@@ -107,6 +107,7 @@ export type { DeepgramASRClientOpts } from "./deepgram";
 export {
   AssemblyAIASRClient,
   DEFAULT_ASSEMBLYAI_MODEL,
+  normaliseKeyterms,
   ASSEMBLYAI_US_BASE_URL,
   ASSEMBLYAI_EU_BASE_URL,
   resolveAssemblyAIBaseUrl,
