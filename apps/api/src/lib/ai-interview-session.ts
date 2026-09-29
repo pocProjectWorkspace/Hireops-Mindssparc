@@ -131,6 +131,7 @@ import { sql as poolSql } from "@hireops/db";
 import { hashToken, signLink } from "@hireops/notifications";
 import {
   coerceAiInterviewQuestions,
+  resolveBrandingSettings,
   type AiInterviewQuestion,
   type AiInterviewSessionCard,
 } from "@hireops/api-types";
@@ -373,6 +374,8 @@ export interface AiInterviewSessionRow {
   round_name: string;
   candidate_full_name: string | null;
   company_name: string;
+  /** Raw `tenants.settings.branding` block — resolved in toCandidateView. */
+  company_branding: unknown;
   position_title: string;
 }
 
@@ -408,7 +411,8 @@ export async function loadSessionByTokenHash(
       iv.round_name,
       p.full_name         AS candidate_full_name,
       pos.title           AS position_title,
-      t.display_name      AS company_name
+      t.display_name      AS company_name,
+      t.settings -> 'branding' AS company_branding
     FROM public.ai_interview_sessions s
     JOIN public.interviews iv ON iv.tenant_id = s.tenant_id AND iv.id = s.interview_id
     JOIN public.applications a ON a.tenant_id = iv.tenant_id AND a.id = iv.application_id
@@ -718,6 +722,9 @@ export interface CandidateSessionView {
   status: string;
   candidateName: string;
   companyName: string;
+  /** The employer's own logo + colour (tenant branding), for the page chrome. */
+  companyLogoUrl: string | null;
+  companyPrimaryColor: string;
   positionTitle: string;
   roundName: string;
   questionCount: number;
@@ -751,6 +758,7 @@ export function toCandidateView(row: AiInterviewSessionRow, consent: EffectiveRe
   const turnState = coerceTurnState(row.turn_state);
   const idx = row.status === "in_progress" ? currentQuestionIndex(questions, turnState) : null;
   const current = idx === null ? null : (questions[idx] ?? null);
+  const branding = resolveBrandingSettings(row.company_branding);
 
   const view: CandidateSessionView = {
     sessionId: row.session_id,
@@ -758,6 +766,8 @@ export function toCandidateView(row: AiInterviewSessionRow, consent: EffectiveRe
     status: row.status,
     candidateName: row.candidate_full_name ?? "there",
     companyName: row.company_name,
+    companyLogoUrl: branding.logoUrl,
+    companyPrimaryColor: branding.primaryColor,
     positionTitle: row.position_title,
     roundName: row.round_name,
     questionCount: questions.length,
