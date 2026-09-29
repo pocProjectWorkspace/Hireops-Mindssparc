@@ -5,6 +5,7 @@ import { Button, Select } from "@hireops/ui";
 import { Badge } from "@/components/ui";
 import type { BadgeTone } from "@/components/ui";
 import { trpc } from "@/lib/trpc-client";
+import { AiInterviewEvidencePanel } from "./AiInterviewEvidencePanel";
 import type { AiInterviewSessionCard, AiInterviewSessionStatus } from "@hireops/api-types";
 
 /**
@@ -214,7 +215,7 @@ function SessionBody({
   onIssue: () => void;
 }) {
   const { status } = session;
-  const answering = status === "issued" || status === "in_progress" || status === "submitted";
+  const answering = status === "issued" || status === "in_progress";
 
   return (
     <div>
@@ -254,8 +255,16 @@ function SessionBody({
 
       {answering ? <p className="mt-3 text-neutral-500">{RECORDING_HINT}</p> : null}
 
-      {status === "in_progress" || status === "submitted" ? (
-        <IntegrityLine integrity={session.integrity} />
+      {status === "in_progress" ? <IntegrityLine integrity={session.integrity} /> : null}
+
+      {/* AI-INT-3 — a submitted round gets the evidence report, which carries
+          the integrity line in its own summary strip. */}
+      {status === "submitted" ? (
+        <AiInterviewEvidencePanel
+          interviewId={session.interviewId}
+          rubricLabels={rubricLabelMap(session, rubric)}
+          integrity={<IntegrityLine integrity={session.integrity} />}
+        />
       ) : null}
 
       {status === "expired" || status === "cancelled" ? (
@@ -313,6 +322,17 @@ function fmtDuration(ms: number): string {
   return `${s}s`;
 }
 
+/** rubric key → label; the session's own snapshot wins over the query's. */
+function rubricLabelMap(
+  session: AiInterviewSessionCard,
+  rubric: { key: string; label: string }[],
+): Map<string, string> {
+  const labels = new Map<string, string>();
+  for (const r of rubric) labels.set(r.key, r.label);
+  for (const r of session.rubric) labels.set(r.key, r.label);
+  return labels;
+}
+
 function QuestionList({
   session,
   rubric,
@@ -322,9 +342,7 @@ function QuestionList({
 }) {
   // The session carries its own rubric snapshot; the query's top-level rubric
   // is the fallback for any key the session's copy does not name.
-  const labels = new Map<string, string>();
-  for (const r of rubric) labels.set(r.key, r.label);
-  for (const r of session.rubric) labels.set(r.key, r.label);
+  const labels = rubricLabelMap(session, rubric);
 
   const ordered = [...session.questions].sort(
     (a, b) => questionOrder(a.key) - questionOrder(b.key),

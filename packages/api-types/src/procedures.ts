@@ -11,7 +11,11 @@ import { skillsMatchResultSchema } from "./panel-prep";
 import { candidateLearningItemSchema } from "./learning";
 import { reportFiltersSchema } from "./reports";
 import { interviewNotesCardSchema, interviewTranscriptCardSchema } from "./interview-transcripts";
-import { aiInterviewSessionCardSchema } from "./ai-interview";
+import {
+  AI_INTERVIEW_EVIDENCE_STATUSES,
+  aiInterviewEvidenceSchema,
+  aiInterviewSessionCardSchema,
+} from "./ai-interview";
 
 /**
  * Input + output schemas for the initial six tRPC procedures (API-01).
@@ -3243,6 +3247,81 @@ export const getAiInterviewSessionOutputSchema = z.object({
 });
 export type GetAiInterviewSessionInput = z.infer<typeof getAiInterviewSessionInputSchema>;
 export type GetAiInterviewSessionOutput = z.infer<typeof getAiInterviewSessionOutputSchema>;
+
+/* ─────────────── AI-INT-3 — the recruiter's evidence review ───────────────
+ *
+ * The read behind the evidence panel on a SUBMITTED AI round, and the one
+ * mutation next to it (re-queue the report). EVIDENCE ONLY: nothing on this
+ * wire is a score, rating, rank, pass/fail or recommendation — the decision
+ * stays in the human scorecard flow, which the AI never fills.
+ */
+
+export const getAiInterviewEvidenceInputSchema = z.object({
+  interviewId: z.string().uuid(),
+});
+
+/**
+ * `none` = no evidence row exists (no session, a session that has not been
+ * submitted, or a row that was never enqueued) — distinct from the stored
+ * ladder so the panel can offer "Generate" rather than spin forever.
+ */
+export const aiInterviewEvidenceReadStatusSchema = z.enum([
+  "none",
+  ...AI_INTERVIEW_EVIDENCE_STATUSES,
+]);
+export type AiInterviewEvidenceReadStatus = z.infer<typeof aiInterviewEvidenceReadStatusSchema>;
+
+/**
+ * One question with the candidate's answer, as the reviewer reads it. The
+ * text is assembled by the SAME pure function the evidence drain grounds its
+ * quotes in (`assembleAnswers`): typed text as typed, a spoken answer as the
+ * transcript segments overlapping its window. `transcriptUnavailable` = the
+ * candidate spoke but the words could not be recovered — a pipeline fact,
+ * never a fact about the candidate.
+ */
+export const aiInterviewEvidenceAnswerSchema = z.object({
+  questionKey: z.string(),
+  prompt: z.string(),
+  rubricKey: z.string(),
+  mode: z.enum(["voice", "typed"]).nullable(),
+  text: z.string().nullable(),
+  answerStartMs: z.number().int().nonnegative().nullable(),
+  transcriptUnavailable: z.boolean(),
+});
+export type AiInterviewEvidenceAnswer = z.infer<typeof aiInterviewEvidenceAnswerSchema>;
+
+export const getAiInterviewEvidenceOutputSchema = z.object({
+  status: aiInterviewEvidenceReadStatusSchema,
+  /** Null until generated, or when the stored jsonb no longer parses. */
+  evidence: aiInterviewEvidenceSchema.nullable(),
+  /** Evidence-generation provenance (not the question-generation one). */
+  model: z.string().nullable(),
+  promptVersion: z.string().nullable(),
+  generatedAt: z.string().nullable(),
+  /** A short, fixed, display-safe reason — never the raw stored error. */
+  lastError: z.string().nullable(),
+  answers: z.array(aiInterviewEvidenceAnswerSchema),
+});
+export type GetAiInterviewEvidenceInput = z.infer<typeof getAiInterviewEvidenceInputSchema>;
+export type GetAiInterviewEvidenceOutput = z.infer<typeof getAiInterviewEvidenceOutputSchema>;
+
+/**
+ * Re-queue the evidence report for a SUBMITTED round: the row goes back to
+ * `pending` with a clean slate (attempt_count 0, no lease, no error), or is
+ * created if it is missing. The drain does the work; this only asks for it.
+ */
+export const regenerateAiInterviewEvidenceInputSchema = z.object({
+  interviewId: z.string().uuid(),
+});
+export const regenerateAiInterviewEvidenceOutputSchema = z.object({
+  status: aiInterviewEvidenceReadStatusSchema,
+});
+export type RegenerateAiInterviewEvidenceInput = z.infer<
+  typeof regenerateAiInterviewEvidenceInputSchema
+>;
+export type RegenerateAiInterviewEvidenceOutput = z.infer<
+  typeof regenerateAiInterviewEvidenceOutputSchema
+>;
 
 /* ─────────────── N4.3a — issuing the candidate link ───────────────
  *

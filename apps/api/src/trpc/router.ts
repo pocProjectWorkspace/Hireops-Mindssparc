@@ -248,6 +248,10 @@ import {
   getAiInterviewSessionOutputSchema,
   issueAiInterviewSessionInputSchema,
   issueAiInterviewSessionOutputSchema,
+  getAiInterviewEvidenceInputSchema,
+  getAiInterviewEvidenceOutputSchema,
+  regenerateAiInterviewEvidenceInputSchema,
+  regenerateAiInterviewEvidenceOutputSchema,
   listUpcomingInterviewsInputSchema,
   listUpcomingInterviewsOutputSchema,
   type InterviewRow,
@@ -1052,6 +1056,10 @@ import {
   getSession as getAiInterviewSessionLib,
 } from "../lib/ai-interview-questions";
 import { issueSession as issueAiInterviewSessionLib } from "../lib/ai-interview-session";
+import {
+  getEvidence as getAiInterviewEvidenceLib,
+  regenerateEvidence as regenerateAiInterviewEvidenceLib,
+} from "../lib/ai-interview-evidence-read";
 import {
   buildReqRevisionPrompt,
   reqRevisionJsonSchema,
@@ -7583,6 +7591,74 @@ export const appRouter = router({
           interviewId: input.interviewId,
           expiresInDays: input.expiresInDays,
           portalBaseUrl: process.env.NEXT_PUBLIC_SITE_URL ?? "http://localhost:3002",
+        });
+      });
+    }),
+
+  /* ───────── AI-INT-3 — the recruiter's evidence review ─────────
+   *
+   * THIN, like the rest of the block: every statement lives in
+   * ../lib/ai-interview-evidence-read.ts. Same INTERVIEW_MANAGE_ROLES gate as
+   * getAiInterviewSession — the evidence panel sits on that card.
+   *
+   * EVIDENCE ONLY. Neither procedure returns or accepts a score, rating or
+   * recommendation; the decision stays in the human scorecard flow.
+   */
+
+  /** The evidence report (if any) + the candidate's answers beside it. */
+  getAiInterviewEvidence: protectedProcedure
+    .input(getAiInterviewEvidenceInputSchema)
+    .output(getAiInterviewEvidenceOutputSchema)
+    .query(async ({ ctx, input }) => {
+      requireAnyRole(ctx, INTERVIEW_MANAGE_ROLES, "You don't have access to interviews.");
+      if (!ctx.tenantId) {
+        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
+      }
+      const tenantId = ctx.tenantId;
+      return getAiInterviewEvidenceLib(ctx.sql, {
+        tenantId,
+        interviewId: input.interviewId,
+        // ADR-002 §7 — the answers are the candidate's own words (typed, or a
+        // transcript slice), the same PII getInterviewNotes records. Fires
+        // only when answer text is actually returned.
+        onPiiRead: (candidateId) => {
+          recordPiiAccess({
+            tenantId,
+            actorUserId: ctx.userId,
+            actorMembershipId: null,
+            actorLabel: "user",
+            entityType: "candidate",
+            entityId: candidateId,
+            fieldsAccessed: [
+              "ai_interview_sessions.turn_state",
+              "interview_transcripts.segments",
+              "ai_interview_evidence.evidence",
+            ],
+            reason: "get_ai_interview_evidence",
+            requestId: ctx.requestId,
+          });
+        },
+      });
+    }),
+
+  /** Re-queue the evidence report for a submitted round. Audited: it spends
+   * a model call on a candidate's answers. Kill switch checked in the lib. */
+  regenerateAiInterviewEvidence: protectedProcedure
+    .input(regenerateAiInterviewEvidenceInputSchema)
+    .output(regenerateAiInterviewEvidenceOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      requireAnyRole(
+        ctx,
+        INTERVIEW_MANAGE_ROLES,
+        "Only hiring managers, recruiters and admins can regenerate an AI interview evidence report.",
+      );
+      return withAudit("regenerate_ai_interview_evidence", ctx, input, async () => {
+        if (!ctx.tenantId) {
+          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
+        }
+        return regenerateAiInterviewEvidenceLib(ctx.sql, {
+          tenantId: ctx.tenantId,
+          interviewId: input.interviewId,
         });
       });
     }),

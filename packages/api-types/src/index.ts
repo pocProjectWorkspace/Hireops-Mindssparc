@@ -41,3 +41,4 @@ export * from "./learning";
 export * from "./reports";
 export * from "./interview-transcripts";
 export * from "./ai-interview";
+export * from "./ai-interview-answers";
