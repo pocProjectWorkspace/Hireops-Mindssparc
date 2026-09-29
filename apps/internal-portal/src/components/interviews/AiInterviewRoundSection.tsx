@@ -254,6 +254,10 @@ function SessionBody({
 
       {answering ? <p className="mt-3 text-neutral-500">{RECORDING_HINT}</p> : null}
 
+      {status === "in_progress" || status === "submitted" ? (
+        <IntegrityLine integrity={session.integrity} />
+      ) : null}
+
       {status === "expired" || status === "cancelled" ? (
         <div className="mt-3">
           <Button variant="secondary" size="sm" disabled={busy} onClick={onRegenerate}>
@@ -263,6 +267,50 @@ function SessionBody({
       ) : null}
     </div>
   );
+}
+
+const INTEGRITY_TITLE = "Signals for a human reviewer — never used to decide automatically.";
+
+/**
+ * AI-INT-1 — the integrity log in one line. Neutral tone on purpose: a tab
+ * switch has plenty of innocent explanations, and colouring it as a warning
+ * would be the UI making the judgement the product says only a person makes.
+ */
+function IntegrityLine({ integrity }: { integrity: AiInterviewSessionCard["integrity"] }) {
+  const tabSwitches = integrity?.tabSwitches ?? 0;
+  const exits = integrity?.fullscreenExits ?? 0;
+  const parts: string[] = [];
+  if (tabSwitches > 0) parts.push(plural(tabSwitches, "tab switch", "tab switches"));
+  if (exits > 0) parts.push(plural(exits, "full-screen exit", "full-screen exits"));
+  if (parts.length > 0 && integrity && integrity.totalAwayMs > 0) {
+    parts.push(`${fmtDuration(integrity.totalAwayMs)} away`);
+  }
+  const text =
+    parts.length > 0 ? parts.join(" · ") : "no tab switches or full-screen exits recorded";
+  return (
+    <div
+      className="mt-2 flex flex-wrap items-center gap-2 text-neutral-600"
+      title={INTEGRITY_TITLE}
+    >
+      <Badge tone="neutral">Integrity</Badge>
+      <span>{text}</span>
+    </div>
+  );
+}
+
+function plural(n: number, one: string, many: string): string {
+  return `${n} ${n === 1 ? one : many}`;
+}
+
+/** 41s · 3m 05s · 1h 02m — a glance figure, not a timesheet. */
+function fmtDuration(ms: number): string {
+  const total = Math.max(1, Math.round(ms / 1000));
+  const h = Math.floor(total / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  const s = total % 60;
+  if (h > 0) return `${h}h ${String(m).padStart(2, "0")}m`;
+  if (m > 0) return `${m}m ${String(s).padStart(2, "0")}s`;
+  return `${s}s`;
 }
 
 function QuestionList({

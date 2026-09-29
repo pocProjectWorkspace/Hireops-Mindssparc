@@ -11,6 +11,7 @@ import {
   voiceAvailability,
   type RoundRecorder,
 } from "./round-recorder";
+import { requestFullscreenQuietly, useIntegrityLog, type IntegrityLog } from "./use-integrity-log";
 
 /**
  * N4.3b — the AI first round as the candidate walks it.
@@ -53,6 +54,14 @@ import {
  * after something breaks. The server records WHICH mode each answer used, so
  * a typed answer can never later be described as something the candidate said
  * aloud.
+ *
+ * ─────────────────────────────────────────────────────────────────────────
+ * THE INTEGRITY LOG (AI-INT-1)
+ * ─────────────────────────────────────────────────────────────────────────
+ * The round asks for full screen on consent and, while it runs, notes
+ * full-screen exits and tab / window switches for the recruiter — see
+ * ./use-integrity-log. It is disclosed (v2 of the copy), never blocks
+ * answering, and a browser that refuses full screen still runs the round.
  */
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:3001";
@@ -185,6 +194,14 @@ export function AiInterviewClient({ token }: { token: string }) {
     void load();
   }, [load]);
 
+  // Listeners exist only while the round runs — a question on screen or the
+  // ready-to-send step — and are torn down by the submit (status moves on).
+  const integrity = useIntegrityLog({
+    endpoint: `${API_BASE}/api/interviews/ai/${token}/integrity`,
+    active: view?.status === "in_progress" && !declined,
+    questionKey: view?.currentQuestion?.key ?? null,
+  });
+
   /** Every write returns the new view, so applying it IS advancing the round. */
   async function post<T extends object>(
     path: string,
@@ -210,6 +227,9 @@ export function AiInterviewClient({ token }: { token: string }) {
   }
 
   async function onConsent(granted: boolean) {
+    // Synchronously, inside the click, BEFORE any await — full screen needs a
+    // live user gesture. A refusal is swallowed; the round runs without it.
+    if (granted) requestFullscreenQuietly();
     setBusy(true);
     setError(null);
     try {
@@ -341,6 +361,12 @@ export function AiInterviewClient({ token }: { token: string }) {
     try {
       const recorder = recorderRef.current;
       const durationSeconds = recorder ? Math.round(recorder.elapsedMs() / 1000) : undefined;
+      // Land any buffered integrity notes before the submit closes the log —
+      // bounded, so a slow network can never hold the submit up.
+      await Promise.race([
+        integrity.flush(),
+        new Promise<void>((resolve) => window.setTimeout(resolve, 1_500)),
+      ]);
       const done = await post("/submit", durationSeconds ? { durationSeconds } : {});
       if (done) recorderRef.current?.stop();
     } finally {
@@ -502,6 +528,7 @@ export function AiInterviewClient({ token }: { token: string }) {
     return (
       <CandidateShell {...shell}>
         <RoundLayout view={view} phase="submit">
+          <FullscreenBanner integrity={integrity} />
           <Card className="flex flex-col gap-4 p-6 sm:p-8">
             <Badge tone="success">All {view.questionCount} questions answered</Badge>
             <h1 className="text-2xl font-semibold tracking-tight text-neutral-900">
@@ -526,6 +553,7 @@ export function AiInterviewClient({ token }: { token: string }) {
   return (
     <CandidateShell {...shell}>
       <RoundLayout view={view} phase="questions">
+        <FullscreenBanner integrity={integrity} />
         <Card className="flex flex-col gap-4 p-6 sm:p-8">
           <div className="flex items-center justify-between gap-3">
             <span className="text-xs font-semibold uppercase tracking-wide text-brand-700">
@@ -768,10 +796,28 @@ function RoundSidebar({ view, phase }: { view: SessionView; phase: Phase }) {
             <li>Find a quiet place and allow microphone access when your browser asks.</li>
             <li>You see one question at a time and can take as long as you need.</li>
             <li>Prefer to type? Every question can be answered in writing instead.</li>
+            <li>The round runs in full screen; leaving it or switching tabs is noted.</li>
           </ul>
         </Card>
       ) : null}
     </aside>
+  );
+}
+
+/**
+ * Slim, non-blocking: the round carries on underneath it. Shown only where
+ * full screen is actually available, so a phone that cannot do it is never
+ * nagged about something it has no way to fix.
+ */
+function FullscreenBanner({ integrity }: { integrity: IntegrityLog }) {
+  if (!integrity.fullscreenSupported || integrity.isFullscreen) return null;
+  return (
+    <Card className="flex flex-wrap items-center justify-between gap-3 border-status-warning-200 bg-status-warning-50 py-3 text-sm text-status-warning-800">
+      <span>You&apos;ve left full screen. This is noted for your recruiter.</span>
+      <Button size="sm" variant="secondary" onClick={() => integrity.requestFullscreen()}>
+        Return to full screen
+      </Button>
+    </Card>
   );
 }
 

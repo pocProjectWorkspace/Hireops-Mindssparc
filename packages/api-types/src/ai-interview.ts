@@ -140,6 +140,124 @@ export const AI_INTERVIEW_SESSION_STATUSES = [
 export const aiInterviewSessionStatusSchema = z.enum(AI_INTERVIEW_SESSION_STATUSES);
 export type AiInterviewSessionStatus = z.infer<typeof aiInterviewSessionStatusSchema>;
 
+/* ──────────────────────────── the integrity log ─────────────────────────── */
+
+/**
+ * AI-INT-1 — `ai_interview_sessions.integrity_events` (0121).
+ *
+ * What the candidate page notes while a round is in progress: leaving or
+ * re-entering full screen, the tab going hidden / visible, the window losing /
+ * regaining focus. THAT IS THE WHOLE LIST. Nothing else about the candidate's
+ * screen or device is captured, and the disclosure (v2) tells them so.
+ *
+ * These are SIGNALS FOR A HUMAN REVIEWER, shown next to the answers. They are
+ * never an input to an automated decision — the same evidence-not-verdict
+ * stance as the rest of the AI round (build plan §5). A tab switch has a dozen
+ * innocent explanations and only a person can weigh them.
+ *
+ * `at` is the SERVER's receive time and is the authoritative timestamp;
+ * `clientAt` is the browser's own clock, kept because events are batched and
+ * the gap between them is what a reviewer reads, but never trusted alone.
+ * `awayMs` rides on the RETURN events (tab_visible / window_focus /
+ * fullscreen_enter): how long the candidate was gone.
+ */
+export const AI_INTERVIEW_INTEGRITY_EVENT_TYPES = [
+  "fullscreen_exit",
+  "fullscreen_enter",
+  "tab_hidden",
+  "tab_visible",
+  "window_blur",
+  "window_focus",
+] as const;
+export type AiInterviewIntegrityEventType = (typeof AI_INTERVIEW_INTEGRITY_EVENT_TYPES)[number];
+
+export function isAiInterviewIntegrityEventType(v: unknown): v is AiInterviewIntegrityEventType {
+  return (
+    typeof v === "string" && (AI_INTERVIEW_INTEGRITY_EVENT_TYPES as readonly string[]).includes(v)
+  );
+}
+
+/** Upper bound on one `awayMs` — a day. Anything longer is not a measurement. */
+export const AI_INTERVIEW_INTEGRITY_AWAY_MS_MAX = 86_400_000;
+
+export interface AiInterviewIntegrityEvent {
+  type: AiInterviewIntegrityEventType;
+  /** ISO, server clock — when the API received the event. */
+  at: string;
+  /** ISO, browser clock — when the page observed it. Context, not authority. */
+  clientAt?: string | null;
+  /** Return events only: how long the candidate was away. */
+  awayMs?: number | null;
+  /** The question on screen when it happened (`questions[].key`). */
+  questionKey?: string | null;
+}
+
+/**
+ * A stored `integrity_events` coerced back to the typed shape, dropping any
+ * entry that does not parse. `coerceAiInterviewQuestions`' posture: a read
+ * path must not throw because a stored row went stale.
+ */
+export function coerceIntegrityEvents(value: unknown): AiInterviewIntegrityEvent[] {
+  if (!Array.isArray(value)) return [];
+  const out: AiInterviewIntegrityEvent[] = [];
+  for (const item of value) {
+    if (!item || typeof item !== "object" || Array.isArray(item)) continue;
+    const e = item as Record<string, unknown>;
+    if (!isAiInterviewIntegrityEventType(e.type) || typeof e.at !== "string") continue;
+    out.push({
+      type: e.type,
+      at: e.at,
+      clientAt: typeof e.clientAt === "string" ? e.clientAt : null,
+      awayMs: typeof e.awayMs === "number" && Number.isFinite(e.awayMs) ? e.awayMs : null,
+      questionKey: typeof e.questionKey === "string" ? e.questionKey : null,
+    });
+  }
+  return out;
+}
+
+export const aiInterviewIntegritySummarySchema = z.object({
+  fullscreenExits: z.number().int().nonnegative(),
+  /** tab_hidden + window_blur — every time attention left the page. */
+  tabSwitches: z.number().int().nonnegative(),
+  /** Sum of `awayMs` on the return events. */
+  totalAwayMs: z.number().int().nonnegative(),
+  /** Every event in the log, of any type. */
+  events: z.number().int().nonnegative(),
+});
+export type AiInterviewIntegritySummary = z.infer<typeof aiInterviewIntegritySummarySchema>;
+
+const RETURN_EVENTS: ReadonlySet<AiInterviewIntegrityEventType> = new Set([
+  "tab_visible",
+  "window_focus",
+  "fullscreen_enter",
+]);
+
+/**
+ * The integrity log as a reviewer reads it at a glance. Pure; shared by the
+ * API (which builds the recruiter card) and anything in the portal that wants
+ * to re-derive it from raw events.
+ *
+ * Deliberately simple counts, not a "risk" figure: a number that looked like
+ * a score would invite being used as one. `totalAwayMs` can double-count a
+ * stretch where the candidate was both out of full screen and on another tab —
+ * acceptable for a glance line, and the raw events carry the detail.
+ */
+export function summariseIntegrity(
+  events: readonly AiInterviewIntegrityEvent[],
+): AiInterviewIntegritySummary {
+  let fullscreenExits = 0;
+  let tabSwitches = 0;
+  let totalAwayMs = 0;
+  for (const e of events) {
+    if (e.type === "fullscreen_exit") fullscreenExits += 1;
+    if (e.type === "tab_hidden" || e.type === "window_blur") tabSwitches += 1;
+    if (RETURN_EVENTS.has(e.type) && typeof e.awayMs === "number" && Number.isFinite(e.awayMs)) {
+      totalAwayMs += Math.max(0, Math.round(e.awayMs));
+    }
+  }
+  return { fullscreenExits, tabSwitches, totalAwayMs, events: events.length };
+}
+
 /**
  * The session as the API hands it to the recruiter's review screen.
  *
@@ -175,6 +293,13 @@ export const aiInterviewSessionCardSchema = z.object({
   /** Generation provenance — the model that answered, not the one requested. */
   model: z.string().nullable(),
   promptVersion: z.string().nullable(),
+  /**
+   * AI-INT-1 — the integrity log summarised for a human reviewer. Null when
+   * nothing was recorded AND the round is not one a candidate has been in
+   * (in_progress / submitted), so "no data yet" and "nothing happened" stay
+   * distinguishable. Signals only — see `summariseIntegrity`.
+   */
+  integrity: aiInterviewIntegritySummarySchema.nullable(),
   createdAt: z.string(),
   updatedAt: z.string(),
 });
