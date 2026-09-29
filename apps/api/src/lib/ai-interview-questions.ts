@@ -100,8 +100,10 @@ import {
   aiInterviewQuestionsSchema,
   aiInterviewSessionStatusSchema,
   coerceAiInterviewQuestions,
+  coerceIntegrityEvents,
   coerceScorecardCriteria,
   resolveScorecardCriteria,
+  summariseIntegrity,
   type AiInterviewQuestion,
   type AiInterviewSessionCard,
   type ScorecardCriterion,
@@ -424,6 +426,8 @@ interface RoundRow {
   approved_at: Date | string | null;
   model: string | null;
   prompt_version: string | null;
+  /** AI-INT-1 (0121) — raw log; summarised onto the card, never shipped raw. */
+  integrity_events: unknown;
   created_at: Date | string | null;
   updated_at: Date | string | null;
 }
@@ -472,6 +476,7 @@ async function loadRound(
       s.approved_at,
       s.model,
       s.prompt_version,
+      s.integrity_events,
       s.created_at,
       s.updated_at
     FROM public.interviews iv
@@ -595,9 +600,24 @@ function toSessionCard(
     approvedAt: toIso(row.approved_at),
     model: row.model,
     promptVersion: row.prompt_version,
+    integrity: toIntegritySummary(row),
     createdAt: toIso(row.created_at) ?? new Date(0).toISOString(),
     updatedAt: toIso(row.updated_at) ?? new Date(0).toISOString(),
   };
+}
+
+/**
+ * AI-INT-1 — the card's integrity line. A round the candidate has been IN
+ * (in_progress / submitted) always gets a summary, zeros included, because
+ * "nothing was noted" is itself what the reviewer needs to read. Any other
+ * status with an empty log gets null: there is nothing to report and no round
+ * to have reported on.
+ */
+function toIntegritySummary(row: RoundRow): AiInterviewSessionCard["integrity"] {
+  const events = coerceIntegrityEvents(row.integrity_events);
+  const running = row.status === "in_progress" || row.status === "submitted";
+  if (events.length === 0 && !running) return null;
+  return summariseIntegrity(events);
 }
 
 export interface GenerateQuestionsInput {

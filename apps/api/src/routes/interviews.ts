@@ -16,6 +16,7 @@ import {
   expireIfLapsed,
   loadSessionByTokenHash,
   recordAnswer,
+  recordIntegrityEvents,
   startSession,
   submitSession,
   toCandidateView,
@@ -466,6 +467,7 @@ const REFUSAL_STATUS: Record<CandidateRefusal, 400 | 403 | 409> = {
   media_missing: 400,
   media_shrank: 400,
   content_type_changed: 409,
+  invalid_integrity_events: 400,
 };
 
 /** Turn a lib refusal into the HTTP answer + the audit row it deserves. */
@@ -623,6 +625,40 @@ interviewsRoutes.post("/ai/:token/answer", async (c) => {
   });
   if (!result.ok) return refusalResponse(c, row, tokenHash, ip, result);
   return c.json({ ok: true, answer: result.value.answer, ...result.value.view });
+});
+
+/**
+ * POST /api/interviews/ai/:token/integrity
+ *
+ * Body: { events: [{ type, clientAt?, awayMs?, questionKey? }] }. AI-INT-1 —
+ * appends to the session's integrity log (full-screen exits, tab / window
+ * switches). Signals for a human reviewer; nothing reads them automatically.
+ *
+ * Deliberately TINY: it returns `{ ok, accepted }` and never the session
+ * view, because the page posts it fire-and-forget (including as a pagehide
+ * beacon, whose response nobody reads) and a view would only be a second,
+ * racing source of truth for the screen. The page sends it as text/plain so
+ * the browser treats it as a simple request with no preflight — which is what
+ * lets `navigator.sendBeacon` deliver it cross-origin; `readJsonBody` parses
+ * the body regardless of the declared type.
+ *
+ * Link-use recording mirrors /answer: no success row (only the submit writes
+ * one — see the block header), a failure row on every refusal.
+ */
+interviewsRoutes.post("/ai/:token/integrity", async (c) => {
+  const resolved = await resolveAiSession(c);
+  if (!resolved.ok) return resolved.response;
+  const { row, tokenHash } = resolved;
+  const ip = consentProvenance(c).ip;
+
+  const body = await readJsonBody(c);
+  if (!Array.isArray(body.events)) {
+    return c.json({ ok: false, reason: "invalid_request" }, 400);
+  }
+
+  const result = await recordIntegrityEvents(poolSql, row, body.events as unknown[]);
+  if (!result.ok) return refusalResponse(c, row, tokenHash, ip, result);
+  return c.json({ ok: true, accepted: result.value.accepted });
 });
 
 /**

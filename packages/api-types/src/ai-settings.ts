@@ -87,7 +87,8 @@ function featureDefault(): AiFeatureSettings {
  * feedback_summary in PANEL-01, interview_prep in PANEL-02, req_revision in
  * RO-01, iris_assistant in IRIS — one key governs BOTH Iris AI calls
  * (iris_intent + iris_message_draft), interview_notes in the notetaker
- * phase (N1), ai_interview_questions in N4.2). */
+ * phase (N1), ai_interview_questions in N4.2, ai_interview_evidence in N4.4 /
+ * AI-INT-2). */
 export const AI_FEATURE_KEYS = [
   "ai_scoring",
   "jd_generation",
@@ -102,6 +103,7 @@ export const AI_FEATURE_KEYS = [
   "iris_assistant",
   "interview_notes",
   "ai_interview_questions",
+  "ai_interview_evidence",
 ] as const;
 export type AiFeatureKey = (typeof AI_FEATURE_KEYS)[number];
 
@@ -188,6 +190,12 @@ export const AI_FEATURE_META: Record<
     description:
       "Drafts the fixed question set for an asynchronous AI first round. Grounded ONLY in the requisition's JD text and skills, its knockout requirements, the round's competency focus, and the round's own scorecard rubric — every question names the rubric criterion it probes, and a set naming a criterion the round does not have is discarded rather than saved. The questions are a DRAFT: nothing is sent to a candidate until a named recruiter approves the set, at which point it freezes. It never scores, never rates, and never writes an 'ideal answer' — questions probe, humans judge. Disabling makes the Generate button refuse with a clear message instead of calling the model; question sets already approved are untouched and still usable.",
   },
+  ai_interview_evidence: {
+    label: "AI interview evidence report",
+    usageFeatures: ["ai_interview_evidence"],
+    description:
+      "After a candidate submits an asynchronous AI round, organises what they actually said against the round's own rubric: whether each answer addresses its question, which rubric criteria it covers, verbatim quotes from the answer, and whether each knockout requirement was confirmed, contradicted or not mentioned. EVIDENCE ONLY — it never scores, rates, ranks, passes or fails anyone and never recommends whether to advance; a human reviews the evidence and decides. It reads only the content of the words (never voice, tone, accent, confidence, fluency, personality or any demographic attribute), and every quote is checked against the candidate's answer and dropped if it is not verbatim. Disabling stops evidence being generated for newly submitted rounds (they are marked skipped, with no model call); transcripts and existing evidence are untouched.",
+  },
 };
 
 export const aiSettingsSchema = z.object({
@@ -205,6 +213,7 @@ export const aiSettingsSchema = z.object({
   iris_assistant: aiFeatureSettingsSchema.default(featureDefault),
   interview_notes: aiFeatureSettingsSchema.default(featureDefault),
   ai_interview_questions: aiFeatureSettingsSchema.default(featureDefault),
+  ai_interview_evidence: aiFeatureSettingsSchema.default(featureDefault),
   /**
    * Global deterministic PII redaction. When on, candidate-derived prompt
    * text going into scoring + agent-draft calls has emails / phone numbers /

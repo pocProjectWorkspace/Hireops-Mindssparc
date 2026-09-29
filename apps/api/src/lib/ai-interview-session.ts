@@ -130,8 +130,11 @@ import { TRPCError } from "@trpc/server";
 import { sql as poolSql } from "@hireops/db";
 import { hashToken, signLink } from "@hireops/notifications";
 import {
+  AI_INTERVIEW_INTEGRITY_AWAY_MS_MAX,
   coerceAiInterviewQuestions,
+  isAiInterviewIntegrityEventType,
   resolveBrandingSettings,
+  type AiInterviewIntegrityEvent,
   type AiInterviewQuestion,
   type AiInterviewSessionCard,
 } from "@hireops/api-types";
@@ -179,7 +182,9 @@ export const CONSENT_VIA_AI_INTERVIEW_LINK = "ai_interview_link";
  * stored row references the version it was captured under and a new wording
  * under an old version is an unanswerable audit question.
  */
-export const AI_INTERVIEW_DISCLOSURE_VERSION = "ai-interview-2026-08-v1";
+// v2 (AI-INT-1): adds the integrity-log paragraph — full-screen exits and
+// tab / window switches are noted for the recruiter.
+export const AI_INTERVIEW_DISCLOSURE_VERSION = "ai-interview-2026-09-v2";
 
 export interface AiInterviewDisclosure {
   /** Always AI_INTERVIEW_DISCLOSURE_VERSION — served together so they can't drift. */
@@ -231,6 +236,10 @@ export const AI_INTERVIEW_DISCLOSURE: AiInterviewDisclosure = {
       "one at a time, and you answer each one in your own time.",
     "Your answers are recorded — the audio you speak, or the text you type — and written up " +
       "so that a recruiter can read and hear exactly what you said.",
+    "While you answer, this page notes when you leave full screen or switch to another tab " +
+      "or window, and for how long. Nothing else about your screen or device is captured. " +
+      "Your recruiter sees these notes next to your answers; they are never used to decide " +
+      "anything automatically.",
     "A person makes the decision. The software asks the questions and gathers what you said; " +
       "it does not score you, rank you, or decide whether you go forward. Nothing is judged " +
       "or inferred about your personality, confidence, accent or fluency — only the content " +
@@ -808,7 +817,8 @@ export type CandidateRefusal =
   | "too_large"
   | "media_missing"
   | "media_shrank"
-  | "content_type_changed";
+  | "content_type_changed"
+  | "invalid_integrity_events";
 
 /** A refusal, on its own, so the guards below can return it without a value. */
 export interface CandidateRefusalResult {
@@ -1222,6 +1232,148 @@ async function assertAnswerable(
   return null;
 }
 
+/* ──────────────────────────── the integrity log ─────────────────────────── */
+
+/**
+ * AI-INT-1. The event shape lives in @hireops/api-types beside
+ * `summariseIntegrity`, so the API and the portal read one definition;
+ * re-exported here because this module is where events are written.
+ */
+export type { AiInterviewIntegrityEvent };
+
+/** Per call: the page batches, so a legitimate flush is a handful of events. */
+export const AI_INTERVIEW_INTEGRITY_BATCH_MAX = 50;
+/**
+ * Per session, total. Past this the log stops growing and the EARLIEST
+ * events are kept — the first time attention left the page is the useful
+ * fact, the five-hundredth is noise, and an unauthenticated jsonb column must
+ * not be growable without bound.
+ */
+export const AI_INTERVIEW_INTEGRITY_SESSION_MAX = 500;
+
+export interface RecordIntegrityEventsResult {
+  /** How many of the submitted events were actually stored (cap applied). */
+  accepted: number;
+}
+
+const QUESTION_KEY_PATTERN = /^q[1-9][0-9]{0,2}$/;
+
+/**
+ * Validate one browser-reported event and stamp it with the server clock.
+ * Returns null when the event is not one we record. `type` and `awayMs` are
+ * the signal and are validated strictly; `clientAt` and `questionKey` are
+ * context and are nulled rather than refused when they do not parse.
+ */
+function toStoredIntegrityEvent(
+  value: unknown,
+  receivedAt: string,
+): AiInterviewIntegrityEvent | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const raw = value as Record<string, unknown>;
+  if (!isAiInterviewIntegrityEventType(raw.type)) return null;
+
+  let awayMs: number | null = null;
+  if (raw.awayMs !== undefined && raw.awayMs !== null) {
+    if (
+      typeof raw.awayMs !== "number" ||
+      !Number.isFinite(raw.awayMs) ||
+      raw.awayMs < 0 ||
+      raw.awayMs > AI_INTERVIEW_INTEGRITY_AWAY_MS_MAX
+    ) {
+      return null;
+    }
+    awayMs = Math.round(raw.awayMs);
+  }
+
+  let clientAt: string | null = null;
+  if (typeof raw.clientAt === "string" && raw.clientAt.length <= 40) {
+    const d = new Date(raw.clientAt);
+    clientAt = Number.isNaN(d.getTime()) ? null : d.toISOString();
+  }
+  const questionKey =
+    typeof raw.questionKey === "string" && QUESTION_KEY_PATTERN.test(raw.questionKey)
+      ? raw.questionKey
+      : null;
+
+  return { type: raw.type, at: receivedAt, clientAt, awayMs, questionKey };
+}
+
+/**
+ * Append a batch of integrity events to the session's log.
+ *
+ * Only while the round is RUNNING: before the start there is nothing to note
+ * and after the submit nothing a candidate does is part of the round. A
+ * refusal here is harmless to the candidate — the page posts fire-and-forget
+ * and never lets it block answering.
+ *
+ * The WHOLE batch is refused if any event is malformed. A well-behaved page
+ * never sends one, so a malformed batch is either a bug or a forged request,
+ * and storing the parts of it that happen to parse would be recording
+ * something no browser observed.
+ *
+ * The append is ONE statement — `integrity_events || $new`, truncated to the
+ * session cap keeping the earliest — so two overlapping flushes (a debounce
+ * and a pagehide beacon) both land rather than the later overwriting the
+ * earlier, which a read-modify-write in this process would do.
+ */
+export async function recordIntegrityEvents(
+  sql: PgSqlClient,
+  row: AiInterviewSessionRow,
+  events: readonly unknown[],
+): Promise<CandidateResult<RecordIntegrityEventsResult>> {
+  const blocked = assertActionable(row);
+  if (blocked) return blocked;
+  if (row.status !== "in_progress") {
+    return refuse("not_started", "Start the interview before answering.");
+  }
+
+  if (events.length > AI_INTERVIEW_INTEGRITY_BATCH_MAX) {
+    return refuse(
+      "invalid_integrity_events",
+      `At most ${AI_INTERVIEW_INTEGRITY_BATCH_MAX} events can be sent at once.`,
+    );
+  }
+  if (events.length === 0) return { ok: true, value: { accepted: 0 } };
+
+  const receivedAt = new Date().toISOString();
+  const stored: AiInterviewIntegrityEvent[] = [];
+  for (const e of events) {
+    const parsed = toStoredIntegrityEvent(e, receivedAt);
+    if (!parsed) {
+      return refuse("invalid_integrity_events", "That integrity event was not recognised.");
+    }
+    stored.push(parsed);
+  }
+
+  // The FROM sub-select reads the pre-update length in the same statement, so
+  // `after - before` is what THIS call added. (A FOR UPDATE CTE referenced
+  // only from RETURNING came back NULL here — Test 10 caught it at the cap.)
+  const [written] = await sql<{ before: number; after: number }[]>`
+    UPDATE public.ai_interview_sessions
+    SET integrity_events = COALESCE(
+          (
+            SELECT jsonb_agg(t.e ORDER BY t.ord)
+            FROM jsonb_array_elements(integrity_events || ${JSON.stringify(stored)}::jsonb)
+              WITH ORDINALITY AS t(e, ord)
+            WHERE t.ord <= ${AI_INTERVIEW_INTEGRITY_SESSION_MAX}
+          ),
+          '[]'::jsonb
+        ),
+        updated_at = now()
+    FROM (
+      SELECT jsonb_array_length(integrity_events) AS before
+      FROM public.ai_interview_sessions
+      WHERE tenant_id = ${row.tenant_id} AND id = ${row.session_id}
+    ) AS prev
+    WHERE tenant_id = ${row.tenant_id} AND id = ${row.session_id} AND status = 'in_progress'
+    RETURNING prev.before AS before, jsonb_array_length(integrity_events) AS after
+  `;
+  // No row: the round moved on (submitted / expired) between the load and the
+  // write. Nothing was stored, and that is the honest count.
+  const accepted = written ? Math.max(0, Number(written.after) - Number(written.before)) : 0;
+  return { ok: true, value: { accepted } };
+}
+
 /* ────────────────────────────── submit + enqueue ────────────────────────── */
 
 export interface SubmitSessionInput {
@@ -1264,6 +1416,8 @@ function isUniqueViolation(err: unknown): boolean {
  * the result says so (`recordingId: null`, `enqueued: false`). Enqueueing
  * anyway would spend a drain claim and an ASR call to discover the absence,
  * and would leave a recording row asserting media that does not exist.
+ * (It still gets an `ai_interview_evidence` row — AI-INT-2 — because typed
+ * answers need no transcript; "nothing" above means nothing to TRANSCRIBE.)
  *
  * The session moves to `submitted` FIRST and independently of the enqueue.
  * The candidate has finished either way, and a transient storage or outbox
@@ -1337,6 +1491,19 @@ export async function submitSession(
       }
     }
   }
+
+  // AI-INT-2 — THE EVIDENCE ENQUEUE, for every submitted round (typed-only
+  // rounds included: their evidence needs no transcript). AFTER the transcript
+  // enqueue on purpose: the evidence drain decides "wait for the transcript"
+  // vs "the transcript is not coming" from the transcript_outbox row, so that
+  // row must already exist by the time an evidence row can be claimed. ON
+  // CONFLICT DO NOTHING on the one-row-per-session unique makes a double
+  // submit (the race loser above still reaches here) a no-op.
+  await sql`
+    INSERT INTO public.ai_interview_evidence (tenant_id, session_id, interview_id, status)
+    VALUES (${row.tenant_id}, ${row.session_id}, ${row.interview_id}, 'pending')
+    ON CONFLICT (tenant_id, session_id) DO NOTHING
+  `;
 
   const after = await reloadSession(sql, row);
   const consent = await resolveRecordingConsent(sql, row.tenant_id, row.interview_id);

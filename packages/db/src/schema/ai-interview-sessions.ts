@@ -148,6 +148,15 @@ export const aiInterviewSessions = pgTable(
     /** Per-answer capture bookkeeping; '{}' is the honest empty state. */
     turnState: jsonb("turn_state").notNull().default({}),
 
+    /**
+     * Append-only integrity log (0121): [{ type, at, clientAt?, awayMs?,
+     * questionKey? }] — full-screen exits/entries, tab hidden/visible, window
+     * blur/focus, recorded while the round is in progress. Signals for a
+     * HUMAN reviewer only; never an input to an automated decision. The
+     * server caps it at 500 events. CHECK pins it to an array.
+     */
+    integrityEvents: jsonb("integrity_events").notNull().default([]),
+
     /** SHA-256 of the candidate's signed link. Never the raw token. */
     linkTokenHash: text("link_token_hash"),
 
@@ -177,6 +186,10 @@ export const aiInterviewSessions = pgTable(
       .on(table.linkTokenHash)
       .where(sql`link_token_hash IS NOT NULL`),
 
+    check(
+      "ai_interview_sessions_integrity_events_array_check",
+      sql`jsonb_typeof(${table.integrityEvents}) = 'array'`,
+    ),
     check(
       "ai_interview_sessions_status_check",
       sql`${table.status} IN ('draft', 'approved', 'issued', 'in_progress', 'submitted', 'expired', 'cancelled')`,

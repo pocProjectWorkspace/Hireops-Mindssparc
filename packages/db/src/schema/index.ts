@@ -92,6 +92,7 @@ export * from "./interview-notes";
 export * from "./transcript-outbox";
 // Asynchronous AI first-round interview — question plan, approval, turns (N4.1)
 export * from "./ai-interview-sessions";
+export * from "./ai-interview-evidence";
 // Candidate accounts (Wave C, CAND-01)
 export * from "./candidate-accounts";
 // Offboarding pillar (OFFBOARD-01)

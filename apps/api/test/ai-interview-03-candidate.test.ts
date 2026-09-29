@@ -31,14 +31,16 @@
  *   5. A typed answer needs no upload and is stored AS TYPED. The mode
  *      assertion is the point: an evidence report built on typed text must
  *      never later be described as something the candidate said aloud. The
- *      all-typed round then submits with no recording and no outbox row.
+ *      all-typed round then submits with no recording and no outbox row —
+ *      but WITH one pending ai_interview_evidence row (AI-INT-2).
  *   6. A wrong-content-type or oversized upload is refused — including an
  *      object that is over the cap in REALITY while the browser declared a
  *      legal size, which is the only version of the check that means anything.
  *   7. Submit inserts EXACTLY ONE `transcript_outbox` row. This is the AI
  *      round's producer for the pipeline N3.4a built the recruiter-upload
  *      producer for.
- *   8. A double submit absorbs 23505 and does not create a second row — both
+ *   8. A double submit absorbs 23505 and does not create a second row (nor a
+ *      second AI-INT-2 evidence row) — both
  *      the concurrent shape (a caller holding a row it read while the session
  *      was still in progress, which is the only path that reaches the INSERT
  *      twice) and the ordinary double-tap through the route.
@@ -46,6 +48,11 @@
  *      access — there is no sweep — so the case asserts that too: the status
  *      is still 'in_progress' after the deadline passes, and it is the
  *      refused request itself that moves it to 'expired'.
+ *  10. AI-INT-1 — the integrity log. Refused before the start, appended
+ *      (server-stamped, earliest kept) while running, a malformed batch
+ *      refused whole, the per-session cap enforced in SQL, the route kept
+ *      tiny (no session view) and never writing a successful link use, and
+ *      the disclosure served at v2.
  *
  * LIB LEVEL vs THE HONO ROUTES. Cases 1, 2, 5, 6, 7 and 8 go through
  * ../src/lib/ai-interview-session directly: the thing under test is a
@@ -63,7 +70,7 @@
  * slugs/emails) via poolSql, so it touches no demo data and needs no JWT.
  * NODE_ENV=test forces LocalStorageClient, so the browser's direct PUT is
  * stood in for by writeLocalSignedUploadUrl() — no network, no Supabase.
- * REQUIRES migrations 0116–0119.
+ * REQUIRES migrations 0116–0119, and 0121 for case 10.
  */
 
 import "../src/bootstrap";
@@ -83,8 +90,11 @@ import {
   createAnswerUploadUrl,
   expireIfLapsed,
   issueSession,
+  AI_INTERVIEW_DISCLOSURE_VERSION,
+  AI_INTERVIEW_INTEGRITY_SESSION_MAX,
   loadSessionByTokenHash,
   recordAnswer,
+  recordIntegrityEvents,
   startSession,
   submitSession,
   type AiInterviewSessionRow,
@@ -111,6 +121,7 @@ const IV_TYPED = "00000000-0000-4000-8000-00000043a013";
 const IV_LIMITS = "00000000-0000-4000-8000-00000043a014";
 const IV_VOICE = "00000000-0000-4000-8000-00000043a015";
 const IV_EXPIRED = "00000000-0000-4000-8000-00000043a016";
+const IV_INTEGRITY = "00000000-0000-4000-8000-00000043a017";
 
 const RUN = Date.now().toString(36);
 const TENANT_SLUG = `synth-n43a-${RUN}`;
@@ -304,6 +315,15 @@ async function outboxRows(recordingId: string): Promise<{ id: string; status: st
   `;
 }
 
+/** AI-INT-2 — the evidence rows submit enqueued for a round's session. */
+async function evidenceRows(interviewId: string): Promise<{ id: string; status: string }[]> {
+  return poolSql<{ id: string; status: string }[]>`
+    SELECT e.id, e.status FROM public.ai_interview_evidence e
+    JOIN public.ai_interview_sessions s ON s.tenant_id = e.tenant_id AND s.id = e.session_id
+    WHERE e.tenant_id = ${T} AND s.interview_id = ${interviewId}
+  `;
+}
+
 async function linkUses(token: string): Promise<{ successful: boolean; reason: string | null }[]> {
   return poolSql<{ successful: boolean; reason: string | null }[]>`
     SELECT successful, failure_reason AS reason FROM public.signed_link_uses
@@ -445,6 +465,7 @@ describe("N4.3a — the AI interview candidate surface", () => {
       [IV_LIMITS, 5, "ai_async"],
       [IV_VOICE, 6, "ai_async"],
       [IV_EXPIRED, 7, "ai_async"],
+      [IV_INTEGRITY, 8, "ai_async"],
     ] as const;
     for (const [id, round, mode] of rounds) {
       await seedInterview(id, round, mode);
@@ -732,6 +753,12 @@ describe("N4.3a — the AI interview candidate surface", () => {
       SELECT count(*)::text AS n FROM public.transcript_outbox WHERE tenant_id = ${T}
     `;
     assert.equal(n, "0", "no voice round has been submitted yet, so the queue is still empty");
+
+    // AI-INT-2 — but the EVIDENCE queue does get a row: typed answers need no
+    // transcript, so an all-typed round still gets its evidence report.
+    const evidence = await evidenceRows(IV_TYPED);
+    assert.equal(evidence.length, 1, "submit enqueues exactly one evidence row");
+    assert.equal(evidence[0]?.status, "pending");
   });
 
   it("Test 6: a wrong content type and an oversized object are both refused", async () => {
@@ -909,6 +936,11 @@ describe("N4.3a — the AI interview candidate surface", () => {
       1,
       "UNIQUE (tenant_id, recording_id) held and the 23505 was absorbed",
     );
+    assert.equal(
+      (await evidenceRows(IV_VOICE)).length,
+      1,
+      "AI-INT-2 — the evidence enqueue is ON CONFLICT DO NOTHING: still one row",
+    );
 
     // And the ordinary double-tap, through the route, is refused outright.
     const http = await candidatePost(voiceToken, "/submit", {});
@@ -997,4 +1029,147 @@ describe("N4.3a — the AI interview candidate surface", () => {
     assert.equal(view.body.status, "expired");
     assert.equal(view.body.currentQuestion, null);
   });
+
+  it("Test 10: the integrity log appends while running, capped, and the route stays tiny", async () => {
+    const token = await issue(IV_INTEGRITY);
+
+    // The candidate is told about the log BEFORE agreeing — v2 of the copy.
+    const before = await candidateGet(token);
+    assert.equal(before.status, 200);
+    const disclosure = before.body.disclosure as { version: string; body: string[] };
+    assert.equal(disclosure.version, AI_INTERVIEW_DISCLOSURE_VERSION);
+    assert.equal(AI_INTERVIEW_DISCLOSURE_VERSION, "ai-interview-2026-09-v2");
+    assert.ok(
+      disclosure.body.some((p) => /full screen/i.test(p) && /tab/i.test(p)),
+      "the disclosure names what the integrity log records",
+    );
+
+    // Not running yet → refused, nothing stored.
+    const early = refusalOf(
+      await recordIntegrityEvents(poolSql, await sessionByToken(token), [{ type: "tab_hidden" }]),
+      "logging before the start",
+    );
+    assert.equal(early.refusal, "not_started");
+    assert.deepEqual(await integrityOf(IV_INTEGRITY), []);
+
+    value(
+      await startSession(poolSql, await sessionByToken(token), {
+        consentGranted: true,
+        ipAddress: null,
+        userAgent: "vitest/n43a",
+      }),
+      "starting the integrity round",
+    );
+
+    const first = value(
+      await recordIntegrityEvents(poolSql, await sessionByToken(token), [
+        { type: "tab_hidden", clientAt: "2026-09-29T10:00:00.000Z", questionKey: "q1" },
+        { type: "tab_visible", awayMs: 41_000.4, questionKey: "q1" },
+      ]),
+      "logging a tab switch",
+    );
+    assert.equal(first.accepted, 2);
+    const stored = await integrityOf(IV_INTEGRITY);
+    assert.equal(stored.length, 2);
+    assert.equal(stored[0]?.type, "tab_hidden");
+    assert.equal(stored[0]?.clientAt, "2026-09-29T10:00:00.000Z");
+    assert.equal(stored[1]?.awayMs, 41_000, "awayMs is stored in whole milliseconds");
+    assert.ok(typeof stored[0]?.at === "string", "every event carries the server's receive time");
+
+    // A malformed batch is refused WHOLE — the valid half is not kept.
+    const bad = refusalOf(
+      await recordIntegrityEvents(poolSql, await sessionByToken(token), [
+        { type: "window_blur" },
+        { type: "screenshot" },
+      ]),
+      "logging an unknown event type",
+    );
+    assert.equal(bad.refusal, "invalid_integrity_events");
+    const negative = refusalOf(
+      await recordIntegrityEvents(poolSql, await sessionByToken(token), [
+        { type: "window_focus", awayMs: -1 },
+      ]),
+      "logging a negative away time",
+    );
+    assert.equal(negative.refusal, "invalid_integrity_events");
+    assert.equal((await integrityOf(IV_INTEGRITY)).length, 2, "refused batches store nothing");
+
+    // THE CAP. Filled to one short of the limit directly, then a batch of
+    // three: one lands, two are dropped, and the EARLIEST events survive.
+    const filler = Array.from({ length: AI_INTERVIEW_INTEGRITY_SESSION_MAX - 3 }, () => ({
+      type: "window_blur",
+      at: "2026-09-29T10:00:00.000Z",
+    }));
+    await poolSql`
+      UPDATE public.ai_interview_sessions
+      SET integrity_events = integrity_events || ${JSON.stringify(filler)}::jsonb
+      WHERE tenant_id = ${T} AND interview_id = ${IV_INTEGRITY}
+    `;
+    const capped = value(
+      await recordIntegrityEvents(poolSql, await sessionByToken(token), [
+        { type: "fullscreen_exit" },
+        { type: "fullscreen_enter", awayMs: 1_000 },
+        { type: "tab_hidden" },
+      ]),
+      "logging past the cap",
+    );
+    assert.equal(capped.accepted, 1);
+    const full = await integrityOf(IV_INTEGRITY);
+    assert.equal(full.length, AI_INTERVIEW_INTEGRITY_SESSION_MAX);
+    assert.equal(full[0]?.type, "tab_hidden", "the earliest events are the ones kept");
+    assert.equal(full[full.length - 1]?.type, "fullscreen_exit");
+
+    // THE ROUTE: tiny response (no session view on the wire) and no
+    // successful signed_link_uses row — only the submit writes one.
+    const usesBefore = await linkUses(token);
+    const posted = await candidatePost(token, "/integrity", { events: [{ type: "tab_hidden" }] });
+    assert.equal(posted.status, 200);
+    assert.deepEqual(posted.body, { ok: true, accepted: 0 });
+    const malformed = await candidatePost(token, "/integrity", { events: "tab_hidden" });
+    assert.equal(malformed.status, 400);
+    assert.equal(malformed.body.reason, "invalid_request");
+    const usesAfter = await linkUses(token);
+    assert.equal(
+      usesAfter.filter((u) => u.successful).length,
+      usesBefore.filter((u) => u.successful).length,
+      "logging integrity events never records a successful link use",
+    );
+
+    // After the submit, the log is closed. (Submit needs one answer.)
+    value(
+      await recordAnswer(poolSql, await sessionByToken(token), {
+        questionKey: "q1",
+        mode: "typed",
+        text: "An answer so the round can be submitted.",
+      }),
+      "answering before the submit",
+    );
+    value(
+      await submitSession(poolSql, await sessionByToken(token), {}),
+      "submitting the integrity round",
+    );
+    const late = await candidatePost(token, "/integrity", { events: [{ type: "tab_hidden" }] });
+    assert.equal(late.status, 409);
+    assert.equal(late.body.reason, "already_submitted");
+  });
 });
+
+async function integrityOf(
+  interviewId: string,
+): Promise<{ type: string; at: string; clientAt: string | null; awayMs: number | null }[]> {
+  const [row] = await poolSql<
+    {
+      integrity_events: {
+        type: string;
+        at: string;
+        clientAt: string | null;
+        awayMs: number | null;
+      }[];
+    }[]
+  >`
+    SELECT integrity_events FROM public.ai_interview_sessions
+    WHERE tenant_id = ${T} AND interview_id = ${interviewId}
+  `;
+  if (!row) assert.fail(`no ai_interview_sessions row for ${interviewId}`);
+  return row.integrity_events;
+}
