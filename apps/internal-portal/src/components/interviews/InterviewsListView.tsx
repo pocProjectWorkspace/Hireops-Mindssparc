@@ -9,6 +9,7 @@ import { trpc } from "@/lib/trpc-client";
 import type { InterviewRow, InterviewRecommendation } from "@hireops/api-types";
 import { PageContainer } from "@/components/nav/PageContainer";
 import { InterviewRecordingSection } from "./InterviewRecordingSection";
+import { AiInterviewRoundSection } from "./AiInterviewRoundSection";
 
 /**
  * INT-02 / RECR-01 — recruiter interviews surface, elevated to the prototype
@@ -23,7 +24,12 @@ import { InterviewRecordingSection } from "./InterviewRecordingSection";
  * sync (that is deferred connector work), and we never fake a Meet link.
  */
 
-const MODE_LABEL: Record<string, string> = { video: "Video", onsite: "On-site", phone: "Phone" };
+const MODE_LABEL: Record<string, string> = {
+  video: "Video",
+  onsite: "On-site",
+  phone: "Phone",
+  ai_async: "AI first round",
+};
 
 type TabKey = "scheduled" | "overdue" | "completed";
 
@@ -120,6 +126,10 @@ function InterviewCardRow({
   // open panel is its own query, and a list of 100 interviews must not fire
   // 100 recording-state reads to render.
   const [showRecording, setShowRecording] = useState(false);
+  // B1 — same collapsed-by-default posture for the AI round card; only
+  // ai_async rounds offer it at all.
+  const [showAiRound, setShowAiRound] = useState(false);
+  const isAiRound = iv.mode === "ai_async";
   const confirmed = !!iv.candidateConfirmedAt;
   const allFeedbackIn =
     iv.panel.length > 0 && iv.panel.every((p) => p.feedbackState === "submitted");
@@ -189,6 +199,15 @@ function InterviewCardRow({
             >
               {showRecording ? "Hide recording" : "Recording"}
             </button>
+            {isAiRound ? (
+              <button
+                type="button"
+                onClick={() => setShowAiRound((v) => !v)}
+                className="text-xs font-medium text-brand-700 hover:underline"
+              >
+                {showAiRound ? "Hide AI round" : "AI round"}
+              </button>
+            ) : null}
             <a
               href={boardHref}
               className="inline-flex h-8 items-center rounded-button bg-brand-600 px-3 text-xs font-medium text-white transition-colors hover:bg-brand-700"
@@ -210,6 +229,7 @@ function InterviewCardRow({
       </div>
 
       {showDecision ? <DecisionSummary interviewId={iv.id} /> : null}
+      {showAiRound && isAiRound ? <AiInterviewRoundSection interviewId={iv.id} /> : null}
       {showRecording ? <InterviewRecordingSection interviewId={iv.id} /> : null}
     </Card>
   );

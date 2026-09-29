@@ -5,8 +5,10 @@ import { useQueryClient } from "@tanstack/react-query";
 import { Button, Input, Select } from "@hireops/ui";
 import { Badge } from "@/components/ui";
 import type { BadgeTone } from "@/components/ui";
+import type { InterviewMode } from "@hireops/api-types";
 import { trpc } from "@/lib/trpc-client";
 import { InterviewDecisionControls } from "./InterviewDecisionControls";
+import { AiInterviewRoundSection } from "./AiInterviewRoundSection";
 
 /**
  * Interview scheduling inside the CandidateDetailDrawer (INT-02). Mirrors
@@ -20,7 +22,29 @@ interface Props {
   applicationId: string;
 }
 
-const MODE_LABEL: Record<string, string> = { video: "Video", onsite: "On-site", phone: "Phone" };
+const MODE_LABEL: Record<string, string> = {
+  video: "Video",
+  onsite: "On-site",
+  phone: "Phone",
+  ai_async: "AI first round",
+};
+
+const MODE_OPTIONS: { value: InterviewMode; label: string }[] = [
+  { value: "video", label: "Video" },
+  { value: "onsite", label: "On-site" },
+  { value: "phone", label: "Phone" },
+  { value: "ai_async", label: "AI first round (async)" },
+];
+
+const AI_ASYNC_HINT =
+  "The candidate answers AI-generated questions in their own time through a secure link. Pick the panel member who owns the round; nobody needs to attend.";
+
+/** The plan round's own mode when it is a known one, else Video. Sending the
+ *  select's value always (rather than omitting it) is what makes the choice
+ *  stick, so the default must reproduce what the API would have picked. */
+function initialMode(planMode: string | undefined): InterviewMode {
+  return MODE_OPTIONS.some((o) => o.value === planMode) ? (planMode as InterviewMode) : "video";
+}
 
 export function InterviewScheduleSection({ applicationId }: Props) {
   const queryClient = useQueryClient();
@@ -116,6 +140,14 @@ export function InterviewScheduleSection({ applicationId }: Props) {
                 <Badge tone="warning">Awaiting confirmation</Badge>
               ) : null}
             </div>
+            {/* The AI first round is driven from here as well as the interviews
+                list — the recruiter who scheduled it from the drawer should not
+                have to go looking for the generate / approve / issue steps. */}
+            {iv.mode === "ai_async" ? (
+              <div className="mt-2">
+                <AiInterviewRoundSection interviewId={iv.id} />
+              </div>
+            ) : null}
             {iv.status === "scheduled" ? (
               <div className="mt-2 flex gap-2">
                 <Button
@@ -197,6 +229,9 @@ function ScheduleForm({
   const [meetingUrl, setMeetingUrl] = useState("");
   const [panel, setPanel] = useState<string[]>(selectedRound?.defaultPanelMembershipIds ?? []);
   const [lead, setLead] = useState<string>("");
+  const [interviewMode, setInterviewMode] = useState<InterviewMode>(
+    initialMode(selectedRound?.mode),
+  );
 
   const memberLabel = useMemo(() => {
     const m = new Map<string, string>();
@@ -216,6 +251,7 @@ function ScheduleForm({
     setRoundNumber(n);
     const pr = planRounds.find((r) => r.roundNumber === n);
     setPanel(pr?.defaultPanelMembershipIds ?? []);
+    setInterviewMode(initialMode(pr?.mode));
   }
   function togglePanel(id: string) {
     setPanel((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
@@ -232,6 +268,7 @@ function ScheduleForm({
       applicationId,
       roundNumber,
       scheduledStart: new Date(start).toISOString(),
+      mode: interviewMode,
       panelMembershipIds: panel,
       leadMembershipId: lead && panel.includes(lead) ? lead : undefined,
       meetingUrl: meetingUrl.trim() || undefined,
@@ -264,6 +301,13 @@ function ScheduleForm({
         value={start}
         onChange={(e) => setStart(e.target.value)}
         required
+      />
+      <Select
+        label="Mode"
+        options={MODE_OPTIONS}
+        value={interviewMode}
+        onValueChange={(v) => setInterviewMode(initialMode(v))}
+        hint={interviewMode === "ai_async" ? AI_ASYNC_HINT : undefined}
       />
       <label className="block">
         <span className="text-sm font-medium text-neutral-700">Meeting URL (optional)</span>
