@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { formatBenchmarkCitation } from "@hireops/api-types";
 import type {
   ListMarketBenchmarksOutput,
   MarketBenchmarkRow,
@@ -50,6 +51,32 @@ function cap(s: string): string {
   return s.charAt(0).toUpperCase() + s.slice(1);
 }
 
+/**
+ * A benchmark's citation line (MI-0a): source note · published date · N, via
+ * the shared formatBenchmarkCitation so the wording matches the Feasibility
+ * card and the AI prompt. When a source URL is recorded the whole citation is
+ * a link to the published guide.
+ */
+function BenchmarkCitation({ row }: { row: MarketBenchmarkRow }) {
+  const citation = formatBenchmarkCitation(row);
+  return (
+    <span className="mt-0.5 block text-xs font-normal text-neutral-500">
+      {row.sourceUrl ? (
+        <a
+          href={row.sourceUrl}
+          target="_blank"
+          rel="noreferrer"
+          className="text-brand-600 underline"
+        >
+          {citation}
+        </a>
+      ) : (
+        citation
+      )}
+    </span>
+  );
+}
+
 export function MarketIntelligenceView({
   initial,
   canEdit,
@@ -67,8 +94,9 @@ export function MarketIntelligenceView({
 
   // The honesty line. Source notes are PER ROW (each row's is editable in the
   // admin form below), so the header may only name a source when every row
-  // agrees. The moment two rows carry different notes we stop claiming one up
-  // here and print each row's note under its role title instead.
+  // agrees. The moment two rows carry different notes the header counts the
+  // distinct sources instead. Every row prints its own citation (note · date ·
+  // N, linked when a URL is recorded) under its role title regardless.
   const distinctSourceNotes = [
     ...new Set(rows.map((r) => r.sourceNote.trim()).filter((n) => n.length > 0)),
   ];
@@ -83,7 +111,10 @@ export function MarketIntelligenceView({
           <>
             Curated salary + hiring benchmarks by role.{" "}
             <span className="font-medium text-neutral-600">
-              {sourceNotesDiffer ? "Sources are noted per benchmark below" : sourceNote}.
+              {sourceNotesDiffer
+                ? `${distinctSourceNotes.length} sources — cited per benchmark below`
+                : sourceNote}
+              .
             </span>{" "}
             These are reference figures maintained by your team, not a live market feed.
           </>
@@ -117,11 +148,7 @@ export function MarketIntelligenceView({
                   <Tr key={r.id}>
                     <Td className="font-medium text-neutral-900">
                       {r.roleTitle}
-                      {sourceNotesDiffer ? (
-                        <span className="mt-0.5 block text-xs font-normal text-neutral-500">
-                          {r.sourceNote}
-                        </span>
-                      ) : null}
+                      <BenchmarkCitation row={r} />
                     </Td>
                     <Td numeric label="Market median">
                       {lpaLabel(r.medianSalaryMinor)}
@@ -213,6 +240,9 @@ function BenchmarkEditForm({ row, onDone }: { row: MarketBenchmarkRow; onDone: (
   const [recommendedRounds, setRecommendedRounds] = useState(row.recommendedRounds.toString());
   const [trending, setTrending] = useState(row.trendingSkills.join(", "));
   const [sourceNote, setSourceNote] = useState(row.sourceNote);
+  const [sourceUrl, setSourceUrl] = useState(row.sourceUrl ?? "");
+  const [sourcePublishedOn, setSourcePublishedOn] = useState(row.sourcePublishedOn ?? "");
+  const [sampleN, setSampleN] = useState(row.sampleN != null ? row.sampleN.toString() : "");
   const [error, setError] = useState<string | null>(null);
 
   async function save() {
@@ -220,6 +250,13 @@ function BenchmarkEditForm({ row, onDone }: { row: MarketBenchmarkRow; onDone: (
     const medianMinor = Math.round(Number(medianLpa) * 10_000_000);
     if (!Number.isFinite(medianMinor) || medianMinor < 0) {
       setError("Median must be a non-negative number of lakhs per annum.");
+      return;
+    }
+    // Citation fields: empty → null (the citation simply omits that part).
+    const trimmedSampleN = sampleN.trim();
+    const sampleNValue = trimmedSampleN === "" ? null : Number(trimmedSampleN);
+    if (sampleNValue != null && (!Number.isInteger(sampleNValue) || sampleNValue <= 0)) {
+      setError("Sample size must be a positive whole number, or left empty.");
       return;
     }
     try {
@@ -237,6 +274,9 @@ function BenchmarkEditForm({ row, onDone }: { row: MarketBenchmarkRow; onDone: (
           .filter(Boolean)
           .slice(0, 20),
         sourceNote: sourceNote.trim() || "Curated benchmark — update quarterly",
+        sourceUrl: sourceUrl.trim() || null,
+        sourcePublishedOn: sourcePublishedOn.trim() || null,
+        sampleN: sampleNValue,
       });
       onDone();
     } catch (err) {
@@ -317,6 +357,37 @@ function BenchmarkEditForm({ row, onDone }: { row: MarketBenchmarkRow; onDone: (
             className={field}
             value={sourceNote}
             onChange={(e) => setSourceNote(e.target.value)}
+          />
+        </label>
+        <label className="flex flex-col gap-1 text-xs text-neutral-600">
+          Source URL
+          <input
+            className={field}
+            type="url"
+            value={sourceUrl}
+            placeholder="https://"
+            onChange={(e) => setSourceUrl(e.target.value)}
+          />
+        </label>
+        <label className="flex flex-col gap-1 text-xs text-neutral-600">
+          Published on
+          <input
+            className={field}
+            type="date"
+            value={sourcePublishedOn}
+            onChange={(e) => setSourcePublishedOn(e.target.value)}
+          />
+        </label>
+        <label className="flex flex-col gap-1 text-xs text-neutral-600">
+          Sample size (N)
+          <input
+            className={field}
+            type="number"
+            min={1}
+            step={1}
+            value={sampleN}
+            inputMode="numeric"
+            onChange={(e) => setSampleN(e.target.value)}
           />
         </label>
       </div>

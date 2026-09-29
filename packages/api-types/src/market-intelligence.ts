@@ -22,6 +22,16 @@ export type BenchmarkLevel = z.infer<typeof benchmarkLevelSchema>;
 /** A trending skill is a short label rendered as a chip on the per-role card. */
 const trendingSkillSchema = z.string().min(1).max(60);
 
+/**
+ * Citation provenance (MI-0a, migration 0120). All nullable — an unknown part
+ * stays null and is omitted from the rendered citation, never invented.
+ * `sourcePublishedOn` is a plain YYYY-MM-DD date string (the DB column is a
+ * `date`, read in string mode).
+ */
+const benchmarkSourceUrlSchema = z.string().url().max(500);
+const benchmarkPublishedOnSchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
+const benchmarkSampleNSchema = z.number().int().positive();
+
 /** The row the Market Intelligence table + trending-skills cards render. */
 export const marketBenchmarkRowSchema = z.object({
   id: z.string().uuid(),
@@ -34,6 +44,9 @@ export const marketBenchmarkRowSchema = z.object({
   recommendedRounds: z.number().int().nonnegative(),
   trendingSkills: z.array(trendingSkillSchema).max(20),
   sourceNote: z.string().min(1).max(300),
+  sourceUrl: benchmarkSourceUrlSchema.nullable(),
+  sourcePublishedOn: benchmarkPublishedOnSchema.nullable(),
+  sampleN: benchmarkSampleNSchema.nullable(),
   updatedAt: z.string(), // ISO
 });
 export type MarketBenchmarkRow = z.infer<typeof marketBenchmarkRowSchema>;
@@ -59,7 +72,29 @@ export const upsertMarketBenchmarkInputSchema = z.object({
   recommendedRounds: z.number().int().nonnegative().max(20),
   trendingSkills: z.array(trendingSkillSchema).max(20).default([]),
   sourceNote: z.string().min(1).max(300).default("Curated benchmark — update quarterly"),
+  // Omitted → null (the upsert writes `?? null`).
+  sourceUrl: benchmarkSourceUrlSchema.nullable().optional(),
+  sourcePublishedOn: benchmarkPublishedOnSchema.nullable().optional(),
+  sampleN: benchmarkSampleNSchema.nullable().optional(),
 });
+/**
+ * The single citation wording for a benchmark — used by the Market Intelligence
+ * table, the Feasibility card and the feasibility prompt so all three read
+ * identically. Null parts are omitted, e.g.
+ *   "Michael Page India Salary Guide 2026 · published 2026-01-15 · N=412"
+ *   "Curated benchmark — update quarterly"
+ */
+export function formatBenchmarkCitation(row: {
+  sourceNote: string;
+  sourcePublishedOn: string | null;
+  sampleN: number | null;
+}): string {
+  const parts = [row.sourceNote.trim()];
+  if (row.sourcePublishedOn) parts.push(`published ${row.sourcePublishedOn}`);
+  if (row.sampleN != null) parts.push(`N=${row.sampleN}`);
+  return parts.filter((p) => p.length > 0).join(" · ");
+}
+
 export type UpsertMarketBenchmarkInput = z.infer<typeof upsertMarketBenchmarkInputSchema>;
 export const upsertMarketBenchmarkOutputSchema = z.object({
   row: marketBenchmarkRowSchema,
@@ -108,6 +143,11 @@ export const feasibilityBenchmarkContextSchema = z.object({
   ttfDays: z.number().int().nonnegative().nullable(),
   availability: benchmarkLevelSchema.nullable(),
   competitorDemand: benchmarkLevelSchema.nullable(),
+  // Citation of the matched benchmark (MI-0b) — all null when nothing matched.
+  sourceNote: z.string().nullable(),
+  sourceUrl: benchmarkSourceUrlSchema.nullable(),
+  sourcePublishedOn: benchmarkPublishedOnSchema.nullable(),
+  sampleN: benchmarkSampleNSchema.nullable(),
 });
 export type FeasibilityBenchmarkContext = z.infer<typeof feasibilityBenchmarkContextSchema>;
 

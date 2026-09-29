@@ -2385,6 +2385,9 @@ interface TenantBenchmark {
   recommendedRounds: number;
   trendingSkills: string[];
   sourceNote: string;
+  sourceUrl: string | null;
+  sourcePublishedOn: string | null;
+  sampleN: number | null;
   updatedAt: Date;
 }
 
@@ -2401,6 +2404,9 @@ function benchmarkRowToApi(row: typeof marketBenchmarks.$inferSelect): MarketBen
     recommendedRounds: row.recommendedRounds,
     trendingSkills: normalizeTrendingSkills(row.trendingSkills),
     sourceNote: row.sourceNote,
+    sourceUrl: row.sourceUrl ?? null,
+    sourcePublishedOn: row.sourcePublishedOn ?? null,
+    sampleN: row.sampleN ?? null,
     updatedAt: row.updatedAt.toISOString(),
   };
 }
@@ -2492,6 +2498,9 @@ async function loadTenantBenchmarks(
     recommendedRounds: r.recommendedRounds,
     trendingSkills: normalizeTrendingSkills(r.trendingSkills),
     sourceNote: r.sourceNote,
+    sourceUrl: r.sourceUrl ?? null,
+    sourcePublishedOn: r.sourcePublishedOn ?? null,
+    sampleN: r.sampleN ?? null,
     updatedAt: r.updatedAt,
   }));
 }
@@ -3164,6 +3173,10 @@ function buildFeasibilityCard(input: BuildCardInput): FeasibilityCard {
       ttfDays: matched?.ttfDays ?? null,
       availability: matched?.availability ?? null,
       competitorDemand: matched?.competitorDemand ?? null,
+      sourceNote: matched?.sourceNote ?? null,
+      sourceUrl: matched?.sourceUrl ?? null,
+      sourcePublishedOn: matched?.sourcePublishedOn ?? null,
+      sampleN: matched?.sampleN ?? null,
     },
     assessment: parsed && parsed.success ? parsed.data : null,
     model: input.model,
@@ -18268,6 +18281,9 @@ export const appRouter = router({
             recommendedRounds: input.recommendedRounds,
             trendingSkills: input.trendingSkills,
             sourceNote: input.sourceNote,
+            sourceUrl: input.sourceUrl ?? null,
+            sourcePublishedOn: input.sourcePublishedOn ?? null,
+            sampleN: input.sampleN ?? null,
             updatedAt: new Date(),
           })
           .onConflictDoUpdate({
@@ -18281,6 +18297,9 @@ export const appRouter = router({
               recommendedRounds: input.recommendedRounds,
               trendingSkills: input.trendingSkills,
               sourceNote: input.sourceNote,
+              sourceUrl: input.sourceUrl ?? null,
+              sourcePublishedOn: input.sourcePublishedOn ?? null,
+              sampleN: input.sampleN ?? null,
               updatedAt: new Date(),
             },
           })
@@ -18497,6 +18516,10 @@ export const appRouter = router({
                 competitorDemand: matched.competitorDemand,
                 recommendedRounds: matched.recommendedRounds,
                 trendingSkills: matched.trendingSkills,
+                sourceNote: matched.sourceNote,
+                sourceUrl: matched.sourceUrl,
+                sourcePublishedOn: matched.sourcePublishedOn,
+                sampleN: matched.sampleN,
               }
             : null,
         });
@@ -19251,6 +19274,9 @@ export const appRouter = router({
             recommendedRounds: b.recommendedRounds,
             trendingSkills: b.trendingSkills,
             sourceNote: b.sourceNote,
+            sourceUrl: b.sourceUrl,
+            sourcePublishedOn: b.sourcePublishedOn,
+            sampleN: b.sampleN,
             updatedAt: b.updatedAt.toISOString(),
           })),
           matchedBenchmarkRoleTitle: matchedTitle,
