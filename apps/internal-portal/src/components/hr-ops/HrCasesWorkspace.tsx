@@ -6,6 +6,7 @@ import type { ListHrCasesOutput, HrCaseListRow, HrCaseStage } from "@hireops/api
 import { trpc } from "@/lib/trpc-client";
 import { TableShell, Thead, Th, Tbody, Tr, Td, EmptyState, StatTile } from "@/components/ui";
 import { PageContainer } from "@/components/nav/PageContainer";
+import { useScreeningScoreVisible } from "@/components/ScreeningScoreProvider";
 import {
   PageHeader,
   HeroStatCard,
@@ -44,6 +45,7 @@ function formatWhen(iso: string): string {
 }
 
 export function HrCasesWorkspace({ initial }: { initial: ListHrCasesOutput }) {
+  const scoreVisible = useScreeningScoreVisible();
   const router = useRouter();
   const { data } = trpc.listHrCases.useQuery(
     {},
@@ -121,7 +123,7 @@ export function HrCasesWorkspace({ initial }: { initial: ListHrCasesOutput }) {
             <Th>Candidate</Th>
             <Th>Role</Th>
             <Th>Stage</Th>
-            <Th numeric>AI score</Th>
+            {scoreVisible ? <Th numeric>AI score</Th> : null}
             <Th>Interview rounds</Th>
             <Th>Salary band</Th>
             <Th>Recruiter</Th>
@@ -144,6 +146,7 @@ export function HrCasesWorkspace({ initial }: { initial: ListHrCasesOutput }) {
 }
 
 function HrCaseRow({ row, onOpen }: { row: HrCaseListRow; onOpen: () => void }) {
+  const scoreVisible = useScreeningScoreVisible();
   return (
     <Tr onClick={onOpen} className="cursor-pointer">
       <Td className="font-medium text-neutral-900">{row.candidateName ?? "Unknown candidate"}</Td>
@@ -151,15 +154,17 @@ function HrCaseRow({ row, onOpen }: { row: HrCaseListRow; onOpen: () => void }) 
       <Td label="Stage">
         <StageChip stage={row.stage} />
       </Td>
-      <Td numeric label="AI score">
-        {row.aiScore != null ? (
-          <span className="font-semibold tabular-nums text-neutral-900">
-            {Math.round(row.aiScore)}%
-          </span>
-        ) : (
-          <span className="text-neutral-400">—</span>
-        )}
-      </Td>
+      {scoreVisible ? (
+        <Td numeric label="AI score">
+          {row.aiScore != null ? (
+            <span className="font-semibold tabular-nums text-neutral-900">
+              {Math.round(row.aiScore)}%
+            </span>
+          ) : (
+            <span className="text-neutral-400">—</span>
+          )}
+        </Td>
+      ) : null}
       <Td label="Interview rounds">
         {row.roundResults.length === 0 ? (
           <span className="text-neutral-400">No rounds</span>

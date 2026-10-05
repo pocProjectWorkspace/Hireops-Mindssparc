@@ -144,7 +144,7 @@ const ACTION_HELP: Record<string, { description: string; example: string }> = {
   },
   advance_application: {
     description: "Move a candidate to the next stage of the pipeline.",
-    example: "Advance Priya Nair to the tech interview",
+    example: "Advance Priya Nair to the panel interview",
   },
   reject_application: {
     description: "End a candidate's application, with the reason on record.",
@@ -184,7 +184,7 @@ const ACTION_HELP: Record<string, { description: string; example: string }> = {
   },
   cancel_interview: {
     description: "Cancel a scheduled interview; the candidate is notified.",
-    example: "Cancel Rahul's tech interview, panel conflict",
+    example: "Cancel Rahul's panel interview, panel conflict",
   },
 };
 

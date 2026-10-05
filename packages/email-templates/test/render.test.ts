@@ -57,3 +57,39 @@ describe("candidate.agent_message", () => {
     expect(r.html).toContain("&lt;script&gt;");
   });
 });
+
+describe("candidate.application_closed", () => {
+  const closedData = {
+    candidateName: "Anika",
+    companyName: "Your organisation",
+    positionTitle: "Accounts Payable Analyst",
+  };
+
+  it("tells a declined candidate plainly, without 'moved forward' wording", async () => {
+    const r = await renderTemplate("candidate.application_closed", {
+      ...closedData,
+      outcome: "not_selected",
+    });
+    expect(r.subject).toBe("An update on your application: Accounts Payable Analyst");
+    expect(r.text).toContain("won't be taking your application further");
+    expect(r.text).not.toMatch(/moved forward|advanced to/i);
+  });
+
+  it("confirms a withdrawal instead of declining", async () => {
+    const r = await renderTemplate("candidate.application_closed", {
+      ...closedData,
+      outcome: "withdrawn",
+    });
+    expect(r.text).toContain("has been withdrawn");
+    expect(r.text).not.toContain("won't be taking your application further");
+  });
+
+  it("applies a tenant body override", async () => {
+    const r = await renderTemplate(
+      "candidate.application_closed",
+      { ...closedData, outcome: "not_selected" },
+      { slots: { body: "We have filled the {positionTitle} role." } },
+    );
+    expect(r.text).toContain("We have filled the Accounts Payable Analyst role.");
+  });
+});

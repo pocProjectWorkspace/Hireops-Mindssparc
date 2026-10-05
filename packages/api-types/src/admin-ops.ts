@@ -218,6 +218,12 @@ export const EMAIL_TEMPLATE_REGISTRY: EmailTemplateMeta[] = [
     description: "Notifies the candidate their application advanced a stage.",
   },
   {
+    key: "candidate.application_closed",
+    label: "Application closed",
+    audience: "Candidate",
+    description: "Tells the candidate their application was not taken further, or was withdrawn.",
+  },
+  {
     key: "candidate.interview_invitation",
     label: "Interview invitation",
     audience: "Candidate",

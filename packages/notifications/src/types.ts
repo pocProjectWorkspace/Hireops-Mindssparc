@@ -35,6 +35,7 @@ export type EmailRecipientType = "candidate" | "recruiter" | "hiring_manager" | 
 export type TemplateKey =
   | "candidate.application_received"
   | "candidate.stage_advanced"
+  | "candidate.application_closed"
   | "candidate.offer_extended"
   | "candidate.interview_invitation"
   | "candidate.interview_cancelled"

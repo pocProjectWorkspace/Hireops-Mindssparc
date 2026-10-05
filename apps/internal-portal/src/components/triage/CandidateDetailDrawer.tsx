@@ -10,6 +10,7 @@ import { useUndoToast } from "./UndoToastProvider";
 import { OfferSection } from "@/components/offers/OfferSection";
 import { InterviewScheduleSection } from "@/components/interviews/InterviewScheduleSection";
 import { AIScoreBadge } from "./AIScoreBadge";
+import { useScreeningScoreVisible } from "@/components/ScreeningScoreProvider";
 import { applicationStageLabel } from "@/lib/labels";
 import { timeAgo } from "@/lib/approval-format";
 import { TERMINAL_NEGATIVE } from "@/components/candidate/candidate-format";
@@ -71,6 +72,7 @@ function SectionHeading({ children }: { children: ReactNode }) {
 
 export function CandidateDetailDrawer() {
   const { candidateId, applicationId, close } = useDrawerRouting();
+  const scoreVisible = useScreeningScoreVisible();
   const queryClient = useQueryClient();
   const { show: showToast, onUndo, dismiss: dismissToast } = useUndoToast();
 
@@ -239,6 +241,7 @@ export function CandidateDetailDrawer() {
               score={application.aiScore}
               explanation={application.aiScoreExplanation}
               variant="drawer"
+              showScore={scoreVisible}
             />
           ) : null}
 

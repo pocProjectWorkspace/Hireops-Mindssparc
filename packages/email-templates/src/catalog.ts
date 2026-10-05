@@ -180,6 +180,57 @@ export const EMAIL_TEMPLATE_CATALOG: Record<TemplateKey, EmailTemplateCatalogEnt
     ],
   },
 
+  "candidate.application_closed": {
+    templateKey: "candidate.application_closed",
+    label: "Application closed",
+    description:
+      "Sent when the recruiting team does not take an application further, or it is withdrawn.",
+    subject: {
+      defaultText: "An update on your application: {positionTitle}",
+      tokens: ["positionTitle"],
+    },
+    slots: [
+      {
+        slotKey: "heading",
+        label: "Heading",
+        defaultText: "An update on your application",
+        tokens: [],
+      },
+      {
+        slotKey: "greeting",
+        label: "Greeting",
+        defaultText: "Hi {candidateName},",
+        tokens: ["candidateName"],
+      },
+      {
+        slotKey: "body",
+        label: "Body paragraph (not taken further)",
+        defaultText:
+          "Thank you for your interest in the {positionTitle} role at {companyName}. After careful consideration, we won't be taking your application further for this role.",
+        tokens: ["positionTitle", "companyName"],
+      },
+      {
+        slotKey: "closingNote",
+        label: "Closing line (not taken further)",
+        defaultText: "We appreciate the time you invested and wish you every success.",
+        tokens: [],
+      },
+      {
+        slotKey: "withdrawnBody",
+        label: "Body paragraph (withdrawn)",
+        defaultText:
+          "Your application for {positionTitle} at {companyName} has been withdrawn. Thank you for the time you spent with us.",
+        tokens: ["positionTitle", "companyName"],
+      },
+      {
+        slotKey: "signOff",
+        label: "Sign-off",
+        defaultText: CANDIDATE_SIGN_OFF,
+        tokens: ["companyName"],
+      },
+    ],
+  },
+
   "candidate.offer_extended": {
     templateKey: "candidate.offer_extended",
     label: "Offer extended",
@@ -773,6 +824,12 @@ export const EMAIL_TEMPLATE_SAMPLE_DATA: Record<TemplateKey, Record<string, unkn
     positionTitle: "Plant Accountant",
     companyName: "Your organisation",
     newStageLabel: "Panel interview",
+  },
+  "candidate.application_closed": {
+    candidateName: "Priya Sharma",
+    positionTitle: "Plant Accountant",
+    companyName: "Your organisation",
+    outcome: "not_selected",
   },
   "candidate.offer_extended": {
     candidateName: "Priya Sharma",

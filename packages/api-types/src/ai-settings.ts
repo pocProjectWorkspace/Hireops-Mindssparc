@@ -221,6 +221,14 @@ export const aiSettingsSchema = z.object({
    * candidate PII, so it is unaffected.
    */
   piiMasking: z.boolean().default(false),
+  /**
+   * Whether recruiters see the 0–100 AI screening score and the match tiers
+   * built from it (shortlist, triage cards, candidate lists, HR cases, metrics).
+   * Off hides every score affordance and stops ranking lists by score: the
+   * candidate is judged on the parsed CV and evidence, not a number. Scoring
+   * itself is governed by `ai_scoring.enabled`; this only governs display.
+   */
+  screeningScoreVisible: z.boolean().default(true),
 });
 export type AiSettings = z.infer<typeof aiSettingsSchema>;
 

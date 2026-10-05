@@ -21,6 +21,7 @@ import {
 } from "@/components/ui";
 import { MatchTierChip, RiskCell, StageBadge, UrgencyChip, sourceLabel } from "./recruiter-chips";
 import { PageContainer } from "@/components/nav/PageContainer";
+import { useScreeningScoreVisible } from "@/components/ScreeningScoreProvider";
 
 type Output = ListShortlistOutput;
 type RawRow = Output["rows"][number];
@@ -103,7 +104,23 @@ function ShortlistRowView({
   );
 }
 
-export function ShortlistView({
+export function ShortlistView(props: { initial: Output; canManageDefaults?: boolean }) {
+  // The shortlist is a threshold over the AI score; with the score hidden for
+  // this tenant there is nothing honest to show here.
+  if (!useScreeningScoreVisible()) {
+    return (
+      <PageContainer>
+        <EmptyState
+          title="AI score shortlist is turned off"
+          hint="Your organisation reviews candidates on their parsed CV, knock-out results and the AI's written explanation rather than a score. Open Candidates to review applicants by role."
+        />
+      </PageContainer>
+    );
+  }
+  return <ScoredShortlistView {...props} />;
+}
+
+function ScoredShortlistView({
   initial,
   canManageDefaults = false,
 }: {

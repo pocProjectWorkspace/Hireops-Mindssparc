@@ -5,6 +5,7 @@ import type { ListCandidatesOutput } from "@hireops/api-types";
 import { Avatar, Badge, ScoreMeter, cn } from "@/components/ui";
 import type { BadgeTone } from "@/components/ui";
 import { applicationStageLabel } from "@/lib/labels";
+import { useScreeningScoreVisible } from "@/components/ScreeningScoreProvider";
 
 // Zod's z.unknown() typing makes the property optional in the inferred
 // type, which the strict Row would otherwise reject. Loosen the prop
@@ -54,6 +55,7 @@ export function TriageCard({
   onOpen: (ids: { candidateId: string; applicationId: string }) => void;
 }) {
   const name = row.fullName ?? "(no name on file)";
+  const scoreVisible = useScreeningScoreVisible();
   const { label: inStageLabel, tone: inStageTone } = timeInStage(row.stageEnteredAt, variant);
 
   // UX-01: pull the selected row into view within the single triage
@@ -93,7 +95,7 @@ export function TriageCard({
       </div>
 
       <div className="flex shrink-0 items-center gap-2 sm:gap-4">
-        <ScoreMeter score={row.aiScore} />
+        {scoreVisible ? <ScoreMeter score={row.aiScore} /> : null}
         <Badge tone={inStageTone} pill className="tabular-nums">
           {inStageLabel}
         </Badge>

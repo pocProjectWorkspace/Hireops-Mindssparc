@@ -377,7 +377,7 @@ const SLA_TABLE: Record<SlaTableKey, { label: string; targetHours: number }> = {
     targetHours: REQUISITION_APPROVAL_SLA_DAYS * 24,
   },
   recruiter_review: { label: "Recruiter review", targetHours: 48 },
-  tech_interview: { label: "Technical interview stage", targetHours: 72 },
+  tech_interview: { label: "Panel interview stage", targetHours: 72 },
   interview_feedback: { label: "Interview feedback submission", targetHours: FEEDBACK_SLA_HOURS },
   offer_decision: { label: "Offer decision (extend → accept/decline)", targetHours: 24 },
 };

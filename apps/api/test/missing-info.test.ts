@@ -62,10 +62,10 @@ describe("RECR-03 missing-info rule engine (pure)", () => {
     }
   });
 
-  it("blocks-advance: eligibility fields gate the Technical interview stage", () => {
+  it("blocks-advance: eligibility fields gate the Panel interview stage", () => {
     for (const key of ["work_authorization", "current_location", "skills_confirmation"] as const) {
       assert.equal(fieldDef(key)?.blocksAdvanceStage, "tech_interview");
-      assert.equal(blocksAdvanceLabelFor(key), "Blocks advance to Technical interview");
+      assert.equal(blocksAdvanceLabelFor(key), "Blocks advance to Panel interview");
     }
   });
 

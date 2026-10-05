@@ -22,6 +22,7 @@ import { z } from "zod";
 export const emailTemplateKeySchema = z.enum([
   "candidate.application_received",
   "candidate.stage_advanced",
+  "candidate.application_closed",
   "candidate.offer_extended",
   "candidate.interview_invitation",
   "candidate.interview_cancelled",

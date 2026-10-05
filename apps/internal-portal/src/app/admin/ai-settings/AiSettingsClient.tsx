@@ -181,6 +181,24 @@ export function AiSettingsClient({
             generation is unaffected, its prompts contain no candidate data.
           </p>
         </Card>
+
+        <Card className="p-5">
+          <div className="mb-1 flex items-center justify-between gap-4">
+            <h2 className="text-sm font-semibold text-neutral-900">Show AI screening score</h2>
+            <Switch
+              checked={settings.screeningScoreVisible}
+              onCheckedChange={(checked) =>
+                setSettings((s) => ({ ...s, screeningScoreVisible: checked }))
+              }
+              label={settings.screeningScoreVisible ? "On" : "Off"}
+            />
+          </div>
+          <p className="text-xs text-neutral-600">
+            When off, recruiters don&rsquo;t see the 0&ndash;100 AI score or the match tiers built
+            from it, and candidate lists are no longer ordered by score. Recruiters work from the
+            parsed CV, knock-out results and the AI&rsquo;s written explanation instead.
+          </p>
+        </Card>
       </div>
 
       <div className="mt-6 flex items-center gap-3">

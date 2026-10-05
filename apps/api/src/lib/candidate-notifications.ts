@@ -48,6 +48,11 @@ const DISPLAY_BY_TEMPLATE: Record<string, CandidateNotificationDisplay> = {
     title: "Application advanced",
     fallbackBody: "Your application moved to the next stage.",
   },
+  "candidate.application_closed": {
+    category: "application",
+    title: "Application update",
+    fallbackBody: "There's an update on your application. Open your dashboard for details.",
+  },
   "candidate.application_received": {
     category: "application",
     title: "Application received",

@@ -6,6 +6,7 @@ export {
   type ApplicationReceivedProps,
 } from "./templates/application-received";
 export { StageAdvanced, type StageAdvancedProps } from "./templates/stage-advanced";
+export { ApplicationClosed, type ApplicationClosedProps } from "./templates/application-closed";
 export { SlaBreachImminent, type SlaBreachImminentProps } from "./templates/sla-breach-imminent";
 export { SlaOpsAlert, type SlaOpsAlertProps, type SlaOpsSeverity } from "./templates/sla-ops-alert";
 export { ReportDigest, type ReportDigestProps } from "./templates/report-digest";

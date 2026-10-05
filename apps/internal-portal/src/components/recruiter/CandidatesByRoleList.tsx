@@ -25,6 +25,7 @@ import {
 } from "@/components/ui";
 import { ChevronRightIcon } from "@/components/patterns/icons";
 import { PageContainer } from "@/components/nav/PageContainer";
+import { useScreeningScoreVisible } from "@/components/ScreeningScoreProvider";
 import {
   MatchTierChip,
   MissingInfoCell,
@@ -183,6 +184,7 @@ function GroupAccordion({
   sourceLabels?: Record<string, string>;
   provenanceByApplicationId: Map<string, IrisProvenanceRow>;
 }) {
+  const scoreVisible = useScreeningScoreVisible();
   return (
     <div className="overflow-hidden rounded-card border border-neutral-200 bg-white shadow-card">
       <button
@@ -209,7 +211,7 @@ function GroupAccordion({
           <Thead>
             <Th>Candidate</Th>
             <Th>Stage</Th>
-            <Th>AI Score</Th>
+            {scoreVisible ? <Th>AI Score</Th> : null}
             <Th>Source</Th>
             <Th>Missing Info</Th>
             <Th numeric>Actions</Th>
@@ -238,24 +240,26 @@ function GroupAccordion({
                   <Td label="Stage">
                     <StageBadge stage={row.stage} />
                   </Td>
-                  <Td label="AI Score">
-                    <div className="flex items-center gap-2">
-                      <ScoreValue score={row.aiScore} />
-                      {row.aiScore != null
-                        ? (() => {
-                            const tier =
-                              row.aiScore >= 90
-                                ? "excellent"
-                                : row.aiScore >= 75
-                                  ? "good"
-                                  : row.aiScore >= 60
-                                    ? "partial"
-                                    : "below";
-                            return tier !== "below" ? <MatchTierChip tier={tier} /> : null;
-                          })()
-                        : null}
-                    </div>
-                  </Td>
+                  {scoreVisible ? (
+                    <Td label="AI Score">
+                      <div className="flex items-center gap-2">
+                        <ScoreValue score={row.aiScore} />
+                        {row.aiScore != null
+                          ? (() => {
+                              const tier =
+                                row.aiScore >= 90
+                                  ? "excellent"
+                                  : row.aiScore >= 75
+                                    ? "good"
+                                    : row.aiScore >= 60
+                                      ? "partial"
+                                      : "below";
+                              return tier !== "below" ? <MatchTierChip tier={tier} /> : null;
+                            })()
+                          : null}
+                      </div>
+                    </Td>
+                  ) : null}
                   <Td label="Source" className="text-neutral-700">
                     {sourceLabel(row.source, sourceLabels, row.partnerOrgName)}
                   </Td>

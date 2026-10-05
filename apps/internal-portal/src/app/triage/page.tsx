@@ -6,6 +6,7 @@ import { FilterChipsBar } from "@/components/triage/FilterChipsBar";
 import { HotZone } from "@/components/triage/HotZone";
 import { MomentumFeed } from "@/components/triage/MomentumFeed";
 import { CandidateDetailDrawer } from "@/components/triage/CandidateDetailDrawer";
+import { loadScreeningScoreVisible } from "@/lib/tenant-ui-settings";
 
 export const dynamic = "force-dynamic"; // Auth-gated + reads searchParams.
 
@@ -29,6 +30,8 @@ export const dynamic = "force-dynamic"; // Auth-gated + reads searchParams.
 export default async function TriagePage() {
   const session = await requireAuth();
   const caller = createServerTRPCCaller(session);
+  // With the AI score hidden for this tenant, don't rank by it either.
+  const momentumSort = (await loadScreeningScoreVisible()) ? "ai_score_desc" : "recent";
 
   const [breaches, momentum] = await Promise.all([
     caller.listCandidates({
@@ -39,7 +42,7 @@ export default async function TriagePage() {
     caller.listCandidates({
       filters: { stage: "application_received" },
       pagination: { limit: 50 },
-      sort: "ai_score_desc",
+      sort: momentumSort,
     }),
   ]);
 

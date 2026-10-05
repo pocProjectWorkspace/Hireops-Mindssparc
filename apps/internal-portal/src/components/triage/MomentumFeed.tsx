@@ -5,6 +5,7 @@ import { trpc } from "@/lib/trpc-client";
 import { useFilterChips } from "@/lib/use-filter-chips";
 import { useDrawerRouting } from "@/lib/use-drawer-routing";
 import { TriageCard } from "./TriageCard";
+import { useScreeningScoreVisible } from "@/components/ScreeningScoreProvider";
 
 /**
  * Below the Hot Zone in the single triage scroller (UX-01) — sorted by
@@ -23,6 +24,7 @@ export function MomentumFeed({ initial }: { initial: ListCandidatesOutput }) {
   const { filters } = useFilterChips();
   const { open, candidateId } = useDrawerRouting();
 
+  const scoreVisible = useScreeningScoreVisible();
   const query = trpc.listCandidates.useQuery(
     {
       filters: {
@@ -31,7 +33,7 @@ export function MomentumFeed({ initial }: { initial: ListCandidatesOutput }) {
         ...(filters.source ? { source: filters.source } : {}),
       },
       pagination: { limit: 50 },
-      sort: "ai_score_desc",
+      sort: scoreVisible ? "ai_score_desc" : "recent",
     },
     {
       initialData:
@@ -50,7 +52,9 @@ export function MomentumFeed({ initial }: { initial: ListCandidatesOutput }) {
           Momentum
         </h2>
         <span className="text-xs text-neutral-400">
-          Fresh applications · highest AI score first
+          {scoreVisible
+            ? "Fresh applications · highest AI score first"
+            : "Fresh applications · newest first"}
         </span>
       </header>
       {rows.length === 0 ? (
