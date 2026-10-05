@@ -247,7 +247,7 @@ describe("prompt registry", () => {
   });
 
   it("humanises stage names and degrades gracefully on unknown values", () => {
-    expect(humaniseStage("tech_interview")).toBe("technical interview");
+    expect(humaniseStage("tech_interview")).toBe("panel interview");
     expect(humaniseStage("some_future_stage")).toBe("some future stage");
   });
 
@@ -288,7 +288,7 @@ describe("prompt registry", () => {
     });
     expect(user).toMatch(/Anika/);
     expect(user).toMatch(/Senior Process Engineer/);
-    expect(user).toMatch(/technical interview/);
+    expect(user).toMatch(/panel interview/);
     expect(user).toMatch(/Role summary: \(not available\)/);
   });
 });
