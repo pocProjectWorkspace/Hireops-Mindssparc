@@ -653,7 +653,15 @@ export const MAIN_NAV_SECTIONS: NavSection[] = [
   { keys: ["home"] },
   {
     heading: "Recruiting",
-    keys: ["triage", "candidates", "shortlist", "approvals", "missing-info", "interviews"],
+    keys: [
+      "triage",
+      "candidates",
+      "shortlist",
+      "approvals",
+      "missing-info",
+      "interviews",
+      "partners",
+    ],
   },
   {
     heading: "Requisitions",
@@ -685,6 +693,7 @@ export const MAIN_NAV_SECTIONS: NavSection[] = [
     heading: "HR leadership",
     keys: [
       "metrics",
+      "ask-data",
       "reports-catalog",
       "governance",
       "exec-audit",
