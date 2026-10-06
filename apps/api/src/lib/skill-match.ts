@@ -32,6 +32,28 @@
  */
 
 /**
+ * The display skill names from a candidate's `parsed_skills`, in their stored
+ * case. Accepts every shape in use: a bare string array (early parser output),
+ * `{ skills: string[] }` (seeds and imports), and the AI parser's
+ * `{ skills: { technical, domain, ... } }`. Anything else yields [].
+ */
+export function parsedSkillNames(parsed: unknown): string[] {
+  const strings = (v: unknown): string[] =>
+    Array.isArray(v)
+      ? v.filter((s): s is string => typeof s === "string" && s.trim().length > 0)
+      : [];
+  if (Array.isArray(parsed)) return strings(parsed);
+  if (!parsed || typeof parsed !== "object") return [];
+  const skills = (parsed as Record<string, unknown>).skills;
+  if (Array.isArray(skills)) return strings(skills);
+  if (skills && typeof skills === "object") {
+    const s = skills as Record<string, unknown>;
+    return [...strings(s.technical), ...strings(s.domain)];
+  }
+  return [];
+}
+
+/**
  * Case-insensitive skill tokens from a candidate's `parsed_skills.skills`
  * array. Defensive by design — `parsed_skills` is AI-written jsonb and may be
  * null, a bare object, or carry non-string entries.
