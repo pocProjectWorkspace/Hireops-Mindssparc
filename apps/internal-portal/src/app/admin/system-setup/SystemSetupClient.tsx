@@ -13,6 +13,9 @@ import {
   SLA_IMMINENT_WINDOW_HOURS_DEFAULT,
   SLA_IMMINENT_WINDOW_HOURS_MIN,
   SLA_IMMINENT_WINDOW_HOURS_MAX,
+  LANDING_PAGES,
+  LANDING_ROLES,
+  type LandingPageKey,
 } from "@hireops/api-types";
 import { Button } from "@hireops/ui";
 import { Card, Badge } from "@/components/ui";
@@ -53,6 +56,9 @@ export function SystemSetupClient({ initial }: { initial: SystemSetup }) {
   const [alertTypes, setAlertTypes] = useState<SystemAlertType[]>(initial.emailAlerts.alertTypes);
   const [rules, setRules] = useState<EscalationRule[]>(initial.escalationRules);
   const [windowHours, setWindowHours] = useState(initial.slaImminentWindowHours);
+  const [landingPages, setLandingPages] = useState<SystemSetup["landingPages"]>(
+    initial.landingPages,
+  );
 
   const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -76,6 +82,7 @@ export function SystemSetupClient({ initial }: { initial: SystemSetup }) {
       emailAlerts: { enabled, recipients, alertTypes },
       escalationRules: rules,
       slaImminentWindowHours: windowHours,
+      landingPages,
     }),
   );
   const dirty = current !== baseline;
@@ -88,6 +95,7 @@ export function SystemSetupClient({ initial }: { initial: SystemSetup }) {
       setAlertTypes(s.emailAlerts.alertTypes);
       setRules(s.escalationRules);
       setWindowHours(s.slaImminentWindowHours);
+      setLandingPages(s.landingPages);
       setError(null);
       setNotice("System setup saved.");
     },
@@ -112,6 +120,7 @@ export function SystemSetupClient({ initial }: { initial: SystemSetup }) {
       emailAlerts: { enabled, recipients, alertTypes },
       escalationRules: rules,
       slaImminentWindowHours: windowHours,
+      landingPages,
     });
   }
 
@@ -268,6 +277,46 @@ export function SystemSetupClient({ initial }: { initial: SystemSetup }) {
                 hours ({SLA_IMMINENT_WINDOW_HOURS_MIN}–{SLA_IMMINENT_WINDOW_HOURS_MAX}; platform
                 default {SLA_IMMINENT_WINDOW_HOURS_DEFAULT})
               </span>
+            </div>
+          </Card>
+
+          <Card className="p-5">
+            <h3 className="mb-1 text-sm font-semibold text-neutral-900">Landing page by role</h3>
+            <p className="mb-3 text-xs text-neutral-500">
+              Where each role lands after signing in. Roles left on the default land on their
+              dashboard. Someone with several roles lands on the page of the first role in this list
+              that has one set.
+            </p>
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+              {LANDING_ROLES.map((role) => (
+                <label key={role} className="flex items-center gap-3 text-sm text-neutral-700">
+                  <span className="w-32 shrink-0">{humanize(role)}</span>
+                  <select
+                    className={inputCls}
+                    value={landingPages[role] ?? ""}
+                    aria-label={`Landing page for ${humanize(role)}`}
+                    onChange={(e) => {
+                      const key = e.target.value as LandingPageKey | "";
+                      setLandingPages((cur) =>
+                        Object.fromEntries(
+                          Object.entries({ ...cur, [role]: key || undefined }).filter(
+                            ([, v]) => v !== undefined,
+                          ),
+                        ),
+                      );
+                    }}
+                  >
+                    <option value="">Default (dashboard)</option>
+                    {(Object.keys(LANDING_PAGES) as LandingPageKey[])
+                      .filter((k) => k !== "dashboard")
+                      .map((k) => (
+                        <option key={k} value={k}>
+                          {LANDING_PAGES[k].label}
+                        </option>
+                      ))}
+                  </select>
+                </label>
+              ))}
             </div>
           </Card>
         </div>
@@ -442,5 +491,8 @@ function normalize(s: SystemSetup): unknown {
     alertTypes: [...s.emailAlerts.alertTypes].sort(),
     rules: s.escalationRules,
     windowHours: s.slaImminentWindowHours,
+    landingPages: Object.fromEntries(
+      Object.entries(s.landingPages).sort(([a], [b]) => a.localeCompare(b)),
+    ),
   };
 }
