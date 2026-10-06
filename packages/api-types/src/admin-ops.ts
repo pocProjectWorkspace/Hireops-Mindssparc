@@ -184,7 +184,7 @@ export type ListNotificationLogInput = z.infer<typeof listNotificationLogInputSc
 export const listNotificationLogOutputSchema = z.object({
   items: z.array(notificationLogRowSchema),
   /** Count per status across the whole tenant outbox (not just this page). */
-  statusCounts: z.record(notificationStatusSchema, z.number().int()),
+  statusCounts: z.partialRecord(notificationStatusSchema, z.number().int()),
   /** Total outbox rows for the tenant. */
   total: z.number().int(),
 });
@@ -353,6 +353,39 @@ export const SLA_IMMINENT_WINDOW_HOURS_DEFAULT = 4 as const;
 export const SLA_IMMINENT_WINDOW_HOURS_MIN = 1 as const;
 export const SLA_IMMINENT_WINDOW_HOURS_MAX = 48 as const;
 
+/**
+ * Where each role lands after sign-in. Platform default is the persona
+ * dashboard for everyone; a tenant can point a role at another page (e.g. an
+ * admin straight to HR metrics). Pages are a fixed whitelist so a setting can
+ * never redirect to an arbitrary URL.
+ */
+export const LANDING_PAGES = {
+  dashboard: { label: "Dashboard", href: "/dashboard" },
+  metrics: { label: "HR metrics", href: "/metrics" },
+  reports: { label: "Reports", href: "/reports" },
+  insights: { label: "Insights", href: "/insights" },
+  ask_data: { label: "Ask your data", href: "/ask-data" },
+  triage: { label: "Triage", href: "/triage" },
+  requisitions: { label: "Requisitions", href: "/requisitions" },
+  interviews: { label: "Interviews", href: "/interviews" },
+} as const;
+export type LandingPageKey = keyof typeof LANDING_PAGES;
+export const landingPageKeySchema = z.enum(
+  Object.keys(LANDING_PAGES) as [LandingPageKey, ...LandingPageKey[]],
+);
+
+/** Roles a landing page can be set for, in precedence order: a user with
+ * several roles lands on the page of the first role here that has one set. */
+export const LANDING_ROLES = [
+  "admin",
+  "hr_head",
+  "hr_ops",
+  "recruiter",
+  "hiring_manager",
+  "panel_member",
+] as const;
+export const landingRoleSchema = z.enum(LANDING_ROLES);
+
 export const systemSetupSchema = z.object({
   version: z.literal(SYSTEM_SETUP_VERSION).default(SYSTEM_SETUP_VERSION),
   emailAlerts: emailAlertsConfigSchema.default(() => emailAlertsConfigSchema.parse({})),
@@ -366,8 +399,20 @@ export const systemSetupSchema = z.object({
     .min(SLA_IMMINENT_WINDOW_HOURS_MIN)
     .max(SLA_IMMINENT_WINDOW_HOURS_MAX)
     .default(SLA_IMMINENT_WINDOW_HOURS_DEFAULT),
+  /** Role → landing page after sign-in. Unset roles land on the dashboard. */
+  landingPages: z.partialRecord(landingRoleSchema, landingPageKeySchema).default({}),
 });
 export type SystemSetup = z.infer<typeof systemSetupSchema>;
+
+/** The page a user with these roles lands on after sign-in. */
+export function resolveLandingHref(setup: SystemSetup, roles: readonly string[]): string {
+  for (const role of LANDING_ROLES) {
+    if (!roles.includes(role)) continue;
+    const key = setup.landingPages[role];
+    if (key) return LANDING_PAGES[key].href;
+  }
+  return LANDING_PAGES.dashboard.href;
+}
 
 export function defaultSystemSetup(): SystemSetup {
   return systemSetupSchema.parse({});

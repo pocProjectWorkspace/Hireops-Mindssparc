@@ -51,6 +51,7 @@ import {
   IconAiSettings,
   IconReports,
   IconMetrics,
+  IconAskData,
   IconGovernance,
   IconExecAudit,
   IconIntegrations,
@@ -95,6 +96,8 @@ export type PortalNavKey =
   // R0.2 — the /reports catalog (distinct from "reports", the admin-only
   // /admin/reports surface that re-homes into it later).
   | "reports-catalog"
+  // ASK-DATA — natural-language analytics (/ask-data)
+  | "ask-data"
   | "governance"
   | "exec-audit"
   | "interviews"
@@ -318,6 +321,16 @@ export const MAIN_NAV: NavItem[] = [
     href: "/reports",
     icon: <IconReports />,
     roles: ["hr_head", "hr_ops", "admin"],
+  },
+  {
+    // ASK-DATA: natural-language questions over the same reporting layer —
+    // matching the API's ASK_DATA_ROLES. A hiring manager's answers are
+    // scoped server-side to the requisitions they manage.
+    key: "ask-data",
+    label: "Ask your data",
+    href: "/ask-data",
+    icon: <IconAskData />,
+    roles: ["hr_head", "hr_ops", "recruiter", "hiring_manager", "admin"],
   },
   {
     // HRHEAD-03: Policy & Governance — the settings blocks (screening privacy,

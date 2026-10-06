@@ -44,6 +44,7 @@ describe("systemSetupSchema — slaImminentWindowHours", () => {
       emailAlerts: { enabled: false, recipients: [], alertTypes: [] },
       escalationRules: [],
       slaImminentWindowHours: SLA_IMMINENT_WINDOW_HOURS_DEFAULT,
+      landingPages: {},
     });
     expect(SLA_IMMINENT_WINDOW_HOURS_DEFAULT).toBe(4);
     expect(resolveSystemSetup(undefined)).toEqual(defaultSystemSetup());

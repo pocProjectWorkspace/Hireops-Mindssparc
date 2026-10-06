@@ -55,7 +55,8 @@ export function LoginForm() {
         setErrorMsg(NOT_INTERNAL_MSG);
         return;
       }
-      const dest = searchParams.get("from") ?? "/dashboard";
+      // "/" resolves the tenant's landing page for this user's role (app/page.tsx).
+      const dest = searchParams.get("from") ?? "/";
       router.replace(dest);
       router.refresh();
       // Deliberately do NOT clear `submitting` here. router.replace() is not

@@ -88,7 +88,7 @@ function featureDefault(): AiFeatureSettings {
  * RO-01, iris_assistant in IRIS — one key governs BOTH Iris AI calls
  * (iris_intent + iris_message_draft), interview_notes in the notetaker
  * phase (N1), ai_interview_questions in N4.2, ai_interview_evidence in N4.4 /
- * AI-INT-2). */
+ * AI-INT-2, ask_data in ASK-DATA). */
 export const AI_FEATURE_KEYS = [
   "ai_scoring",
   "jd_generation",
@@ -104,6 +104,7 @@ export const AI_FEATURE_KEYS = [
   "interview_notes",
   "ai_interview_questions",
   "ai_interview_evidence",
+  "ask_data",
 ] as const;
 export type AiFeatureKey = (typeof AI_FEATURE_KEYS)[number];
 
@@ -196,6 +197,12 @@ export const AI_FEATURE_META: Record<
     description:
       "After a candidate submits an asynchronous AI round, organises what they actually said against the round's own rubric: whether each answer addresses its question, which rubric criteria it covers, verbatim quotes from the answer, and whether each knockout requirement was confirmed, contradicted or not mentioned. EVIDENCE ONLY — it never scores, rates, ranks, passes or fails anyone and never recommends whether to advance; a human reviews the evidence and decides. It reads only the content of the words (never voice, tone, accent, confidence, fluency, personality or any demographic attribute), and every quote is checked against the candidate's answer and dropped if it is not verbatim. Disabling stops evidence being generated for newly submitted rounds (they are marked skipped, with no model call); transcripts and existing evidence are untouched.",
   },
+  ask_data: {
+    label: "Ask your data (question interpretation)",
+    usageFeatures: ["ask_data"],
+    description:
+      "On the Ask your data page, maps a typed question to ONE question from a fixed catalog of supported analytics questions, plus its filters (period, business unit, requisition). The AI never writes a query and never produces a number — every figure is calculated by HireOps from your live data, and the interpretation is shown so it can be corrected. Exact matches to a suggested question, chip clicks and filter edits never call the model. Disabling makes typed questions point to the suggested questions instead; the suggested questions keep working.",
+  },
 };
 
 export const aiSettingsSchema = z.object({
@@ -214,6 +221,7 @@ export const aiSettingsSchema = z.object({
   interview_notes: aiFeatureSettingsSchema.default(featureDefault),
   ai_interview_questions: aiFeatureSettingsSchema.default(featureDefault),
   ai_interview_evidence: aiFeatureSettingsSchema.default(featureDefault),
+  ask_data: aiFeatureSettingsSchema.default(featureDefault),
   /**
    * Global deterministic PII redaction. When on, candidate-derived prompt
    * text going into scoring + agent-draft calls has emails / phone numbers /

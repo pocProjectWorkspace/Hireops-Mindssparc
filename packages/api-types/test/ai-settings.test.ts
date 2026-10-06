@@ -55,3 +55,22 @@ describe("ai-settings: iris_assistant feature key", () => {
     expect(resolved.iris_assistant.enabled).toBe(false);
   });
 });
+
+/**
+ * ASK-DATA — the `ask_data` feature key (Ask your data question interpretation).
+ * Additive-with-defaults like every key before it: enabled for a tenant whose
+ * stored block predates it, and honourable as a kill switch.
+ */
+describe("ai-settings: ask_data feature key", () => {
+  it("is listed with a META entry logging under its own usage feature", () => {
+    expect(AI_FEATURE_KEYS).toContain("ask_data");
+    expect(AI_FEATURE_META.ask_data.usageFeatures).toEqual(["ask_data"]);
+  });
+
+  it("defaults to enabled for a legacy block and honours an explicit disable", () => {
+    expect(aiSettingsSchema.parse({ jd_generation: { enabled: false } }).ask_data.enabled).toBe(
+      true,
+    );
+    expect(aiSettingsSchema.parse({ ask_data: { enabled: false } }).ask_data.enabled).toBe(false);
+  });
+});
