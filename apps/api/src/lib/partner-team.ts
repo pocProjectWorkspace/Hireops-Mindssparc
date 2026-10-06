@@ -270,8 +270,9 @@ const SETTLED_STAGES = new Set([
 /** Stages the wireflows call out as worth celebrating / chasing to close. */
 const OFFER_STAGES = new Set(["offer_drafted", "offer_accepted"]);
 
-/** "tech_interview" → "Tech interview". */
+/** "offer_drafted" → "Offer drafted". The interview stage reads "Panel interview" (not every role is technical). */
 function stageLabel(stage: string): string {
+  if (stage === "tech_interview") return "Panel interview";
   const spaced = stage.replace(/_/g, " ");
   return spaced.charAt(0).toUpperCase() + spaced.slice(1);
 }

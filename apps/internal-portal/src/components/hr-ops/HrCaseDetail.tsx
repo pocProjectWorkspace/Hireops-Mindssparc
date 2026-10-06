@@ -1,6 +1,7 @@
 "use client";
 
 import { PageContainer } from "@/components/nav/PageContainer";
+import { useScreeningScoreVisible } from "@/components/ScreeningScoreProvider";
 import { useState } from "react";
 import type { ReactNode } from "react";
 import type { GetHrCaseDetailOutput, HrCaseFeedbackCard } from "@hireops/api-types";
@@ -41,6 +42,7 @@ export function HrCaseDetail({
     { initialData: initial, staleTime: 5_000, refetchOnWindowFocus: true },
   );
   const [tab, setTab] = useState<TabKey>("summary");
+  const scoreVisible = useScreeningScoreVisible();
   // Rule-engine suggestion handed from the Compensation tab to the Offer composer.
   const [suggestedPaise, setSuggestedPaise] = useState<number | null>(null);
   const utils = trpc.useUtils();
@@ -96,7 +98,7 @@ export function HrCaseDetail({
             {pipeline.department ? ` · ${pipeline.department}` : ""}
           </p>
         </div>
-        {pipeline.aiScore != null ? (
+        {scoreVisible && pipeline.aiScore != null ? (
           <div className="rounded-card border border-neutral-200 bg-white px-4 py-2.5 text-center shadow-card">
             <p className="text-[11px] font-semibold uppercase tracking-wider text-neutral-500">
               AI score
@@ -158,6 +160,7 @@ function Field({ label, value }: { label: string; value: ReactNode }) {
 }
 
 function SummaryTab({ data }: { data: GetHrCaseDetailOutput }) {
+  const scoreVisible = useScreeningScoreVisible();
   const { candidate, pipeline } = data;
   const location = [candidate.locationCity, candidate.locationCountry].filter(Boolean).join(", ");
   return (
@@ -209,10 +212,12 @@ function SummaryTab({ data }: { data: GetHrCaseDetailOutput }) {
       <Card className="space-y-4 p-5">
         <h2 className="text-sm font-semibold text-neutral-900">Pipeline status</h2>
         <dl className="grid grid-cols-2 gap-4">
-          <Field
-            label="AI score"
-            value={pipeline.aiScore != null ? `${Math.round(pipeline.aiScore)}%` : "Not scored"}
-          />
+          {scoreVisible ? (
+            <Field
+              label="AI score"
+              value={pipeline.aiScore != null ? `${Math.round(pipeline.aiScore)}%` : "Not scored"}
+            />
+          ) : null}
           <Field label="Salary band" value={pipeline.salaryBand ?? "—"} />
           <Field label="Recruiter" value={pipeline.assignedRecruiterName ?? "—"} />
           <Field label="Stage" value={<StageChip stage={pipeline.stage} />} />

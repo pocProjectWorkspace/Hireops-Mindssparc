@@ -8,6 +8,7 @@ import {
   type ApplicationReceivedProps,
 } from "./templates/application-received";
 import { StageAdvanced, type StageAdvancedProps } from "./templates/stage-advanced";
+import { ApplicationClosed, type ApplicationClosedProps } from "./templates/application-closed";
 import { SlaBreachImminent, type SlaBreachImminentProps } from "./templates/sla-breach-imminent";
 import { SlaOpsAlert, type SlaOpsAlertProps } from "./templates/sla-ops-alert";
 import { ReportDigest, type ReportDigestProps } from "./templates/report-digest";
@@ -124,6 +125,19 @@ export async function renderTemplate(
           overrides?.subject,
           { positionTitle: props.positionTitle },
           `Update on your application: ${props.positionTitle}`,
+        ),
+        html: await render(element),
+        text: await render(element, { plainText: true }),
+      };
+    }
+    case "candidate.application_closed": {
+      const props = data as unknown as ApplicationClosedProps;
+      const element = ApplicationClosed({ ...props, slots });
+      return {
+        subject: resolveSubject(
+          overrides?.subject,
+          { positionTitle: props.positionTitle },
+          `An update on your application: ${props.positionTitle}`,
         ),
         html: await render(element),
         text: await render(element, { plainText: true }),

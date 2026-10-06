@@ -31,7 +31,7 @@ import {
 } from "@/components/ui";
 import { PageContainer } from "@/components/nav/PageContainer";
 import { trpc } from "@/lib/trpc-client";
-import { humanizeSentence } from "@/lib/labels";
+import { applicationStageLabel, humanizeSentence } from "@/lib/labels";
 import { formatCostMicros } from "@/lib/approval-format";
 import { formatFeeMinor } from "@/lib/money";
 import { buildCsv, downloadCsv } from "@/lib/csv";
@@ -863,7 +863,7 @@ export function ReportsHubClient({
                 return pipeline.funnel.map((f) => (
                   <DataBar
                     key={f.stage}
-                    label={humanizeSentence(f.stage)}
+                    label={applicationStageLabel(f.stage)}
                     labelClassName="w-40 text-neutral-700"
                     pct={(f.count / max) * 100}
                     value={f.count.toLocaleString()}
@@ -897,10 +897,10 @@ export function ReportsHubClient({
                             className="text-brand-700 hover:underline"
                             title="Open the triage feed filtered to this stage"
                           >
-                            {humanizeSentence(s.stage)}
+                            {applicationStageLabel(s.stage)}
                           </Link>
                         ) : (
-                          humanizeSentence(s.stage)
+                          applicationStageLabel(s.stage)
                         )}
                       </Td>
                       <Td numeric label="Threshold (h)">
@@ -939,7 +939,7 @@ export function ReportsHubClient({
                   .filter((s) => s.medianDays !== null)
                   .map((s) => (
                     <Tr key={s.stage}>
-                      <Td label="Stage">{humanizeSentence(s.stage)}</Td>
+                      <Td label="Stage">{applicationStageLabel(s.stage)}</Td>
                       <Td numeric label="Median days">
                         {formatDays(s.medianDays)}
                       </Td>

@@ -1,6 +1,7 @@
 import { cn } from "@/components/ui/cn";
 import { Badge } from "@/components/ui";
 import type { BadgeTone } from "@/components/ui";
+import { applicationStageLabel } from "@/lib/labels";
 import type {
   MatchTierValue,
   RequisitionPhase,
@@ -147,8 +148,9 @@ export function PhaseChip({ phase, className }: { phase: RequisitionPhase; class
 
 // ─────────────── application stage ───────────────
 
+/** Kept for existing callers — delegates to the shared applicationStageLabel. */
 export function stageLabel(stage: string): string {
-  return stage.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+  return applicationStageLabel(stage);
 }
 
 const TERMINAL_STAGES = new Set(["offer_declined", "withdrawn", "recruiter_rejected"]);

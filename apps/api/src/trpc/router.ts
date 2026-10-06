@@ -26146,8 +26146,9 @@ async function dashRows<T>(db: DashDb, query: SQL): Promise<T[]> {
   return (res as unknown as { rows?: T[] }).rows ?? (res as unknown as T[]);
 }
 
-/** "tech_interview" → "Tech Interview". */
+/** "offer_drafted" → "Offer Drafted". The interview stage reads "Panel Interview" (not every role is technical). */
 function humanizeStage(stage: string): string {
+  if (stage === "tech_interview") return "Panel Interview";
   return stage.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
@@ -26529,7 +26530,7 @@ const RECRUITER_FUNNEL_BUCKETS: { key: string; label: string; stages: Applicatio
     stages: ["application_received", "ai_screening", "recruiter_review"],
   },
   { key: "shortlisted", label: "Shortlisted", stages: ["shortlisted"] },
-  { key: "tech_interview", label: "Tech interview", stages: ["tech_interview"] },
+  { key: "tech_interview", label: "Panel interview", stages: ["tech_interview"] },
   { key: "hr_round", label: "HR round", stages: ["hr_round"] },
   { key: "offer", label: "Offer", stages: ["offer_drafted", "offer_accepted"] },
 ];
@@ -28137,19 +28138,35 @@ async function transitionApplicationStage(
     try {
       const meta = await fetchTransitionEmailContext(db, applicationId);
       if (meta) {
+        // A rejected or withdrawn application gets the closing email, not the
+        // "moved forward" one.
+        const closed = targetStage === "recruiter_rejected" || targetStage === "withdrawn";
         await enqueueNotification(db, {
           tenantId: app.tenantId,
           recipientType: "candidate",
           recipientEmail: meta.candidateEmail,
           recipientCandidateId: meta.candidateId,
-          templateKey: "candidate.stage_advanced",
-          templateData: {
-            candidateName: meta.candidateName,
-            positionTitle: meta.positionTitle,
-            companyName: meta.companyName,
-            newStageLabel: STAGE_LABELS[targetStage] ?? targetStage,
-          },
-          dedupKey: `stage_advanced:${tx.id}`,
+          ...(closed
+            ? {
+                templateKey: "candidate.application_closed" as const,
+                templateData: {
+                  candidateName: meta.candidateName,
+                  positionTitle: meta.positionTitle,
+                  companyName: meta.companyName,
+                  outcome: targetStage === "withdrawn" ? "withdrawn" : "not_selected",
+                },
+                dedupKey: `application_closed:${tx.id}`,
+              }
+            : {
+                templateKey: "candidate.stage_advanced" as const,
+                templateData: {
+                  candidateName: meta.candidateName,
+                  positionTitle: meta.positionTitle,
+                  companyName: meta.companyName,
+                  newStageLabel: STAGE_LABELS[targetStage] ?? targetStage,
+                },
+                dedupKey: `stage_advanced:${tx.id}`,
+              }),
         });
       }
     } catch (err) {
@@ -28218,7 +28235,7 @@ const CANDIDATE_VISIBLE_STAGES = new Set<ApplicationStage>([
 
 const STAGE_LABELS: Partial<Record<ApplicationStage, string>> = {
   shortlisted: "Shortlisted",
-  tech_interview: "Technical interview",
+  tech_interview: "Panel interview",
   hr_round: "HR round",
   offer_drafted: "Offer in preparation",
   offer_accepted: "Offer accepted",

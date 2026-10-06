@@ -5,6 +5,7 @@ import type { GetHrMetricsOutput } from "@hireops/api-types";
 import { StatTile } from "@/components/ui";
 import { PageContainer } from "@/components/nav/PageContainer";
 import { trpc } from "@/lib/trpc-client";
+import { useScreeningScoreVisible } from "@/components/ScreeningScoreProvider";
 
 /**
  * The /metrics analytics surface — a KPI header row over an aggregate read
@@ -24,6 +25,7 @@ const ChartGrid = dynamic(() => import("./ChartGrid").then((m) => m.ChartGrid), 
 });
 
 export function MetricsClient({ initial }: { initial: GetHrMetricsOutput }) {
+  const scoreVisible = useScreeningScoreVisible();
   const query = trpc.getHrMetrics.useQuery(undefined, {
     initialData: initial,
     refetchOnWindowFocus: false,
@@ -45,10 +47,12 @@ export function MetricsClient({ initial }: { initial: GetHrMetricsOutput }) {
         <StatTile label="Active in pipeline" value={kpis.active.toLocaleString()} />
         <StatTile label="Hires" value={kpis.hired.toLocaleString()} />
         <StatTile label="Offers extended" value={kpis.offers_extended.toLocaleString()} />
-        <StatTile
-          label="Avg AI score"
-          value={kpis.avg_ai_score === null ? "—" : kpis.avg_ai_score.toLocaleString()}
-        />
+        {scoreVisible ? (
+          <StatTile
+            label="Avg AI score"
+            value={kpis.avg_ai_score === null ? "—" : kpis.avg_ai_score.toLocaleString()}
+          />
+        ) : null}
       </section>
 
       <ChartGrid data={data} />

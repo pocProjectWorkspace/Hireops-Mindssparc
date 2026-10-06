@@ -115,7 +115,7 @@ const FIELD_BY_KEY: Record<MissingInfoFieldKey, MissingInfoFieldDef> = Object.fr
 const STAGE_LABEL: Partial<Record<ApplicationStage, string>> = {
   recruiter_review: "Recruiter review",
   shortlisted: "Shortlist",
-  tech_interview: "Technical interview",
+  tech_interview: "Panel interview",
   hr_round: "HR round",
   offer_drafted: "Offer",
   offer_accepted: "Offer accepted",

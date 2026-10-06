@@ -3,6 +3,7 @@
 import { applicationSourceSchema, applicationStageSchema } from "@hireops/api-types";
 import type { ApplicationSource, ApplicationStage } from "@hireops/api-types";
 import { useFilterChips } from "@/lib/use-filter-chips";
+import { applicationStageLabel } from "@/lib/labels";
 
 /**
  * Sticky bar above the Hot Zone. Three native <select>s — Radix
@@ -60,7 +61,7 @@ export function FilterChipsBar({
           <option value="">All stages</option>
           {STAGES.map((s) => (
             <option key={s} value={s}>
-              {s.replace(/_/g, " ")}
+              {applicationStageLabel(s)}
             </option>
           ))}
         </select>

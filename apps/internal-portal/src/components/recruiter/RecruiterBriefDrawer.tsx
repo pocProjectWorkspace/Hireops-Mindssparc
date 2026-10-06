@@ -6,6 +6,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { Badge, Button, DataBar } from "@/components/ui";
 import { trpc } from "@/lib/trpc-client";
 import { humanizeSentence } from "@/lib/labels";
+import { useScreeningScoreVisible } from "@/components/ScreeningScoreProvider";
 import type {
   RecruiterBriefKind,
   RecruiterBriefCard,
@@ -70,6 +71,7 @@ export interface RecruiterBriefDrawerProps {
 }
 
 export function RecruiterBriefDrawer({ applicationId, onClose }: RecruiterBriefDrawerProps) {
+  const scoreVisible = useScreeningScoreVisible();
   const queryClient = useQueryClient();
 
   useEffect(() => {
@@ -182,14 +184,16 @@ export function RecruiterBriefDrawer({ applicationId, onClose }: RecruiterBriefD
                   ) : null}
                 </div>
                 <div className="mt-3 flex flex-wrap gap-4 text-sm">
-                  <span className="text-neutral-500">
-                    AI Score:{" "}
-                    <span className="font-semibold text-neutral-900">
-                      {data.snapshot.aiScore != null
-                        ? `${Math.round(data.snapshot.aiScore)}%`
-                        : "Not scored"}
+                  {scoreVisible ? (
+                    <span className="text-neutral-500">
+                      AI Score:{" "}
+                      <span className="font-semibold text-neutral-900">
+                        {data.snapshot.aiScore != null
+                          ? `${Math.round(data.snapshot.aiScore)}%`
+                          : "Not scored"}
+                      </span>
                     </span>
-                  </span>
+                  ) : null}
                   <span className="text-neutral-500">
                     Must-have match:{" "}
                     <span className="font-semibold text-neutral-900">

@@ -172,7 +172,7 @@ export function humaniseStage(stage: string): string {
     ai_screening: "automated screening",
     recruiter_review: "recruiter review",
     shortlisted: "shortlisted",
-    tech_interview: "technical interview",
+    tech_interview: "panel interview",
     hr_round: "HR round",
     offer_drafted: "offer being prepared",
   };

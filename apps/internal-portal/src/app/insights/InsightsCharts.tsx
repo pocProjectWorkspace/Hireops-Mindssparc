@@ -14,6 +14,7 @@ import {
 } from "recharts";
 import type { GetRequisitionInsightsOutput } from "@hireops/api-types";
 import { Card, EmptyState } from "@/components/ui";
+import { applicationStageLabel } from "@/lib/labels";
 
 /**
  * RO-03 — the /insights chart grid (client-only, code-split from
@@ -109,16 +110,11 @@ function ChartTooltip({
   );
 }
 
-function humanize(value: string): string {
-  const spaced = value.replace(/_/g, " ");
-  return spaced.charAt(0).toUpperCase() + spaced.slice(1);
-}
-
 // ─────────────── 1. hiring funnel ───────────────
 
 function HiringFunnel({ funnel }: { funnel: GetRequisitionInsightsOutput["funnel"] }) {
   const rows = funnel.map((f) => ({
-    label: humanize(f.stage),
+    label: applicationStageLabel(f.stage),
     value: f.count,
     dropOff: f.dropOffPct,
   }));
@@ -413,7 +409,9 @@ function SlaTiles({
                 : "border-neutral-200 bg-white"
             }`}
           >
-            <p className="truncate text-[11px] font-medium text-neutral-600">{humanize(t.stage)}</p>
+            <p className="truncate text-[11px] font-medium text-neutral-600">
+              {applicationStageLabel(t.stage)}
+            </p>
             <p
               className={`mt-1 text-lg font-semibold tabular-nums leading-none ${
                 t.breach ? "text-status-error-700" : "text-neutral-900"

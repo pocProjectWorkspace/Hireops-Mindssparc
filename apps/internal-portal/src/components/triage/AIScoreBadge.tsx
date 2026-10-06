@@ -14,6 +14,10 @@ import { Badge, ScoreMeter } from "@/components/ui";
  * Honesty (CONF-01): when scored_by === 'skipped' the drawer says "Scoring
  * disabled" rather than pretending the candidate is merely unscored.
  *
+ * `showScore={false}` (tenant setting aiSettings.screeningScoreVisible off)
+ * drops every number (the meter, the ring, the 0–1 factor sub-scores) and
+ * keeps the written factor notes.
+ *
  * Pure presentational — no data fetching. The score visual comes from the
  * shared ScoreMeter primitive so rows, cards, and the drawer read as one.
  */
@@ -56,10 +60,12 @@ export function AIScoreBadge({
   score,
   explanation,
   variant = "card",
+  showScore = true,
 }: {
   score: number | null;
   explanation: unknown;
   variant?: "card" | "drawer";
+  showScore?: boolean;
 }) {
   const exp = narrowExplanation(explanation);
   const scoredBy = typeof exp.scored_by === "string" ? exp.scored_by : null;
@@ -72,7 +78,7 @@ export function AIScoreBadge({
   if (variant === "card") {
     return (
       <div className="flex items-center gap-2">
-        <ScoreMeter score={score} />
+        {showScore ? <ScoreMeter score={score} /> : null}
         {factors.length > 0 && (
           <ul className="flex flex-wrap gap-1" aria-label="Top scoring factors">
             {factors.map((f, i) => (
@@ -109,7 +115,9 @@ export function AIScoreBadge({
             </p>
           ) : null}
         </div>
-        <ScoreMeter score={skipped ? null : score} variant="ring" label="Score" />
+        {showScore ? (
+          <ScoreMeter score={skipped ? null : score} variant="ring" label="Score" />
+        ) : null}
       </header>
       {skipped ? (
         <p className="text-sm text-neutral-600">
@@ -129,7 +137,7 @@ export function AIScoreBadge({
                 </p>
                 {f.note && <p className="text-xs text-neutral-600">{f.note}</p>}
               </div>
-              {typeof f.score === "number" && (
+              {showScore && typeof f.score === "number" && (
                 <span className="font-mono text-xs tabular-nums text-neutral-500">
                   {f.score.toFixed(2)}
                 </span>

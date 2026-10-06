@@ -10,7 +10,8 @@ import { useUndoToast } from "./UndoToastProvider";
 import { OfferSection } from "@/components/offers/OfferSection";
 import { InterviewScheduleSection } from "@/components/interviews/InterviewScheduleSection";
 import { AIScoreBadge } from "./AIScoreBadge";
-import { humanizeSentence } from "@/lib/labels";
+import { useScreeningScoreVisible } from "@/components/ScreeningScoreProvider";
+import { applicationStageLabel } from "@/lib/labels";
 import { timeAgo } from "@/lib/approval-format";
 import { TERMINAL_NEGATIVE } from "@/components/candidate/candidate-format";
 
@@ -71,6 +72,7 @@ function SectionHeading({ children }: { children: ReactNode }) {
 
 export function CandidateDetailDrawer() {
   const { candidateId, applicationId, close } = useDrawerRouting();
+  const scoreVisible = useScreeningScoreVisible();
   const queryClient = useQueryClient();
   const { show: showToast, onUndo, dismiss: dismissToast } = useUndoToast();
 
@@ -107,7 +109,7 @@ export function CandidateDetailDrawer() {
   const advance = trpc.advanceApplication.useMutation({
     onSuccess: (out) => {
       showToast({
-        message: `Moved to ${out.toStage.replace(/_/g, " ")}`,
+        message: `Moved to ${applicationStageLabel(out.toStage)}`,
         applicationId: out.applicationId,
         transitionId: out.transitionId,
         candidateName: detail.data?.person?.fullName ?? "candidate",
@@ -239,6 +241,7 @@ export function CandidateDetailDrawer() {
               score={application.aiScore}
               explanation={application.aiScoreExplanation}
               variant="drawer"
+              showScore={scoreVisible}
             />
           ) : null}
 
@@ -261,7 +264,7 @@ export function CandidateDetailDrawer() {
                   isRejection ? "text-status-error-800" : "text-neutral-900"
                 }`}
               >
-                {humanizeSentence(latestTransition.toStage)}
+                {applicationStageLabel(latestTransition.toStage)}
               </p>
               {latestTransition.reason ? (
                 <p

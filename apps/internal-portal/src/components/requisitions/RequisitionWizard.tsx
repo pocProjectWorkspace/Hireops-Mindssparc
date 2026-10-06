@@ -16,7 +16,7 @@ import { Button, Card } from "@/components/ui";
 import { InterviewPlanSection } from "@/components/interviews/InterviewPlanSection";
 import { JdEditor } from "./JdEditor";
 import { SkillWeightsEditor, newSkillRow, type SkillWeightRow } from "./SkillWeightsEditor";
-import { ROLE_TEMPLATES, type RoleTemplate } from "./requisition-templates";
+import type { RoleTemplate } from "./requisition-templates";
 import type { JdSectionKey } from "@hireops/api-types";
 
 /**
@@ -214,18 +214,17 @@ export function RequisitionWizard({
   const updateDraft = trpc.updateRequisitionDraft.useMutation();
   const submit = trpc.submitRequisitionForApproval.useMutation();
 
-  // T12/G11 — the Quick-start row reads the org's curated JD-template library
-  // (jd_templates) when it has rows, and FALLS BACK to the ROLE_TEMPLATES
-  // constant whenever the query is loading, errored, or empty. `retry: false`
-  // keeps a FORBIDDEN (non-curator role) from spinning — it falls straight back
-  // to the offline presets, so the wizard behaves identically to before.
+  // T12/G11 — the Quick-start row reads the org's JD-template library
+  // (jd_templates). No library rows (or loading / errored / FORBIDDEN for a
+  // non-curator role) = no Quick-start row; `retry: false` keeps a FORBIDDEN
+  // from spinning.
   const templatesQuery = trpc.listJdTemplates.useQuery(
     {},
     { staleTime: 60_000, refetchOnWindowFocus: false, retry: false },
   );
   const templates: RoleTemplate[] = useMemo(() => {
     const rows = templatesQuery.data?.items;
-    if (!rows || rows.length === 0) return ROLE_TEMPLATES;
+    if (!rows || rows.length === 0) return [];
     return rows.map((r) => ({
       id: r.id,
       label: r.label,
@@ -528,29 +527,32 @@ export function RequisitionWizard({
         <Card padded={false} className="p-6">
           <h2 className="mb-1 text-base font-semibold text-neutral-900">Role basics</h2>
           <p className="mb-4 text-sm text-neutral-600">
-            Start from a curated template or fill the fields directly. Everything stays editable.
+            Start from one of your organisation&rsquo;s role templates, or fill the fields directly.
+            Everything stays editable.
           </p>
 
-          <div className="mb-5">
-            <p className="mb-2 text-xs font-medium text-neutral-700">
-              Quick start, role templates{" "}
-              <span className="font-normal text-neutral-400">
-                (curated presets, fully editable)
-              </span>
-            </p>
-            <div className="flex flex-wrap gap-2">
-              {templates.map((t) => (
-                <button
-                  key={t.id}
-                  type="button"
-                  onClick={() => applyTemplate(t)}
-                  className="rounded-full border border-neutral-300 bg-white px-3 py-1 text-xs text-neutral-700 transition-colors hover:border-brand-400 hover:bg-brand-50 hover:text-brand-700"
-                >
-                  {t.label}
-                </button>
-              ))}
+          {templates.length > 0 ? (
+            <div className="mb-5">
+              <p className="mb-2 text-xs font-medium text-neutral-700">
+                Quick start, role templates{" "}
+                <span className="font-normal text-neutral-400">
+                  (curated presets, fully editable)
+                </span>
+              </p>
+              <div className="flex flex-wrap gap-2">
+                {templates.map((t) => (
+                  <button
+                    key={t.id}
+                    type="button"
+                    onClick={() => applyTemplate(t)}
+                    className="rounded-full border border-neutral-300 bg-white px-3 py-1 text-xs text-neutral-700 transition-colors hover:border-brand-400 hover:bg-brand-50 hover:text-brand-700"
+                  >
+                    {t.label}
+                  </button>
+                ))}
+              </div>
             </div>
-          </div>
+          ) : null}
 
           <div className="grid grid-cols-2 gap-4">
             <div className="col-span-2">
@@ -559,7 +561,7 @@ export function RequisitionWizard({
                   className={inputCls}
                   value={basics.title}
                   onChange={(e) => setBasics({ ...basics, title: e.target.value })}
-                  placeholder="Senior Backend Engineer"
+                  placeholder="e.g. Accounts Payable Analyst"
                 />
               </Field>
             </div>
@@ -628,7 +630,7 @@ export function RequisitionWizard({
                 className={inputCls}
                 value={basics.primaryLocation}
                 onChange={(e) => setBasics({ ...basics, primaryLocation: e.target.value })}
-                placeholder="Bengaluru"
+                placeholder="City"
               />
             </Field>
             <Field label="Employment type">
