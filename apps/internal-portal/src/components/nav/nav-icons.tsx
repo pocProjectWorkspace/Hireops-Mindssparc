@@ -221,6 +221,17 @@ export function IconReports() {
   );
 }
 
+export function IconAskData() {
+  return (
+    <Svg>
+      <path d="M21 12a8 8 0 0 1-11.6 7.1L4 20l1-4.6A8 8 0 1 1 21 12Z" />
+      <path d="M9 14v-2" />
+      <path d="M12 14V9" />
+      <path d="M15 14v-4" />
+    </Svg>
+  );
+}
+
 export function IconMetrics() {
   return (
     <Svg>

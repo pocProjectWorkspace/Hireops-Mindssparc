@@ -97,6 +97,7 @@ const NAV_HELP: Record<string, string> = {
   "panel-setup": "Set up interview panels and rounds for a role.",
   insights: "Hiring insights and trends for your roles.",
   metrics: "Org-wide hiring metrics and health.",
+  "ask-data": "Ask a hiring question in plain English; every number is calculated by HireOps.",
   governance: "Compliance and governance across hiring.",
   "exec-audit": "The executive audit trail of key decisions.",
   "market-intelligence": "Market and talent intelligence for planning.",

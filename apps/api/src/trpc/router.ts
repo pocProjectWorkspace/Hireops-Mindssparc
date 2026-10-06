@@ -143,6 +143,18 @@ import { getInterviewHealthReport } from "../lib/reports/interview-health";
 import { getOnboardingReadinessReport } from "../lib/reports/onboarding-readiness";
 // R1.4 sponsor pack — the executive summary / board pack (#23).
 import { getExecutiveSummaryReport } from "../lib/reports/executive-summary";
+// ASK-DATA — "Ask your data": NL question → whitelisted intent → report-layer executor.
+import {
+  ASK_DATA_CANDIDATE_NAME_ROLES,
+  ASK_DATA_FEATURE,
+  ASK_DATA_ROLES,
+  ASK_DATA_SCHEMA_NAME,
+  ASK_DATA_TENANT_WIDE_ROLES,
+  HIRING_MANAGER_SCOPE,
+  askDataAiResponseJsonSchema,
+} from "../lib/ask-data/interpret";
+import { loadAskDataLookups } from "../lib/ask-data/execute";
+import { runAskData } from "../lib/ask-data/run";
 import {
   getIrisAction,
   listIrisActions,
@@ -418,6 +430,12 @@ import {
   type RequisitionApprovalBiasFlag,
   getRecruitmentReportInputSchema,
   getRecruitmentReportOutputSchema,
+  // ASK-DATA — "Ask your data" contracts (packages/api-types/src/ask-data.ts).
+  ASK_DATA_CATALOG,
+  askDataCatalogInputSchema,
+  askDataCatalogOutputSchema,
+  askDataInputSchema,
+  askDataOutputSchema,
   // R0.2 — /reports catalog report contracts (packages/api-types/src/reports.ts).
   getRequisitionAgingReportInputSchema,
   getRequisitionAgingReportOutputSchema,
@@ -11580,6 +11598,131 @@ export const appRouter = router({
 
       return getExecutiveSummaryReport(db, ctx.tenantId, filters, {
         isAdmin: ctx.roles.includes("admin"),
+      });
+    }),
+
+  // ─────────────────────── askDataCatalog / askData (ASK-DATA) ───────────────────────
+  //
+  // "Ask your data" — natural-language analytics over the reporting catalog.
+  // THE STANCE: the AI never writes SQL and never produces a number. It only
+  // maps a typed question to ONE intent from the fixed 14-entry catalog
+  // (packages/api-types/src/ask-data.ts) plus params; every figure and the
+  // summary sentence are computed by lib/ask-data/execute.ts over the same
+  // lib/reports measures the /reports catalog renders.
+  //
+  // Reliability on stage: a chip click / chip edit sends `intent` and skips the
+  // model entirely; a typed question that (near-)exactly matches a suggested
+  // question, or a short filter-only follow-up, also resolves without it. Only
+  // genuinely free text calls Claude (feature `ask_data`, kill-switch +
+  // model settings from aiSettings, cost-logged by the ai-client). Disabled /
+  // failing AI → `ai_unavailable` + suggestions; chips keep working.
+  //
+  // Roles: admin, hr_head, hr_ops, recruiter see tenant-wide answers.
+  // hiring_manager (without one of those) is scoped to the requisitions they
+  // manage (requisitions.hiring_manager_id = their membership); intents with
+  // no honest per-manager scope answer "not available for your role" rather
+  // than tenant-wide data (HIRING_MANAGER_SCOPE). Candidate names on declined
+  // offers: admin / hr_head / hr_ops only. Read-only, no withAudit (matches the
+  // catalog); askData is a mutation only because the AI path writes an
+  // ai_usage_logs row.
+  askDataCatalog: protectedProcedure
+    .input(askDataCatalogInputSchema)
+    .output(askDataCatalogOutputSchema)
+    .query(async ({ ctx }) => {
+      requireAnyRole(ctx, ASK_DATA_ROLES, "Ask your data isn't available for your role");
+      const db = requireDb(ctx);
+      if (!ctx.tenantId) {
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: "protected procedure missing tenantId",
+        });
+      }
+      const tenantWide = ctx.roles.some((r) => ASK_DATA_TENANT_WIDE_ROLES.has(r));
+      const lookups = await loadAskDataLookups(db, ctx.tenantId, null);
+      const aiSettings = await resolveTenantAiSettingsDb(ctx.tenantId);
+      return {
+        entries: ASK_DATA_CATALOG.map((e) => ({
+          id: e.id,
+          label: e.label,
+          question: e.question,
+          group: e.group,
+          params: [...e.params],
+          available: tenantWide || HIRING_MANAGER_SCOPE[e.id] !== "none",
+        })),
+        businessUnits: lookups.businessUnits.map((b) => b.name),
+        aiEnabled: aiSettings.ask_data.enabled,
+      };
+    }),
+
+  askData: protectedProcedure
+    .input(askDataInputSchema)
+    .output(askDataOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      requireAnyRole(ctx, ASK_DATA_ROLES, "Ask your data isn't available for your role");
+      const db = requireDb(ctx);
+      if (!ctx.tenantId) {
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: "protected procedure missing tenantId",
+        });
+      }
+      const tenantId = ctx.tenantId;
+      const actorMembershipId = await resolveActorMembership(db, ctx);
+
+      // Hiring-manager scope: only when the caller holds no tenant-wide role.
+      const tenantWide = ctx.roles.some((r) => ASK_DATA_TENANT_WIDE_ROLES.has(r));
+      let hmMembershipId: string | null = null;
+      let hmRequisitionIds: Set<string> | null = null;
+      if (!tenantWide) {
+        if (!actorMembershipId) {
+          throw new TRPCError({
+            code: "FORBIDDEN",
+            message: "Your membership was not found for this tenant",
+          });
+        }
+        hmMembershipId = actorMembershipId;
+        const own = await db.execute(dsql`
+          SELECT r.id::text AS id FROM public.requisitions r
+          WHERE r.tenant_id = ${tenantId}::uuid
+            AND r.hiring_manager_id = ${actorMembershipId}::uuid
+        `);
+        const ownRows =
+          (own as { rows?: { id: string }[] }).rows ?? (own as unknown as { id: string }[]);
+        hmRequisitionIds = new Set(ownRows.map((r) => r.id));
+      }
+
+      const lookups = await loadAskDataLookups(db, tenantId, hmMembershipId);
+      const aiSettings = await resolveTenantAiSettingsDb(tenantId);
+      const feature = aiSettings.ask_data;
+
+      return runAskData({
+        input,
+        lookups,
+        aiEnabled: feature.enabled,
+        exec: {
+          db,
+          tenantId,
+          resolveNames: (ids) => resolveMembershipNames(ctx, tenantId, ids),
+          canSeeCandidateNames: ctx.roles.some((r) => ASK_DATA_CANDIDATE_NAME_ROLES.has(r)),
+          hmMembershipId,
+          hmRequisitionIds,
+        },
+        complete: async ({ system, user }) => {
+          const client = await getAIClient(tenantId);
+          return client.completeStructured<unknown>({
+            prompt: user,
+            system,
+            model: feature.model,
+            temperature: 0,
+            // An intent + a handful of params; the tenant ceiling still caps it.
+            maxTokens: Math.min(feature.maxTokens, 512),
+            schema: askDataAiResponseJsonSchema,
+            schemaName: ASK_DATA_SCHEMA_NAME,
+            feature: ASK_DATA_FEATURE,
+            requestId: ctx.requestId,
+            actorMembershipId,
+          });
+        },
       });
     }),
 
