@@ -1205,6 +1205,7 @@ import {
 // buildRequisitionInsights (LD-2A). Shared by the Insights skill-gap chart and
 // the per-hire upskilling suggestions so the two can never drift apart.
 import {
+  parsedSkillNames,
   parsedSkillTokens,
   skillNeedle,
   tokensMatchNeedle,
@@ -7891,7 +7892,7 @@ export const appRouter = router({
         // PANEL-02 — DETERMINISTIC Resume-vs-JD skills overlap (no AI). Pull
         // the requisition's JD skills and diff them against the parsed resume
         // skills with the pure helper (unit-tested in api-types).
-        const parsedSkills = Array.isArray(iv.parsedSkills) ? (iv.parsedSkills as string[]) : [];
+        const parsedSkills = parsedSkillNames(iv.parsedSkills);
         const jdSkillRows = await db
           .select({
             skillName: jdSkills.skillName,
