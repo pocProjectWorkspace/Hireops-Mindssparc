@@ -24,6 +24,7 @@ import { z } from "zod";
 import { TRPCError } from "@trpc/server";
 import {
   and,
+  asc,
   desc,
   eq,
   gt,
@@ -191,6 +192,14 @@ import {
   listRequisitionApprovalsOutputSchema,
   createRequisitionDraftInputSchema,
   createRequisitionDraftOutputSchema,
+  type CreateRequisitionDraftInput,
+  previewWorkdayRequisitionImportOutputSchema,
+  importWorkdayRequisitionsInputSchema,
+  importWorkdayRequisitionsOutputSchema,
+  type ImportWorkdayRequisitionsOutput,
+  WORKDAY_SAMPLE_REQUISITIONS,
+  WORKDAY_PREVIEW_COLUMNS,
+  WORKDAY_IMPORT_SOURCE,
   generateJdDraftInputSchema,
   generateJdDraftOutputSchema,
   updateRequisitionDraftInputSchema,
@@ -995,6 +1004,12 @@ import {
   type InterviewMode,
 } from "@hireops/api-types";
 import { createClient } from "@supabase/supabase-js";
+import {
+  buildWorkdayPreviewRow,
+  mapWorkdayRow,
+  workdayJdSections,
+  type WorkdayTenantLookups,
+} from "../lib/workday-import";
 import {
   parseResume,
   getAIClient,
@@ -5042,207 +5057,196 @@ export const appRouter = router({
           });
         }
 
-        // Resolve the position's business unit. T3.1 / G14 — the wizard picker
-        // sends a CONTROLLED businessUnitId; use it directly (verify it's the
-        // tenant's and non-archived). The legacy free-text `department` path
-        // (seeds / programmatic callers) stays: resolve-or-create a unit by slug.
-        let businessUnitId: string | undefined;
-        // A human label for the "duplicate position title" error below.
-        let departmentLabel: string;
-        if (input.businessUnitId) {
-          const [picked] = await db
-            .select({
-              id: businessUnits.id,
-              name: businessUnits.name,
-              isArchived: businessUnits.isArchived,
-            })
-            .from(businessUnits)
+        return insertRequisitionDraftChain(db, { tenantId, membershipId, input });
+      });
+    }),
+
+  // ═══════════ Workday import — PoC PREVIEW (no live Workday connection) ═══════════
+
+  /**
+   * previewWorkdayRequisitionImport — the "Import from Workday" drawer's preview.
+   * Reads the BUILT-IN sample Workday requisition export (there is no live
+   * Workday connection) and validates every mapped field against the tenant's
+   * REAL data: active business units, active members (hiring manager by display
+   * name) and active comp bands (grade by level/name). Each row also carries
+   * whether it was already imported (provenance on the creating state
+   * transition). Same roles as createRequisitionDraft. Read-only.
+   */
+  previewWorkdayRequisitionImport: protectedProcedure
+    .output(previewWorkdayRequisitionImportOutputSchema)
+    .query(async ({ ctx }) => {
+      requireAnyRole(
+        ctx,
+        REQUISITION_WRITE_ROLES,
+        "Importing requisitions requires the hiring_manager or admin role",
+      );
+      const db = requireDb(ctx);
+      if (!ctx.tenantId) {
+        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
+      }
+      const tenantId = ctx.tenantId;
+      const membershipId = await resolveActorMembership(db, ctx);
+      const lookups = await loadWorkdayTenantLookups(ctx, db, tenantId);
+      const callerName = membershipId
+        ? (lookups.members.find((m) => m.membershipId === membershipId)?.displayName ?? null)
+        : null;
+      const imported = await loadWorkdayImportedMap(db, tenantId);
+      return {
+        columns: [...WORKDAY_PREVIEW_COLUMNS],
+        rows: WORKDAY_SAMPLE_REQUISITIONS.map((r) =>
+          buildWorkdayPreviewRow(
+            r,
+            lookups,
+            callerName,
+            imported.get(r["Job Requisition ID"]) ?? null,
+          ),
+        ),
+      };
+    }),
+
+  /**
+   * importWorkdayRequisitions — "Import as drafts". For each requested sample
+   * row not already imported, creates a DRAFT requisition through the SAME
+   * chain as createRequisitionDraft (insertRequisitionDraftChain), then seeds
+   * the draft JD (sections + jd_text) and jd_skills from the sample. Workday
+   * provenance + idempotency key = metadata on the creating state transition
+   * ({ source: "workday_import_preview", workdayJobRequisitionId }). Unknown
+   * hiring manager → the caller (flagged in the preview); no matching grade →
+   * no comp band (budget left blank). Same roles as createRequisitionDraft.
+   */
+  importWorkdayRequisitions: protectedProcedure
+    .input(importWorkdayRequisitionsInputSchema)
+    .output(importWorkdayRequisitionsOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      return withAudit("import_workday_requisitions", ctx, input, async () => {
+        requireAnyRole(
+          ctx,
+          REQUISITION_WRITE_ROLES,
+          "Importing requisitions requires the hiring_manager or admin role",
+        );
+        const db = requireDb(ctx);
+        if (!ctx.tenantId) {
+          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
+        }
+        const tenantId = ctx.tenantId;
+        const membershipId = await resolveActorMembership(db, ctx);
+        if (!membershipId) {
+          throw new TRPCError({
+            code: "FORBIDDEN",
+            message: "Creating membership not found for this tenant",
+          });
+        }
+        const lookups = await loadWorkdayTenantLookups(ctx, db, tenantId);
+        const imported = await loadWorkdayImportedMap(db, tenantId);
+        const wanted = new Set(input.jobRequisitionIds);
+
+        const results: ImportWorkdayRequisitionsOutput["results"] = [];
+        for (const row of WORKDAY_SAMPLE_REQUISITIONS) {
+          const jrId = row["Job Requisition ID"];
+          if (!wanted.has(jrId)) continue;
+          const title = row["Job Posting Title"];
+          const existing = imported.get(jrId);
+          if (existing) {
+            results.push({
+              jobRequisitionId: jrId,
+              title,
+              outcome: "already_imported",
+              requisitionId: existing,
+              message: null,
+            });
+            continue;
+          }
+          const { resolved } = mapWorkdayRow(row, lookups, null);
+          if (!resolved.businessUnitId) {
+            results.push({
+              jobRequisitionId: jrId,
+              title,
+              outcome: "skipped",
+              requisitionId: null,
+              message: "No business unit configured for this tenant",
+            });
+            continue;
+          }
+          // Pre-check the active-title partial unique so a clash is a clean
+          // per-row skip rather than a 23505 that aborts the whole transaction.
+          const [clash] = await db
+            .select({ id: positions.id })
+            .from(positions)
             .where(
-              and(eq(businessUnits.tenantId, tenantId), eq(businessUnits.id, input.businessUnitId)),
+              and(
+                eq(positions.tenantId, tenantId),
+                eq(positions.businessUnitId, resolved.businessUnitId),
+                eq(positions.title, title),
+                eq(positions.isActive, true),
+              ),
             )
             .limit(1);
-          if (!picked) {
-            throw new TRPCError({ code: "BAD_REQUEST", message: "Business unit not found" });
-          }
-          if (picked.isArchived) {
-            throw new TRPCError({
-              code: "BAD_REQUEST",
-              message: "That business unit is archived — pick an active unit",
+          if (clash) {
+            results.push({
+              jobRequisitionId: jrId,
+              title,
+              outcome: "skipped",
+              requisitionId: null,
+              message: `An active position titled "${title}" already exists in that business unit`,
             });
+            continue;
           }
-          businessUnitId = picked.id;
-          departmentLabel = picked.name;
-        } else {
-          const department = input.department?.trim();
-          if (!department) {
-            throw new TRPCError({
-              code: "BAD_REQUEST",
-              message: "A business unit is required",
-            });
-          }
-          departmentLabel = department;
-          const buSlug = slugifyDepartment(department);
-          const [existingBu] = await db
-            .select({ id: businessUnits.id })
-            .from(businessUnits)
-            .where(and(eq(businessUnits.tenantId, tenantId), eq(businessUnits.slug, buSlug)))
-            .limit(1);
-          businessUnitId = existingBu?.id;
-          if (!businessUnitId) {
-            const [createdBu] = await db
-              .insert(businessUnits)
-              .values({ tenantId, name: department, slug: buSlug })
-              .returning({ id: businessUnits.id });
-            businessUnitId = createdBu?.id;
-          }
-        }
-        if (!businessUnitId) {
-          throw new TRPCError({
-            code: "INTERNAL_SERVER_ERROR",
-            message: "business_unit resolution returned no row",
+
+          const created = await insertRequisitionDraftChain(db, {
+            tenantId,
+            membershipId,
+            input: {
+              title,
+              businessUnitId: resolved.businessUnitId,
+              locationType: "onsite",
+              primaryLocation: resolved.primaryLocation,
+              numberOfOpenings: row["Number of Openings"],
+              targetStartDate: resolved.targetStartDate,
+              compBandId: resolved.compBandId ?? undefined,
+            },
+            hiringManagerId: resolved.hiringManagerMembershipId ?? membershipId,
+            transitionReason: `Imported from Workday ${jrId} (sample Workday export, PoC preview)`,
+            transitionMetadata: {
+              source: WORKDAY_IMPORT_SOURCE,
+              workdayJobRequisitionId: jrId,
+            },
           });
-        }
 
-        // T3.2 / G15 — resolve the comp band (if the wizard sent one) and derive
-        // the position's comp values. The band GENUINELY drives comp: when the
-        // request omits explicit compBandMin/Max, we COPY the band's
-        // min/max/currency onto the position (server-authoritative). When it DOES
-        // send them (an override), we use those but STILL retain comp_band_id as
-        // provenance, so an edited value reads as a divergence from the band.
-        let compBandId: string | null = null;
-        let compBandMin = input.compBandMin;
-        let compBandMax = input.compBandMax;
-        let compCurrency = input.compCurrency;
-        if (input.compBandId) {
-          const [band] = await db
-            .select({
-              id: compBands.id,
-              minMajor: compBands.minMajor,
-              maxMajor: compBands.maxMajor,
-              currency: compBands.currency,
-              isArchived: compBands.isArchived,
+          // Seed the draft JD from the sample (same sections shape the wizard's
+          // JD editor writes) and its skills.
+          const sections = workdayJdSections(row);
+          await db
+            .update(jdVersions)
+            .set({
+              jdText: composeJdText(sections, title),
+              summary: sections.summary,
+              aiMetadata: { sections, source: WORKDAY_IMPORT_SOURCE },
+              updatedAt: new Date(),
             })
-            .from(compBands)
-            .where(and(eq(compBands.tenantId, tenantId), eq(compBands.id, input.compBandId)))
-            .limit(1);
-          if (!band) {
-            throw new TRPCError({ code: "BAD_REQUEST", message: "Comp band not found" });
-          }
-          if (band.isArchived) {
-            throw new TRPCError({
-              code: "BAD_REQUEST",
-              message: "That comp band is archived — pick an active band",
-            });
-          }
-          compBandId = band.id;
-          // Copy from the band unless the request explicitly overrides min/max.
-          if (input.compBandMin === undefined && input.compBandMax === undefined) {
-            compBandMin = Number(band.minMajor);
-            compBandMax = Number(band.maxMajor);
-            compCurrency = band.currency;
-          } else if (compCurrency === undefined) {
-            // Override path: keep the explicit values; default currency to the band's.
-            compCurrency = band.currency;
-          }
-        }
-
-        // Create the position. An active position can't share a title in
-        // the same BU (partial unique) — surface a clean 400 rather than a
-        // raw 23505 so the hiring manager can pick a more specific title.
-        let positionId: string;
-        try {
-          const [pos] = await db
-            .insert(positions)
-            .values({
+            .where(and(eq(jdVersions.tenantId, tenantId), eq(jdVersions.id, created.jdVersionId)));
+          await db.insert(jdSkills).values(
+            row.skills.map((skillName) => ({
               tenantId,
-              businessUnitId,
-              title: input.title.trim(),
-              level: input.seniority ?? null,
-              locationType: input.locationType,
-              primaryLocation: input.primaryLocation ?? null,
-              compBandMin: compBandMin !== undefined ? String(compBandMin) : null,
-              compBandMax: compBandMax !== undefined ? String(compBandMax) : null,
-              compCurrency: compCurrency ?? null,
-              compBandId,
-              hiringManagerId: membershipId,
-              createdBy: membershipId,
-            })
-            .returning({ id: positions.id });
-          if (!pos) {
-            throw new TRPCError({
-              code: "INTERNAL_SERVER_ERROR",
-              message: "position insert returned no row",
-            });
-          }
-          positionId = pos.id;
-        } catch (err) {
-          if (isUniqueViolation(err)) {
-            throw new TRPCError({
-              code: "BAD_REQUEST",
-              message: `An active position titled "${input.title.trim()}" already exists in ${departmentLabel}. Pick a more specific title.`,
-            });
-          }
-          throw err;
-        }
+              jdVersionId: created.jdVersionId,
+              skillName,
+              weight: "1.00",
+              isRequired: true,
+            })),
+          );
 
-        // Draft JD version — placeholder body; the JD step fills it. jd_text
-        // is NOT NULL, so seed a sentinel we can detect as "not yet drafted".
-        const [jd] = await db
-          .insert(jdVersions)
-          .values({
-            tenantId,
-            positionId,
-            versionNumber: 1,
-            status: "draft",
-            jdText: JD_DRAFT_PLACEHOLDER,
-            summary: null,
-            aiMetadata: {},
-            createdBy: membershipId,
-          })
-          .returning({ id: jdVersions.id });
-        if (!jd) {
-          throw new TRPCError({
-            code: "INTERNAL_SERVER_ERROR",
-            message: "jd_version insert returned no row",
+          results.push({
+            jobRequisitionId: jrId,
+            title,
+            outcome: "created",
+            requisitionId: created.requisitionId,
+            message: null,
           });
         }
 
-        // The requisition — status draft, self-assigned to the creating
-        // hiring manager. headcount_envelope_id stays NULL (envelope/budget
-        // governance is out of REQ-02 scope; the FK is nullable). public_slug
-        // uses the DB default (uuid-keyed) — a human slug is set at posting.
-        const [req] = await db
-          .insert(requisitions)
-          .values({
-            tenantId,
-            positionId,
-            jdVersionId: jd.id,
-            primaryRecruiterId: membershipId,
-            hiringManagerId: membershipId,
-            status: "draft",
-            numberOfOpenings: input.numberOfOpenings,
-            targetStartDate: input.targetStartDate ?? null,
-            isPublic: false,
-            createdBy: membershipId,
-          })
-          .returning({ id: requisitions.id });
-        if (!req) {
-          throw new TRPCError({
-            code: "INTERNAL_SERVER_ERROR",
-            message: "requisition insert returned no row",
-          });
-        }
-
-        await db.insert(requisitionStateTransitions).values({
-          tenantId,
-          requisitionId: req.id,
-          fromStatus: null,
-          toStatus: "draft",
-          transitionedBy: membershipId,
-          reason: "Requisition draft created",
-        });
-
-        return { requisitionId: req.id };
+        return {
+          results,
+          createdCount: results.filter((r) => r.outcome === "created").length,
+        };
       });
     }),
 
@@ -5834,6 +5838,8 @@ export const appRouter = router({
       const rawSections = meta.sections;
       const parsedSections = jdSectionsSchema.safeParse(rawSections);
 
+      const workdayJobRequisitionId = await findWorkdayImportProvenance(db, tenantId, row.id);
+
       return {
         id: row.id,
         status: row.status,
@@ -5884,6 +5890,7 @@ export const appRouter = router({
           : null,
         latestDecision,
         isDraft: row.status === "draft",
+        workdayJobRequisitionId,
       };
     }),
 
@@ -28548,6 +28555,321 @@ async function resolveActorMembership(
  * submission. jd_text is NOT NULL, so we can't leave it empty.
  */
 const JD_DRAFT_PLACEHOLDER = "(draft — generate or write the job description)";
+
+/**
+ * The REQ-02 draft-creation chain (business unit → comp band → position → draft
+ * jd_version placeholder → requisition → first state transition), extracted
+ * from createRequisitionDraft so the Workday-import PoC preview creates drafts
+ * through the SAME path. Behaviour for createRequisitionDraft is unchanged: the
+ * creator is hiring manager + placeholder recruiter unless `hiringManagerId` /
+ * `primaryRecruiterId` are passed, and the transition reason/metadata default to
+ * the wizard's. Runs inside the caller's per-call transaction.
+ */
+async function insertRequisitionDraftChain(
+  db: NonNullable<HonoTRPCContext["db"]>,
+  opts: {
+    tenantId: string;
+    membershipId: string;
+    input: CreateRequisitionDraftInput;
+    hiringManagerId?: string;
+    primaryRecruiterId?: string;
+    transitionReason?: string;
+    transitionMetadata?: Record<string, unknown>;
+  },
+): Promise<{ requisitionId: string; positionId: string; jdVersionId: string }> {
+  const { tenantId, membershipId, input } = opts;
+  const hiringManagerId = opts.hiringManagerId ?? membershipId;
+  const primaryRecruiterId = opts.primaryRecruiterId ?? membershipId;
+
+  // Resolve the position's business unit. T3.1 / G14 — the wizard picker
+  // sends a CONTROLLED businessUnitId; use it directly (verify it's the
+  // tenant's and non-archived). The legacy free-text `department` path
+  // (seeds / programmatic callers) stays: resolve-or-create a unit by slug.
+  let businessUnitId: string | undefined;
+  // A human label for the "duplicate position title" error below.
+  let departmentLabel: string;
+  if (input.businessUnitId) {
+    const [picked] = await db
+      .select({
+        id: businessUnits.id,
+        name: businessUnits.name,
+        isArchived: businessUnits.isArchived,
+      })
+      .from(businessUnits)
+      .where(and(eq(businessUnits.tenantId, tenantId), eq(businessUnits.id, input.businessUnitId)))
+      .limit(1);
+    if (!picked) {
+      throw new TRPCError({ code: "BAD_REQUEST", message: "Business unit not found" });
+    }
+    if (picked.isArchived) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: "That business unit is archived — pick an active unit",
+      });
+    }
+    businessUnitId = picked.id;
+    departmentLabel = picked.name;
+  } else {
+    const department = input.department?.trim();
+    if (!department) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: "A business unit is required",
+      });
+    }
+    departmentLabel = department;
+    const buSlug = slugifyDepartment(department);
+    const [existingBu] = await db
+      .select({ id: businessUnits.id })
+      .from(businessUnits)
+      .where(and(eq(businessUnits.tenantId, tenantId), eq(businessUnits.slug, buSlug)))
+      .limit(1);
+    businessUnitId = existingBu?.id;
+    if (!businessUnitId) {
+      const [createdBu] = await db
+        .insert(businessUnits)
+        .values({ tenantId, name: department, slug: buSlug })
+        .returning({ id: businessUnits.id });
+      businessUnitId = createdBu?.id;
+    }
+  }
+  if (!businessUnitId) {
+    throw new TRPCError({
+      code: "INTERNAL_SERVER_ERROR",
+      message: "business_unit resolution returned no row",
+    });
+  }
+
+  // T3.2 / G15 — resolve the comp band (if the wizard sent one) and derive
+  // the position's comp values. The band GENUINELY drives comp: when the
+  // request omits explicit compBandMin/Max, we COPY the band's
+  // min/max/currency onto the position (server-authoritative). When it DOES
+  // send them (an override), we use those but STILL retain comp_band_id as
+  // provenance, so an edited value reads as a divergence from the band.
+  let compBandId: string | null = null;
+  let compBandMin = input.compBandMin;
+  let compBandMax = input.compBandMax;
+  let compCurrency = input.compCurrency;
+  if (input.compBandId) {
+    const [band] = await db
+      .select({
+        id: compBands.id,
+        minMajor: compBands.minMajor,
+        maxMajor: compBands.maxMajor,
+        currency: compBands.currency,
+        isArchived: compBands.isArchived,
+      })
+      .from(compBands)
+      .where(and(eq(compBands.tenantId, tenantId), eq(compBands.id, input.compBandId)))
+      .limit(1);
+    if (!band) {
+      throw new TRPCError({ code: "BAD_REQUEST", message: "Comp band not found" });
+    }
+    if (band.isArchived) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: "That comp band is archived — pick an active band",
+      });
+    }
+    compBandId = band.id;
+    // Copy from the band unless the request explicitly overrides min/max.
+    if (input.compBandMin === undefined && input.compBandMax === undefined) {
+      compBandMin = Number(band.minMajor);
+      compBandMax = Number(band.maxMajor);
+      compCurrency = band.currency;
+    } else if (compCurrency === undefined) {
+      // Override path: keep the explicit values; default currency to the band's.
+      compCurrency = band.currency;
+    }
+  }
+
+  // Create the position. An active position can't share a title in
+  // the same BU (partial unique) — surface a clean 400 rather than a
+  // raw 23505 so the hiring manager can pick a more specific title.
+  let positionId: string;
+  try {
+    const [pos] = await db
+      .insert(positions)
+      .values({
+        tenantId,
+        businessUnitId,
+        title: input.title.trim(),
+        level: input.seniority ?? null,
+        locationType: input.locationType,
+        primaryLocation: input.primaryLocation ?? null,
+        compBandMin: compBandMin !== undefined ? String(compBandMin) : null,
+        compBandMax: compBandMax !== undefined ? String(compBandMax) : null,
+        compCurrency: compCurrency ?? null,
+        compBandId,
+        hiringManagerId,
+        createdBy: membershipId,
+      })
+      .returning({ id: positions.id });
+    if (!pos) {
+      throw new TRPCError({
+        code: "INTERNAL_SERVER_ERROR",
+        message: "position insert returned no row",
+      });
+    }
+    positionId = pos.id;
+  } catch (err) {
+    if (isUniqueViolation(err)) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: `An active position titled "${input.title.trim()}" already exists in ${departmentLabel}. Pick a more specific title.`,
+      });
+    }
+    throw err;
+  }
+
+  // Draft JD version — placeholder body; the JD step fills it. jd_text
+  // is NOT NULL, so seed a sentinel we can detect as "not yet drafted".
+  const [jd] = await db
+    .insert(jdVersions)
+    .values({
+      tenantId,
+      positionId,
+      versionNumber: 1,
+      status: "draft",
+      jdText: JD_DRAFT_PLACEHOLDER,
+      summary: null,
+      aiMetadata: {},
+      createdBy: membershipId,
+    })
+    .returning({ id: jdVersions.id });
+  if (!jd) {
+    throw new TRPCError({
+      code: "INTERNAL_SERVER_ERROR",
+      message: "jd_version insert returned no row",
+    });
+  }
+
+  // The requisition — status draft, self-assigned to the creating
+  // hiring manager. headcount_envelope_id stays NULL (envelope/budget
+  // governance is out of REQ-02 scope; the FK is nullable). public_slug
+  // uses the DB default (uuid-keyed) — a human slug is set at posting.
+  const [req] = await db
+    .insert(requisitions)
+    .values({
+      tenantId,
+      positionId,
+      jdVersionId: jd.id,
+      primaryRecruiterId,
+      hiringManagerId,
+      status: "draft",
+      numberOfOpenings: input.numberOfOpenings,
+      targetStartDate: input.targetStartDate ?? null,
+      isPublic: false,
+      createdBy: membershipId,
+    })
+    .returning({ id: requisitions.id });
+  if (!req) {
+    throw new TRPCError({
+      code: "INTERNAL_SERVER_ERROR",
+      message: "requisition insert returned no row",
+    });
+  }
+
+  await db.insert(requisitionStateTransitions).values({
+    tenantId,
+    requisitionId: req.id,
+    fromStatus: null,
+    toStatus: "draft",
+    transitionedBy: membershipId,
+    reason: opts.transitionReason ?? "Requisition draft created",
+    metadata: opts.transitionMetadata ?? {},
+  });
+
+  return { requisitionId: req.id, positionId, jdVersionId: jd.id };
+}
+
+/**
+ * Workday-import PoC preview — the tenant lookups the pure mapper validates
+ * against: active business units, active comp bands (tenant-bound RLS tx) and
+ * active members with display names (service connection — public.users is
+ * self-only under RLS; explicit tenant predicate is load-bearing, same idiom as
+ * resolveMembershipNames).
+ */
+async function loadWorkdayTenantLookups(
+  ctx: HonoTRPCContext,
+  db: NonNullable<HonoTRPCContext["db"]>,
+  tenantId: string,
+): Promise<WorkdayTenantLookups> {
+  const bus = await db
+    .select({ id: businessUnits.id, name: businessUnits.name })
+    .from(businessUnits)
+    .where(and(eq(businessUnits.tenantId, tenantId), eq(businessUnits.isArchived, false)))
+    .orderBy(asc(businessUnits.createdAt));
+  const bands = await db
+    .select({ id: compBands.id, name: compBands.name, level: compBands.level })
+    .from(compBands)
+    .where(and(eq(compBands.tenantId, tenantId), eq(compBands.isArchived, false)));
+  const memberRows = await ctx.sql<{ id: string; display_name: string | null }[]>`
+    SELECT tum.id::text AS id, u.display_name AS display_name
+    FROM public.tenant_user_memberships tum
+    LEFT JOIN public.users u ON u.id = tum.user_id
+    WHERE tum.tenant_id = ${tenantId} AND tum.status = 'active'
+  `;
+  return {
+    businessUnits: bus,
+    compBands: bands,
+    members: memberRows.map((m) => ({ membershipId: m.id, displayName: m.display_name })),
+  };
+}
+
+/**
+ * Workday JR id → requisition id for every requisition created by the Workday
+ * import preview (the idempotency + provenance read).
+ */
+async function loadWorkdayImportedMap(
+  db: NonNullable<HonoTRPCContext["db"]>,
+  tenantId: string,
+): Promise<Map<string, string>> {
+  const rows = await db
+    .select({
+      requisitionId: requisitionStateTransitions.requisitionId,
+      jrId: dsql<
+        string | null
+      >`${requisitionStateTransitions.metadata}->>'workdayJobRequisitionId'`,
+    })
+    .from(requisitionStateTransitions)
+    .where(
+      and(
+        eq(requisitionStateTransitions.tenantId, tenantId),
+        dsql`${requisitionStateTransitions.metadata}->>'source' = ${WORKDAY_IMPORT_SOURCE}`,
+      ),
+    )
+    .orderBy(asc(requisitionStateTransitions.transitionedAt));
+  const out = new Map<string, string>();
+  for (const r of rows) {
+    if (r.jrId && !out.has(r.jrId)) out.set(r.jrId, r.requisitionId);
+  }
+  return out;
+}
+
+/** The Workday JR id a requisition was imported from (preview provenance), else null. */
+async function findWorkdayImportProvenance(
+  db: NonNullable<HonoTRPCContext["db"]>,
+  tenantId: string,
+  requisitionId: string,
+): Promise<string | null> {
+  const [row] = await db
+    .select({
+      jrId: dsql<
+        string | null
+      >`${requisitionStateTransitions.metadata}->>'workdayJobRequisitionId'`,
+    })
+    .from(requisitionStateTransitions)
+    .where(
+      and(
+        eq(requisitionStateTransitions.tenantId, tenantId),
+        eq(requisitionStateTransitions.requisitionId, requisitionId),
+        dsql`${requisitionStateTransitions.metadata}->>'source' = ${WORKDAY_IMPORT_SOURCE}`,
+      ),
+    )
+    .limit(1);
+  return row?.jrId ?? null;
+}
 
 /** Slugify a free-text department into a business_unit slug. */
 function slugifyDepartment(name: string): string {
