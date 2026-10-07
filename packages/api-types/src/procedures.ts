@@ -808,6 +808,12 @@ export const getRequisitionDetailOutputSchema = z.object({
   latestDecision: requisitionLatestDecisionSchema.nullable(),
   /** True when the caller may still edit + submit (status === 'draft'). */
   isDraft: z.boolean(),
+  /**
+   * Workday-import PoC preview provenance: the sample Workday Job Requisition ID
+   * this draft was imported from (read from its creating state transition's
+   * metadata), else null. Optional for back-compat.
+   */
+  workdayJobRequisitionId: z.string().nullable().optional(),
 });
 export type GetRequisitionDetailInput = z.infer<typeof getRequisitionDetailInputSchema>;
 export type GetRequisitionDetailOutput = z.infer<typeof getRequisitionDetailOutputSchema>;
