@@ -68,7 +68,7 @@ function ChartGridSkeleton() {
       {Array.from({ length: 6 }).map((_, i) => (
         <div
           key={i}
-          className="h-[300px] animate-pulse rounded-card border border-neutral-200 bg-neutral-100"
+          className="h-[300px] animate-pulse rounded-card border border-neutral-200 bg-neutral-200"
         />
       ))}
     </div>

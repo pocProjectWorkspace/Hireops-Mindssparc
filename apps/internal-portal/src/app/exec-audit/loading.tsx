@@ -11,7 +11,7 @@ export default function ExecAuditLoading() {
           {Array.from({ length: 3 }).map((_, i) => (
             <div
               key={i}
-              className="h-48 animate-pulse rounded-card border border-neutral-200 bg-neutral-100"
+              className="h-48 animate-pulse rounded-card border border-neutral-200 bg-neutral-200"
             />
           ))}
         </div>
