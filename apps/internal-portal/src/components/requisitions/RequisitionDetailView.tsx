@@ -202,6 +202,9 @@ export function RequisitionDetailView({
               <h2 className="text-lg font-semibold text-neutral-900">{r.title}</h2>
               <Badge tone={REQ_STATUS_TONE[r.status] ?? "neutral"}>{statusLabel(r.status)}</Badge>
               <AiAssistedPill row={provenance.get(requisitionId)} />
+              {r.workdayJobRequisitionId ? (
+                <Badge tone="info">Imported from Workday · {r.workdayJobRequisitionId}</Badge>
+              ) : null}
             </div>
             <p className="mt-1 text-sm text-neutral-600">
               {r.department ?? "—"} · {r.primaryLocation ?? "—"} ({r.locationType})

@@ -4,6 +4,7 @@ import { AppShell } from "@/components/nav/AppShell";
 import { RoleNotice } from "@/components/nav/RoleNotice";
 import { RequisitionsListV2 } from "@/components/requirements/RequisitionsListV2";
 import { RequisitionsCardGrid } from "@/components/requirements/RequisitionsCardGrid";
+import { WorkdayImportButton } from "@/components/requisitions/WorkdayImportDrawer";
 
 export const dynamic = "force-dynamic"; // Auth-gated + reads live requisition state.
 
@@ -20,6 +21,8 @@ export const dynamic = "force-dynamic"; // Auth-gated + reads live requisition s
  */
 
 const READ_ROLES = ["hiring_manager", "recruiter", "admin"];
+/** Same roles the API lets create drafts (REQUISITION_WRITE_ROLES) — gates the Workday import PoC preview. */
+const WRITE_ROLES = ["hiring_manager", "admin"];
 
 /** Anchor styled as the house primary button. */
 function LinkButton({ href, children }: { href: string; children: React.ReactNode }) {
@@ -66,6 +69,7 @@ export default async function RequisitionsPage({
   // Recruiters (who read but don't own the create/submit flow) get the card-grid
   // library view (RECR-01). Requirement owners / admins keep the RO-01 table
   // with its submit-for-approval row actions.
+  const canCreate = session.roles.some((r) => WRITE_ROLES.includes(r));
   const isRecruiterView =
     session.roles.includes("recruiter") && !session.roles.includes("hiring_manager");
 
@@ -76,7 +80,12 @@ export default async function RequisitionsPage({
       roles={session.roles}
       active="requisitions"
       user={sessionUserChip(session)}
-      actions={<LinkButton href="/requisitions/new">New requisition</LinkButton>}
+      actions={
+        <div className="flex items-center gap-2">
+          {canCreate ? <WorkdayImportButton /> : null}
+          <LinkButton href="/requisitions/new">New requisition</LinkButton>
+        </div>
+      }
     >
       {isRecruiterView ? (
         <RequisitionsCardGrid initial={initial} />
