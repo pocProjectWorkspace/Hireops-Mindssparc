@@ -374,9 +374,19 @@ function WorkdayImportDrawer({ onClose }: { onClose: () => void }) {
                       Import failed: {importMut.error.message}
                     </p>
                   ) : null}
+                  {preview.error ? (
+                    <p className="mt-3 text-sm text-status-error-700">
+                      Couldn&apos;t load the sample export: {preview.error.message}
+                    </p>
+                  ) : null}
                   <div className="mt-4">
                     <Button
-                      disabled={pending.length === 0 || importMut.isPending || preview.isLoading}
+                      disabled={
+                        pending.length === 0 ||
+                        importMut.isPending ||
+                        preview.isLoading ||
+                        !!preview.error
+                      }
                       onClick={() =>
                         importMut.mutate({
                           jobRequisitionIds: pending.map((r) => r.jobRequisitionId),
@@ -385,9 +395,13 @@ function WorkdayImportDrawer({ onClose }: { onClose: () => void }) {
                     >
                       {importMut.isPending
                         ? "Importing…"
-                        : pending.length === 0
-                          ? "All sample rows already imported"
-                          : `Import ${pending.length} as drafts`}
+                        : preview.isLoading
+                          ? "Loading sample export…"
+                          : preview.error
+                            ? "Sample export unavailable"
+                            : pending.length === 0
+                              ? "All sample rows already imported"
+                              : `Import ${pending.length} as drafts`}
                     </Button>
                   </div>
                 </Card>
