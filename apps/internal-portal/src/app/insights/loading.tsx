@@ -13,7 +13,7 @@ export default function InsightsLoading() {
           {Array.from({ length: 4 }).map((_, i) => (
             <div
               key={i}
-              className="h-[280px] animate-pulse rounded-card border border-neutral-200 bg-neutral-100"
+              className="h-[280px] animate-pulse rounded-card border border-neutral-200 bg-neutral-200"
             />
           ))}
         </div>

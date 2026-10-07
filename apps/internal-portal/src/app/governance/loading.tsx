@@ -8,7 +8,7 @@ export default function GovernanceLoading() {
         {Array.from({ length: 4 }).map((_, i) => (
           <div
             key={i}
-            className="h-40 animate-pulse rounded-card border border-neutral-200 bg-neutral-100"
+            className="h-40 animate-pulse rounded-card border border-neutral-200 bg-neutral-200"
           />
         ))}
       </div>

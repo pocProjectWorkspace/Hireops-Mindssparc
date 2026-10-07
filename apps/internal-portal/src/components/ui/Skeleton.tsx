@@ -16,7 +16,7 @@ export function Skeleton({ variant = "bar", className }: SkeletonProps) {
     <div
       aria-hidden
       className={cn(
-        "animate-pulse bg-neutral-100",
+        "animate-pulse bg-neutral-200",
         variant === "tile" ? "h-20 rounded-md" : "h-12 rounded-md",
         className,
       )}
