@@ -57,11 +57,17 @@ export type LearningAssignmentLayer = z.infer<typeof learningAssignmentLayerSche
 
 const MAX_URL_LEN = 2000;
 
+/** Any id a Postgres `uuid` column will hold. zod 4's `.uuid()` is RFC-strict
+ * (version 1-8, variant 8-b) and rejects hand-written ids Postgres accepts — a
+ * single such catalogue row failed output validation and took down the whole
+ * /admin/learning page. `z.guid()` checks the 8-4-4-4-12 hex shape only. */
+const pgUuid = z.guid();
+
 // ═══════════════════════ (A) the resource catalogue ═══════════════════════
 
 /** One catalogue row as the admin surface renders it. */
 export const learningResourceRowSchema = z.object({
-  id: z.string().uuid(),
+  id: pgUuid,
   title: z.string().min(1).max(200),
   description: z.string().nullable(),
   provider: learningProviderSchema,
@@ -93,7 +99,7 @@ export type ListLearningResourcesOutput = z.infer<typeof listLearningResourcesOu
  * key — unique(tenant_id, title) — so a re-created row with the same title
  * surfaces a clean BAD_REQUEST rather than a duplicate. */
 export const upsertLearningResourceInputSchema = z.object({
-  id: z.string().uuid().optional(),
+  id: pgUuid.optional(),
   title: z.string().trim().min(1).max(200),
   description: z.string().trim().max(2000).nullable().optional(),
   provider: learningProviderSchema,
@@ -112,7 +118,7 @@ export type UpsertLearningResourceOutput = z.infer<typeof upsertLearningResource
 /** Archive / restore. Resources are archived, never deleted: track items FK
  * them, and tasks already pushed onto a hire's case must keep resolving. */
 export const archiveLearningResourceInputSchema = z.object({
-  id: z.string().uuid(),
+  id: pgUuid,
   archived: z.boolean(),
 });
 export type ArchiveLearningResourceInput = z.infer<typeof archiveLearningResourceInputSchema>;
@@ -126,7 +132,7 @@ export type ArchiveLearningResourceOutput = z.infer<typeof archiveLearningResour
 
 /** One item inside a track, denormalised with the bits the editor renders. */
 export const learningTrackItemRowSchema = z.object({
-  resourceId: z.string().uuid(),
+  resourceId: pgUuid,
   resourceTitle: z.string(),
   resourceProvider: learningProviderSchema,
   resourceIsArchived: z.boolean(),
@@ -138,11 +144,11 @@ export const learningTrackItemRowSchema = z.object({
 export type LearningTrackItemRow = z.infer<typeof learningTrackItemRowSchema>;
 
 export const learningTrackRowSchema = z.object({
-  id: z.string().uuid(),
+  id: pgUuid,
   name: z.string().min(1).max(120),
   layer: learningTrackLayerSchema,
-  businessUnitId: z.string().uuid().nullable(),
-  positionId: z.string().uuid().nullable(),
+  businessUnitId: pgUuid.nullable(),
+  positionId: pgUuid.nullable(),
   roleFamily: z.string().nullable(),
   isActive: z.boolean(),
   sortOrder: z.number().int(),
@@ -177,11 +183,11 @@ export type ListLearningTracksOutput = z.infer<typeof listLearningTracksOutputSc
  */
 export const upsertLearningTrackInputSchema = z
   .object({
-    id: z.string().uuid().optional(),
+    id: pgUuid.optional(),
     name: z.string().trim().min(1).max(120),
     layer: learningTrackLayerSchema,
-    businessUnitId: z.string().uuid().nullable().optional(),
-    positionId: z.string().uuid().nullable().optional(),
+    businessUnitId: pgUuid.nullable().optional(),
+    positionId: pgUuid.nullable().optional(),
     roleFamily: z.string().trim().min(1).max(120).nullable().optional(),
     isActive: z.boolean().optional(),
     sortOrder: z.number().int().min(0).max(9999).optional(),
@@ -214,11 +220,11 @@ export type UpsertLearningTrackOutput = z.infer<typeof upsertLearningTrackOutput
 /** Replace-set a track's whole ordered item list (the round-template shape):
  * the array order IS the sort order, and an empty array clears the track. */
 export const setLearningTrackItemsInputSchema = z.object({
-  trackId: z.string().uuid(),
+  trackId: pgUuid,
   items: z
     .array(
       z.object({
-        resourceId: z.string().uuid(),
+        resourceId: pgUuid,
         isRequired: z.boolean().optional(),
         dueOffsetDays: z.number().int().min(0).max(3650).nullable().optional(),
       }),
@@ -246,11 +252,11 @@ export type SetLearningTrackItemsOutput = z.infer<typeof setLearningTrackItemsOu
  */
 export const assignLearningToCaseInputSchema = z
   .object({
-    caseId: z.string().uuid(),
+    caseId: pgUuid,
     /** Push a whole curated bundle. */
-    trackId: z.string().uuid().optional(),
+    trackId: pgUuid.optional(),
     /** …and/or loose catalogue rows, tagged as the 'individual' layer. */
-    resourceIds: z.array(z.string().uuid()).max(50).optional(),
+    resourceIds: z.array(pgUuid).max(50).optional(),
   })
   .superRefine((val, ctx) => {
     if (!val.trackId && (val.resourceIds ?? []).length === 0) {
@@ -264,7 +270,7 @@ export const assignLearningToCaseInputSchema = z
 export type AssignLearningToCaseInput = z.infer<typeof assignLearningToCaseInputSchema>;
 
 export const assignLearningToCaseOutputSchema = z.object({
-  caseId: z.string().uuid(),
+  caseId: pgUuid,
   /** Tasks newly created by this push. */
   assigned: z.number().int().nonnegative(),
   /** Resources this case already had — left untouched, progress preserved. */
@@ -272,7 +278,7 @@ export const assignLearningToCaseOutputSchema = z.object({
   /** Candidate notifications enqueued (one per newly-assigned resource). */
   notified: z.number().int().nonnegative(),
   /** The onboarding_tasks ids created by this push. */
-  taskIds: z.array(z.string().uuid()),
+  taskIds: z.array(pgUuid),
 });
 export type AssignLearningToCaseOutput = z.infer<typeof assignLearningToCaseOutputSchema>;
 
@@ -285,7 +291,7 @@ export type AssignLearningToCaseOutput = z.infer<typeof assignLearningToCaseOutp
  * if the catalogue row was archived afterwards.
  */
 export const candidateLearningItemSchema = z.object({
-  taskId: z.string().uuid(),
+  taskId: pgUuid,
   /** The onboarding task status: pending | in_progress | completed | … */
   status: z.string(),
   layer: learningAssignmentLayerSchema,
@@ -306,7 +312,7 @@ export type CandidateLearningItem = z.infer<typeof candidateLearningItemSchema>;
  * hire actually consumed the material (see the honest limitation above).
  */
 export const candidateUpdateLearningProgressInputSchema = z.object({
-  taskId: z.string().uuid(),
+  taskId: pgUuid,
   status: z.enum(["in_progress", "completed"]),
 });
 export type CandidateUpdateLearningProgressInput = z.infer<
@@ -314,7 +320,7 @@ export type CandidateUpdateLearningProgressInput = z.infer<
 >;
 
 export const candidateUpdateLearningProgressOutputSchema = z.object({
-  taskId: z.string().uuid(),
+  taskId: pgUuid,
   status: z.string(),
   completedAt: z.string().nullable(), // ISO
 });
@@ -341,9 +347,9 @@ export type CandidateUpdateLearningProgressOutput = z.infer<
 /** One (skill → resource) mapping, denormalised with the catalogue bits the
  * admin editor renders. */
 export const learningSkillMapRowSchema = z.object({
-  id: z.string().uuid(),
+  id: pgUuid,
   skillName: z.string(),
-  resourceId: z.string().uuid(),
+  resourceId: pgUuid,
   resourceTitle: z.string(),
   resourceProvider: learningProviderSchema,
   /** Archived resources stay MAPPED (un-archiving restores the mapping) but are
@@ -377,9 +383,9 @@ export type ListLearningSkillMapOutput = z.infer<typeof listLearningSkillMapOutp
  * BAD_REQUEST rather than a second identical row.
  */
 export const upsertLearningSkillMappingInputSchema = z.object({
-  id: z.string().uuid().optional(),
+  id: pgUuid.optional(),
   skillName: z.string().trim().min(1).max(200),
-  resourceId: z.string().uuid(),
+  resourceId: pgUuid,
   sortOrder: z.number().int().min(0).max(9999).optional(),
 });
 export type UpsertLearningSkillMappingInput = z.infer<typeof upsertLearningSkillMappingInputSchema>;
@@ -395,12 +401,12 @@ export type UpsertLearningSkillMappingOutput = z.infer<
  * mapping is a curation opinion with nothing hanging off it — tasks already
  * pushed at a hire point at the RESOURCE, never at the mapping. */
 export const deleteLearningSkillMappingInputSchema = z.object({
-  id: z.string().uuid(),
+  id: pgUuid,
 });
 export type DeleteLearningSkillMappingInput = z.infer<typeof deleteLearningSkillMappingInputSchema>;
 
 export const deleteLearningSkillMappingOutputSchema = z.object({
-  id: z.string().uuid(),
+  id: pgUuid,
 });
 export type DeleteLearningSkillMappingOutput = z.infer<
   typeof deleteLearningSkillMappingOutputSchema
@@ -408,7 +414,7 @@ export type DeleteLearningSkillMappingOutput = z.infer<
 
 /** One suggested resource, carrying the JD skill it closes. */
 export const suggestedLearningItemSchema = z.object({
-  resourceId: z.string().uuid(),
+  resourceId: pgUuid,
   title: z.string(),
   description: z.string().nullable(),
   provider: learningProviderSchema,
@@ -435,7 +441,7 @@ export const learningMissingSkillSchema = z.object({
 export type LearningMissingSkill = z.infer<typeof learningMissingSkillSchema>;
 
 export const getSuggestedLearningForCaseInputSchema = z.object({
-  caseId: z.string().uuid(),
+  caseId: pgUuid,
   /** Cap on returned suggestions so a weak-profile hire is not buried. */
   limit: z.number().int().min(1).max(50).optional(),
 });
@@ -444,7 +450,7 @@ export type GetSuggestedLearningForCaseInput = z.infer<
 >;
 
 export const getSuggestedLearningForCaseOutputSchema = z.object({
-  caseId: z.string().uuid(),
+  caseId: pgUuid,
   /** Ranked: must-have gaps first, then the JD's own skill order, then the
    * mapping's sort order. Excludes archived resources and anything already
    * pushed onto this case. */
