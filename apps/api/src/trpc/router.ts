@@ -122,6 +122,7 @@ import {
 } from "@hireops/db";
 import { evaluateKnockouts, type KnockoutInput } from "@hireops/ai-scoring";
 import { SLA_THRESHOLDS_HOURS, resolveSlaThresholds } from "../lib/sla-thresholds";
+import { resolveTenantLabelsDb } from "../lib/tenant-labels";
 import { computeGovernanceRiskFlags, computeExecutiveAudit } from "../lib/governance";
 // R0.1 reporting semantic layer — shared measure definitions. Namespaced
 // so `measures.funnelByStage(…)` reads as "the canonical funnel", and so
@@ -385,6 +386,24 @@ import {
   updateShortlistDefaultsInputSchema,
   updateShortlistDefaultsOutputSchema,
   resolveShortlistDefaults,
+  resolveEffectiveShortlistDefaults,
+  resolveStageLabel,
+  resolveStageLabelMap,
+  resolveTenantLabels,
+  getTenantLabelsInputSchema,
+  getTenantLabelsOutputSchema,
+  updateTenantLabelsInputSchema,
+  updateTenantLabelsOutputSchema,
+  getUrgencySettingsInputSchema,
+  getUrgencySettingsOutputSchema,
+  updateUrgencySettingsInputSchema,
+  updateUrgencySettingsOutputSchema,
+  partnerGetStageLabelsOutputSchema,
+  screeningScoreTier,
+  type ScreeningScoreBands,
+  resolveUrgencySettings,
+  defaultUrgencySettings,
+  type UrgencySettings,
   type ShortlistDefaults,
   getAiBudgetInputSchema,
   getAiBudgetOutputSchema,
@@ -9566,7 +9585,12 @@ export const appRouter = router({
         .where(eq(tenants.id, ctx.tenantId))
         .limit(1);
       const settings = (row?.settings ?? {}) as Record<string, unknown>;
-      return resolveShortlistDefaults(settings.shortlistDefaults);
+      // CFG-LITE / BUG-11 — unset fields follow the tenant's one score cut-off
+      // setting (aiSettings.screeningScoreBands).
+      return resolveEffectiveShortlistDefaults(
+        settings.shortlistDefaults,
+        resolveAiSettings(settings.aiSettings).screeningScoreBands,
+      );
     }),
 
   // ─────────────────────── updateShortlistDefaults (T2.3 / G08) ───────────────────────
@@ -10421,6 +10445,121 @@ export const appRouter = router({
         }
 
         return { ok: true as const, settings: nextBlock };
+      });
+    }),
+
+  // ─────────────────────── getTenantLabels / updateTenantLabels (CFG-LITE) ───────────────────────
+  //
+  // Tenant display labels for pipeline stages (staff / candidate / partner
+  // wording) and interview recommendations, stored as OVERRIDES ONLY under
+  // tenants.settings.labels. Canonical keys never change — this is wording.
+  // Admin-only; the write is audited and uses the same atomic top-level jsonb
+  // `||` sibling-key merge as updateTenantAiSettings (FORCE RLS, SELECT-only
+  // policies → unscoped pool + explicit tenant predicate). Staff surfaces read
+  // the resolved labels through the portal's tenant-ui-settings loader and the
+  // partner portal through getPartnerStageLabels, not through this procedure.
+  getTenantLabels: protectedProcedure
+    .input(getTenantLabelsInputSchema)
+    .output(getTenantLabelsOutputSchema)
+    .query(async ({ ctx }) => {
+      requireAnyRole(ctx, AI_SETTINGS_ADMIN_ROLES, "Display labels are admin-only");
+      if (!ctx.tenantId) {
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: "protected procedure missing tenantId",
+        });
+      }
+      return { labels: await resolveTenantLabelsDb(ctx.tenantId) };
+    }),
+
+  updateTenantLabels: protectedProcedure
+    .input(updateTenantLabelsInputSchema)
+    .output(updateTenantLabelsOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      return withAudit("update_tenant_labels", ctx, input, async () => {
+        requireAnyRole(ctx, AI_SETTINGS_ADMIN_ROLES, "Display labels are admin-only");
+        if (!ctx.tenantId) {
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: "protected procedure missing tenantId",
+          });
+        }
+        const tenantId = ctx.tenantId;
+        // Normalise: blanks drop out, so "reset to default" = send it blank.
+        const nextBlock = resolveTenantLabels(input);
+        const res = await poolDb.execute(dsql`
+          UPDATE public.tenants
+          SET settings = COALESCE(settings, '{}'::jsonb)
+              || jsonb_build_object('labels', ${JSON.stringify(nextBlock)}::jsonb)
+          WHERE id = ${tenantId}::uuid
+          RETURNING id
+        `);
+        const updated = (res as { rows?: unknown[] }).rows ?? (res as unknown[]);
+        if (updated.length !== 1) {
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: "tenant settings update affected an unexpected number of rows",
+          });
+        }
+        return { ok: true as const, labels: nextBlock };
+      });
+    }),
+
+  // ─────────────────────── getUrgencySettings / updateUrgencySettings (CFG-LITE / PP1) ───────────────────────
+  //
+  // Recruiter-urgency policy (component weights + notice-period bands) under
+  // tenants.settings.urgency; unset → the platform default (40/35/25, notice
+  // 0/15/30/60/90 days). Admin-only; write audited; same sibling-key merge.
+  getUrgencySettings: protectedProcedure
+    .input(getUrgencySettingsInputSchema)
+    .output(getUrgencySettingsOutputSchema)
+    .query(async ({ ctx }) => {
+      requireAnyRole(ctx, AI_SETTINGS_ADMIN_ROLES, "Urgency settings are admin-only");
+      const db = requireDb(ctx);
+      if (!ctx.tenantId) {
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: "protected procedure missing tenantId",
+        });
+      }
+      const [row] = await db
+        .select({ settings: tenants.settings })
+        .from(tenants)
+        .where(eq(tenants.id, ctx.tenantId))
+        .limit(1);
+      const settings = (row?.settings ?? {}) as Record<string, unknown>;
+      return resolveUrgencySettings(settings.urgency);
+    }),
+
+  updateUrgencySettings: protectedProcedure
+    .input(updateUrgencySettingsInputSchema)
+    .output(updateUrgencySettingsOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      return withAudit("update_urgency_settings", ctx, input, async () => {
+        requireAnyRole(ctx, AI_SETTINGS_ADMIN_ROLES, "Urgency settings are admin-only");
+        if (!ctx.tenantId) {
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: "protected procedure missing tenantId",
+          });
+        }
+        const tenantId = ctx.tenantId;
+        const nextBlock = resolveUrgencySettings(input);
+        const res = await poolDb.execute(dsql`
+          UPDATE public.tenants
+          SET settings = COALESCE(settings, '{}'::jsonb)
+              || jsonb_build_object('urgency', ${JSON.stringify(nextBlock)}::jsonb)
+          WHERE id = ${tenantId}::uuid
+          RETURNING id
+        `);
+        const updated = (res as { rows?: unknown[] }).rows ?? (res as unknown[]);
+        if (updated.length !== 1) {
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: "tenant settings update affected an unexpected number of rows",
+          });
+        }
+        return { ok: true as const, urgency: nextBlock };
       });
     }),
 
@@ -11714,6 +11853,7 @@ export const appRouter = router({
           canSeeCandidateNames: ctx.roles.some((r) => ASK_DATA_CANDIDATE_NAME_ROLES.has(r)),
           hmMembershipId,
           hmRequisitionIds,
+          stageLabels: await resolveTenantLabelsDb(tenantId),
         },
         complete: async ({ system, user }) => {
           const client = await getAIClient(tenantId);
@@ -11910,12 +12050,18 @@ export const appRouter = router({
     };
     const offer = asRows<OfferRow>(offerRes)[0] ?? { extended: 0, accepted: 0, declined: 0 };
 
-    const scoreTier = (min: number): "platinum" | "gold" | "silver" | "neutral" => {
-      if (min >= 90) return "platinum";
-      if (min >= 70) return "gold";
-      if (min >= 50) return "silver";
-      return "neutral";
-    };
+    // CFG-LITE / BUG-11 — the histogram shading follows the tenant's one
+    // score cut-off setting (aiSettings.screeningScoreBands): a bucket takes
+    // the tier its lower bound falls in.
+    const scoreBands = (await resolveTenantAiSettingsDb(tenantId)).screeningScoreBands;
+    const SCORE_TIER_SHADE = {
+      strong: "platinum",
+      good: "gold",
+      partial: "silver",
+      below: "neutral",
+    } as const;
+    const scoreTier = (min: number): "platinum" | "gold" | "silver" | "neutral" =>
+      SCORE_TIER_SHADE[screeningScoreTier(min, scoreBands)];
 
     return {
       kpis: {
@@ -15846,6 +15992,18 @@ export const appRouter = router({
   }),
 
   /**
+   * partnerGetStageLabels (CFG-LITE) — the tenant's partner-facing stage
+   * wording (settings.labels, platform default per stage where unset). Pure
+   * display wording; never throws on a malformed settings block.
+   */
+  partnerGetStageLabels: partnerProcedure
+    .output(partnerGetStageLabelsOutputSchema)
+    .query(async ({ ctx }) => {
+      const labels = await resolveTenantLabelsDb(ctx.partner.tenantId);
+      return { labels: resolveStageLabelMap(labels, "partner") };
+    }),
+
+  /**
    * partnerListAssignedRequisitions — the reqs Kyndryl has opened to this
    * partner org (partner_assignments status='active'), joined to
    * requisitions + positions for the dashboard cards. Capped for POC scale.
@@ -17943,12 +18101,19 @@ export const appRouter = router({
       let active = 0;
       let placed = 0;
       const byStage: PartnerStageCount[] = [];
+      // CFG-LITE — tenant partner-facing stage wording; with no override the
+      // historic Title-Case label is kept.
+      const stageLabels = await resolveTenantLabelsDb(ctx.partner.tenantId);
       for (const r of rows) {
         if (!r.stage) continue;
         total += r.n;
         if (r.stage === "offer_accepted") placed += r.n;
         else if (!TERMINAL.has(r.stage)) active += r.n;
-        byStage.push({ stage: r.stage, label: humanizeStage(r.stage), count: r.n });
+        byStage.push({
+          stage: r.stage,
+          label: resolveStageLabel(stageLabels, r.stage, "partner", humanizeStage(r.stage)),
+          count: r.n,
+        });
       }
       byStage.sort((a, b) => b.count - a.count);
       return { totalSubmissions: total, activeSubmissions: active, placed, byStage };
@@ -22294,6 +22459,8 @@ export const appRouter = router({
       // composite (slaStateFor) below, so a tenant SLA override genuinely shifts
       // shortlist urgency. Read from the same settings row; default otherwise.
       let slaThresholds: Record<ApplicationStage, number | null> = SLA_THRESHOLDS_HOURS;
+      // CFG-LITE / PP1 — the tenant's urgency weights + notice bands.
+      let urgencySettings: UrgencySettings = defaultUrgencySettings();
       if (ctx.tenantId) {
         const [settingsRow] = await db
           .select({ settings: tenants.settings })
@@ -22301,8 +22468,12 @@ export const appRouter = router({
           .where(eq(tenants.id, ctx.tenantId))
           .limit(1);
         const settings = (settingsRow?.settings ?? {}) as Record<string, unknown>;
-        shortlistDefaults = resolveShortlistDefaults(settings.shortlistDefaults);
+        shortlistDefaults = resolveEffectiveShortlistDefaults(
+          settings.shortlistDefaults,
+          resolveAiSettings(settings.aiSettings).screeningScoreBands,
+        );
         slaThresholds = resolveSlaThresholds(settings.slaThresholds);
+        urgencySettings = resolveUrgencySettings(settings.urgency);
       }
       const effectiveThreshold = input.threshold ?? shortlistDefaults.threshold;
       const cutoffs = shortlistDefaults.tierCutoffs;
@@ -22387,11 +22558,14 @@ export const appRouter = router({
           parsed.skills,
         );
         const hoursInStage = (Date.now() - r.stageEnteredAt.getTime()) / (60 * 60 * 1000);
-        const urgency = computeRecruiterUrgency({
-          slaState: slaStateFor(r.stage, hoursInStage, slaThresholds),
-          daysInStage: Math.floor(hoursInStage / 24),
-          noticePeriodDays,
-        });
+        const urgency = computeRecruiterUrgency(
+          {
+            slaState: slaStateFor(r.stage, hoursInStage, slaThresholds),
+            daysInStage: Math.floor(hoursInStage / 24),
+            noticePeriodDays,
+          },
+          urgencySettings,
+        );
         const riskFlags = computeRiskFlags({
           mustHavePct,
           expectedSalaryInrPaise: r.expectedSalaryInrPaise,
@@ -22715,6 +22889,8 @@ export const appRouter = router({
         // tracker renders byte-identically to today.
         const policyOverrides = await loadCandidateFieldPolicyOverrides(db, tenantId);
         const effectiveFields = effectiveMissingInfoFields(policyOverrides);
+        // CFG-LITE — the tenant's staff stage wording for "Blocks advance to …".
+        const stageLabels = await resolveTenantLabelsDb(tenantId);
 
         const rows: MissingInfoRow[] = [];
         for (const a of appRows) {
@@ -22750,7 +22926,7 @@ export const appRouter = router({
               status,
               lastContactAt: req?.lastContactAt ? toIsoString(req.lastContactAt) : null,
               blocksAdvanceStage: def.blocksAdvanceStage,
-              blocksAdvanceLabel: blocksAdvanceLabelForDef(def),
+              blocksAdvanceLabel: blocksAdvanceLabelForDef(def, stageLabels),
               requestId: req?.requestId ?? null,
             });
           };
@@ -26687,15 +26863,20 @@ const RECRUITER_FUNNEL_BUCKETS: { key: string; label: string; stages: Applicatio
 ];
 
 const RECRUITER_TERMINAL_STAGES = "('offer_declined', 'withdrawn', 'recruiter_rejected')";
-/** Below this AI match score an in-flight candidate is flagged skill-mismatch. */
-const RECRUITER_MISMATCH_SCORE = 60;
-/** At/above this score a candidate counts as "strong" for the insights. */
-const RECRUITER_STRONG_SCORE = 80;
 
 async function buildRecruiterDashboardExtras(
   db: DashDb,
   tenantId: string,
 ): Promise<GetRecruiterDashboardExtrasOutput> {
+  // CFG-LITE / BUG-11 — the tenant's one score cut-off setting: below the
+  // `partial` floor an in-flight candidate is flagged skill-mismatch; at/above
+  // the `strong` floor it counts as "strong" for the insights.
+  const scoreBands: ScreeningScoreBands = (await resolveTenantAiSettingsDb(tenantId))
+    .screeningScoreBands;
+  const RECRUITER_MISMATCH_SCORE = scoreBands.partial;
+  const RECRUITER_STRONG_SCORE = scoreBands.strong;
+  // CFG-LITE — single-stage funnel buckets carry the tenant's staff wording.
+  const stageLabels = await resolveTenantLabelsDb(tenantId);
   const T = dsql`tenant_id = ${tenantId}::uuid`;
   const live = dsql`current_stage NOT IN ${dsql.raw(RECRUITER_TERMINAL_STAGES)}`;
   const breach = slaBreachSql(await resolveTenantSlaThresholdsDb(tenantId));
@@ -26817,6 +26998,10 @@ async function buildRecruiterDashboardExtras(
   for (const r of stageRows) countByStage.set(r.stage, Number(r.n) || 0);
   const bucketCounts = RECRUITER_FUNNEL_BUCKETS.map((b) => ({
     ...b,
+    label:
+      b.stages.length === 1 && b.stages[0]
+        ? resolveStageLabel(stageLabels, b.stages[0], "staff", b.label)
+        : b.label,
     count: b.stages.reduce((sum, s) => sum + (countByStage.get(s) ?? 0), 0),
   }));
   const headCount = bucketCounts[0]?.count ?? 0;
@@ -27615,9 +27800,11 @@ async function buildHrHeadDashboardExtras(
     reach[i] = running;
   }
   const topReach = Math.max(1, reach[0] ?? 0);
+  // CFG-LITE — tenant staff stage wording; no override keeps the historic label.
+  const stageLabels = await resolveTenantLabelsDb(tenantId);
   const funnelStages = HRHEAD_FUNNEL_STAGES.map((s, i) => ({
     stage: s,
-    label: humanizeStage(s),
+    label: resolveStageLabel(stageLabels, s, "staff", humanizeStage(s)),
     count: reach[i] ?? 0,
     pct: Math.round(((reach[i] ?? 0) / topReach) * 100),
   }));
@@ -28292,6 +28479,9 @@ async function transitionApplicationStage(
         // A rejected or withdrawn application gets the closing email, not the
         // "moved forward" one.
         const closed = targetStage === "recruiter_rejected" || targetStage === "withdrawn";
+        // CFG-LITE — the tenant's candidate-facing stage wording (platform
+        // default = the historic email wording). Never throws.
+        const tenantLabels = closed ? null : await resolveTenantLabelsDb(app.tenantId);
         await enqueueNotification(db, {
           tenantId: app.tenantId,
           recipientType: "candidate",
@@ -28314,7 +28504,7 @@ async function transitionApplicationStage(
                   candidateName: meta.candidateName,
                   positionTitle: meta.positionTitle,
                   companyName: meta.companyName,
-                  newStageLabel: STAGE_LABELS[targetStage] ?? targetStage,
+                  newStageLabel: resolveStageLabel(tenantLabels, targetStage, "candidate"),
                 },
                 dedupKey: `stage_advanced:${tx.id}`,
               }),
@@ -30824,21 +31014,41 @@ async function buildRequisitionInsights(
     return { stage, count, dropOffPct };
   });
 
-  // Score distribution — real AI scores bucketed.
+  // Score distribution — real AI scores bucketed by the tenant's one score
+  // cut-off setting (CFG-LITE / BUG-11, aiSettings.screeningScoreBands).
+  const bands = ctx.tenantId
+    ? (await resolveTenantAiSettingsDb(ctx.tenantId)).screeningScoreBands
+    : resolveAiSettings(undefined).screeningScoreBands;
   const buckets = { excellent: 0, good: 0, partial: 0, low: 0 };
   for (const a of apps) {
     if (a.aiScore == null) continue;
-    const s = Number(a.aiScore);
-    if (s >= 85) buckets.excellent += 1;
-    else if (s >= 70) buckets.good += 1;
-    else if (s >= 50) buckets.partial += 1;
+    const tier = screeningScoreTier(Number(a.aiScore), bands);
+    if (tier === "strong") buckets.excellent += 1;
+    else if (tier === "good") buckets.good += 1;
+    else if (tier === "partial") buckets.partial += 1;
     else buckets.low += 1;
   }
+  const range = (lo: number, hi: number): string => (hi < lo ? "—" : `${lo}–${hi}`);
   const scoreDistribution = [
-    { key: "excellent" as const, label: "Excellent", range: "85–100", count: buckets.excellent },
-    { key: "good" as const, label: "Good", range: "70–84", count: buckets.good },
-    { key: "partial" as const, label: "Partial", range: "50–69", count: buckets.partial },
-    { key: "low" as const, label: "Low", range: "0–49", count: buckets.low },
+    {
+      key: "excellent" as const,
+      label: "Excellent",
+      range: range(bands.strong, 100),
+      count: buckets.excellent,
+    },
+    {
+      key: "good" as const,
+      label: "Good",
+      range: range(bands.good, bands.strong - 1),
+      count: buckets.good,
+    },
+    {
+      key: "partial" as const,
+      label: "Partial",
+      range: range(bands.partial, bands.good - 1),
+      count: buckets.partial,
+    },
+    { key: "low" as const, label: "Low", range: range(0, bands.partial - 1), count: buckets.low },
   ];
 
   // Active candidates (non-terminal stages).

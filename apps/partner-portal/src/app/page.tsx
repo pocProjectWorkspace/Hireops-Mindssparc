@@ -34,13 +34,15 @@ export default async function DashboardPage() {
     throw err;
   }
 
-  const [reqs, submissions, stats, attention] = await Promise.all([
+  const [reqs, submissions, stats, attention, stageLabels] = await Promise.all([
     caller.partnerListAssignedRequisitions(),
     caller.partnerListMySubmissions(),
     caller.partnerGetDashboardStats(),
     // P1.3 — the "needs your attention" feed. Fetched alongside the other
     // three so the dashboard stays a single round of parallel reads.
     caller.partnerGetAttentionFeed(),
+    // CFG-LITE — the tenant's partner-facing stage wording.
+    caller.partnerGetStageLabels(),
   ]);
 
   return (
@@ -56,6 +58,7 @@ export default async function DashboardPage() {
         submissions={submissions.items}
         stats={stats}
         attention={attention.items}
+        stageLabels={stageLabels.labels}
       />
     </PartnerShell>
   );

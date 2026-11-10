@@ -61,8 +61,13 @@ export default async function SubmissionDetailPage({ params }: { params: { claim
   };
 
   let detail: PartnerGetSubmissionDetailOutput;
+  let stageLabels: Record<string, string>;
   try {
-    detail = await caller.partnerGetSubmissionDetail({ claimId: params.claimId });
+    [detail, stageLabels] = await Promise.all([
+      caller.partnerGetSubmissionDetail({ claimId: params.claimId }),
+      // CFG-LITE — the tenant's partner-facing stage wording.
+      caller.partnerGetStageLabels().then((r) => r.labels),
+    ]);
   } catch (err) {
     if (err instanceof TRPCError && (err.code === "FORBIDDEN" || err.code === "BAD_REQUEST")) {
       return (
@@ -126,7 +131,7 @@ export default async function SubmissionDetailPage({ params }: { params: { claim
           </div>
           <Badge tone={stageTone(detail.application?.currentStage ?? null)}>
             {detail.application
-              ? stageLabel(detail.application.currentStage)
+              ? stageLabel(detail.application.currentStage, stageLabels)
               : "No application yet"}
           </Badge>
         </div>
@@ -171,7 +176,7 @@ export default async function SubmissionDetailPage({ params }: { params: { claim
                       }`}
                     />
                     <span className="min-w-0 flex-1 truncate text-sm text-neutral-900">
-                      {stageLabel(entry.toStage)}
+                      {stageLabel(entry.toStage, stageLabels)}
                     </span>
                     <span className="shrink-0 text-sm tabular-nums text-neutral-500">
                       {fmtDate(entry.transitionedAt)}

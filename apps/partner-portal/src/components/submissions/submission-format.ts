@@ -49,8 +49,18 @@ export function isPartnerStage(value: string | null | undefined): value is Partn
   return typeof value === "string" && value in STAGE_LABELS;
 }
 
-/** The partner-facing name of a stage; an unknown value degrades to itself. */
-export function stageLabel(stage: string): string {
+/**
+ * The tenant's partner-facing stage wording (CFG-LITE), as returned by the
+ * API's partnerGetStageLabels: every stage key → label. Null/absent = the
+ * platform wording above.
+ */
+export type PartnerStageLabels = Record<string, string> | null | undefined;
+
+/** The partner-facing name of a stage; an unknown value degrades to itself.
+ * A tenant label (`labels`, from partnerGetStageLabels) wins when present. */
+export function stageLabel(stage: string, labels?: PartnerStageLabels): string {
+  const tenant = labels?.[stage];
+  if (tenant) return tenant;
   return isPartnerStage(stage) ? STAGE_LABELS[stage] : humanise(stage);
 }
 

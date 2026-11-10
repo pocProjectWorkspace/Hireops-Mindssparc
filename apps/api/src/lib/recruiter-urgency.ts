@@ -25,6 +25,14 @@
  *                               — NOT AI, NOT a judgement, just facts.
  */
 
+import {
+  URGENCY_NOTICE_BANDS_DEFAULT,
+  URGENCY_NOTICE_BAND_SHARES,
+  URGENCY_WEIGHTS_DEFAULT,
+  defaultUrgencySettings,
+  type UrgencySettings,
+} from "@hireops/api-types";
+
 // ─────────────────────────────── urgency ───────────────────────────────
 
 export type UrgencyRank = "high" | "medium" | "low";
@@ -42,17 +50,13 @@ export type UrgencySlaState = "breached" | "at_risk" | "ok" | "none";
 
 /**
  * Component weights (sum = 100). Ordered by how load-bearing each facet is for
- * "should the recruiter act on this candidate now". Documented here so the UI
- * copy and the unit test cite one source.
+ * "should the recruiter act on this candidate now". These are the PLATFORM
+ * DEFAULT (CFG-LITE / PP1): a tenant may override them via
+ * `tenants.settings.urgency.weights` — see `@hireops/api-types`
+ * urgency-settings. Documented here so the UI copy and the unit test cite one
+ * source.
  */
-export const RECRUITER_URGENCY_WEIGHTS = {
-  /** How overdue the candidate is against the stage SLA. */
-  sla: 40,
-  /** How long the candidate has sat in the current stage. */
-  daysInStage: 35,
-  /** How soon the candidate can start (short notice = act fast before they go). */
-  notice: 25,
-} as const;
+export const RECRUITER_URGENCY_WEIGHTS = URGENCY_WEIGHTS_DEFAULT;
 
 export type UrgencyComponentKey = keyof typeof RECRUITER_URGENCY_WEIGHTS;
 
@@ -111,24 +115,48 @@ function daysInStagePoints(days: number): number {
   return 0;
 }
 
-/** Notice-period bands → earned points (of the 25-pt max). Shorter = higher. */
-export const URGENCY_NOTICE_IMMEDIATE = 0;
-export const URGENCY_NOTICE_SHORT = 15;
-export const URGENCY_NOTICE_MED = 30;
-export const URGENCY_NOTICE_LONG = 60;
-export const URGENCY_NOTICE_VLONG = 90;
+/** Notice-period bands → earned points (of the notice weight). Shorter = higher.
+ * Platform-default day ceilings; a tenant may override them via
+ * `tenants.settings.urgency.noticeBands` (CFG-LITE / PP1). */
+export const URGENCY_NOTICE_IMMEDIATE = URGENCY_NOTICE_BANDS_DEFAULT[0];
+export const URGENCY_NOTICE_SHORT = URGENCY_NOTICE_BANDS_DEFAULT[1];
+export const URGENCY_NOTICE_MED = URGENCY_NOTICE_BANDS_DEFAULT[2];
+export const URGENCY_NOTICE_LONG = URGENCY_NOTICE_BANDS_DEFAULT[3];
+export const URGENCY_NOTICE_VLONG = URGENCY_NOTICE_BANDS_DEFAULT[4];
 
-function noticePoints(noticePeriodDays: number | null): { earned: number; note: string } {
+const NOTICE_BAND_NOTES: readonly ((d: number) => string)[] = [
+  () => "Immediately available — move before they accept elsewhere",
+  (d) => `${d}-day notice — short runway`,
+  (d) => `${d}-day notice`,
+  (d) => `${d}-day notice — some runway`,
+  (d) => `${d}-day notice — long runway`,
+];
+
+/** Scale a platform-default point value to a tenant weight (identity at defaults). */
+function scalePoints(points: number, defaultMax: number, weight: number): number {
+  if (defaultMax <= 0) return 0;
+  return Math.round((points * weight) / defaultMax);
+}
+
+function noticePoints(
+  noticePeriodDays: number | null,
+  bands: readonly number[],
+  weight: number,
+): { earned: number; note: string } {
   if (noticePeriodDays == null) {
     return { earned: 0, note: "Notice not captured — no time-pressure signal" };
   }
   const d = noticePeriodDays;
-  if (d <= URGENCY_NOTICE_IMMEDIATE)
-    return { earned: 25, note: "Immediately available — move before they accept elsewhere" };
-  if (d <= URGENCY_NOTICE_SHORT) return { earned: 20, note: `${d}-day notice — short runway` };
-  if (d <= URGENCY_NOTICE_MED) return { earned: 15, note: `${d}-day notice` };
-  if (d <= URGENCY_NOTICE_LONG) return { earned: 8, note: `${d}-day notice — some runway` };
-  if (d <= URGENCY_NOTICE_VLONG) return { earned: 4, note: `${d}-day notice — long runway` };
+  for (let i = 0; i < bands.length; i++) {
+    const ceiling = bands[i];
+    if (ceiling !== undefined && d <= ceiling) {
+      const share = URGENCY_NOTICE_BAND_SHARES[i] ?? 0;
+      // A band-0 ceiling above zero is "available within N days", not "immediately".
+      const noteFor = NOTICE_BAND_NOTES[i] ?? ((n: number) => `${n}-day notice`);
+      const note = i === 0 && d > 0 ? `${d}-day notice — very short runway` : noteFor(d);
+      return { earned: Math.round(weight * share), note };
+    }
+  }
   return { earned: 0, note: `${d}-day notice — no time-pressure` };
 }
 
@@ -151,36 +179,50 @@ const SLA_NOTES: Record<UrgencySlaState, string> = {
 
 /**
  * Compute the recruiter urgency composite. Deterministic — same input always
- * yields the same index + component breakdown. Every component's `earned` is in
+ * yields the same index + component breakdown. `settings` is the tenant's
+ * resolved urgency policy (weights + notice bands, CFG-LITE / PP1); omitted, the
+ * platform default reproduces the historic 40/35/25 + 0/15/30/60/90 exactly. Every component's `earned` is in
  * [0, max]; the index is the integer sum, in [0, 100].
  */
-export function computeRecruiterUrgency(input: RecruiterUrgencyInput): RecruiterUrgencyResult {
+export function computeRecruiterUrgency(
+  input: RecruiterUrgencyInput,
+  settings: Pick<UrgencySettings, "weights" | "noticeBands"> = defaultUrgencySettings(),
+): RecruiterUrgencyResult {
   const days = Math.max(0, Math.floor(input.daysInStage));
+  const w = settings.weights;
 
-  const slaEarned = URGENCY_SLA_POINTS[input.slaState];
-  const daysEarned = daysInStagePoints(days);
-  const notice = noticePoints(input.noticePeriodDays);
+  const slaEarned = scalePoints(
+    URGENCY_SLA_POINTS[input.slaState],
+    URGENCY_WEIGHTS_DEFAULT.sla,
+    w.sla,
+  );
+  const daysEarned = scalePoints(
+    daysInStagePoints(days),
+    URGENCY_WEIGHTS_DEFAULT.daysInStage,
+    w.daysInStage,
+  );
+  const notice = noticePoints(input.noticePeriodDays, settings.noticeBands, w.notice);
 
   const components: UrgencyComponent[] = [
     {
       key: "sla",
       label: URGENCY_LABELS.sla,
       earned: slaEarned,
-      max: RECRUITER_URGENCY_WEIGHTS.sla,
+      max: w.sla,
       note: SLA_NOTES[input.slaState],
     },
     {
       key: "daysInStage",
       label: URGENCY_LABELS.daysInStage,
       earned: daysEarned,
-      max: RECRUITER_URGENCY_WEIGHTS.daysInStage,
+      max: w.daysInStage,
       note: days <= 0 ? "Entered stage today" : `${days}d in stage`,
     },
     {
       key: "notice",
       label: URGENCY_LABELS.notice,
       earned: notice.earned,
-      max: RECRUITER_URGENCY_WEIGHTS.notice,
+      max: w.notice,
       note: notice.note,
     },
   ];

@@ -4,7 +4,7 @@ import { useEffect, useRef } from "react";
 import type { ListCandidatesOutput } from "@hireops/api-types";
 import { Avatar, Badge, ScoreMeter, cn } from "@/components/ui";
 import type { BadgeTone } from "@/components/ui";
-import { applicationStageLabel } from "@/lib/labels";
+import { useApplicationStageLabel } from "@/components/TenantLabelsProvider";
 import { useScreeningScoreVisible } from "@/components/ScreeningScoreProvider";
 
 // Zod's z.unknown() typing makes the property optional in the inferred
@@ -54,6 +54,7 @@ export function TriageCard({
   selected?: boolean;
   onOpen: (ids: { candidateId: string; applicationId: string }) => void;
 }) {
+  const applicationStageLabel = useApplicationStageLabel();
   const name = row.fullName ?? "(no name on file)";
   const scoreVisible = useScreeningScoreVisible();
   const { label: inStageLabel, tone: inStageTone } = timeInStage(row.stageEnteredAt, variant);

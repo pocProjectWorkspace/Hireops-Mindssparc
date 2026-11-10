@@ -205,6 +205,33 @@ export const AI_FEATURE_META: Record<
   },
 };
 
+/** CFG-LITE / BUG-11 — platform default score cut-offs (inclusive floors). */
+export const SCREENING_SCORE_BANDS_DEFAULT = { strong: 90, good: 75, partial: 60 } as const;
+
+export const screeningScoreBandsSchema = z
+  .object({
+    strong: z.number().int().min(0).max(100).default(SCREENING_SCORE_BANDS_DEFAULT.strong),
+    good: z.number().int().min(0).max(100).default(SCREENING_SCORE_BANDS_DEFAULT.good),
+    partial: z.number().int().min(0).max(100).default(SCREENING_SCORE_BANDS_DEFAULT.partial),
+  })
+  .refine((b) => b.partial <= b.good && b.good <= b.strong, {
+    message: "Score cut-offs must be ordered: partial ≤ good ≤ strong.",
+  });
+export type ScreeningScoreBands = z.infer<typeof screeningScoreBandsSchema>;
+
+function defaultScreeningScoreBands(): ScreeningScoreBands {
+  return { ...SCREENING_SCORE_BANDS_DEFAULT };
+}
+
+/** The score-tier bucket for a real 0–100 score under the given bands. */
+export type ScreeningScoreTier = "strong" | "good" | "partial" | "below";
+export function screeningScoreTier(score: number, bands: ScreeningScoreBands): ScreeningScoreTier {
+  if (score >= bands.strong) return "strong";
+  if (score >= bands.good) return "good";
+  if (score >= bands.partial) return "partial";
+  return "below";
+}
+
 export const aiSettingsSchema = z.object({
   version: z.literal(AI_SETTINGS_VERSION).default(AI_SETTINGS_VERSION),
   ai_scoring: aiFeatureSettingsSchema.default(featureDefault),
@@ -237,6 +264,19 @@ export const aiSettingsSchema = z.object({
    * itself is governed by `ai_scoring.enabled`; this only governs display.
    */
   screeningScoreVisible: z.boolean().default(true),
+  /**
+   * CFG-LITE / BUG-11 — the ONE set of AI screening-score cut-offs every
+   * score-tier display reads (recruiter dashboard strong/mismatch counts,
+   * insights score distribution, analytics histogram tiers, candidate-list
+   * tier chips). Inclusive floors; partial ≤ good ≤ strong. The platform
+   * default (90 / 75 / 60) is the historic shortlist tier floors. The
+   * shortlist's own `shortlistDefaults.tierCutoffs` stays the shortlist's
+   * explicit override (it predates this block); unset, it equals these.
+   * A cross-field-invalid stored block resolves to the defaults.
+   */
+  screeningScoreBands: screeningScoreBandsSchema
+    .default(defaultScreeningScoreBands)
+    .catch(defaultScreeningScoreBands),
 });
 export type AiSettings = z.infer<typeof aiSettingsSchema>;
 
@@ -265,8 +305,12 @@ export const getTenantAiSettingsInputSchema = z.object({});
 export const getTenantAiSettingsOutputSchema = aiSettingsSchema;
 export type GetTenantAiSettingsOutput = z.infer<typeof getTenantAiSettingsOutputSchema>;
 
-/** The full block the admin surface writes. Lenient (defaults fill gaps). */
-export const updateTenantAiSettingsInputSchema = aiSettingsSchema;
+/** The full block the admin surface writes. Lenient (defaults fill gaps), but
+ * an out-of-order score-band set is REJECTED on write (the read path's
+ * `.catch` only exists so a stale stored blob never breaks the other keys). */
+export const updateTenantAiSettingsInputSchema = aiSettingsSchema.extend({
+  screeningScoreBands: screeningScoreBandsSchema.default(defaultScreeningScoreBands),
+});
 export type UpdateTenantAiSettingsInput = z.infer<typeof updateTenantAiSettingsInputSchema>;
 export const updateTenantAiSettingsOutputSchema = z.object({
   ok: z.literal(true),

@@ -9,7 +9,8 @@ import { RecommendationChip } from "@/components/patterns";
 import { trpc, handleTRPCError } from "@/lib/trpc-client";
 import type { GetPanelInterviewBriefOutput, GetInterviewPrepOutput } from "@hireops/api-types";
 import { SKILLS_MATCH_AMBER_THRESHOLD } from "@hireops/api-types";
-import { applicationStageLabel, humanizeSentence } from "@/lib/labels";
+import { humanizeSentence } from "@/lib/labels";
+import { useApplicationStageLabel } from "@/components/TenantLabelsProvider";
 
 /**
  * PANEL-02 — the candidate BRIEF content for one interview (the read-only
@@ -41,6 +42,8 @@ export function BriefContent({
 }) {
   const iv = brief.interview;
   const c = brief.candidate;
+  // CFG-LITE — tenant staff stage wording via the layout provider.
+  const humanStage = useApplicationStageLabel();
 
   return (
     <div className="space-y-5">
@@ -393,10 +396,6 @@ function statusTone(status: string): BadgeTone {
     default:
       return "neutral";
   }
-}
-
-function humanStage(stage: string): string {
-  return applicationStageLabel(stage);
 }
 
 function formatWhen(iso: string | null): string {

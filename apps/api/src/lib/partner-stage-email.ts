@@ -39,6 +39,8 @@ import {
   type TenantBoundDb,
 } from "@hireops/db";
 import { enqueueNotification } from "@hireops/notifications";
+import { resolveStageLabel } from "@hireops/api-types";
+import { resolveTenantLabelsDb } from "./tenant-labels";
 import type { Logger } from "@hireops/observability";
 
 /**
@@ -95,29 +97,14 @@ export const PARTNER_TERMINAL_STAGES = new Set<ApplicationStage>([
 ]);
 
 /**
- * The human label the partner reads, for each allowlisted stage.
- *
- * P0.4 borrowed the router's STAGE_LABELS here, on the reasoning that the
- * router already owned the shared map. P0.5 has callers that are NOT the
- * router (routes/offers.ts, lib/offer-accept.ts) and cannot import it without
- * a cycle, so the partner-facing labels move in beside the allowlist they
- * belong to: one file now decides which stages a partner hears about AND what
- * they are called. Strings are the router's verbatim, so the emails P0.4
- * already sends are byte-identical (partner-notifications.test.ts Tests 4/5
- * pin "Shortlisted" and "Not moving forward").
- *
- * The router's STAGE_LABELS stays where it is: it also feeds the CANDIDATE
- * email and two read surfaces, which have their own audience.
+ * The human label the partner reads comes from the shared stage-label resolver
+ * (CFG-LITE): the tenant's `settings.labels` partner wording, else the platform
+ * partner default in `@hireops/api-types` PLATFORM_STAGE_LABELS. For every
+ * allowlisted stage that default is the wording this file used to hard-code
+ * ("Shortlisted", "Not moving forward", …), so the emails P0.4 already sends
+ * are byte-identical for an unconfigured tenant (partner-notifications.test.ts
+ * Tests 4/5 pin them).
  */
-const PARTNER_STAGE_LABELS: Partial<Record<ApplicationStage, string>> = {
-  shortlisted: "Shortlisted",
-  tech_interview: "Panel interview",
-  hr_round: "HR round",
-  offer_accepted: "Offer accepted",
-  offer_declined: "Offer declined",
-  recruiter_rejected: "Not moving forward",
-  withdrawn: "Withdrawn",
-};
 
 /** "13 August 2026" — date-only, UTC. Same discipline as the partner
  * invitation's expiry line: the minute is noise and a date-only string
@@ -275,7 +262,11 @@ export async function enqueuePartnerStageChangedEmail(
       candidateName: partnerMeta.candidateName,
       requisitionTitle: partnerMeta.requisitionTitle,
       companyName: partnerMeta.companyName,
-      stageLabel: PARTNER_STAGE_LABELS[args.toStage] ?? args.toStage,
+      stageLabel: resolveStageLabel(
+        await resolveTenantLabelsDb(args.tenantId),
+        args.toStage,
+        "partner",
+      ),
       changedAtFormatted: formatPartnerEmailDate(new Date()),
       isTerminal: PARTNER_TERMINAL_STAGES.has(args.toStage),
     },

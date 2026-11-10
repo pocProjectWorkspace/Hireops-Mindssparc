@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { trpc } from "@/lib/trpc-client";
-import { applicationStageLabel } from "@/lib/labels";
+import { useApplicationStageLabel } from "@/components/TenantLabelsProvider";
 import type { ApplicationStage } from "@hireops/api-types";
 
 /**
@@ -49,6 +49,7 @@ export function IrisApplicationPicker({
   preselectApplicationId?: string;
   initialSearch?: string;
 }) {
+  const applicationStageLabel = useApplicationStageLabel();
   // Seed the query from the NL resolver's candidateQuery hint on mount (the
   // drawer mounts a fresh picker when the form opens). Only seeds the search —
   // the human still selects the concrete application.

@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { humanize, humanizeSentence, humanizeBool } from "../src/lib/labels";
+import {
+  applicationStageLabel,
+  humanize,
+  humanizeSentence,
+  humanizeBool,
+  recommendationLabel,
+} from "../src/lib/labels";
+import { resolveTenantLabels } from "@hireops/api-types";
 
 describe("humanize", () => {
   it("title-cases snake_case and kebab-case tokens", () => {
@@ -50,5 +57,28 @@ describe("humanizeBool", () => {
   it("accepts domain-specific copy", () => {
     expect(humanizeBool(true, { yes: "Required", no: "Optional" })).toBe("Required");
     expect(humanizeBool(false, { yes: "Required", no: "Optional" })).toBe("Optional");
+  });
+});
+
+// CFG-LITE — a tenant's display-label override reaches the portal helpers.
+describe("applicationStageLabel / recommendationLabel with tenant labels", () => {
+  const labels = resolveTenantLabels({
+    stages: { shortlisted: { staff: "Longlist", candidate: "Next step" } },
+    recommendations: { strong_yes: "Accept" },
+  });
+
+  it("platform wording is unchanged without tenant labels", () => {
+    expect(applicationStageLabel("tech_interview")).toBe("Panel interview");
+    expect(applicationStageLabel("recruiter_rejected")).toBe("Rejected");
+    expect(applicationStageLabel("shortlisted", null)).toBe("Shortlisted");
+    expect(applicationStageLabel(null)).toBe("—");
+    expect(recommendationLabel("strong_yes")).toBe("Strong yes");
+  });
+
+  it("a tenant STAFF override wins; other audiences don't leak in", () => {
+    expect(applicationStageLabel("shortlisted", labels)).toBe("Longlist");
+    expect(applicationStageLabel("hr_round", labels)).toBe("HR round");
+    expect(recommendationLabel("strong_yes", labels)).toBe("Accept");
+    expect(recommendationLabel("hold", labels)).toBe("Hold");
   });
 });

@@ -46,6 +46,8 @@ import type {
   RevokePartnerInvitationOutput,
 } from "@hireops/api-types";
 import { createPartnerInvitation, revokePartnerInvitationForTenant } from "./partner-admin";
+import { tenantStageLabelOverride, type TenantLabels } from "@hireops/api-types";
+import { resolveTenantLabelsDb } from "./tenant-labels";
 
 /**
  * The role gate for the three team procedures. FORBIDDEN with an identical
@@ -270,8 +272,12 @@ const SETTLED_STAGES = new Set([
 /** Stages the wireflows call out as worth celebrating / chasing to close. */
 const OFFER_STAGES = new Set(["offer_drafted", "offer_accepted"]);
 
-/** "offer_drafted" → "Offer drafted". The interview stage reads "Panel interview" (not every role is technical). */
-function stageLabel(stage: string): string {
+/** "offer_drafted" → "Offer drafted". The interview stage reads "Panel interview" (not every role is technical).
+ * CFG-LITE: a tenant's partner-facing stage label (settings.labels) wins; with
+ * no override the historic sentence-case wording here is kept verbatim. */
+function stageLabel(stage: string, labels?: TenantLabels): string {
+  const override = tenantStageLabelOverride(labels, stage, "partner");
+  if (override) return override;
   if (stage === "tech_interview") return "Panel interview";
   const spaced = stage.replace(/_/g, " ");
   return spaced.charAt(0).toUpperCase() + spaced.slice(1);
@@ -409,6 +415,7 @@ export async function getPartnerAttentionFeed(
     .limit(CLAIM_SCAN_CAP);
 
   const items: PartnerAttentionItem[] = [];
+  const labels = await resolveTenantLabelsDb(tenantId);
 
   for (const r of newReqRows) {
     items.push({
@@ -430,7 +437,7 @@ export async function getPartnerAttentionFeed(
       if (!SETTLED_STAGES.has(r.stage) && daysAtStage >= STALE_STAGE_DAYS) {
         items.push({
           kind: "stale_submission",
-          title: `${who} has been at ${stageLabel(r.stage).toLowerCase()} for ${daysAtStage} days`,
+          title: `${who} has been at ${stageLabel(r.stage, labels).toLowerCase()} for ${daysAtStage} days`,
           detail: `Entered that stage on ${fmtDate(r.stageEnteredAt)}${forRole}.`,
           href: `/submissions/${r.claimId}`,
           occurredAt: r.stageEnteredAt.toISOString(),
@@ -440,7 +447,7 @@ export async function getPartnerAttentionFeed(
       if (OFFER_STAGES.has(r.stage)) {
         items.push({
           kind: "offer_stage",
-          title: `${who} is at ${stageLabel(r.stage).toLowerCase()}`,
+          title: `${who} is at ${stageLabel(r.stage, labels).toLowerCase()}`,
           detail: `Reached that stage on ${fmtDate(r.stageEnteredAt)}${forRole}.`,
           href: `/submissions/${r.claimId}`,
           occurredAt: r.stageEnteredAt.toISOString(),

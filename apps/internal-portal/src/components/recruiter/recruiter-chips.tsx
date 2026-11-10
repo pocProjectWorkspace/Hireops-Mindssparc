@@ -2,6 +2,8 @@ import { cn } from "@/components/ui/cn";
 import { Badge } from "@/components/ui";
 import type { BadgeTone } from "@/components/ui";
 import { applicationStageLabel } from "@/lib/labels";
+import { useApplicationStageLabel } from "@/components/TenantLabelsProvider";
+import { useScreeningScoreBands } from "@/components/ScreeningScoreProvider";
 import type {
   MatchTierValue,
   RequisitionPhase,
@@ -25,14 +27,16 @@ import type {
  * values tint by tier so the eye finds the strong candidates.
  */
 export function ScoreValue({ score, className }: { score: number | null; className?: string }) {
+  // CFG-LITE / BUG-11 — tint by the tenant's score cut-offs (good / partial floors).
+  const bands = useScreeningScoreBands();
   if (score == null) {
     return <span className={cn("text-xs text-neutral-400", className)}>Unscored</span>;
   }
   const rounded = Math.round(score);
   const tone =
-    rounded >= 75
+    rounded >= bands.good
       ? "text-status-positive-700"
-      : rounded >= 60
+      : rounded >= bands.partial
         ? "text-neutral-800"
         : "text-status-warning-800";
   return <span className={cn("font-semibold tabular-nums", tone, className)}>{rounded}%</span>;
@@ -148,7 +152,8 @@ export function PhaseChip({ phase, className }: { phase: RequisitionPhase; class
 
 // ─────────────── application stage ───────────────
 
-/** Kept for existing callers — delegates to the shared applicationStageLabel. */
+/** Kept for existing callers — delegates to the shared applicationStageLabel
+ * (platform wording; components use useApplicationStageLabel for tenant wording). */
 export function stageLabel(stage: string): string {
   return applicationStageLabel(stage);
 }
@@ -165,6 +170,8 @@ const STAGE_TONE: Record<string, BadgeTone> = {
 };
 
 export function StageBadge({ stage, className }: { stage: ApplicationStage; className?: string }) {
+  // CFG-LITE — tenant staff wording (settings.labels) via the layout provider.
+  const stageLabel = useApplicationStageLabel();
   return (
     <Badge tone={STAGE_TONE[stage] ?? "neutral"} className={className}>
       {stageLabel(stage)}

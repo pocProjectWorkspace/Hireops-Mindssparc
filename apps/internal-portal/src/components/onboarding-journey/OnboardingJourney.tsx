@@ -133,6 +133,7 @@ const NAV_HELP: Record<string, string> = {
   "comp-bands": "Compensation bands by role and level.",
   "panel-pools": "Interviewer pools for panels.",
   "sla-thresholds": "SLA hours per pipeline stage.",
+  labels: "Stage and recommendation wording.",
   "governance-policy": "Governance and compliance rules.",
   "retention-policy": "Data retention rules.",
 };

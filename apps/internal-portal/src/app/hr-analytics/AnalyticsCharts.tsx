@@ -16,7 +16,7 @@ import {
 } from "recharts";
 import type { GetHrAnalyticsOutput } from "@hireops/api-types";
 import { Card, EmptyState } from "@/components/ui";
-import { applicationStageLabel } from "@/lib/labels";
+import { useApplicationStageLabel } from "@/components/TenantLabelsProvider";
 
 /**
  * HROPS-02 — the recharts grid for /hr-analytics. Client-only (loaded via
@@ -151,6 +151,7 @@ function TimeToHire({ rows }: { rows: GetHrAnalyticsOutput["timeToHireByDept"] }
 
 // 2. Candidate drop-off by stage
 function DropOff({ rows }: { rows: GetHrAnalyticsOutput["dropOffByStage"] }) {
+  const applicationStageLabel = useApplicationStageLabel();
   const data = rows.map((r) => ({ label: applicationStageLabel(r.stage), value: r.count }));
   const empty = rows.every((r) => r.count === 0);
   return (

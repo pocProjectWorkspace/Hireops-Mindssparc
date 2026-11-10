@@ -50,7 +50,11 @@ export default async function SubmissionsPage({
     : searchParams?.stage;
   const stage = isPartnerStage(rawStage) ? rawStage : null;
 
-  const submissions = await caller.partnerListMySubmissions(stage ? { stage } : undefined);
+  const [submissions, stageLabels] = await Promise.all([
+    caller.partnerListMySubmissions(stage ? { stage } : undefined),
+    // CFG-LITE — the tenant's partner-facing stage wording.
+    caller.partnerGetStageLabels().then((r) => r.labels),
+  ]);
 
   return (
     <PartnerShell
@@ -70,7 +74,7 @@ export default async function SubmissionsPage({
               for its timeline and your ownership window.
             </p>
           </div>
-          <StageFilter value={stage} />
+          <StageFilter value={stage} labels={stageLabels} />
         </div>
 
         {submissions.items.length === 0 ? (
@@ -78,7 +82,7 @@ export default async function SubmissionsPage({
             <EmptyState
               title={
                 stage
-                  ? `No submissions at ${stageLabel(stage).toLowerCase()}`
+                  ? `No submissions at ${stageLabel(stage, stageLabels).toLowerCase()}`
                   : "No submissions yet"
               }
               hint={
@@ -125,7 +129,7 @@ export default async function SubmissionsPage({
                     </div>
                     <div className="flex shrink-0 flex-wrap items-center gap-2">
                       {s.stage ? (
-                        <Badge tone={stageTone(s.stage)}>{stageLabel(s.stage)}</Badge>
+                        <Badge tone={stageTone(s.stage)}>{stageLabel(s.stage, stageLabels)}</Badge>
                       ) : (
                         <Badge tone="neutral">No application yet</Badge>
                       )}

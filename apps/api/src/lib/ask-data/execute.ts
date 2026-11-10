@@ -25,7 +25,9 @@ import type {
   AskDataIntentId,
   AskDataResult,
   ReportFilters,
+  TenantLabels,
 } from "@hireops/api-types";
+import { PLATFORM_STAGE_LABELS, resolveStageLabel } from "@hireops/api-types";
 
 import * as measures from "../reports/measures";
 import { getRequisitionAgingReport } from "../reports/requisition-aging";
@@ -46,6 +48,9 @@ export interface AskDataExecDeps {
   /** Set ⇒ the caller is hiring-manager scoped to these (own) requisitions. */
   hmMembershipId: string | null;
   hmRequisitionIds: ReadonlySet<string> | null;
+  /** CFG-LITE — the tenant's display labels (staff stage wording). Omitted →
+   * platform default wording. */
+  stageLabels?: TenantLabels | null;
 }
 
 /** postgres-js returns `{rows: …}`; fall back to the array form (matches measures.ts). */
@@ -99,20 +104,17 @@ export async function loadAskDataLookups(
 
 // ─────────────────────────────── formatting helpers ───────────────────────────────
 
-/** Staff stage wording — mirrors the portal's applicationStageLabel. */
-const STAGE_LABELS: Record<string, string> = {
-  application_received: "Applied",
-  ai_screening: "AI screening",
-  recruiter_review: "Recruiter review",
-  shortlisted: "Shortlisted",
-  tech_interview: "Panel interview",
-  hr_round: "HR round",
-  offer_drafted: "Offer drafted",
-  offer_accepted: "Offer accepted",
-  offer_declined: "Offer declined",
-  withdrawn: "Withdrawn",
-  recruiter_rejected: "Rejected",
-};
+/** Staff stage wording — the same resolver the portal's applicationStageLabel
+ * uses (CFG-LITE): tenant override → platform staff default. An unknown key is
+ * humanized as before. */
+function stageName(deps: AskDataExecDeps, stage: string): string {
+  return resolveStageLabel(
+    deps.stageLabels,
+    stage,
+    "staff",
+    stage in PLATFORM_STAGE_LABELS ? undefined : humanize(stage),
+  );
+}
 const TERMINAL_STAGES = new Set([
   "offer_accepted",
   "offer_declined",
@@ -383,7 +385,7 @@ const timeToFillTrend: Executor = async (deps, f) => {
 const pipelineFunnel: Executor = async (deps, f) => {
   const funnel = await measures.funnelByStage(deps.db, deps.tenantId, reportFilters(f));
   const rows = funnel.map((b) => ({
-    stage: STAGE_LABELS[b.stage] ?? humanize(b.stage),
+    stage: stageName(deps, b.stage),
     candidates: b.count,
   }));
   const total = funnel.reduce((s, b) => s + b.count, 0);
@@ -396,7 +398,7 @@ const pipelineFunnel: Executor = async (deps, f) => {
       ? `No candidates${scopePhrase(f)} in this period.`
       : `${plural(total, "candidate")}${scopePhrase(f)}: ${activeTotal.toLocaleString("en-US")} still in the pipeline` +
         (busiest && busiest.count > 0
-          ? `, the largest group at ${STAGE_LABELS[busiest.stage] ?? busiest.stage} (${busiest.count})`
+          ? `, the largest group at ${stageName(deps, busiest.stage)} (${busiest.count})`
           : "") +
         `, and ${plural(hired, "hire")}.`;
   return {
@@ -418,12 +420,12 @@ const stageBottlenecks: Executor = async (deps, f) => {
     s.days === null ? [] : [{ stage: s.stage, days: s.days }],
   );
   const rows = withData.map((s) => ({
-    stage: STAGE_LABELS[s.stage] ?? humanize(s.stage),
+    stage: stageName(deps, s.stage),
     median_days: round1(s.days),
   }));
   const slowest = [...withData].sort((a, b) => b.days - a.days)[0];
   const summary = slowest
-    ? `Candidates wait longest at ${STAGE_LABELS[slowest.stage] ?? slowest.stage}${scopePhrase(f)}: a median of ${fmtDays(slowest.days)} before moving on.`
+    ? `Candidates wait longest at ${stageName(deps, slowest.stage)}${scopePhrase(f)}: a median of ${fmtDays(slowest.days)} before moving on.`
     : `No completed stage moves${scopePhrase(f)} in this period yet.`;
   return {
     title: "Where candidates get stuck",

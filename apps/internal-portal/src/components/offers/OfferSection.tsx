@@ -5,7 +5,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { Badge, Button } from "@/components/ui";
 import type { BadgeTone } from "@/components/ui";
 import { trpc } from "@/lib/trpc-client";
-import { applicationStageLabel } from "@/lib/labels";
+import { useApplicationStageLabel } from "@/components/TenantLabelsProvider";
 
 /**
  * Offer drafting section inside the CandidateDetailDrawer. Three modes:
@@ -34,6 +34,7 @@ interface OfferSectionProps {
 const DRAFTABLE_STAGES = new Set<string>(["hr_round", "offer_drafted"]);
 
 export function OfferSection({ applicationId }: OfferSectionProps) {
+  const applicationStageLabel = useApplicationStageLabel();
   const queryClient = useQueryClient();
   const offers = trpc.listOffersByApplication.useQuery(
     { applicationId },

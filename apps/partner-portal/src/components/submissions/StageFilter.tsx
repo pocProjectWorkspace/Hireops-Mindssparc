@@ -2,7 +2,7 @@
 
 import { useRouter } from "next/navigation";
 import { useState, type ChangeEvent } from "react";
-import { PARTNER_STAGE_OPTIONS, stageLabel } from "./submission-format";
+import { PARTNER_STAGE_OPTIONS, stageLabel, type PartnerStageLabels } from "./submission-format";
 
 /**
  * The wireflows' §3.7 "All stages ▾" control. Changing it navigates to
@@ -15,7 +15,14 @@ import { PARTNER_STAGE_OPTIONS, stageLabel } from "./submission-format";
  * select posts to /submissions either way, and the router.push is only the
  * no-click nicety on top.
  */
-export function StageFilter({ value }: { value: string | null }) {
+export function StageFilter({
+  value,
+  labels,
+}: {
+  value: string | null;
+  /** CFG-LITE — the tenant's partner stage wording. */
+  labels?: PartnerStageLabels;
+}) {
   const router = useRouter();
   const [pending, setPending] = useState(false);
 
@@ -41,7 +48,7 @@ export function StageFilter({ value }: { value: string | null }) {
         <option value="">All stages</option>
         {PARTNER_STAGE_OPTIONS.map((s) => (
           <option key={s} value={s}>
-            {stageLabel(s)}
+            {stageLabel(s, labels)}
           </option>
         ))}
       </select>

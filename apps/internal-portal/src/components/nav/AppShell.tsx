@@ -145,6 +145,8 @@ export type PortalNavKey =
   | "panel-pools"
   // T4.1 — tenant-configurable SLA thresholds
   | "sla-thresholds"
+  // CFG-LITE — tenant display labels (stage + interview-recommendation wording)
+  | "labels"
   // T4.2 — configurable governance/compliance policy
   | "governance-policy"
   // T4.3 — document retention policy + overdue register
@@ -593,6 +595,10 @@ export const ADMIN_NAV: NavItem[] = [
     href: "/admin/panel-pools",
     icon: <IconPanelPools />,
   },
+  // CFG-LITE — tenant display labels: stage wording per audience (staff /
+  // candidate / partner) + interview-recommendation wording. Wording only —
+  // canonical stage + recommendation keys never change. Reuses IconBranding.
+  { key: "labels", label: "Labels", href: "/admin/labels", icon: <IconBranding /> },
   // T4.1 — tenant-configurable SLA thresholds. The per-stage hours drive breach
   // detection, urgency, governance and the imminent-alert emails.
   {
@@ -732,6 +738,7 @@ export const ADMIN_NAV_SECTIONS: NavSection[] = [
       "email-templates",
       "candidate-fields",
       "interview-templates",
+      "labels",
       "sla-thresholds",
       "governance-policy",
       "retention-policy",
