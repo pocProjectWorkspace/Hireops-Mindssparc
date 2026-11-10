@@ -140,3 +140,5 @@ export * from "./bulk-cv-upload";
 export * from "./interview-scheduling";
 // PC-14..17 pre-joining engagement: journeys, touchpoints, pulses, risk signals, reneges (0128)
 export * from "./pre-joining-engagement";
+// PC-18 welcome guide per business unit: sources, versioned guides, read receipts (0130)
+export * from "./welcome-guides";

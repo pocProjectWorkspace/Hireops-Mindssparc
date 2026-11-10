@@ -41,6 +41,7 @@ describe("settings", () => {
     expect(d.cadenceDays).toBe(14);
     expect(d.steps.map((s) => s.key)).toEqual([
       "welcome",
+      "welcome_guide",
       "pulse",
       "company_update",
       "two_weeks_to_go",
@@ -190,11 +191,11 @@ describe("planPreJoiningTouchpoints", () => {
     expect(keys.filter((k) => k === "pulse")).toHaveLength(1);
   });
 
-  it("very short notice (2 days): welcome only; joining today/past or invalid: nothing", () => {
+  it("very short notice (2 days): welcome + welcome guide only; joining today/past or invalid: nothing", () => {
     const base = { acceptedAt: now, now, settings: settings({ quietHours: IST }) };
     expect(
       planPreJoiningTouchpoints({ ...base, joiningDate: "2026-11-12" }).map((p) => p.stepKey),
-    ).toEqual(["welcome"]);
+    ).toEqual(["welcome", "welcome_guide"]);
     expect(planPreJoiningTouchpoints({ ...base, joiningDate: "2026-11-10" })).toEqual([]);
     expect(planPreJoiningTouchpoints({ ...base, joiningDate: "2026-11-01" })).toEqual([]);
     expect(planPreJoiningTouchpoints({ ...base, joiningDate: "2026-02-30" })).toEqual([]);

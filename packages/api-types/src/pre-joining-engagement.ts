@@ -26,6 +26,8 @@ import { z } from "zod";
 
 export const PRE_JOINING_STEP_KEYS = [
   "welcome",
+  // PC-18 — links to the published welcome guide in the candidate portal.
+  "welcome_guide",
   "pulse",
   "company_update",
   "two_weeks_to_go",
@@ -36,6 +38,7 @@ export type PreJoiningStepKey = z.infer<typeof preJoiningStepKeySchema>;
 
 export const PRE_JOINING_STEP_LABELS: Record<PreJoiningStepKey, string> = {
   welcome: "Welcome (on accept)",
+  welcome_guide: "Welcome guide (shortly after the welcome)",
   pulse: "Check-in pulse",
   company_update: "Company update",
   two_weeks_to_go: "Two weeks to go",
@@ -236,13 +239,33 @@ export function defaultPreJoiningEngagementSettings(): PreJoiningEngagementSetti
 }
 
 /**
+ * Steps added to the platform AFTER tenants could save a `steps` list, with
+ * their platform default. A stored list that predates a step does not mention
+ * it; the step then takes its platform default (platform default + tenant
+ * override) rather than reading as "switched off" — an explicit
+ * `{ key, enabled: false }` is the only way a tenant turns one off.
+ */
+export const PRE_JOINING_LATE_ADDED_STEPS: readonly { key: PreJoiningStepKey; enabled: boolean }[] =
+  [{ key: "welcome_guide", enabled: true }];
+
+/**
  * Raw `settings.preJoiningEngagement` (absent / partial / corrupt) → a full,
  * valid block. Never throws: a malformed block resolves to the platform default
  * (which is disabled), the resolveRetentionPolicy discipline.
  */
 export function resolvePreJoiningEngagementSettings(raw: unknown): PreJoiningEngagementSettings {
   const parsed = preJoiningEngagementSettingsSchema.safeParse(raw ?? {});
-  return parsed.success ? parsed.data : defaultPreJoiningEngagementSettings();
+  const s = parsed.success ? parsed.data : defaultPreJoiningEngagementSettings();
+  const missing = PRE_JOINING_LATE_ADDED_STEPS.filter(
+    (late) => !s.steps.some((x) => x.key === late.key),
+  );
+  if (missing.length === 0) return s;
+  // Canonical order, so a late-added step shows in its place on the settings page.
+  const order = (k: PreJoiningStepKey) => PRE_JOINING_STEP_KEYS.indexOf(k);
+  const steps = [...s.steps, ...missing.map((m) => ({ ...m }))].sort(
+    (a, b) => order(a.key) - order(b.key),
+  );
+  return { ...s, steps };
 }
 
 export function isStepEnabled(s: PreJoiningEngagementSettings, key: PreJoiningStepKey): boolean {
@@ -355,6 +378,9 @@ export const PRE_JOINING_SEND_HOUR = 10;
 /** Welcome is only sent if the journey starts within this long of the accept. */
 export const WELCOME_WINDOW_DAYS = 3;
 
+/** PC-18 — the welcome-guide email goes out this long after the welcome (or after the start). */
+export const WELCOME_GUIDE_DELAY_MS = 2 * 3_600_000;
+
 // ─────────────────────────── schedule generation ───────────────────────────
 
 export interface PlannedTouchpoint {
@@ -372,6 +398,10 @@ export interface PlannedTouchpoint {
  *   - nothing when the joining date is invalid or today/past;
  *   - welcome: now (out of quiet hours) when the accept is recent (≤3 days —
  *     a backfilled, long-accepted candidate does not get a "congratulations");
+ *   - welcome_guide (PC-18): two hours after the welcome (or after now when
+ *     there is no welcome — a backfilled candidate still gets the guide), out
+ *     of quiet hours, before the joining day. Whether a published guide exists
+ *     is checked when it is sent, not here (the drain skips it if none);
  *   - two/one weeks to go: joining −14 / −7 at the send hour, if still ahead;
  *   - pulses: every `cadenceDays` from the accept day, ahead of now, no later
  *     than joining −3, and not within 3 days of a countdown email;
@@ -412,6 +442,13 @@ export function planPreJoiningTouchpoints(args: {
     if (sinceAccept <= WELCOME_WINDOW_DAYS) add("welcome", applyQuietHours(now, q));
   }
 
+  if (isStepEnabled(settings, "welcome_guide")) {
+    const welcome = out.find((o) => o.stepKey === "welcome");
+    const base = welcome ? welcome.scheduledFor : now;
+    const when = applyQuietHours(new Date(base.getTime() + WELCOME_GUIDE_DELAY_MS), q);
+    if (daysBetweenIso(localParts(when, tz).date, joiningDate) > 0) add("welcome_guide", when);
+  }
+
   for (const [key, offset] of [
     ["two_weeks_to_go", 14],
     ["one_week_to_go", 7],
@@ -431,7 +468,7 @@ export function planPreJoiningTouchpoints(args: {
       if (daysBetweenIso(day, joiningDate) < 3) break;
       const when = at(day);
       if (!ahead(when)) continue;
-      if (near(day, 3, ["two_weeks_to_go", "one_week_to_go", "welcome"])) continue;
+      if (near(day, 3, ["two_weeks_to_go", "one_week_to_go", "welcome", "welcome_guide"])) continue;
       add("pulse", when);
     }
   }
@@ -710,6 +747,14 @@ export const engagementTimelineItemSchema = z.discriminatedUnion("kind", [
     source: riskSignalSourceSchema,
     quote: z.string().nullable(),
     status: riskSignalStatusSchema,
+  }),
+  z.object({
+    // PC-18 — the candidate opened the welcome guide (first section seen).
+    kind: z.literal("welcome_guide_viewed"),
+    id: z.string(),
+    at: z.string(),
+    guideVersion: z.number().int(),
+    sectionsViewed: z.number().int(),
   }),
   z.object({
     kind: z.literal("renege"),

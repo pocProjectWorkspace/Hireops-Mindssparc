@@ -120,6 +120,16 @@ function Item({
           ) : null}
         </div>
       );
+    case "welcome_guide_viewed":
+      return (
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="font-medium text-neutral-900">Welcome guide viewed</span>
+          <Badge tone="info">
+            {item.sectionsViewed} section{item.sectionsViewed === 1 ? "" : "s"} read
+          </Badge>
+          <span className="text-xs text-neutral-500">version {item.guideVersion}</span>
+        </div>
+      );
     case "renege":
       return (
         <div>

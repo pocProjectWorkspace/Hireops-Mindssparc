@@ -118,6 +118,7 @@ function resolveSubject(
 /** PC-14 — TemplateKey → pre-joining variant. */
 const PRE_JOINING_VARIANT_BY_KEY: Partial<Record<TemplateKey, PreJoiningVariant>> = {
   "candidate.pre_joining_welcome": "welcome",
+  "candidate.pre_joining_welcome_guide": "welcome_guide",
   "candidate.pre_joining_pulse": "pulse",
   "candidate.pre_joining_company_update": "company_update",
   "candidate.pre_joining_two_weeks": "two_weeks",
@@ -127,6 +128,7 @@ const PRE_JOINING_VARIANT_BY_KEY: Partial<Record<TemplateKey, PreJoiningVariant>
 /** PC-14 — default subject per pre-joining step (mirrors the catalog). */
 export const PRE_JOINING_SUBJECTS: Record<PreJoiningVariant, string> = {
   welcome: "Welcome to {companyName}, {candidateName}",
+  welcome_guide: "Get to know your new team at {companyName}",
   pulse: "Quick check-in: still on track for {joiningDate}?",
   company_update: "News from {companyName}: {updateTitle}",
   two_weeks: "Two weeks until you join {companyName}",
@@ -515,6 +517,7 @@ export async function renderTemplate(
       };
     }
     case "candidate.pre_joining_welcome":
+    case "candidate.pre_joining_welcome_guide":
     case "candidate.pre_joining_pulse":
     case "candidate.pre_joining_company_update":
     case "candidate.pre_joining_two_weeks":

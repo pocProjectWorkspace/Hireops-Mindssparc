@@ -59,3 +59,4 @@ export * from "./pre-joining-engagement";
 // import it from "@hireops/api-types"); the slot engine's is used only inside
 // ./scheduling-slots and its test, which import it by path.
 export { localParts } from "./pre-joining-engagement";
+export * from "./welcome-guide";

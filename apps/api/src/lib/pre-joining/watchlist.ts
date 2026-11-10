@@ -29,6 +29,7 @@ import {
   type RiskSignalType,
 } from "@hireops/api-types";
 import { loadPreJoiningSettings, stopPreJoiningJourney } from "./journey";
+import { listWelcomeGuideViews } from "./welcome-guide";
 
 type PgSqlClient = typeof poolSql;
 
@@ -378,6 +379,17 @@ export async function getEngagementTimeline(
       source: s.source === "pulse_response" ? "pulse_response" : "inbound_email",
       quote: s.quote,
       status: s.status === "acknowledged" ? "acknowledged" : "open",
+    });
+  }
+
+  // PC-18 — "Welcome guide viewed": one entry per guide version opened.
+  for (const v of await listWelcomeGuideViews(sql, tenantId, applicationId)) {
+    items.push({
+      kind: "welcome_guide_viewed",
+      id: v.guideId,
+      at: v.firstViewedAt,
+      guideVersion: v.version,
+      sectionsViewed: v.sections,
     });
   }
 

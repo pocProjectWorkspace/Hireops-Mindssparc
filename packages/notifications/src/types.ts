@@ -72,6 +72,8 @@ export type TemplateKey =
   // PC-14 — pre-joining engagement journey (candidate, between offer accept
   // and joining). One key per step so each is separately overridable.
   | "candidate.pre_joining_welcome"
+  // PC-18 — links to the published welcome guide in the candidate portal.
+  | "candidate.pre_joining_welcome_guide"
   | "candidate.pre_joining_pulse"
   | "candidate.pre_joining_company_update"
   | "candidate.pre_joining_two_weeks"

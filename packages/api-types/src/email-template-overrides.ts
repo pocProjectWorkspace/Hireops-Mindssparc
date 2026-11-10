@@ -51,6 +51,8 @@ export const emailTemplateKeySchema = z.enum([
   "recruiter.scheduling_alert",
   // PC-14/15 — pre-joining engagement journey + the recruiter signal alert.
   "candidate.pre_joining_welcome",
+  // PC-18 — the welcome-guide journey step.
+  "candidate.pre_joining_welcome_guide",
   "candidate.pre_joining_pulse",
   "candidate.pre_joining_company_update",
   "candidate.pre_joining_two_weeks",

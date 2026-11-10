@@ -841,6 +841,13 @@
       "when": 1789084800000,
       "tag": "0128_pre_joining_engagement",
       "breakpoints": true
+    },
+    {
+      "idx": 130,
+      "version": "7",
+      "when": 1789257600000,
+      "tag": "0130_welcome_guides",
+      "breakpoints": true
     }
   ]
 }

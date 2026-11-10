@@ -25,7 +25,13 @@ import { resolveSlot, type SlotOverrides } from "../slots";
  * stays code-owned and is rendered as escaped text, never HTML.
  */
 
-export type PreJoiningVariant = "welcome" | "pulse" | "company_update" | "two_weeks" | "one_week";
+export type PreJoiningVariant =
+  | "welcome"
+  | "welcome_guide"
+  | "pulse"
+  | "company_update"
+  | "two_weeks"
+  | "one_week";
 
 export interface PreJoiningEmailProps {
   variant: PreJoiningVariant;
@@ -41,6 +47,8 @@ export interface PreJoiningEmailProps {
   updateBody?: string | null;
   updateLinkUrl?: string | null;
   updateVideoUrl?: string | null;
+  /** welcome_guide only (PC-18) — the candidate-portal welcome guide page. */
+  guideUrl?: string | null;
   /** one_week only — the tenant's first-day information (free text). */
   firstDayInfo?: string | null;
   /** Reply-to address with the routing token — dispatcher-only, not rendered. */
@@ -60,6 +68,12 @@ export const PRE_JOINING_DEFAULT_COPY: Record<
     intro:
       "Thank you for accepting our offer for {positionTitle}. We're looking forward to welcoming you on {joiningDate}. Between now and then we'll check in every so often with news from the team and the practical details for your first day.",
     preview: "Welcome aboard — we're looking forward to {joiningDate}",
+  },
+  welcome_guide: {
+    heading: "Meet the team you're joining",
+    intro:
+      "Before your first day on {joiningDate}, take a few minutes to get to know the team you're joining: who you'll meet, how we work, and what your first week will look like. It's all in your welcome guide.",
+    preview: "Your welcome guide is ready",
   },
   pulse: {
     heading: "A quick check-in",
@@ -92,6 +106,10 @@ export const PRE_JOINING_REPLY_NOTE =
 export const PRE_JOINING_FIRST_DAY_FALLBACK =
   "Your recruiter will share your reporting time and location before your first day.";
 export const PRE_JOINING_SIGN_OFF = "— The {companyName} team";
+/** PC-18 — welcome_guide variant. */
+export const PRE_JOINING_GUIDE_CTA = "Open your welcome guide";
+export const PRE_JOINING_GUIDE_SIGN_IN_NOTE =
+  "You'll be asked to sign in to your candidate account to view it.";
 
 function fill(text: string, tok: Record<string, string>): string {
   return text.replace(/\{(\w+)\}/g, (m, k: string) => tok[k] ?? m);
@@ -145,6 +163,17 @@ export function PreJoiningEmail(props: PreJoiningEmailProps) {
                   {resolveSlot(slots?.linkLabel, tok, <>Read more</>)}
                 </Link>
               </Text>
+            ) : null}
+
+            {variant === "welcome_guide" && props.guideUrl ? (
+              <Section style={pulseBox}>
+                <Button href={props.guideUrl} style={button}>
+                  {resolveSlot(slots?.guideCta, tok, <>{PRE_JOINING_GUIDE_CTA}</>)}
+                </Button>
+                <Text style={textMuted}>
+                  {resolveSlot(slots?.signInNote, tok, <>{PRE_JOINING_GUIDE_SIGN_IN_NOTE}</>)}
+                </Text>
+              </Section>
             ) : null}
 
             {variant === "one_week" ? (

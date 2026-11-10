@@ -9,3 +9,5 @@ export * from "./inbound";
 export * from "./webhook-signature";
 export * from "./watchlist";
 export * from "./admin";
+export * from "./welcome-guide-prompt";
+export * from "./welcome-guide";

@@ -648,6 +648,16 @@ import {
   getEngagementTimelineOutputSchema,
   acknowledgeRiskSignalInputSchema,
   recordRenegeInputSchema,
+  // PC-18 — welcome guide per business unit.
+  listWelcomeScopesOutputSchema,
+  welcomeScopeInputSchema,
+  getWelcomeContentOutputSchema,
+  upsertWelcomeSourceInputSchema,
+  welcomeGuideVersionSchema,
+  updateWelcomeGuideDraftInputSchema,
+  welcomeGuideIdInputSchema,
+  candidateGetMyWelcomeGuideOutputSchema,
+  candidateMarkWelcomeSectionViewedInputSchema,
   type OverdueDocumentRow,
   getPartnerDefaultsInputSchema,
   getPartnerDefaultsOutputSchema,
@@ -1331,6 +1341,17 @@ import {
   recordRenege as recordRenegeLib,
   startJourneysForAcceptedCandidates,
   upsertCompanyUpdate as upsertPreJoiningCompanyUpdateLib,
+  createWelcomeDraftFromVersion as createWelcomeDraftFromVersionLib,
+  discardWelcomeGuideDraft as discardWelcomeGuideDraftLib,
+  generateWelcomeGuide as generateWelcomeGuideLib,
+  getCandidateWelcomeGuide as getCandidateWelcomeGuideLib,
+  getWelcomeContent as getWelcomeContentLib,
+  isWelcomeGenerationEnabled,
+  listWelcomeScopes as listWelcomeScopesLib,
+  markWelcomeSectionViewed as markWelcomeSectionViewedLib,
+  publishWelcomeGuide as publishWelcomeGuideLib,
+  updateWelcomeGuideDraft as updateWelcomeGuideDraftLib,
+  upsertWelcomeSource as upsertWelcomeSourceLib,
 } from "../lib/pre-joining";
 // P0.4/P0.5 — the partner-facing stage email. Extracted from this file so the
 // two raw-SQL offer paths (candidate accept / decline) fire the same enqueue
@@ -11014,6 +11035,146 @@ export const appRouter = router({
       });
     }),
 
+  // ─────────────────────── PC-18 welcome guide (admin) ───────────────────────
+  //
+  // Tenant-authored source per business unit (businessUnitId null = the
+  // organisation default) → AI draft grounded in that source (behind the
+  // `welcome_guide` kill switch) → a person edits + publishes. admin + hr_head.
+
+  listWelcomeScopes: protectedProcedure
+    .input(z.object({}).default({}))
+    .output(listWelcomeScopesOutputSchema)
+    .query(async ({ ctx }) => {
+      requireAnyRole(ctx, PRE_JOINING_ADMIN_ROLES, "Welcome content requires hr_head or admin");
+      const tenantId = requireTenantId(ctx);
+      const [scopes, generationEnabled] = await Promise.all([
+        listWelcomeScopesLib(ctx.sql, tenantId),
+        isWelcomeGenerationEnabled(ctx.sql, tenantId),
+      ]);
+      return { scopes, generationEnabled };
+    }),
+
+  getWelcomeContent: protectedProcedure
+    .input(welcomeScopeInputSchema)
+    .output(getWelcomeContentOutputSchema)
+    .query(async ({ ctx, input }) => {
+      requireAnyRole(ctx, PRE_JOINING_ADMIN_ROLES, "Welcome content requires hr_head or admin");
+      const out = await getWelcomeContentLib(ctx.sql, {
+        tenantId: requireTenantId(ctx),
+        businessUnitId: input.businessUnitId,
+      });
+      if (!out) throw new TRPCError({ code: "NOT_FOUND", message: "Business unit not found" });
+      return out;
+    }),
+
+  upsertWelcomeSource: protectedProcedure
+    .input(upsertWelcomeSourceInputSchema)
+    .output(z.object({ id: z.string() }))
+    .mutation(async ({ ctx, input }) => {
+      return withAudit("upsert_welcome_source", ctx, input, async () => {
+        requireAnyRole(ctx, PRE_JOINING_ADMIN_ROLES, "Welcome content requires hr_head or admin");
+        const tenantId = requireTenantId(ctx);
+        const membershipId = await resolveCallerMembershipId(ctx, tenantId);
+        const r = await upsertWelcomeSourceLib(ctx.sql, {
+          tenantId,
+          membershipId,
+          businessUnitId: input.businessUnitId,
+          source: input.source,
+        });
+        if (!r.ok) throw new TRPCError({ code: r.code, message: r.message });
+        return { id: r.id };
+      });
+    }),
+
+  generateWelcomeGuide: protectedProcedure
+    .input(welcomeScopeInputSchema)
+    .output(welcomeGuideVersionSchema)
+    .mutation(async ({ ctx, input }) => {
+      return withAudit("generate_welcome_guide", ctx, input, async () => {
+        requireAnyRole(ctx, PRE_JOINING_ADMIN_ROLES, "Welcome content requires hr_head or admin");
+        const tenantId = requireTenantId(ctx);
+        const membershipId = await resolveCallerMembershipId(ctx, tenantId);
+        const r = await generateWelcomeGuideLib(ctx.sql, {
+          tenantId,
+          businessUnitId: input.businessUnitId,
+          membershipId,
+          requestId: ctx.requestId ?? null,
+        });
+        if (!r.ok) throw new TRPCError({ code: r.code, message: r.message });
+        return r.guide;
+      });
+    }),
+
+  updateWelcomeGuideDraft: protectedProcedure
+    .input(updateWelcomeGuideDraftInputSchema)
+    .output(welcomeGuideVersionSchema)
+    .mutation(async ({ ctx, input }) => {
+      return withAudit("update_welcome_guide_draft", ctx, input, async () => {
+        requireAnyRole(ctx, PRE_JOINING_ADMIN_ROLES, "Welcome content requires hr_head or admin");
+        const tenantId = requireTenantId(ctx);
+        const membershipId = await resolveCallerMembershipId(ctx, tenantId);
+        const r = await updateWelcomeGuideDraftLib(ctx.sql, {
+          tenantId,
+          guideId: input.guideId,
+          content: input.content,
+          membershipId,
+        });
+        if (!r.ok) throw new TRPCError({ code: r.code, message: r.message });
+        return r.guide;
+      });
+    }),
+
+  publishWelcomeGuide: protectedProcedure
+    .input(welcomeGuideIdInputSchema)
+    .output(z.object({ ok: z.literal(true), version: z.number().int() }))
+    .mutation(async ({ ctx, input }) => {
+      return withAudit("publish_welcome_guide", ctx, input, async () => {
+        requireAnyRole(ctx, PRE_JOINING_ADMIN_ROLES, "Welcome content requires hr_head or admin");
+        const tenantId = requireTenantId(ctx);
+        const membershipId = await resolveCallerMembershipId(ctx, tenantId);
+        const r = await publishWelcomeGuideLib(ctx.sql, {
+          tenantId,
+          guideId: input.guideId,
+          membershipId,
+        });
+        if (!r.ok) throw new TRPCError({ code: r.code, message: r.message });
+        return { ok: true as const, version: r.version };
+      });
+    }),
+
+  discardWelcomeGuideDraft: protectedProcedure
+    .input(welcomeGuideIdInputSchema)
+    .output(z.object({ ok: z.literal(true) }))
+    .mutation(async ({ ctx, input }) => {
+      return withAudit("discard_welcome_guide_draft", ctx, input, async () => {
+        requireAnyRole(ctx, PRE_JOINING_ADMIN_ROLES, "Welcome content requires hr_head or admin");
+        const r = await discardWelcomeGuideDraftLib(ctx.sql, {
+          tenantId: requireTenantId(ctx),
+          guideId: input.guideId,
+        });
+        if (!r.ok) throw new TRPCError({ code: r.code, message: r.message });
+        return { ok: true as const };
+      });
+    }),
+
+  createWelcomeDraftFromVersion: protectedProcedure
+    .input(welcomeGuideIdInputSchema)
+    .output(welcomeGuideVersionSchema)
+    .mutation(async ({ ctx, input }) => {
+      return withAudit("create_welcome_draft_from_version", ctx, input, async () => {
+        requireAnyRole(ctx, PRE_JOINING_ADMIN_ROLES, "Welcome content requires hr_head or admin");
+        const tenantId = requireTenantId(ctx);
+        const membershipId = await resolveCallerMembershipId(ctx, tenantId);
+        const r = await createWelcomeDraftFromVersionLib(ctx.sql, {
+          tenantId,
+          guideId: input.guideId,
+          membershipId,
+        });
+        if (!r.ok) throw new TRPCError({ code: r.code, message: r.message });
+        return r.guide;
+      });
+    }),
+
   // ─────────────────────── listDocumentsPastRetention (T4.3) ───────────────────────
   //
   // The honesty crux. An HONEST register of UPLOADED documents whose retention
@@ -18966,6 +19127,41 @@ export const appRouter = router({
           completedAt: toIsoString(updated.completedAt),
         };
       });
+    }),
+
+  /**
+   * candidateGetMyWelcomeGuide (PC-18) — the published welcome guide for the
+   * caller's pre-joining application (accepted offer, not yet joined): their
+   * requisition's business unit, else the nearest ancestor with a published
+   * guide, else the organisation default. PERSON-SCOPED via
+   * candidates.person_id = ctx.candidate.personId inside the lib.
+   */
+  candidateGetMyWelcomeGuide: candidateProcedure
+    .output(candidateGetMyWelcomeGuideOutputSchema)
+    .query(async ({ ctx }) => {
+      return getCandidateWelcomeGuideLib(ctx.sql, {
+        tenantId: ctx.candidate.tenantId,
+        personId: ctx.candidate.personId,
+        companyName: ctx.candidate.tenantDisplayName,
+      });
+    }),
+
+  /**
+   * candidateMarkWelcomeSectionViewed (PC-18) — read receipt for one section.
+   * Only the guide the caller would be shown right now is accepted; idempotent.
+   */
+  candidateMarkWelcomeSectionViewed: candidateProcedure
+    .input(candidateMarkWelcomeSectionViewedInputSchema)
+    .output(z.object({ ok: z.literal(true) }))
+    .mutation(async ({ ctx, input }) => {
+      const r = await markWelcomeSectionViewedLib(ctx.sql, {
+        tenantId: ctx.candidate.tenantId,
+        personId: ctx.candidate.personId,
+        guideId: input.guideId,
+        section: input.section,
+      });
+      if (!r.ok) throw new TRPCError({ code: r.code, message: r.message });
+      return { ok: true as const };
     }),
 
   // ═══════════ DASH-01 — persona landing dashboards ═══════════
