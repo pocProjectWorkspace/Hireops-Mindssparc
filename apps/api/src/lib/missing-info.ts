@@ -226,3 +226,76 @@ export function computeMissingInfo(
   }
   return out;
 }
+
+// ─────────────────────────── field presence (PC-7b) ───────────────────────────
+
+/** The parsed-resume keys presence reads (structural — the router's
+ * ParsedResumeView is assignable). Every key optional; a partial parse never throws. */
+export interface PresenceParsedResume {
+  skills?: unknown;
+  notice_period_days?: unknown;
+  availability_date?: unknown;
+  work_authorization?: unknown;
+  education?: unknown;
+  personal?: Record<string, unknown>;
+}
+
+export interface FieldPresenceInputs {
+  /** applications.expected_salary_inr_paise (PC-7's expected CTC column). */
+  expectedSalaryInrPaise: bigint | null;
+  parsed: PresenceParsedResume;
+  personLocationCountry: string | null;
+  /** PC-7 applications.notice_period_days — preferred over the parsed CV. */
+  applicationNoticePeriodDays?: number | null;
+  /** PC-7 applications.current_location — preferred over persons / the CV. */
+  applicationCurrentLocation?: string | null;
+}
+
+function presentString(v: unknown): boolean {
+  return typeof v === "string" && v.trim().length > 0;
+}
+
+/**
+ * Deterministic field-presence for the Missing Info Tracker AND the T2.1
+ * candidate-field stage gate. `true` = the value is on the application / parsed
+ * resume / person; `false` = genuinely missing (drives a pending row, and can
+ * block a forward move). Reads only real fields — no inference.
+ *
+ * PC-7b — the per-application screening answers win: notice period is present
+ * when applications.notice_period_days is set (else the parsed CV's), current
+ * location when applications.current_location is set (else persons / the CV).
+ * Expected salary was always the application column.
+ */
+export function computeFieldPresence(args: FieldPresenceInputs): FieldPresence {
+  const { parsed } = args;
+  const personal = parsed.personal ?? {};
+  const noticePresent =
+    args.applicationNoticePeriodDays != null ||
+    typeof parsed.notice_period_days === "number" ||
+    typeof personal.notice_period_days === "number";
+  const availabilityPresent =
+    presentString(parsed.availability_date) || presentString(personal.availability_date);
+  const workAuthPresent =
+    presentString(parsed.work_authorization) || presentString(personal.work_authorization);
+  const locationPresent =
+    presentString(args.applicationCurrentLocation) ||
+    presentString(args.personLocationCountry) ||
+    presentString(personal.location_country);
+  const skillsPresent =
+    Array.isArray(parsed.skills) && parsed.skills.some((s) => typeof s === "string");
+  const educationYearPresent =
+    Array.isArray(parsed.education) &&
+    parsed.education.some(
+      (e) => e && typeof e === "object" && (e as Record<string, unknown>).year != null,
+    );
+
+  return {
+    expected_salary: args.expectedSalaryInrPaise != null,
+    notice_period: noticePresent,
+    availability_date: availabilityPresent,
+    work_authorization: workAuthPresent,
+    current_location: locationPresent,
+    skills_confirmation: skillsPresent,
+    education_year: educationYearPresent,
+  };
+}

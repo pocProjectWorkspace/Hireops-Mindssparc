@@ -41,6 +41,7 @@ import {
 } from "drizzle-orm";
 import {
   db as poolDb,
+  apiAuditLogs,
   tenants,
   persons,
   candidates,
@@ -179,6 +180,15 @@ import {
   listCandidatesInputSchema,
   listCandidatesOutputSchema,
   listCandidatesByRequisitionInputSchema,
+  bulkMoveApplicationsInputSchema,
+  bulkMoveApplicationsOutputSchema,
+  previewApplicationClosedEmailInputSchema,
+  previewApplicationClosedEmailOutputSchema,
+  BULK_MOVE_MAX,
+  CANDIDATE_LIST_PAGE_DEFAULT,
+  type BulkMoveApplicationsOutput,
+  type BulkMoveRowResult,
+  type CandidateListSort,
   listCandidatesByRequisitionOutputSchema,
   listShortlistInputSchema,
   listShortlistOutputSchema,
@@ -1102,6 +1112,7 @@ import {
 } from "../lib/req-revision";
 import {
   computeMissingInfo,
+  computeFieldPresence,
   blocksAdvanceLabelForDef,
   fieldDef as missingInfoFieldDef,
   fieldDefFrom,
@@ -1137,6 +1148,19 @@ import {
   setApplicationScreeningAnswers,
   summariseKnockouts,
 } from "../lib/screening-answers";
+import {
+  CANDIDATE_LIST_SORT_ORDER,
+  candidateListConditions,
+  factFilterConditions,
+  resolveFactFilters,
+  whereAll,
+} from "../lib/candidate-list-filters";
+import {
+  bulkMoveAuditInput,
+  classifyBulkMoveError,
+  planBulkMove,
+  singleMoveAuditAction,
+} from "../lib/bulk-move";
 import {
   DEFAULT_APPLY_SCREENING_POLICY,
   knockoutFieldDef,
@@ -2102,6 +2126,9 @@ async function loadApplicationFieldPresence(
   const [row] = await db
     .select({
       expectedSalaryInrPaise: applications.expectedSalaryInrPaise,
+      // PC-7b — the application's own screening answers win over CV / person.
+      noticePeriodDays: applications.noticePeriodDays,
+      currentLocation: applications.currentLocation,
       parsedSkills: candidates.parsedSkills,
       personLocationCountry: persons.locationCountry,
     })
@@ -2115,6 +2142,8 @@ async function loadApplicationFieldPresence(
     expectedSalaryInrPaise: row.expectedSalaryInrPaise,
     parsed: narrowParsedResume(row.parsedSkills),
     personLocationCountry: row.personLocationCountry,
+    applicationNoticePeriodDays: row.noticePeriodDays,
+    applicationCurrentLocation: row.currentLocation,
   });
 }
 
@@ -3982,50 +4011,8 @@ function narrowParsedResume(value: unknown): ParsedResumeView {
   if (!value || typeof value !== "object") return {};
   return value as ParsedResumeView;
 }
-function asString(v: unknown): string | null {
-  return typeof v === "string" && v.trim().length > 0 ? v.trim() : null;
-}
 function asStringArray(v: unknown): string[] {
   return Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : [];
-}
-
-/**
- * Deterministic field-presence for the Missing Info Tracker. `true` = the value
- * is on the application / parsed resume; `false` = genuinely missing (drives a
- * pending row). Reads only real fields — no inference.
- */
-function computeFieldPresence(args: {
-  expectedSalaryInrPaise: bigint | null;
-  parsed: ParsedResumeView;
-  personLocationCountry: string | null;
-}): FieldPresence {
-  const { parsed } = args;
-  const personal = parsed.personal ?? {};
-  const noticePresent =
-    typeof parsed.notice_period_days === "number" ||
-    typeof personal.notice_period_days === "number";
-  const availabilityPresent =
-    asString(parsed.availability_date) != null || asString(personal.availability_date) != null;
-  const workAuthPresent =
-    asString(parsed.work_authorization) != null || asString(personal.work_authorization) != null;
-  const locationPresent =
-    asString(args.personLocationCountry) != null || asString(personal.location_country) != null;
-  const skillsPresent = asStringArray(parsed.skills).length > 0;
-  const educationYearPresent =
-    Array.isArray(parsed.education) &&
-    parsed.education.some(
-      (e) => e && typeof e === "object" && (e as Record<string, unknown>).year != null,
-    );
-
-  return {
-    expected_salary: args.expectedSalaryInrPaise != null,
-    notice_period: noticePresent,
-    availability_date: availabilityPresent,
-    work_authorization: workAuthPresent,
-    current_location: locationPresent,
-    skills_confirmation: skillsPresent,
-    education_year: educationYearPresent,
-  };
 }
 
 /** Parsed resume highlights (deterministic — flattened from work_history +
@@ -4060,6 +4047,9 @@ interface RecruiterBriefContextRow {
   currentStage: ApplicationStage;
   aiScore: number | null;
   expectedSalaryInrPaise: bigint | null;
+  /** PC-7b — application screening answers (preferred by field presence). */
+  applicationNoticePeriodDays: number | null;
+  applicationCurrentLocation: string | null;
   personLocationCountry: string | null;
   parsedSkills: unknown;
   yearsOfExperience: number | null;
@@ -4089,6 +4079,8 @@ async function loadRecruiterBriefContext(
       currentStage: applications.currentStage,
       aiScore: applications.aiScore,
       expectedSalaryInrPaise: applications.expectedSalaryInrPaise,
+      applicationNoticePeriodDays: applications.noticePeriodDays,
+      applicationCurrentLocation: applications.currentLocation,
       personLocationCountry: persons.locationCountry,
       parsedSkills: candidates.parsedSkills,
       yearsOfExperience: candidates.yearsOfExperience,
@@ -4145,6 +4137,8 @@ async function loadRecruiterBriefContext(
       currentStage: row.currentStage as ApplicationStage,
       aiScore: row.aiScore != null ? Number(row.aiScore) : null,
       expectedSalaryInrPaise: row.expectedSalaryInrPaise,
+      applicationNoticePeriodDays: row.applicationNoticePeriodDays,
+      applicationCurrentLocation: row.applicationCurrentLocation,
       personLocationCountry: row.personLocationCountry,
       parsedSkills: row.parsedSkills,
       yearsOfExperience: row.yearsOfExperience != null ? Number(row.yearsOfExperience) : null,
@@ -4882,7 +4876,12 @@ export const appRouter = router({
           ? [dsql`${applications.aiScore} >= ${filters.minAiScore}`]
           : []),
         ...(filters.slaBreachOnly ? [slaBreachExpr] : []),
+        // PC-5 — the same SQL fact filters as candidates-by-role (expected-CTC
+        // dropped silently for callers who cannot see pay).
+        ...factFilterConditions(resolveFactFilters(filters, ctx.roles).applied),
       ];
+      // PC-5 — offset mode: stable order + a total, cursor ignored.
+      const offsetMode = input.pagination.offset !== undefined;
 
       // Sort + cursor. For Wave 1 we keep the cursor field locked to the
       // primary sort field; cross-sort cursor reuse isn't perfect, but
@@ -4892,20 +4891,24 @@ export const appRouter = router({
       let orderClause;
       if (input.sort === "ai_score_desc") {
         orderClause = dsql`${applications.aiScore} DESC NULLS LAST, ${applications.id} DESC`;
-        if (cursor) {
+        if (cursor && !offsetMode) {
           // Cursor encodes createdAt fallback; not strictly correct for
           // ai_score_desc but stable enough for Wave 1.
           conds.push(lt(applications.createdAt, cursor));
         }
       } else if (input.sort === "sla_breach") {
         // Oldest-in-stage first — recruiter sees most overdue at the top.
-        orderClause = dsql`${applications.stageEnteredAt} ASC`;
-        if (cursor) {
+        orderClause = offsetMode
+          ? dsql`${applications.stageEnteredAt} ASC, ${applications.id} ASC`
+          : dsql`${applications.stageEnteredAt} ASC`;
+        if (cursor && !offsetMode) {
           conds.push(dsql`${applications.stageEnteredAt} > ${cursor.toISOString()}`);
         }
       } else {
-        orderClause = desc(applications.createdAt);
-        if (cursor) conds.push(lt(applications.createdAt, cursor));
+        orderClause = offsetMode
+          ? dsql`${applications.createdAt} DESC, ${applications.id} DESC`
+          : desc(applications.createdAt);
+        if (cursor && !offsetMode) conds.push(lt(applications.createdAt, cursor));
       }
 
       const rows = await db
@@ -4926,6 +4929,7 @@ export const appRouter = router({
           knockoutPassed: applications.knockoutPassed,
           knockoutFailures: applications.knockoutFailures,
           knockoutEvaluatedAt: applications.knockoutEvaluatedAt,
+          total: dsql<number>`(count(*) OVER ())::int`,
         })
         .from(applications)
         .innerJoin(
@@ -4941,10 +4945,40 @@ export const appRouter = router({
         )
         .where(conds.length ? and(...conds) : undefined)
         .orderBy(orderClause)
-        .limit(limit + 1);
+        .limit(offsetMode ? limit : limit + 1)
+        .offset(offsetMode ? (input.pagination.offset ?? 0) : 0);
 
-      const hasMore = rows.length > limit;
-      const out = rows.slice(0, limit);
+      let total: number | null = null;
+      let hasMore: boolean;
+      let out: typeof rows;
+      if (offsetMode) {
+        out = rows;
+        if (rows[0]) {
+          total = rows[0].total;
+        } else {
+          // Past the end: count(*) OVER () had no row to ride on.
+          const [c] = await db
+            .select({ n: dsql<number>`count(*)::int` })
+            .from(applications)
+            .innerJoin(
+              candidates,
+              and(
+                eq(applications.candidateId, candidates.id),
+                eq(applications.tenantId, candidates.tenantId),
+              ),
+            )
+            .innerJoin(
+              persons,
+              and(eq(candidates.personId, persons.id), eq(candidates.tenantId, persons.tenantId)),
+            )
+            .where(conds.length ? and(...conds) : undefined);
+          total = c?.n ?? 0;
+        }
+        hasMore = false;
+      } else {
+        hasMore = rows.length > limit;
+        out = rows.slice(0, limit);
+      }
 
       // HRHEAD-03 screeningPrivacy — same presentation-level mask the drawer
       // applies, here per triage row. Resolve the policy once, then decide
@@ -4977,6 +5011,7 @@ export const appRouter = router({
           };
         }),
         nextCursor: hasMore ? lastCursor(out) : null,
+        total,
       };
     }),
 
@@ -6654,6 +6689,280 @@ export const appRouter = router({
           input.reason ?? null,
         );
       });
+    }),
+
+  /**
+   * PC-5 — checkbox bulk stage move on the candidates-by-role list: advance to
+   * the next stage, reject, or move to a named stage. ONE mutation for up to
+   * BULK_MOVE_MAX (500) applications, chosen either by explicit ids ("select on
+   * this page") or by the list filter ("select all N matching" — re-resolved
+   * here with the same SQL the list uses, so the server moves exactly what the
+   * recruiter is looking at; more than the cap is refused, never truncated).
+   *
+   * HONESTY. Each row goes through the SAME transitionApplicationStage core as
+   * advanceApplication / rejectApplication: the HR-round and candidate-field
+   * stage gates refuse per row (reported as skipped, gate_blocked, with the
+   * gate's message), the candidate stage / closing email and the partner email
+   * enqueue per row, and each moved row gets its own api_audit_logs entry with
+   * the single-move action name (advance_application / reject_application,
+   * marked bulk) so reports count it exactly like a single move. Each row runs
+   * in its own savepoint so one failure never aborts the batch.
+   *
+   * Role gate: admin + recruiter (RECRUITER_SURFACE_ROLES) — the candidates
+   * surface's gate and the Iris bulk_advance / bulk_reject actions' roles.
+   */
+  bulkMoveApplications: protectedProcedure
+    .input(bulkMoveApplicationsInputSchema)
+    .output(bulkMoveApplicationsOutputSchema)
+    .mutation(async ({ ctx, input }): Promise<BulkMoveApplicationsOutput> => {
+      requireAnyRole(
+        ctx,
+        RECRUITER_SURFACE_ROLES,
+        "Bulk stage moves are available to recruiters and admins.",
+      );
+      const db = requireDb(ctx);
+      const tenantId = ctx.tenantId;
+      if (!tenantId) {
+        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
+      }
+
+      // 1. Resolve the selection to concrete application ids (RLS-scoped).
+      let ids: string[];
+      if (input.selection.mode === "ids") {
+        ids = [...new Set(input.selection.applicationIds)];
+      } else {
+        const { conditions } = candidateListConditions(input.selection.filter, ctx.roles);
+        const matched = await db
+          .select({ id: applications.id })
+          .from(applications)
+          .innerJoin(
+            candidates,
+            and(
+              eq(applications.candidateId, candidates.id),
+              eq(applications.tenantId, candidates.tenantId),
+            ),
+          )
+          .innerJoin(
+            persons,
+            and(eq(candidates.personId, persons.id), eq(candidates.tenantId, persons.tenantId)),
+          )
+          .where(whereAll(conditions))
+          .orderBy(desc(applications.createdAt), desc(applications.id))
+          .limit(BULK_MOVE_MAX + 1);
+        if (matched.length > BULK_MOVE_MAX) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: `More than ${BULK_MOVE_MAX} candidates match these filters. Narrow the filters and try again.`,
+          });
+        }
+        ids = matched.map((m) => m.id);
+      }
+
+      // 2. Current stages in one read; the plan is server-side only.
+      const stageRows = ids.length
+        ? await db
+            .select({ id: applications.id, stage: applications.currentStage })
+            .from(applications)
+            .where(inArray(applications.id, ids))
+        : [];
+      const stageById = new Map(stageRows.map((r) => [r.id, r.stage]));
+      const reason = input.reason?.trim() ? input.reason.trim() : null;
+      const bulkRequestId = ctx.requestId;
+
+      const results: BulkMoveRowResult[] = [];
+      for (const applicationId of ids) {
+        const currentStage = stageById.get(applicationId);
+        if (!currentStage) {
+          results.push({
+            applicationId,
+            status: "skipped",
+            fromStage: null,
+            toStage: null,
+            transitionId: null,
+            skipReason: "not_found",
+            message: "Application not found.",
+          });
+          continue;
+        }
+        const plan = planBulkMove(input.action, currentStage, input.targetStage);
+        if (plan.kind === "skip") {
+          results.push({
+            applicationId,
+            status: "skipped",
+            fromStage: currentStage,
+            toStage: null,
+            transitionId: null,
+            skipReason: plan.skipReason,
+            message: plan.message,
+          });
+          continue;
+        }
+        try {
+          // Savepoint per row: a gate refusal or a DB error rolls back only
+          // this row's writes, never the outer request transaction.
+          const moved = await db.transaction((tx) =>
+            transitionApplicationStage(tx, ctx, applicationId, plan.targetStage, reason, {
+              bulk: true,
+              bulkRequestId,
+            }),
+          );
+          results.push({
+            applicationId,
+            status: "moved",
+            fromStage: moved.fromStage,
+            toStage: moved.toStage,
+            transitionId: moved.transitionId,
+            skipReason: null,
+            message: null,
+          });
+        } catch (err) {
+          const c = classifyBulkMoveError(err);
+          if (c.skipReason === "error") {
+            ctx.log.warn(
+              { err, request_id: ctx.requestId, application_id: applicationId },
+              "bulkMoveApplications: row failed",
+            );
+          }
+          results.push({
+            applicationId,
+            status: "skipped",
+            fromStage: currentStage,
+            toStage: null,
+            transitionId: null,
+            skipReason: c.skipReason,
+            message: c.message,
+          });
+        }
+      }
+
+      const moved = results.filter((r) => r.status === "moved");
+      // Audit, mirroring withAudit (fire-and-forget, never fails the request):
+      // one row per moved application under the single-move action name, plus
+      // one summary row for the bulk intent itself.
+      const auditRows = [
+        ...moved.flatMap((r) =>
+          r.toStage
+            ? [
+                {
+                  tenantId,
+                  action: singleMoveAuditAction(r.toStage),
+                  actorUserId: ctx.userId,
+                  requestId: ctx.requestId,
+                  source: "app" as const,
+                  inputJson: bulkMoveAuditInput({
+                    applicationId: r.applicationId,
+                    targetStage: r.toStage,
+                    reason,
+                    bulkRequestId,
+                  }),
+                },
+              ]
+            : [],
+        ),
+        {
+          tenantId,
+          action: "bulk_move_applications",
+          actorUserId: ctx.userId,
+          requestId: ctx.requestId,
+          source: "app" as const,
+          inputJson: {
+            action: "bulk_move_applications",
+            input: {
+              action: input.action,
+              targetStage: input.targetStage ?? null,
+              selectionMode: input.selection.mode,
+              ...(input.selection.mode === "filter" ? { filter: input.selection.filter } : {}),
+              requested: ids.length,
+              moved: moved.length,
+            },
+          },
+        },
+      ];
+      void poolDb
+        .insert(apiAuditLogs)
+        .values(auditRows)
+        .then(() => undefined)
+        .catch((err: unknown) => {
+          ctx.log.error(
+            { err, action: "bulk_move_applications", request_id: ctx.requestId },
+            "api_audit_logs write failed",
+          );
+        });
+
+      return {
+        requested: ids.length,
+        moved: moved.length,
+        skipped: results.length - moved.length,
+        results,
+      };
+    }),
+
+  /**
+   * PC-5 — what a rejected candidate will receive: the
+   * candidate.application_closed email rendered through the REAL render path
+   * with the tenant's enabled copy override (the same one the dispatcher
+   * applies), the tenant name, and the role title when a requisition is given.
+   * The candidate's name is a placeholder — each email is personalised at send.
+   * The reject path has no suppression switch, so suppressionSupported is false
+   * and the bulk-reject dialog shows the preview only.
+   */
+  previewApplicationClosedEmail: protectedProcedure
+    .input(previewApplicationClosedEmailInputSchema)
+    .output(previewApplicationClosedEmailOutputSchema)
+    .query(async ({ ctx, input }) => {
+      requireAnyRole(ctx, RECRUITER_SURFACE_ROLES, "Candidates is a recruiter surface.");
+      const db = requireDb(ctx);
+      const tenantId = ctx.tenantId;
+      if (!tenantId) {
+        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
+      }
+      let positionTitle = "the role you applied for";
+      if (input.requisitionId) {
+        const [req] = await db
+          .select({ title: positions.title })
+          .from(requisitions)
+          .innerJoin(
+            positions,
+            and(
+              eq(positions.id, requisitions.positionId),
+              eq(positions.tenantId, requisitions.tenantId),
+            ),
+          )
+          .where(eq(requisitions.id, input.requisitionId))
+          .limit(1);
+        if (req?.title) positionTitle = req.title;
+      }
+      const [ov] = await db
+        .select({
+          subjectOverride: tenantEmailTemplateOverrides.subjectOverride,
+          slotOverrides: tenantEmailTemplateOverrides.slotOverrides,
+        })
+        .from(tenantEmailTemplateOverrides)
+        .where(
+          and(
+            eq(tenantEmailTemplateOverrides.tenantId, tenantId),
+            eq(tenantEmailTemplateOverrides.templateKey, "candidate.application_closed"),
+            eq(tenantEmailTemplateOverrides.enabled, true),
+          ),
+        )
+        .limit(1);
+      const overrides: EmailTemplateOverrides = {};
+      if (ov?.subjectOverride && ov.subjectOverride.trim().length > 0) {
+        overrides.subject = ov.subjectOverride;
+      }
+      const slots = ov ? narrowSlotOverrides(ov.slotOverrides) : {};
+      if (Object.keys(slots).length > 0) overrides.slots = slots;
+      const rendered = await renderTemplate(
+        "candidate.application_closed",
+        {
+          candidateName: "[Candidate name]",
+          positionTitle,
+          companyName: await resolveTenantDisplayName(tenantId),
+          outcome: "not_selected",
+        },
+        overrides.subject || overrides.slots ? overrides : undefined,
+      );
+      return { subject: rendered.subject, html: rendered.html, suppressionSupported: false };
     }),
 
   /**
@@ -22290,13 +22599,65 @@ export const appRouter = router({
     .query(async ({ ctx, input }) => {
       requireAnyRole(ctx, RECRUITER_SURFACE_ROLES, "Candidates is a recruiter surface.");
       const db = requireDb(ctx);
-      const search = input.search?.trim().toLowerCase() ?? "";
 
-      const conds = [
-        ...(input.stage ? [eq(applications.currentStage, input.stage)] : []),
-        ...(input.source ? [eq(applications.source, input.source)] : []),
-      ];
+      // PC-5 — every filter is SQL (candidate-list-filters.ts) so paging and
+      // totals are honest at 400+ CVs per role. The expected-CTC filter is
+      // dropped silently for callers who cannot see pay.
+      const { sort: sortIn, page: pageIn, ...filter } = input;
+      const offset = pageIn?.offset ?? 0;
+      const limit = pageIn?.limit ?? CANDIDATE_LIST_PAGE_DEFAULT;
+      const sort: CandidateListSort = sortIn ?? "ai_score";
+      const { conditions } = candidateListConditions(filter, ctx.roles);
+      const { conditions: facetConditions } = candidateListConditions(filter, ctx.roles, {
+        includeRequisition: false,
+      });
 
+      // Role picker facets: matching rows per requisition under every filter
+      // except the requisition one. Cheap GROUP BY over the tenant's
+      // applications (RLS-scoped); also feeds each group's phase rollup.
+      const facetRows = await db
+        .select({
+          requisitionId: applications.requisitionId,
+          roleTitle: positions.title,
+          count: dsql<number>`count(*)::int`,
+          stages: dsql<ApplicationStage[]>`array_agg(DISTINCT ${applications.currentStage})`,
+        })
+        .from(applications)
+        .innerJoin(
+          candidates,
+          and(
+            eq(applications.candidateId, candidates.id),
+            eq(applications.tenantId, candidates.tenantId),
+          ),
+        )
+        .innerJoin(
+          persons,
+          and(eq(candidates.personId, persons.id), eq(candidates.tenantId, persons.tenantId)),
+        )
+        .innerJoin(
+          requisitions,
+          and(
+            eq(applications.requisitionId, requisitions.id),
+            eq(applications.tenantId, requisitions.tenantId),
+          ),
+        )
+        .innerJoin(
+          positions,
+          and(
+            eq(requisitions.positionId, positions.id),
+            eq(requisitions.tenantId, positions.tenantId),
+          ),
+        )
+        .where(whereAll(facetConditions))
+        .groupBy(applications.requisitionId, positions.title)
+        .orderBy(dsql`count(*) DESC`, applications.requisitionId);
+      const facetByReq = new Map(facetRows.map((f) => [f.requisitionId, f]));
+
+      // Page of rows. Rows of one requisition are kept contiguous (groups
+      // ordered largest-first, as the accordion always was), then the sort key
+      // within the group; applications.id ends every order so offset paging
+      // is stable. count(*) OVER () is the total across all pages.
+      const groupSize = dsql`count(*) OVER (PARTITION BY ${applications.requisitionId})`;
       const rows = await db
         .select({
           candidateId: candidates.id,
@@ -22331,6 +22692,7 @@ export const appRouter = router({
           // real FK; null for every direct application, and the chip falls
           // back to the plain source label.
           partnerOrgName: partnerOrgs.name,
+          total: dsql<number>`(count(*) OVER ())::int`,
         })
         .from(applications)
         .innerJoin(
@@ -22365,8 +22727,22 @@ export const appRouter = router({
             eq(partnerOrgs.id, applications.sourcePartnerId),
           ),
         )
-        .where(conds.length ? and(...conds) : undefined)
-        .orderBy(desc(applications.aiScore), desc(applications.createdAt));
+        .where(whereAll(conditions))
+        .orderBy(
+          dsql`${groupSize} DESC`,
+          applications.requisitionId,
+          ...CANDIDATE_LIST_SORT_ORDER[sort],
+        )
+        .limit(limit)
+        .offset(offset);
+
+      // count(*) OVER () rides on every row; an empty page past the end still
+      // needs the total, so fall back to the facet sum (same filters).
+      const total =
+        rows[0]?.total ??
+        (filter.requisitionId
+          ? (facetByReq.get(filter.requisitionId)?.count ?? 0)
+          : facetRows.reduce((sum, f) => sum + f.count, 0));
 
       // Must-have skills per jd_version (one query, then a lookup map).
       const mustHaveByJd = await loadMustHaveSkillsByJdVersion(
@@ -22384,10 +22760,6 @@ export const appRouter = router({
       >();
 
       for (const r of rows) {
-        if (search) {
-          const hay = `${r.fullName ?? ""} ${recruiterRefCode(r.candidateId)}`.toLowerCase();
-          if (!hay.includes(search)) continue;
-        }
         const parsed = narrowParsedSkills(r.parsedSkills);
         const mask = resolveCandidateMasking({ roles: ctx.roles, stage: r.stage, privacy });
         // PC-7 — the application's stated notice wins; parsed CV is the fallback.
@@ -22399,7 +22771,8 @@ export const appRouter = router({
         );
         const missingInfo = computeCandidateMissingInfo({
           phone: r.phone,
-          location: r.locationCountry ?? r.locationCity,
+          // PC-7b — the application's stated location wins over the person's.
+          location: r.currentLocation ?? r.locationCountry ?? r.locationCity,
           linkedinUrl: r.linkedinUrl,
           resumeUrl: r.resumeUrl,
           expectedSalaryInrPaise: r.expectedSalaryInrPaise,
@@ -22411,12 +22784,12 @@ export const appRouter = router({
           g = {
             requisitionId: r.requisitionId,
             roleTitle: r.roleTitle ?? "Untitled requisition",
-            stages: [],
+            stages: facetByReq.get(r.requisitionId)?.stages ?? [],
             rows: [],
           };
           groups.set(r.requisitionId, g);
         }
-        g.stages.push(r.stage);
+        if (!facetByReq.has(r.requisitionId)) g.stages.push(r.stage);
         g.rows.push({
           candidateId: r.candidateId,
           applicationId: r.applicationId,
@@ -22438,20 +22811,26 @@ export const appRouter = router({
         });
       }
 
-      const shapedGroups = [...groups.values()]
-        .map((g) => ({
-          requisitionId: g.requisitionId,
-          roleTitle: g.roleTitle,
-          phase: rollupRequisitionPhase(g.stages),
-          candidateCount: g.rows.length,
-          rows: g.rows,
-        }))
-        .filter((g) => g.candidateCount > 0)
-        .sort((a, b) => b.candidateCount - a.candidateCount);
+      // Groups keep page order (already largest-first from the ORDER BY);
+      // candidateCount is the requisition's FULL matching count, not the page's.
+      const shapedGroups = [...groups.values()].map((g) => ({
+        requisitionId: g.requisitionId,
+        roleTitle: g.roleTitle,
+        phase: rollupRequisitionPhase(g.stages),
+        candidateCount: facetByReq.get(g.requisitionId)?.count ?? g.rows.length,
+        rows: g.rows,
+      }));
 
       return {
         groups: shapedGroups as never,
-        totalCandidates: shapedGroups.reduce((sum, g) => sum + g.candidateCount, 0),
+        totalCandidates: total,
+        page: { offset, limit, total },
+        requisitionFacets: facetRows.map((f) => ({
+          requisitionId: f.requisitionId,
+          roleTitle: f.roleTitle ?? "Untitled requisition",
+          count: f.count,
+        })),
+        compFilterAvailable: canSeeScreeningComp(ctx.roles),
       };
     }),
 
@@ -22663,6 +23042,8 @@ export const appRouter = router({
           expectedSalaryInrPaise: row.expectedSalaryInrPaise,
           parsed,
           personLocationCountry: row.personLocationCountry,
+          applicationNoticePeriodDays: row.applicationNoticePeriodDays,
+          applicationCurrentLocation: row.applicationCurrentLocation,
         });
         // T2.1 / G05 — display the tenant's EFFECTIVE required-field policy (the
         // override merged over the code catalog). No policy rows → the constant.
@@ -22871,6 +23252,8 @@ export const appRouter = router({
             candidateName: persons.fullName,
             currentStage: applications.currentStage,
             expectedSalaryInrPaise: applications.expectedSalaryInrPaise,
+            noticePeriodDays: applications.noticePeriodDays,
+            currentLocation: applications.currentLocation,
             personLocationCountry: persons.locationCountry,
             parsedSkills: candidates.parsedSkills,
             positionTitle: positions.title,
@@ -22911,6 +23294,8 @@ export const appRouter = router({
             expectedSalaryInrPaise: a.expectedSalaryInrPaise,
             parsed,
             personLocationCountry: a.personLocationCountry,
+            applicationNoticePeriodDays: a.noticePeriodDays,
+            applicationCurrentLocation: a.currentLocation,
           });
           const verdicts = computeMissingInfo(presence, effectiveFields);
           const candidateRef = `RC-${a.candidateId.slice(0, 6).toUpperCase()}`;
