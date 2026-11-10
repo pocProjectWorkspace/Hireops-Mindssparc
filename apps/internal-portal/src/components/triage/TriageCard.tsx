@@ -95,7 +95,7 @@ export function TriageCard({
       </div>
 
       <div className="flex shrink-0 items-center gap-2 sm:gap-4">
-        {scoreVisible ? <ScoreMeter score={row.aiScore} /> : null}
+        {scoreVisible ? <ScoreMeter score={row.aiScore ?? null} /> : null}
         <Badge tone={inStageTone} pill className="tabular-nums">
           {inStageLabel}
         </Badge>

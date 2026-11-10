@@ -213,9 +213,11 @@ async function main() {
     }),
   );
 
-  // AI-03 fit-scoring drain. Same SKIP LOCKED + small batch pattern;
-  // each row costs a real Anthropic call so the default batch is
-  // smaller than the notification drain (5 vs 25).
+  // AI-03 fit-scoring drain (+ PC-6 screening evidence, same call). Same
+  // SKIP LOCKED pattern; PC-4: each pass claims and works rows N at a time
+  // (AI_SCORE_DRAIN_CONCURRENCY, default 8) — each row is a 15–30 s model
+  // call, so sequential processing capped throughput at a few hundred CVs/hr.
+  // The loop's in-flight guard still stops passes overlapping.
   loops.push(
     startLoop("ai-score-drain", AI_SCORE_DRAIN_INTERVAL_MS, async () => {
       const r = await drainAiScoreOutboxOnce({ log });

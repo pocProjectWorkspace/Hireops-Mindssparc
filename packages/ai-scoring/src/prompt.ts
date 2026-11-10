@@ -11,22 +11,47 @@
  * evolutions can be tracked across the historical scoring corpus
  * without re-running everything. Bump `AI_SCORING_PROMPT_VERSION`
  * whenever the prompt text or response shape changes meaningfully.
+ *
+ * PC-6 (prompt `pc6-v1`): the same call now also returns per-criterion
+ * screening EVIDENCE (`criteria`: verdict + reason + verbatim CV quotes), which
+ * the drain verifies (./screening-evidence.ts) and stores in
+ * application_screening_evidence. The score stays for ordering / back-compat.
+ * PP6 fixed: the model now sees the FULL JD (capped at JD_CHAR_CAP), not its
+ * first 500 characters. The candidate block is the rendered CV text between
+ * explicit markers — the only text a quote may be copied from — and carries no
+ * contact details, location or spoken languages.
  */
 
 import { z } from "zod";
 import type { ParserOutput } from "@hireops/ai-client";
+import {
+  SCREENING_VERDICTS,
+  renderCvForScreening,
+  type ScreeningCriterion,
+} from "./screening-evidence";
 
-// ai-03-v2 (CONF-03): the builder can now render an optional grading-emphasis
-// block driven by the per-tenant scoring weight profile. When no weights are
-// passed (a tenant at the incumbent defaults), the prompt is byte-identical to
-// ai-03-v1 — the emphasis block is opt-in, so default-profile scores are
-// unchanged.
-export const AI_SCORING_PROMPT_VERSION = "ai-03-v2";
+// ai-03-v1 → ai-03-v2 (CONF-03, optional grading-emphasis block) → pc6-v1
+// (PC-6: full JD, screening criteria + verbatim-quote evidence in the same
+// call, CV rendered as quotable text). The emphasis block is still opt-in:
+// rendered only for a NON-default weight profile.
+export const AI_SCORING_PROMPT_VERSION = "pc6-v1";
 
-/** Caps applied to the prompt to keep inputs bounded. */
-const SKILL_CAP = 50;
-const WORK_HISTORY_CAP = 3;
-const JD_DESCRIPTION_CHAR_CAP = 500;
+/**
+ * The JD is sent whole up to this many characters (PP6 — it used to be cut at
+ * 500, so the model never saw most requirements). 12k chars ≈ 3k tokens.
+ */
+export const JD_CHAR_CAP = 12_000;
+
+/** Delimiters around the CV text. No digits, so PII masking never touches them. */
+export const CV_BLOCK_BEGIN = "----- BEGIN CV -----";
+export const CV_BLOCK_END = "----- END CV -----";
+
+const screeningCriterionResponseSchema = z.object({
+  criterion_key: z.string(),
+  verdict: z.enum(SCREENING_VERDICTS),
+  reason: z.string(),
+  quotes: z.array(z.string()),
+});
 
 export const aiScoringResponseSchema = z.object({
   score: z.number().min(0).max(100),
@@ -47,6 +72,10 @@ export const aiScoringResponseSchema = z.object({
     .min(2)
     .max(4),
   caveats: z.array(z.string().min(1).max(500)).max(3),
+  // PC-6: per-criterion evidence. Defaults to [] on parse so a response
+  // without it (an older fixture) still scores — every criterion then reads
+  // "unclear" rather than failing the whole application.
+  criteria: z.array(screeningCriterionResponseSchema).default([]),
 });
 
 export type AIScoringResponse = z.infer<typeof aiScoringResponseSchema>;
@@ -72,15 +101,19 @@ export interface ScoringEmphasisInput {
 
 export interface BuildAIScoringPromptInput {
   positionTitle: string;
+  /** The JD body. Sent whole up to JD_CHAR_CAP (see composeScreeningJd). */
   jdDescription: string | null;
   jdSkills: JdSkillInput[];
   parsedCv: ParserOutput;
   /**
+   * PC-6 — the criteria to assess (buildScreeningCriteria). Omitted → the
+   * required jd_skills alone, in the order given.
+   */
+  criteria?: ScreeningCriterion[];
+  /**
    * Optional grading-emphasis guidance. When present and non-empty the prompt
    * renders an explicit "weight your judgement toward these categories"
-   * block; when omitted the prompt is byte-identical to ai-03-v1. The drain
-   * passes this only for a NON-default weight profile, so default-profile
-   * tenants score exactly as before CONF-03.
+   * block. The drain passes this only for a NON-default weight profile.
    */
   scoringWeights?: ScoringEmphasisInput[];
 }
@@ -91,6 +124,36 @@ export interface BuiltPrompt {
 }
 
 /**
+ * The JD text the screener sees: the stored jd_text, with the summary put in
+ * front when jd_text does not already contain it (seeded / imported JDs often
+ * carry the substance only in `summary`). Capped at JD_CHAR_CAP.
+ */
+export function composeScreeningJd(jdText: string | null, summary: string | null): string | null {
+  const body = jdText?.trim() ?? "";
+  const sum = summary?.trim() ?? "";
+  const joined = sum && !body.includes(sum) ? (body ? `${sum}\n\n${body}` : sum) : body;
+  if (!joined) return null;
+  return joined.length > JD_CHAR_CAP ? joined.slice(0, JD_CHAR_CAP) : joined;
+}
+
+/**
+ * The CV block out of a built (and possibly PII-masked) user prompt — exactly
+ * the text the model was shown, and therefore the text quotes are verified
+ * against. Null if the markers are missing.
+ */
+export function extractCvBlock(user: string): string | null {
+  const start = user.indexOf(`${CV_BLOCK_BEGIN}\n`);
+  const end = user.indexOf(`\n${CV_BLOCK_END}`, start);
+  if (start === -1 || end === -1) return null;
+  return user.slice(start + CV_BLOCK_BEGIN.length + 1, end);
+}
+
+const KIND_LABEL: Record<ScreeningCriterion["kind"], string> = {
+  must_have: "must-have skill",
+  requirement: "required qualification",
+};
+
+/**
  * Build the system + user messages for the AI scoring call. Returns
  * plain strings — the AI client wrapper handles provider-specific
  * envelope shape. Caller passes `aiScoringResponseSchema` as the
@@ -98,11 +161,14 @@ export interface BuiltPrompt {
  */
 export function buildAIScoringPrompt(input: BuildAIScoringPromptInput): BuiltPrompt {
   const system =
-    "You are an experienced technical recruiter evaluating a candidate's fit for a specific role. " +
-    "Read the job context and the candidate's parsed CV, then return a JSON object only — no prose, no explanation outside the JSON.";
+    "You are an experienced recruiter screening a candidate's CV against a specific role. " +
+    "Judge ONLY job-relevant evidence written in the CV. Never consider, infer or mention age, gender, " +
+    "race, ethnicity, caste, nationality, religion, marital or family status, disability, health, or any " +
+    "other protected characteristic, and never draw conclusions from names, places or institutions as " +
+    "proxies for them. Return a JSON object only — no prose, no explanation outside the JSON.";
 
-  const jdSummary = input.jdDescription
-    ? input.jdDescription.slice(0, JD_DESCRIPTION_CHAR_CAP).trim()
+  const jdBody = input.jdDescription
+    ? input.jdDescription.slice(0, JD_CHAR_CAP).trim()
     : "(no JD body provided)";
 
   const skillBullets = input.jdSkills
@@ -113,24 +179,17 @@ export function buildAIScoringPrompt(input: BuildAIScoringPromptInput): BuiltPro
     .join("\n");
   const skillsBlock = input.jdSkills.length > 0 ? skillBullets : "  (no required skills listed)";
 
-  const p = input.parsedCv;
-  const candidateSkills = p.skills.technical.slice(0, SKILL_CAP).join(", ") || "(none extracted)";
-  const yoe = p.total_years_experience !== null ? `${p.total_years_experience}` : "(unknown)";
-  const currentRoleLine = p.current_role
-    ? `${p.current_role.title} at ${p.current_role.company}`
-    : "(between roles)";
-  const topEdu = p.education[0];
-  const eduLine = topEdu
-    ? `${topEdu.degree} — ${topEdu.institution}${topEdu.field_of_study ? ` (${topEdu.field_of_study})` : ""}`
-    : "(none extracted)";
-  const workLines = p.work_history
-    .slice(0, WORK_HISTORY_CAP)
-    .map(
-      (w, i) =>
-        `  ${i + 1}. ${w.title} at ${w.company} (${w.start_date} → ${w.end_date ?? "present"})`,
-    )
-    .join("\n");
-  const workBlock = workLines || "  (none extracted)";
+  const criteria: ScreeningCriterion[] =
+    input.criteria ??
+    input.jdSkills
+      .filter((s) => s.isRequired)
+      .map((s, i) => ({ key: `mh-${i + 1}`, kind: "must_have" as const, label: s.skillName }));
+  const criteriaBlock =
+    criteria.length > 0
+      ? criteria.map((c) => `  - ${c.key} [${KIND_LABEL[c.kind]}]: ${c.label}`).join("\n")
+      : "  (no screening criteria defined for this requisition — return an empty criteria array)";
+
+  const cvText = renderCvForScreening(input.parsedCv) || "(nothing could be extracted from the CV)";
 
   // CONF-03: optional grading-emphasis guidance. Rendered only when the caller
   // passes a non-default weight profile. This is INSTRUCTION, not arithmetic —
@@ -154,16 +213,29 @@ export function buildAIScoringPrompt(input: BuildAIScoringPromptInput): BuiltPro
     `- Title: ${input.positionTitle}`,
     "- Required skills (with weights):",
     skillsBlock,
-    `- JD summary: ${jdSummary}`,
+    "- Job description:",
+    jdBody,
+    "",
+    "Screening criteria (assess EVERY one, by key):",
+    criteriaBlock,
     "",
     "Candidate parsed CV:",
-    `- Years of experience: ${yoe}`,
-    `- Current role: ${currentRoleLine}`,
-    `- Skills: ${candidateSkills}`,
-    `- Education: ${eduLine}`,
-    "- Work history (most recent):",
-    workBlock,
+    "The text between the markers is the ONLY information about the candidate. Every quote you",
+    "return must be copied from it exactly.",
+    CV_BLOCK_BEGIN,
+    cvText,
+    CV_BLOCK_END,
     ...emphasisLines,
+    "",
+    "For each screening criterion return one entry in `criteria`:",
+    '  - criterion_key: the exact key shown above (e.g. "mh-1").',
+    '  - verdict: "met" (the CV clearly shows it), "partially_met" (the CV shows part of it,',
+    '    or a close but weaker equivalent), "not_met" (the CV covers the relevant area and this',
+    '    is absent or contradicted), or "unclear" (the CV does not say enough to tell).',
+    "  - reason: one factual sentence about what the CV does or does not show.",
+    "  - quotes: 0-2 short excerpts copied character-for-character from the CV text between the",
+    "    markers. No paraphrase, no joining two passages, no added words. A met or partially_met",
+    "    verdict without a verbatim quote will be treated as unclear.",
     "",
     "Return JSON only matching this shape:",
     "{",
@@ -173,7 +245,11 @@ export function buildAIScoringPrompt(input: BuildAIScoringPromptInput): BuiltPro
     '      "score": <0-1>,',
     '      "note": "<one sentence>" }',
     "  ],   // 2-4 factors",
-    '  "caveats": [<short note>, ...]  // 0-3 items',
+    '  "caveats": [<short note>, ...],  // 0-3 items',
+    '  "criteria": [',
+    '    { "criterion_key": "<key>", "verdict": "met" | "partially_met" | "not_met" | "unclear",',
+    '      "reason": "<one sentence>", "quotes": ["<verbatim CV excerpt>", ...] }',
+    "  ]   // one per screening criterion",
     "}",
   ].join("\n");
 

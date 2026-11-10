@@ -77,6 +77,7 @@ import {
   workdaySyncOutbox,
   notificationOutbox,
   aiScoreOutbox,
+  applicationScreeningEvidence,
   automationAgents,
   agentTriggers,
   agentActions,
@@ -122,6 +123,16 @@ import {
 } from "@hireops/db";
 import { evaluateKnockouts, type KnockoutInput } from "@hireops/ai-scoring";
 import { SLA_THRESHOLDS_HOURS, resolveSlaThresholds } from "../lib/sla-thresholds";
+import {
+  evidenceOrderSql,
+  loadScreeningEvidence,
+  loadScreeningQueueByRequisition,
+  presentAiScore,
+  presentScoreExplanation,
+  screeningEvidenceJoin,
+  screeningSummaryColumns,
+  toScreeningSummary,
+} from "../lib/screening-evidence-read";
 import { computeGovernanceRiskFlags, computeExecutiveAudit } from "../lib/governance";
 // R0.1 reporting semantic layer — shared measure definitions. Namespaced
 // so `measures.funnelByStage(…)` reads as "the canonical funnel", and so
@@ -182,6 +193,8 @@ import {
   listCandidatesByRequisitionOutputSchema,
   listShortlistInputSchema,
   listShortlistOutputSchema,
+  getApplicationScreeningEvidenceInputSchema,
+  getApplicationScreeningEvidenceOutputSchema,
   getRequisitionByIdInputSchema,
   getRequisitionByIdOutputSchema,
   listRequisitionsInputSchema,
@@ -4659,16 +4672,27 @@ export const appRouter = router({
             requestId: ctx.requestId,
           });
         }
+        // PC-6 — the per-criterion screening evidence (primary screening
+        // output), and NEW-16: the 0–100 score is omitted server-side when the
+        // tenant hides it.
+        const scoreVisible = ctx.tenantId
+          ? (await resolveTenantAiSettingsDb(ctx.tenantId)).screeningScoreVisible
+          : true;
+        const screeningEvidence = appRow ? await loadScreeningEvidence(db, appRow.id) : null;
         return {
           candidate: { ...row.candidate, createdAt: row.candidate.createdAt.toISOString() },
           person: presentedPerson,
           application: appRow
             ? {
                 id: appRow.id,
-                aiScore: appRow.aiScore === null ? null : Number(appRow.aiScore),
-                aiScoreExplanation: appRow.aiScoreExplanation ?? null,
+                ...presentAiScore(appRow.aiScore, scoreVisible),
+                aiScoreExplanation: presentScoreExplanation(
+                  appRow.aiScoreExplanation ?? null,
+                  scoreVisible,
+                ),
                 aiScoredAt: toIsoString(appRow.aiScoredAt),
                 partnerOrgName: appRow.partnerOrgName ?? null,
+                screeningEvidence,
               }
             : null,
           latestTransition,
@@ -4712,11 +4736,19 @@ export const appRouter = router({
         );
       const slaBreachExpr = dsql`(CASE ${dsql.join(slaBreachClauses, dsql.raw(" "))} ELSE false END)`;
 
+      // NEW-16 / PC-6 — with the screening score hidden for this tenant, the
+      // score can neither be returned NOR leak through the order or a filter:
+      // ai_score_desc is served as evidence_desc and minAiScore is ignored.
+      const scoreVisible = ctx.tenantId
+        ? (await resolveTenantAiSettingsDb(ctx.tenantId)).screeningScoreVisible
+        : true;
+      const sort = !scoreVisible && input.sort === "ai_score_desc" ? "evidence_desc" : input.sort;
+
       const conds = [
         ...(filters.requisitionId ? [eq(applications.requisitionId, filters.requisitionId)] : []),
         ...(filters.stage ? [eq(applications.currentStage, filters.stage)] : []),
         ...(filters.source ? [eq(applications.source, filters.source)] : []),
-        ...(filters.minAiScore !== undefined
+        ...(filters.minAiScore !== undefined && scoreVisible
           ? [dsql`${applications.aiScore} >= ${filters.minAiScore}`]
           : []),
         ...(filters.slaBreachOnly ? [slaBreachExpr] : []),
@@ -4728,14 +4760,20 @@ export const appRouter = router({
       // 20, Momentum capped at 50). Document if pagination quirks
       // surface in practice.
       let orderClause;
-      if (input.sort === "ai_score_desc") {
+      if (sort === "ai_score_desc") {
         orderClause = dsql`${applications.aiScore} DESC NULLS LAST, ${applications.id} DESC`;
         if (cursor) {
           // Cursor encodes createdAt fallback; not strictly correct for
           // ai_score_desc but stable enough for Wave 1.
           conds.push(lt(applications.createdAt, cursor));
         }
-      } else if (input.sort === "sla_breach") {
+      } else if (sort === "evidence_desc") {
+        // PC-6 — must-haves met (partial = ½) desc, not met asc, unscreened
+        // last; newest first within a tie. Same createdAt-cursor caveat as
+        // ai_score_desc above.
+        orderClause = dsql`${evidenceOrderSql()}, ${applications.createdAt} DESC, ${applications.id} DESC`;
+        if (cursor) conds.push(lt(applications.createdAt, cursor));
+      } else if (sort === "sla_breach") {
         // Oldest-in-stage first — recruiter sees most overdue at the top.
         orderClause = dsql`${applications.stageEnteredAt} ASC`;
         if (cursor) {
@@ -4758,6 +4796,7 @@ export const appRouter = router({
           aiScore: applications.aiScore,
           aiScoreExplanation: applications.aiScoreExplanation,
           createdAt: applications.createdAt,
+          ...screeningSummaryColumns,
         })
         .from(applications)
         .innerJoin(
@@ -4771,6 +4810,7 @@ export const appRouter = router({
           persons,
           and(eq(candidates.personId, persons.id), eq(candidates.tenantId, persons.tenantId)),
         )
+        .leftJoin(applicationScreeningEvidence, screeningEvidenceJoin())
         .where(conds.length ? and(...conds) : undefined)
         .orderBy(orderClause)
         .limit(limit + 1);
@@ -4797,8 +4837,9 @@ export const appRouter = router({
             source: r.source,
             stage: r.stage,
             stageEnteredAt: r.stageEnteredAt.toISOString(),
-            aiScore: r.aiScore === null ? null : Number(r.aiScore),
-            aiScoreExplanation: r.aiScoreExplanation,
+            ...presentAiScore(r.aiScore, scoreVisible),
+            aiScoreExplanation: presentScoreExplanation(r.aiScoreExplanation, scoreVisible),
+            screening: toScreeningSummary(r),
             createdAt: r.createdAt.toISOString(),
           };
         }),
@@ -22114,6 +22155,13 @@ export const appRouter = router({
       const db = requireDb(ctx);
       const search = input.search?.trim().toLowerCase() ?? "";
 
+      // PC-6 / NEW-16 — evidence order by default when the tenant hides the
+      // score (and the score order is never honoured while it is hidden).
+      const scoreVisible = ctx.tenantId
+        ? (await resolveTenantAiSettingsDb(ctx.tenantId)).screeningScoreVisible
+        : true;
+      const sort = !scoreVisible ? "evidence" : (input.sort ?? "ai_score");
+
       const conds = [
         ...(input.stage ? [eq(applications.currentStage, input.stage)] : []),
         ...(input.source ? [eq(applications.source, input.source)] : []),
@@ -22148,6 +22196,7 @@ export const appRouter = router({
           // real FK; null for every direct application, and the chip falls
           // back to the plain source label.
           partnerOrgName: partnerOrgs.name,
+          ...screeningSummaryColumns,
         })
         .from(applications)
         .innerJoin(
@@ -22182,8 +22231,13 @@ export const appRouter = router({
             eq(partnerOrgs.id, applications.sourcePartnerId),
           ),
         )
+        .leftJoin(applicationScreeningEvidence, screeningEvidenceJoin())
         .where(conds.length ? and(...conds) : undefined)
-        .orderBy(desc(applications.aiScore), desc(applications.createdAt));
+        .orderBy(
+          ...(sort === "evidence"
+            ? [evidenceOrderSql(), desc(applications.createdAt)]
+            : [desc(applications.aiScore), desc(applications.createdAt)]),
+        );
 
       // Must-have skills per jd_version (one query, then a lookup map).
       const mustHaveByJd = await loadMustHaveSkillsByJdVersion(
@@ -22242,14 +22296,18 @@ export const appRouter = router({
           partnerOrgName: r.partnerOrgName ?? null,
           stage: r.stage,
           stageEnteredAt: r.stageEnteredAt.toISOString(),
-          aiScore: r.aiScore === null ? null : Number(r.aiScore),
-          aiScoreExplanation: r.aiScoreExplanation,
+          ...presentAiScore(r.aiScore, scoreVisible),
+          aiScoreExplanation: presentScoreExplanation(r.aiScoreExplanation, scoreVisible),
           yearsOfExperience: r.yearsOfExperience === null ? null : Number(r.yearsOfExperience),
           noticePeriodDays,
           mustHavePct,
           missingInfo,
+          screening: toScreeningSummary(r),
         });
       }
+
+      // PC-4 — "Screening 312 of 400…": scoring queue depth per requisition.
+      const queueByReq = await loadScreeningQueueByRequisition(db, [...groups.keys()]);
 
       const shapedGroups = [...groups.values()]
         .map((g) => ({
@@ -22258,6 +22316,7 @@ export const appRouter = router({
           phase: rollupRequisitionPhase(g.stages),
           candidateCount: g.rows.length,
           rows: g.rows,
+          screeningQueue: queueByReq.get(g.requisitionId) ?? { pending: 0, total: 0 },
         }))
         .filter((g) => g.candidateCount > 0)
         .sort((a, b) => b.candidateCount - a.candidateCount);
@@ -22323,6 +22382,7 @@ export const appRouter = router({
           stageEnteredAt: applications.stageEnteredAt,
           aiScore: applications.aiScore,
           aiScoreExplanation: applications.aiScoreExplanation,
+          ...screeningSummaryColumns,
         })
         .from(applications)
         .innerJoin(
@@ -22350,13 +22410,20 @@ export const appRouter = router({
             eq(requisitions.tenantId, positions.tenantId),
           ),
         )
+        .leftJoin(applicationScreeningEvidence, screeningEvidenceJoin())
         .where(
           and(
             dsql`${applications.aiScore} IS NOT NULL`,
             dsql`${applications.currentStage} NOT IN ('offer_declined', 'withdrawn', 'recruiter_rejected')`,
           ),
         )
-        .orderBy(desc(applications.aiScore));
+        // PC-6 — `evidence` orders by the deterministic evidence key; the
+        // score order stays the default.
+        .orderBy(
+          ...(input.sort === "evidence"
+            ? [evidenceOrderSql(), desc(applications.aiScore)]
+            : [desc(applications.aiScore)]),
+        );
 
       const mustHaveByJd = await loadMustHaveSkillsByJdVersion(
         db,
@@ -22414,6 +22481,7 @@ export const appRouter = router({
           urgencyIndex: urgency.index,
           urgencyRank: urgency.rank,
           riskFlags,
+          screening: toScreeningSummary(r),
         });
       }
 
@@ -22427,6 +22495,22 @@ export const appRouter = router({
         tierCounts,
         rows: shaped as never,
       };
+    }),
+
+  /**
+   * getApplicationScreeningEvidence (PC-6) — the full per-criterion screening
+   * evidence for ONE application: verdict, reason and verified verbatim CV
+   * quotes per criterion. Backs the expandable evidence list on the candidate
+   * list rows (list rows only carry the counts). Recruiter surface; RLS
+   * tenant-scopes the read. Null when the application has not been screened.
+   */
+  getApplicationScreeningEvidence: protectedProcedure
+    .input(getApplicationScreeningEvidenceInputSchema)
+    .output(getApplicationScreeningEvidenceOutputSchema)
+    .query(async ({ ctx, input }) => {
+      requireAnyRole(ctx, RECRUITER_SURFACE_ROLES, "Screening evidence is a recruiter surface.");
+      const db = requireDb(ctx);
+      return { evidence: await loadScreeningEvidence(db, input.applicationId) };
     }),
 
   // ═══════════ RECR-03 — recruiter AI brief drawer + Missing Info Tracker ═══════════

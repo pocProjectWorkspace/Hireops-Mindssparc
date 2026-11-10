@@ -22,6 +22,7 @@ const baseRow = {
   aiScoreExplanation: {
     top_factors: [{ label: "Python" }, { label: "AWS" }, { label: "Lead experience" }],
   },
+  screening: null,
   createdAt: new Date().toISOString(),
 };
 

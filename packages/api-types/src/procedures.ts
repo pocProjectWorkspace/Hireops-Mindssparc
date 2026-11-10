@@ -10,6 +10,11 @@ import { jdBiasScanSchema, biasCategorySchema, biasSeveritySchema } from "./bias
 import { skillsMatchResultSchema } from "./panel-prep";
 import { candidateLearningItemSchema } from "./learning";
 import { reportFiltersSchema } from "./reports";
+import {
+  screeningEvidenceSchema,
+  screeningEvidenceSummarySchema,
+  screeningQueueSchema,
+} from "./screening-evidence";
 import { interviewNotesCardSchema, interviewTranscriptCardSchema } from "./interview-transcripts";
 import {
   AI_INTERVIEW_EVIDENCE_STATUSES,
@@ -142,10 +147,15 @@ export const candidateRowSchema = z.object({
  */
 export const candidateApplicationScoreSchema = z.object({
   id: z.string().uuid(),
-  aiScore: z.number().nullable(),
+  // PC-6 / NEW-16: OMITTED (not null — null means "unscored") when the tenant
+  // hides the screening score (aiSettings.screeningScoreVisible = false).
+  aiScore: z.number().nullable().optional(),
   aiScoreExplanation: z.unknown().nullable(),
   aiScoredAt: z.string().nullable(),
   partnerOrgName: z.string().nullable(),
+  // PC-6 — per-criterion screening evidence (verdict + reason + verified CV
+  // quotes). Null when the application has not been screened yet.
+  screeningEvidence: screeningEvidenceSchema.nullable(),
 });
 
 /**
@@ -190,7 +200,9 @@ export const listCandidatesInputSchema = z.object({
     limit: z.number().int().min(1).max(100),
     cursor: z.string().optional(),
   }),
-  sort: z.enum(["recent", "ai_score_desc", "sla_breach"]).default("recent"),
+  // PC-6: `evidence_desc` orders by screening evidence — must-haves met
+  // (partially met = ½) descending, then not met ascending; unscreened last.
+  sort: z.enum(["recent", "ai_score_desc", "sla_breach", "evidence_desc"]).default("recent"),
 });
 
 /**
@@ -212,8 +224,11 @@ export const candidateSummarySchema = z.object({
   source: applicationSourceSchema.nullable(),
   stage: applicationStageSchema,
   stageEnteredAt: z.string(),
-  aiScore: z.number().nullable(),
+  // PC-6 / NEW-16: omitted when the tenant hides the screening score.
+  aiScore: z.number().nullable().optional(),
   aiScoreExplanation: z.unknown().nullable(),
+  /** PC-6 — compact screening-evidence counts; null until screened. */
+  screening: screeningEvidenceSummarySchema.nullable(),
   createdAt: z.string(),
 });
 
@@ -236,6 +251,13 @@ export const listCandidatesByRequisitionInputSchema = z.object({
   search: z.string().max(120).optional(),
   stage: applicationStageSchema.optional(),
   source: applicationSourceSchema.optional(),
+  /**
+   * PC-6 — row order inside each group. `ai_score` (the legacy order) or
+   * `evidence` (must-haves met desc, partially met = ½, then not met asc).
+   * Omitted → `evidence` when the tenant hides the screening score, else
+   * `ai_score`.
+   */
+  sort: z.enum(["ai_score", "evidence"]).optional(),
 });
 
 /** Coarse pipeline phase for a requisition, rolled up DETERMINISTICALLY from
@@ -278,12 +300,15 @@ export const candidateByRequisitionRowSchema = z.object({
   partnerOrgName: z.string().nullable(),
   stage: applicationStageSchema,
   stageEnteredAt: z.string(),
-  aiScore: z.number().nullable(),
+  // PC-6 / NEW-16: omitted when the tenant hides the screening score.
+  aiScore: z.number().nullable().optional(),
   aiScoreExplanation: z.unknown().nullable(),
   yearsOfExperience: z.number().nullable(),
   noticePeriodDays: z.number().nullable(),
   mustHavePct: z.number().nullable(),
   missingInfo: candidateMissingInfoSchema,
+  /** PC-6 — compact screening-evidence counts; null until screened. */
+  screening: screeningEvidenceSummarySchema.nullable(),
 });
 
 export const candidatesByRequisitionGroupSchema = z.object({
@@ -292,6 +317,8 @@ export const candidatesByRequisitionGroupSchema = z.object({
   phase: requisitionPhaseSchema,
   candidateCount: z.number().int().min(0),
   rows: z.array(candidateByRequisitionRowSchema),
+  /** PC-4 — scoring queue depth for this requisition ("Screening 312 of 400…"). */
+  screeningQueue: screeningQueueSchema,
 });
 
 export const listCandidatesByRequisitionOutputSchema = z.object({
@@ -320,6 +347,9 @@ export const listShortlistInputSchema = z.object({
    * the procedure falls back to the tenant's configured shortlist default
    * threshold (tenants.settings.shortlistDefaults) — T2.3 / G08. */
   threshold: z.number().min(0).max(100).optional(),
+  /** PC-6 — table order: `ai_score` (default, the legacy order) or `evidence`
+   * (must-haves met desc, partially met = ½, then not met asc). */
+  sort: z.enum(["ai_score", "evidence"]).optional(),
 });
 
 export const shortlistRowSchema = z.object({
@@ -332,6 +362,8 @@ export const shortlistRowSchema = z.object({
   aiScoreExplanation: z.unknown().nullable(),
   tier: matchTierSchema,
   mustHavePct: z.number().nullable(),
+  /** PC-6 — compact screening-evidence counts; null until screened. */
+  screening: screeningEvidenceSummarySchema.nullable(),
   noticePeriodDays: z.number().nullable(),
   stage: applicationStageSchema,
   /** DETERMINISTIC urgency index (0–100) + rank. NOT a probability. */
