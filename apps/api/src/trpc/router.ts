@@ -30941,11 +30941,32 @@ async function buildRequisitionInsights(
   }
 
   const scopeLabel = single ? ("single" as const) : ("all" as const);
+  // CFG-LITE / BUG-11 — the empty distribution shows the same tenant ranges
+  // the populated one does (aiSettings.screeningScoreBands).
+  const emptyBands = ctx.tenantId
+    ? (await resolveTenantAiSettingsDb(ctx.tenantId)).screeningScoreBands
+    : resolveAiSettings(undefined).screeningScoreBands;
+  const emptyRange = (lo: number, hi: number): string => (hi < lo ? "—" : `${lo}–${hi}`);
   const emptyScoreDist = [
-    { key: "excellent" as const, label: "Excellent", range: "85–100", count: 0 },
-    { key: "good" as const, label: "Good", range: "70–84", count: 0 },
-    { key: "partial" as const, label: "Partial", range: "50–69", count: 0 },
-    { key: "low" as const, label: "Low", range: "0–49", count: 0 },
+    {
+      key: "excellent" as const,
+      label: "Excellent",
+      range: emptyRange(emptyBands.strong, 100),
+      count: 0,
+    },
+    {
+      key: "good" as const,
+      label: "Good",
+      range: emptyRange(emptyBands.good, emptyBands.strong - 1),
+      count: 0,
+    },
+    {
+      key: "partial" as const,
+      label: "Partial",
+      range: emptyRange(emptyBands.partial, emptyBands.good - 1),
+      count: 0,
+    },
+    { key: "low" as const, label: "Low", range: emptyRange(0, emptyBands.partial - 1), count: 0 },
   ];
   const emptySla = (Object.entries(slaThresholds) as [ApplicationStage, number | null][])
     .filter(([, h]) => h !== null)
