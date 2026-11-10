@@ -136,3 +136,5 @@ export * from "./learning-tracks";
 export * from "./learning-skill-map";
 // PC-2 bulk CV upload per requisition (batches + per-file work queue)
 export * from "./bulk-cv-upload";
+// In-app interview scheduling — panellist availability + candidate slot offers (PC-8/9/10, 0127)
+export * from "./interview-scheduling";

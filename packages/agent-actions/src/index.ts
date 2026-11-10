@@ -5,6 +5,8 @@
  * the AGENT-01a design session each have an executor that narrows config
  * via the discriminated union and returns a uniform result shape.
  *
+ * `propose_calendar_slots` is REAL as of PC-8 (HireOps-held availability).
+ *
  * `draft_message` and `send_message` are REAL as of FOLLOWUP-01 — they
  * perform side effects (LLM call, notification_outbox enqueue) through
  * the injected `ExecutorDeps` ports. The remaining five are still
@@ -27,6 +29,8 @@ export {
   type AIDraftRequest,
   type AIDraftResult,
   type EnqueueEmailRequest,
+  type ProposeSlotsRequest,
+  type ProposeSlotsResult,
   ActionConfigMismatchError,
   MissingTriggerContextError,
 } from "./types";

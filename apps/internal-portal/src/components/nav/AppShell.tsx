@@ -106,6 +106,10 @@ export type PortalNavKey =
   | "panel-board"
   | "panel-feedback"
   | "panel-history"
+  // PC-8 — a member's own interview availability (weekly windows + OOO)
+  | "availability"
+  // PC-8 — tenant scheduling settings (durations, working hours, buffers, …)
+  | "scheduling-settings"
   | "hr-documents"
   | "case-audit"
   | "hr-policies"
@@ -449,6 +453,16 @@ export const MAIN_NAV: NavItem[] = [
     roles: ["panel_member", "admin"],
   },
   {
+    // PC-8: the member's own weekly interview availability + out-of-office.
+    // Anyone who can sit on a panel; recruiters/HMs/admins can also look up
+    // other members there. Reuses IconInterviews (no calendar icon exists).
+    key: "availability",
+    label: "My availability",
+    href: "/availability",
+    icon: <IconInterviews />,
+    roles: ["panel_member", "hiring_manager", "recruiter", "admin"],
+  },
+  {
     // HROPS-02: the comp & offer desk — the hr_ops comp operator's surface.
     // hr_ops + admin, matching the listCompDesk API gate.
     key: "comp-offers",
@@ -603,6 +617,14 @@ export const ADMIN_NAV: NavItem[] = [
     href: "/admin/sla-thresholds",
     icon: <IconSlaThresholds />,
   },
+  // PC-8 — tenant interview-scheduling settings (duration presets, working
+  // hours, buffer, notice, horizon, slots offered, link lifetime, reschedules).
+  {
+    key: "scheduling-settings",
+    label: "Interview scheduling",
+    href: "/admin/scheduling",
+    icon: <IconInterviews />,
+  },
   // T4.2 — configurable governance/compliance policy. The compliance-score
   // weights + governance SLA knobs that drive the HR-head governance surface.
   {
@@ -713,7 +735,7 @@ export const MAIN_NAV_SECTIONS: NavSection[] = [
   },
   {
     heading: "Interview panel",
-    keys: ["panel", "panel-board", "panel-feedback", "panel-history"],
+    keys: ["panel", "panel-board", "panel-feedback", "panel-history", "availability"],
   },
 ];
 
@@ -742,6 +764,7 @@ export const ADMIN_NAV_SECTIONS: NavSection[] = [
       "email-templates",
       "candidate-fields",
       "interview-templates",
+      "scheduling-settings",
       "sla-thresholds",
       "governance-policy",
       "diversity-slate",

@@ -58,5 +58,15 @@ export function fakeExecutorDeps(): FakeExecutorDeps {
       });
       return { outboxId: `fake-outbox-${seq}` };
     },
+
+    async proposeInterviewSlots() {
+      // PC-8 — deterministic, no availability rows needed for drain tests.
+      return {
+        roundNumber: 1,
+        slots: [{ start: "2026-11-17T09:00:00.000Z", end: "2026-11-17T09:45:00.000Z" }],
+        timezone: "UTC",
+        emptyReason: null,
+      };
+    },
   };
 }

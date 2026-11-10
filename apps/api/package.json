@@ -10,7 +10,8 @@
     "./reports/executive-summary": "./src/lib/reports/executive-summary.ts",
     "./storage": "./src/lib/storage/index.ts",
     "./application-ingest": "./src/lib/application-ingest.ts",
-    "./bulk-cv/policy": "./src/lib/bulk-cv/policy.ts"
+    "./bulk-cv/policy": "./src/lib/bulk-cv/policy.ts",
+    "./scheduling": "./src/lib/interview-scheduling.ts"
   },
   "scripts": {
     "build": "tsc --noEmit",

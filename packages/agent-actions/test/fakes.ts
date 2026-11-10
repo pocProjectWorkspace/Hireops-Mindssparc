@@ -3,6 +3,8 @@ import type {
   ApplicationContext,
   EnqueueEmailRequest,
   ExecutorDeps,
+  ProposeSlotsRequest,
+  ProposeSlotsResult,
 } from "../src/index";
 
 /**
@@ -32,6 +34,7 @@ export interface FakeDeps extends ExecutorDeps {
     loadApplicationContext: { tenantId: string; applicationId: string }[];
     draftWithAI: { tenantId: string; req: AIDraftRequest }[];
     enqueueEmail: { tenantId: string; req: EnqueueEmailRequest }[];
+    proposeInterviewSlots: { tenantId: string; req: ProposeSlotsRequest }[];
   };
 }
 
@@ -42,6 +45,7 @@ export interface FakeDepsOpts {
   onLoadContext?: () => never;
   onDraft?: () => never;
   onEnqueue?: () => never;
+  proposeResult?: ProposeSlotsResult;
 }
 
 export function makeFakeDeps(opts: FakeDepsOpts = {}): FakeDeps {
@@ -49,6 +53,7 @@ export function makeFakeDeps(opts: FakeDepsOpts = {}): FakeDeps {
     loadApplicationContext: [],
     draftWithAI: [],
     enqueueEmail: [],
+    proposeInterviewSlots: [],
   };
 
   return {
@@ -70,6 +75,22 @@ export function makeFakeDeps(opts: FakeDepsOpts = {}): FakeDeps {
       calls.enqueueEmail.push({ tenantId, req });
       if (opts.onEnqueue) opts.onEnqueue();
       return { outboxId: "outbox-1" };
+    },
+    async proposeInterviewSlots(tenantId, req) {
+      calls.proposeInterviewSlots.push({ tenantId, req });
+      return (
+        opts.proposeResult ?? {
+          roundNumber: 1,
+          slots: [
+            { start: "2026-11-17T09:00:00.000Z", end: "2026-11-17T09:45:00.000Z" },
+            { start: "2026-11-18T10:00:00.000Z", end: "2026-11-18T10:45:00.000Z" },
+            { start: "2026-11-19T11:00:00.000Z", end: "2026-11-19T11:45:00.000Z" },
+            { start: "2026-11-20T11:00:00.000Z", end: "2026-11-20T11:45:00.000Z" },
+          ],
+          timezone: "UTC",
+          emptyReason: null,
+        }
+      );
     },
   };
 }

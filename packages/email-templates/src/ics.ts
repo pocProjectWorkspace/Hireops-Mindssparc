@@ -24,6 +24,15 @@ export interface BuildInterviewIcsInput {
   meetingUrl: string;
   /** Candidate confirm link — included in the description. */
   confirmUrl: string;
+  /**
+   * PC-9 — the panellist's copy. Same VEVENT UID as the candidate's (it is the
+   * same event); the description points at the interview brief instead of the
+   * candidate's confirm link. Omitted → the candidate copy, byte-identical to
+   * before.
+   */
+  audience?: "candidate" | "panelist";
+  /** Panellist copy only — the brief link. */
+  briefUrl?: string;
 }
 
 /** RFC-5545 UTC timestamp: YYYYMMDDTHHMMSSZ. */
@@ -74,7 +83,11 @@ export function buildInterviewIcs(input: BuildInterviewIcsInput): EmailAttachmen
     `Format: ${input.modeLabel} · ${input.durationMinutes} minutes`,
   ];
   if (input.meetingUrl) descriptionParts.push(`Join: ${input.meetingUrl}`);
-  if (input.confirmUrl) descriptionParts.push(`Confirm attendance: ${input.confirmUrl}`);
+  if (input.audience === "panelist") {
+    if (input.briefUrl) descriptionParts.push(`Interview brief: ${input.briefUrl}`);
+  } else if (input.confirmUrl) {
+    descriptionParts.push(`Confirm attendance: ${input.confirmUrl}`);
+  }
   const location = input.meetingUrl || input.modeLabel;
 
   const lines = [

@@ -21,7 +21,13 @@
  * one, so neither "candidate" nor "recruiter" would be honest. P0.4 reuses the
  * same value for the three emails addressed to an EXISTING partner user.
  */
-export type EmailRecipientType = "candidate" | "recruiter" | "hiring_manager" | "partner";
+export type EmailRecipientType =
+  | "candidate"
+  | "recruiter"
+  | "hiring_manager"
+  | "partner"
+  // PC-8 — an interview panellist (any internal member on a round's panel).
+  | "panelist";
 
 /**
  * Template keys Wave 1 ships. Adding a key requires:
@@ -54,7 +60,15 @@ export type TemplateKey =
   // date / candidate name only (requirements.md §6.3); nothing internal.
   | "partner.submission_received"
   | "partner.stage_changed"
-  | "partner.claim_expiry_warning";
+  | "partner.claim_expiry_warning"
+  // PC-8 / PC-9 / PC-10 — in-app interview scheduling. The candidate's
+  // pick-a-slot link, the panellist's calendar invite (with .ics), the
+  // "rescheduling in progress" notice, and the recruiter's action-needed alert
+  // when no common slot exists.
+  | "candidate.interview_slot_offer"
+  | "panelist.interview_scheduled"
+  | "panelist.interview_rescheduling"
+  | "recruiter.scheduling_alert";
 
 /**
  * A file attached to an outgoing email. Content is base64 (matches Resend's

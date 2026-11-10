@@ -8,7 +8,7 @@
  * Verifies:
  *   1. All 7 expected action types are registered.
  *   2. Each entry is a function.
- *   3. The 5 still-stubbed executors return the documented stub output
+ *   3. The 4 still-stubbed executors return the documented stub output
  *      shape with the `_stub: true` + `_ticket: 'AGENT-02'` markers.
  *   4. Each executor throws ActionConfigMismatchError when the config
  *      discriminator doesn't match its own type.
@@ -25,6 +25,7 @@ import { describe, expect, it } from "vitest";
 import {
   actionExecutorRegistry,
   ActionConfigMismatchError,
+  MissingTriggerContextError,
   type ActionExecutorParams,
   type ActionResult,
 } from "../src/index";
@@ -94,10 +95,11 @@ describe("send_message executor", () => {
   });
 });
 
-describe("propose_calendar_slots executor", () => {
-  it("returns slot_count proposed slots, each with start + end ISO strings", async () => {
-    const result = await actionExecutorRegistry.propose_calendar_slots(
-      baseParams({
+describe("propose_calendar_slots executor (PC-8 — real, via the availability port)", () => {
+  it("asks the port and returns at most slot_count {start,end} slots — no stub markers", async () => {
+    const deps = makeFakeDeps();
+    const result = await actionExecutorRegistry.propose_calendar_slots({
+      ...baseParams({
         config: {
           type: "propose_calendar_slots",
           panel_id: "panel-1",
@@ -106,16 +108,73 @@ describe("propose_calendar_slots executor", () => {
           duration_minutes: 45,
         },
       }),
-    );
-    assertStubMarkers(result);
+      triggerContext: { application_id: "app-9", round_number: 2 },
+      deps,
+    });
     expect(result.requiresApproval).toBe(false);
-    const out = result.output as { proposed_slots: { start: string; end: string }[] };
+    expect(result.costMicros).toBe(0n);
+    const out = result.output as Record<string, unknown> & {
+      proposed_slots: { start: string; end: string }[];
+    };
+    expect(out._stub).toBeUndefined();
+    expect(out.source).toBe("hireops_availability");
+    expect(out.panel_id).toBe("panel-1");
+    expect(out.duration_minutes).toBe(45);
     expect(out.proposed_slots).toHaveLength(3);
     for (const slot of out.proposed_slots) {
-      expect(typeof slot.start).toBe("string");
-      expect(typeof slot.end).toBe("string");
       expect(new Date(slot.start).getTime() < new Date(slot.end).getTime()).toBe(true);
     }
+    expect(deps.calls.proposeInterviewSlots).toEqual([
+      {
+        tenantId: "t-1",
+        req: {
+          applicationId: "app-9",
+          roundNumber: 2,
+          panelRef: "panel-1",
+          slotCount: 3,
+          windowDays: 7,
+          durationMinutes: 45,
+        },
+      },
+    ]);
+  });
+
+  it("an empty answer is honest output, not a failure", async () => {
+    const deps = makeFakeDeps({
+      proposeResult: { roundNumber: 1, slots: [], timezone: "UTC", emptyReason: "No common time" },
+    });
+    const result = await actionExecutorRegistry.propose_calendar_slots({
+      ...baseParams({
+        config: {
+          type: "propose_calendar_slots",
+          panel_id: "panel-1",
+          slot_count: 3,
+          window_days: 7,
+          duration_minutes: 45,
+        },
+      }),
+      deps,
+    });
+    const out = result.output as { proposed_slots: unknown[]; empty_reason: string };
+    expect(out.proposed_slots).toEqual([]);
+    expect(out.empty_reason).toBe("No common time");
+  });
+
+  it("requires triggerContext.application_id", async () => {
+    await expect(
+      actionExecutorRegistry.propose_calendar_slots({
+        ...baseParams({
+          config: {
+            type: "propose_calendar_slots",
+            panel_id: "panel-1",
+            slot_count: 3,
+            window_days: 7,
+            duration_minutes: 45,
+          },
+        }),
+        triggerContext: {},
+      }),
+    ).rejects.toBeInstanceOf(MissingTriggerContextError);
   });
 });
 

@@ -89,6 +89,10 @@ async function trpcMutation<O>(name: string, input: unknown, jwt: string) {
 
 async function cleanup(): Promise<void> {
   const stmts: (() => Promise<unknown>)[] = [
+    // PC-9 — scheduling now also queues one calendar invite per panellist
+    // (recipient is a member, not the candidate), so clear those too.
+    () =>
+      poolSql`DELETE FROM public.notification_outbox WHERE tenant_id = ${tenantId} AND template_key = 'panelist.interview_scheduled' AND template_data->>'interviewId' IN (SELECT id::text FROM public.interviews WHERE application_id = ${I2_APP})`,
     () =>
       poolSql`DELETE FROM public.interview_panelists WHERE interview_id IN (SELECT id FROM public.interviews WHERE application_id = ${I2_APP})`,
     () => poolSql`DELETE FROM public.interviews WHERE application_id = ${I2_APP}`,
