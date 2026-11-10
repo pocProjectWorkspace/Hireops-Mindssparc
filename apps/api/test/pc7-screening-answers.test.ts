@@ -167,7 +167,7 @@ async function seedFixtures(): Promise<void> {
     await poolSql`
       INSERT INTO public.requisition_knockouts
         (id, tenant_id, requisition_id, question_text, type, threshold_value, source, order_index)
-      VALUES (${id}, ${tenantId}, ${FX_REQ}, ${q}, ${type}::knockout_type, ${poolSql.json(tv as never)},
+      VALUES (${id}, ${tenantId}, ${FX_REQ}, ${q}, ${type}::knockout_type, ${JSON.stringify(tv)}::jsonb,
               'candidate_asserted', ${order})
       ON CONFLICT (id) DO NOTHING
     `;
@@ -181,7 +181,7 @@ async function seedFixtures(): Promise<void> {
   await poolSql`
     INSERT INTO public.candidates (id, tenant_id, person_id, source, consent_version, parsed_skills)
     VALUES (${FX_CANDIDATE}, ${tenantId}, ${FX_PERSON}, 'career_site', 'v1',
-            ${poolSql.json({ notice_period_days: 30, skills: ["Excel"] } as never)})
+            ${JSON.stringify({ notice_period_days: 30, skills: ["Excel"] })}::jsonb)
     ON CONFLICT (id) DO NOTHING
   `;
   await poolSql`
