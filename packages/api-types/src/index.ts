@@ -43,4 +43,5 @@ export * from "./ask-data";
 export * from "./interview-transcripts";
 export * from "./ai-interview";
 export * from "./ai-interview-answers";
+export * from "./assessment-summary";
 export * from "./workday-import";

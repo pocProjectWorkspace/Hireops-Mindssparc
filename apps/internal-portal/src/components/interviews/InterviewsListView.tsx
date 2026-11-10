@@ -9,6 +9,7 @@ import { trpc } from "@/lib/trpc-client";
 import type { InterviewRow, InterviewRecommendation } from "@hireops/api-types";
 import { PageContainer } from "@/components/nav/PageContainer";
 import { InterviewRecordingSection } from "./InterviewRecordingSection";
+import { AssessmentSummaryPanel } from "@/components/assessment/AssessmentSummaryPanel";
 import { AiInterviewRoundSection } from "./AiInterviewRoundSection";
 
 /**
@@ -129,6 +130,8 @@ function InterviewCardRow({
   // B1 — same collapsed-by-default posture for the AI round card; only
   // ai_async rounds offer it at all.
   const [showAiRound, setShowAiRound] = useState(false);
+  // PC-11 — the all-rounds assessment for this candidate (+ PC-12 decision).
+  const [showAssessment, setShowAssessment] = useState(false);
   const isAiRound = iv.mode === "ai_async";
   const confirmed = !!iv.candidateConfirmedAt;
   const allFeedbackIn =
@@ -194,6 +197,13 @@ function InterviewCardRow({
             ) : null}
             <button
               type="button"
+              onClick={() => setShowAssessment((v) => !v)}
+              className="text-xs font-medium text-brand-700 hover:underline"
+            >
+              {showAssessment ? "Hide assessment" : "Assessment"}
+            </button>
+            <button
+              type="button"
               onClick={() => setShowRecording((v) => !v)}
               className="text-xs font-medium text-brand-700 hover:underline"
             >
@@ -229,6 +239,11 @@ function InterviewCardRow({
       </div>
 
       {showDecision ? <DecisionSummary interviewId={iv.id} /> : null}
+      {showAssessment ? (
+        <div className="mt-3">
+          <AssessmentSummaryPanel applicationId={iv.applicationId} defaultOpen />
+        </div>
+      ) : null}
       {showAiRound && isAiRound ? <AiInterviewRoundSection interviewId={iv.id} /> : null}
       {showRecording ? <InterviewRecordingSection interviewId={iv.id} /> : null}
     </Card>

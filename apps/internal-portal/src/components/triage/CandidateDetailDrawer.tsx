@@ -9,6 +9,11 @@ import { useDrawerRouting } from "@/lib/use-drawer-routing";
 import { useUndoToast } from "./UndoToastProvider";
 import { OfferSection } from "@/components/offers/OfferSection";
 import { InterviewScheduleSection } from "@/components/interviews/InterviewScheduleSection";
+import { AssessmentSummaryPanel } from "@/components/assessment/AssessmentSummaryPanel";
+import {
+  SelectionDecisionChip,
+  useLatestSelectionDecisions,
+} from "@/components/assessment/SelectionDecisionChip";
 import { AIScoreBadge } from "./AIScoreBadge";
 import { useScreeningScoreVisible } from "@/components/ScreeningScoreProvider";
 import { applicationStageLabel } from "@/lib/labels";
@@ -95,6 +100,8 @@ export function CandidateDetailDrawer() {
     { id: candidateId ?? "", applicationId: applicationId ?? undefined },
     { enabled: !!candidateId },
   );
+  // PC-12 — latest selection decision chip (additive; empty when none).
+  const latestDecisions = useLatestSelectionDecisions(applicationId ? [applicationId] : []);
 
   const revert = trpc.revertApplicationStage.useMutation({
     onSuccess: () => {
@@ -151,6 +158,7 @@ export function CandidateDetailDrawer() {
 
   if (!candidateId) return null;
 
+  const latestDecision = applicationId ? latestDecisions.get(applicationId) : undefined;
   const isPending = advance.isPending || reject.isPending;
   const person = detail.data?.person;
   const candidate = detail.data?.candidate;
@@ -208,6 +216,12 @@ export function CandidateDetailDrawer() {
                         ? `Partner · ${application.partnerOrgName}`
                         : candidate.source.replace(/_/g, " ")}
                     </Badge>
+                  ) : null}
+                  {latestDecision ? (
+                    <SelectionDecisionChip
+                      decision={latestDecision.decision}
+                      reasonLabel={latestDecision.reasonLabel}
+                    />
                   ) : null}
                   {typeof parsed.notice_period_days === "number" ? (
                     <Badge tone="info">{parsed.notice_period_days}d notice</Badge>
@@ -330,6 +344,9 @@ export function CandidateDetailDrawer() {
           ) : null}
 
           {applicationId ? <InterviewScheduleSection applicationId={applicationId} /> : null}
+
+          {/* PC-11 / PC-12 — all-rounds assessment + the explicit selection decision. */}
+          {applicationId ? <AssessmentSummaryPanel applicationId={applicationId} /> : null}
 
           {applicationId ? <OfferSection applicationId={applicationId} /> : null}
 

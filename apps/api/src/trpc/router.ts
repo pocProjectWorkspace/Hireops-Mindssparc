@@ -117,6 +117,7 @@ import {
   missingInfoRequests,
   recruiterBrief,
   assistantActions,
+  applicationSelectionDecisions,
   type ApplicationStage,
   type TenantBoundDb,
 } from "@hireops/db";
@@ -1002,6 +1003,19 @@ import {
   // constraints and the zod enum, which is exactly what happened when
   // 'ai_async' was added.
   type InterviewMode,
+  // PC-11 / PC-12 — assessment summary + selection decision.
+  getCandidateAssessmentSummaryInputSchema,
+  getCandidateAssessmentSummaryOutputSchema,
+  recordSelectionDecisionInputSchema,
+  recordSelectionDecisionOutputSchema,
+  listSelectionDecisionsInputSchema,
+  listSelectionDecisionsOutputSchema,
+  listLatestSelectionDecisionsInputSchema,
+  listLatestSelectionDecisionsOutputSchema,
+  findSelectionDecisionReason,
+  planSelectionDecision,
+  type SelectionDecision,
+  type SelectionDecisionRow,
 } from "@hireops/api-types";
 import { createClient } from "@supabase/supabase-js";
 import {
@@ -1093,6 +1107,16 @@ import {
   getEvidence as getAiInterviewEvidenceLib,
   regenerateEvidence as regenerateAiInterviewEvidenceLib,
 } from "../lib/ai-interview-evidence-read";
+import {
+  ASSESSMENT_FULL_ROLES,
+  ASSESSMENT_SUMMARY_ROLES,
+  SELECTION_DECISION_GATE_ROLES,
+  buildCandidateAssessmentSummary,
+  canRecordSelectionDecision,
+  isFullAssessmentViewer,
+  loadApplicationAccessFacts,
+  resolveTenantSelectionDecisionReasons,
+} from "../lib/assessment-summary";
 import {
   buildReqRevisionPrompt,
   reqRevisionJsonSchema,
@@ -8750,6 +8774,280 @@ export const appRouter = router({
       const summary = await fetchInterviewDecisionSummary(db, input.interviewId);
       if (!summary) throw new TRPCError({ code: "NOT_FOUND", message: "Interview not found" });
       return summary;
+    }),
+
+  // ─────────── PC-11 / PC-12: assessment summary + selection decision ───────────
+
+  /**
+   * PC-11 — every round of one application in order, with each panellist's
+   * recommendation / ratings / written feedback, the round outcome, the AI
+   * interview EVIDENCE digest (no score) and a notetaker pointer, plus a
+   * screening snapshot. Aggregates are counts + human-rating averages only.
+   *
+   * Access (lib/assessment-summary.ts): the requisition's hiring manager,
+   * recruiter, hr_ops, hr_head, admin see everything; a panellist sees only the
+   * rounds they sat on under the panel-independence disclosure rule; anyone else
+   * is FORBIDDEN. The AI digest and the notes pointer follow the EXISTING
+   * getAiInterviewEvidence / getInterviewNotes rules — never widened.
+   */
+  getCandidateAssessmentSummary: protectedProcedure
+    .input(getCandidateAssessmentSummaryInputSchema)
+    .output(getCandidateAssessmentSummaryOutputSchema)
+    .query(async ({ ctx, input }) => {
+      requireAnyRole(
+        ctx,
+        ASSESSMENT_SUMMARY_ROLES,
+        "You don't have access to candidate assessments.",
+      );
+      if (!ctx.tenantId) {
+        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
+      }
+      const tenantId = ctx.tenantId;
+      const db = requireDb(ctx);
+      const membershipId = await resolveActorMembership(db, ctx);
+      const result = await buildCandidateAssessmentSummary(
+        db,
+        { tenantId, roles: ctx.roles, membershipId },
+        input.applicationId,
+      );
+      // ADR-002 §7 — verbatim candidate words (AI evidence quotes) are the same
+      // PII getAiInterviewEvidence records; log only when they were returned.
+      if (result.quotesReturned) {
+        recordPiiAccess({
+          tenantId,
+          actorUserId: ctx.userId,
+          actorMembershipId: membershipId,
+          actorLabel: "user",
+          entityType: "candidate",
+          entityId: result.candidateId,
+          fieldsAccessed: ["ai_interview_evidence.evidence"],
+          reason: "get_candidate_assessment_summary",
+          requestId: ctx.requestId,
+        });
+      }
+      return result.output;
+    }),
+
+  /**
+   * PC-12 — record the explicit final selection decision. HM of THIS
+   * requisition, recruiter or admin. `selected` → offer_drafted (the offer-ready
+   * stage), `not_selected` → recruiter_rejected (the existing reject path,
+   * closing email unchanged), `on_hold` → recorded only. Stage moves go through
+   * transitionApplicationStage, so every existing gate applies. Append-only
+   * history (application_selection_decisions, migration 0129) + audit log.
+   */
+  recordSelectionDecision: protectedProcedure
+    .input(recordSelectionDecisionInputSchema)
+    .output(recordSelectionDecisionOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      requireAnyRole(
+        ctx,
+        SELECTION_DECISION_GATE_ROLES,
+        "Only the hiring manager, recruiters and admins can record a selection decision.",
+      );
+      if (!ctx.tenantId) {
+        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
+      }
+      const tenantId = ctx.tenantId;
+      return withAudit("record_selection_decision", ctx, input, async () => {
+        const db = requireDb(ctx);
+        const facts = await loadApplicationAccessFacts(db, tenantId, input.applicationId);
+        const membershipId = await resolveActorMembership(db, ctx);
+        if (!canRecordSelectionDecision({ tenantId, roles: ctx.roles, membershipId }, facts)) {
+          throw new TRPCError({
+            code: "FORBIDDEN",
+            message: "Only this requisition's hiring manager, a recruiter or an admin can decide.",
+          });
+        }
+
+        let reasonKey: string | null = null;
+        let reasonLabel: string | null = null;
+        if (input.reasonKey) {
+          const reasons = await resolveTenantSelectionDecisionReasons(db, tenantId);
+          const reason = findSelectionDecisionReason(reasons, input.decision, input.reasonKey);
+          if (!reason) {
+            throw new TRPCError({
+              code: "BAD_REQUEST",
+              message: `"${input.reasonKey}" is not a reason for this decision.`,
+            });
+          }
+          reasonKey = reason.key;
+          reasonLabel = reason.label;
+        }
+        const notes = input.notes && input.notes.length > 0 ? input.notes : null;
+
+        const plan = planSelectionDecision(input.decision, facts.currentStage);
+        if (!plan.ok) throw new TRPCError({ code: "PRECONDITION_FAILED", message: plan.message });
+
+        let transitionId: string | null = null;
+        if (plan.targetStage) {
+          const moved = await transitionApplicationStage(
+            db,
+            ctx,
+            input.applicationId,
+            plan.targetStage,
+            reasonLabel,
+            {
+              source: "record_selection_decision",
+              decision: input.decision,
+              reasonKey,
+            },
+          );
+          transitionId = moved.transitionId;
+        }
+
+        const [row] = await db
+          .insert(applicationSelectionDecisions)
+          .values({
+            tenantId,
+            applicationId: input.applicationId,
+            decision: input.decision,
+            reasonKey,
+            reasonLabel,
+            notes,
+            decidedByMembershipId: membershipId,
+            fromStage: facts.currentStage,
+            toStage: plan.targetStage,
+            transitionId,
+          })
+          .returning({
+            id: applicationSelectionDecisions.id,
+            decidedAt: applicationSelectionDecisions.decidedAt,
+          });
+        if (!row) {
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: "selection decision insert returned no row",
+          });
+        }
+        return {
+          decisionId: row.id,
+          applicationId: input.applicationId,
+          decision: input.decision as SelectionDecision,
+          fromStage: facts.currentStage,
+          toStage: plan.targetStage,
+          transitionId,
+          decidedAt: row.decidedAt.toISOString(),
+        };
+      });
+    }),
+
+  /** PC-12 — one application's decision history (newest first) + the latest. */
+  listSelectionDecisions: protectedProcedure
+    .input(listSelectionDecisionsInputSchema)
+    .output(listSelectionDecisionsOutputSchema)
+    .query(async ({ ctx, input }) => {
+      requireAnyRole(
+        ctx,
+        ASSESSMENT_SUMMARY_ROLES,
+        "You don't have access to candidate assessments.",
+      );
+      if (!ctx.tenantId) {
+        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
+      }
+      const tenantId = ctx.tenantId;
+      const db = requireDb(ctx);
+      const facts = await loadApplicationAccessFacts(db, tenantId, input.applicationId);
+      const membershipId = await resolveActorMembership(db, ctx);
+      if (!isFullAssessmentViewer({ tenantId, roles: ctx.roles, membershipId }, facts)) {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: "Only this requisition's hiring manager, recruiters and HR see decisions.",
+        });
+      }
+      const rows = await db
+        .select({
+          id: applicationSelectionDecisions.id,
+          applicationId: applicationSelectionDecisions.applicationId,
+          decision: applicationSelectionDecisions.decision,
+          reasonKey: applicationSelectionDecisions.reasonKey,
+          reasonLabel: applicationSelectionDecisions.reasonLabel,
+          notes: applicationSelectionDecisions.notes,
+          decidedByName: users.displayName,
+          fromStage: applicationSelectionDecisions.fromStage,
+          toStage: applicationSelectionDecisions.toStage,
+          decidedAt: applicationSelectionDecisions.decidedAt,
+        })
+        .from(applicationSelectionDecisions)
+        .leftJoin(
+          tenantUserMemberships,
+          eq(tenantUserMemberships.id, applicationSelectionDecisions.decidedByMembershipId),
+        )
+        .leftJoin(users, eq(users.id, tenantUserMemberships.userId))
+        .where(
+          and(
+            eq(applicationSelectionDecisions.tenantId, tenantId),
+            eq(applicationSelectionDecisions.applicationId, input.applicationId),
+          ),
+        )
+        .orderBy(
+          desc(applicationSelectionDecisions.decidedAt),
+          desc(applicationSelectionDecisions.id),
+        );
+      const history: SelectionDecisionRow[] = rows.map((r) => ({
+        id: r.id,
+        applicationId: r.applicationId,
+        decision: r.decision as SelectionDecision,
+        reasonKey: r.reasonKey,
+        reasonLabel: r.reasonLabel,
+        notes: r.notes,
+        decidedByName: r.decidedByName ?? null,
+        fromStage: r.fromStage,
+        toStage: r.toStage,
+        decidedAt: r.decidedAt.toISOString(),
+      }));
+      return { latest: history[0] ?? null, history };
+    }),
+
+  /**
+   * PC-12 — the latest decision per application, for the chip on the candidate
+   * lists. Additive read only. Full-role viewers see every requested row; a
+   * hiring manager sees rows only for requisitions they manage; others get none.
+   */
+  listLatestSelectionDecisions: protectedProcedure
+    .input(listLatestSelectionDecisionsInputSchema)
+    .output(listLatestSelectionDecisionsOutputSchema)
+    .query(async ({ ctx, input }) => {
+      if (!ctx.tenantId) {
+        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
+      }
+      const tenantId = ctx.tenantId;
+      const fullRole = ctx.roles.some((r) => ASSESSMENT_FULL_ROLES.has(r));
+      const isHm = ctx.roles.includes("hiring_manager");
+      if (!fullRole && !isHm) return { rows: [] };
+      const db = requireDb(ctx);
+      const hmMembershipId = fullRole ? null : await resolveActorMembership(db, ctx);
+      if (!fullRole && !hmMembershipId) return { rows: [] };
+      const rows = await db
+        .selectDistinctOn([applicationSelectionDecisions.applicationId], {
+          applicationId: applicationSelectionDecisions.applicationId,
+          decision: applicationSelectionDecisions.decision,
+          reasonLabel: applicationSelectionDecisions.reasonLabel,
+          decidedAt: applicationSelectionDecisions.decidedAt,
+        })
+        .from(applicationSelectionDecisions)
+        .innerJoin(applications, eq(applications.id, applicationSelectionDecisions.applicationId))
+        .innerJoin(requisitions, eq(requisitions.id, applications.requisitionId))
+        .where(
+          and(
+            eq(applicationSelectionDecisions.tenantId, tenantId),
+            inArray(applicationSelectionDecisions.applicationId, input.applicationIds),
+            ...(hmMembershipId ? [eq(requisitions.hiringManagerId, hmMembershipId)] : []),
+          ),
+        )
+        .orderBy(
+          applicationSelectionDecisions.applicationId,
+          desc(applicationSelectionDecisions.decidedAt),
+          desc(applicationSelectionDecisions.id),
+        );
+      return {
+        rows: rows.map((r) => ({
+          applicationId: r.applicationId,
+          decision: r.decision as SelectionDecision,
+          reasonLabel: r.reasonLabel,
+          decidedAt: r.decidedAt.toISOString(),
+        })),
+      };
     }),
 
   // ─────────── protected: integration health (admin) ───────────

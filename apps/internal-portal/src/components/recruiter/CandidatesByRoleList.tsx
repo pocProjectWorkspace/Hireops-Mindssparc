@@ -6,9 +6,14 @@ import type {
   ApplicationStage,
   ApplicationSource,
   IrisProvenanceRow,
+  LatestSelectionDecision,
 } from "@hireops/api-types";
 import { trpc } from "@/lib/trpc-client";
 import { AiAssistedPill, useProvenanceMap } from "@/components/iris/AiAssistedPill";
+import {
+  SelectionDecisionChip,
+  useLatestSelectionDecisions,
+} from "@/components/assessment/SelectionDecisionChip";
 import { useDrawerRouting } from "@/lib/use-drawer-routing";
 import { useUndoToast } from "@/components/triage/UndoToastProvider";
 import {
@@ -175,6 +180,7 @@ function GroupAccordion({
   selectedCandidateId,
   sourceLabels,
   provenanceByApplicationId,
+  decisionByApplicationId,
 }: {
   group: Group;
   open: boolean;
@@ -183,6 +189,8 @@ function GroupAccordion({
   selectedCandidateId: string | null;
   sourceLabels?: Record<string, string>;
   provenanceByApplicationId: Map<string, IrisProvenanceRow>;
+  /** PC-12 — latest selection decision per application (chip only). */
+  decisionByApplicationId: Map<string, LatestSelectionDecision>;
 }) {
   const scoreVisible = useScreeningScoreVisible();
   return (
@@ -238,7 +246,19 @@ function GroupAccordion({
                     </div>
                   </Td>
                   <Td label="Stage">
-                    <StageBadge stage={row.stage} />
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      <StageBadge stage={row.stage} />
+                      {(() => {
+                        const d = decisionByApplicationId.get(row.applicationId);
+                        return d ? (
+                          <SelectionDecisionChip
+                            decision={d.decision}
+                            reasonLabel={d.reasonLabel}
+                            compact
+                          />
+                        ) : null;
+                      })()}
+                    </div>
                   </Td>
                   {scoreVisible ? (
                     <Td label="AI Score">
@@ -324,6 +344,7 @@ export function CandidatesByRoleList({
     [groups],
   );
   const provenanceByApplicationId = useProvenanceMap("application", applicationIds);
+  const decisionByApplicationId = useLatestSelectionDecisions(applicationIds);
 
   // First group open by default; user toggles override.
   const isOpen = useMemo(
@@ -408,6 +429,7 @@ export function CandidatesByRoleList({
               selectedCandidateId={candidateId}
               sourceLabels={sourceLabels}
               provenanceByApplicationId={provenanceByApplicationId}
+              decisionByApplicationId={decisionByApplicationId}
             />
           ))}
         </div>
