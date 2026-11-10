@@ -129,6 +129,7 @@ const SOURCE_LABELS: Record<string, string> = {
   agency_search: "Agency search",
   talent_pool: "Talent pool",
   whatsapp: "WhatsApp",
+  bulk_upload: "Bulk upload",
 };
 
 /** snake_case → "Sentence case". */

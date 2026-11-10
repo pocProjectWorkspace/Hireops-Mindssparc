@@ -17,6 +17,9 @@ import { pgEnum } from "drizzle-orm/pg-core";
  * - agency_search       — recruiter-initiated outreach (passive sourcing)
  * - talent_pool         — silver-medallist recontact (§5.3 row 7, Phase 2)
  * - whatsapp            — WhatsApp-initiated apply (§5.3 row 9)
+ * - bulk_upload         — recruiter loaded the CV file(s) against a req
+ *                         (PC-2 bulk upload; agency/RPO CVs that arrive
+ *                         outside any portal). Added by migration 0123.
  */
 export const applicationSourceEnum = pgEnum("application_source", [
   "career_site",
@@ -27,6 +30,7 @@ export const applicationSourceEnum = pgEnum("application_source", [
   "agency_search",
   "talent_pool",
   "whatsapp",
+  "bulk_upload",
 ]);
 
 export type ApplicationSource = (typeof applicationSourceEnum.enumValues)[number];

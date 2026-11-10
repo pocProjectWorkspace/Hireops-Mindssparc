@@ -65,6 +65,7 @@ const SOURCE_COLORS: Record<string, string> = {
   agency_search: "var(--color-neutral-400)",
   talent_pool: "var(--color-neutral-300)",
   whatsapp: "var(--color-neutral-600)",
+  bulk_upload: "var(--color-neutral-700)",
 };
 const SOURCE_FALLBACK = "var(--color-neutral-400)";
 

@@ -187,6 +187,7 @@ const SOURCE_LABELS: Record<ApplicationSource, string> = {
   agency_search: "Agency search",
   talent_pool: "Talent pool",
   whatsapp: "WhatsApp",
+  bulk_upload: "Bulk upload",
 };
 
 /** The two sources that mean "an agency sent this candidate". */
