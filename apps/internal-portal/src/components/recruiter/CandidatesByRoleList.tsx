@@ -11,6 +11,7 @@ import { trpc } from "@/lib/trpc-client";
 import { AiAssistedPill, useProvenanceMap } from "@/components/iris/AiAssistedPill";
 import { useDrawerRouting } from "@/lib/use-drawer-routing";
 import { useUndoToast } from "@/components/triage/UndoToastProvider";
+import { ScreeningChips } from "@/components/triage/ScreeningChips";
 import {
   Avatar,
   Badge,
@@ -234,6 +235,10 @@ function GroupAccordion({
                           {row.refCode}
                           {row.yearsOfExperience != null ? ` · ${row.yearsOfExperience} yrs` : ""}
                         </p>
+                        {/* PC-7 — screening answers + knockout verdict. */}
+                        <div className="mt-1">
+                          <ScreeningChips screening={row.screening} knockout={row.knockout} />
+                        </div>
                       </div>
                     </div>
                   </Td>

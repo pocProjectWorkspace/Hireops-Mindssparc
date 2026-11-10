@@ -6,11 +6,22 @@
  * list of requisition knockouts, return whether the candidate passed
  * each one + the overall verdict.
  *
- * Source contract: Wave 1 only handles `source = 'parsed_cv'`. Knockouts
- * with `candidate_asserted` or `partner_asserted` are skipped silently
- * here — the apply form doesn't collect candidate-asserted answers
- * (CRS-01 scope fence), and partner channels submit via a separate path
- * not in scope.
+ * Source contract:
+ *   - `parsed_cv` knockouts walk the parsed CV (unchanged since AI-03).
+ *   - `candidate_asserted` / `partner_asserted` knockouts (PC-7) read the
+ *     application's SCREENING ANSWERS — the third argument, a flat view like
+ *     `{ notice_period_days: 60, expected_ctc: 1800000, current_location: "Pune" }`
+ *     (money in MAJOR units per year, matching the threshold the wizard
+ *     stores). When the answer is missing and threshold_value carries a
+ *     `fallback_field_path`, the parsed CV is tried at that path (notice
+ *     period). Still missing → `null` with reason `field_missing`: UNKNOWN,
+ *     never a fail — a candidate who didn't state a notice period has not
+ *     failed a notice-period bar.
+ *   - A caller that passes NO screening view (undefined) keeps the pre-PC-7
+ *     behaviour for asserted knockouts: `null` / `source_not_parsed_cv`.
+ *   - Asserted `enum` checks on a string compare case-insensitively and also
+ *     match any comma/slash-separated segment ("Pune, Maharashtra" matches an
+ *     allowed "pune") — people type locations; CVs are normalised by the parser.
  *
  * field_path convention: every knockout's `threshold_value` jsonb
  * carries a `field_path` string (added in AI-03 — older
@@ -57,6 +68,14 @@
  */
 
 const SOURCE_PARSED_CV = "parsed_cv" as const;
+const ASSERTED_SOURCES = new Set(["candidate_asserted", "partner_asserted"]);
+
+/**
+ * PC-7 — the application's screening answers as the evaluator sees them. Flat,
+ * keyed by the knockout field_path (see KNOCKOUT_FIELD_CATALOGUE in
+ * @hireops/api-types). Money in MAJOR units. Missing/unknown = absent or null.
+ */
+export type ScreeningAnswersView = Readonly<Record<string, unknown>>;
 
 export type KnockoutType = "boolean" | "numeric_min" | "numeric_max" | "enum";
 
@@ -164,9 +183,29 @@ function isTruthyForBoolean(v: unknown): boolean {
 
 /** Read field_path off threshold_value defensively. Returns null if absent. */
 function readFieldPath(thresholdValue: unknown): string | null {
+  return readPathKey(thresholdValue, "field_path");
+}
+
+function readPathKey(thresholdValue: unknown, key: string): string | null {
   if (!thresholdValue || typeof thresholdValue !== "object") return null;
-  const fp = (thresholdValue as Record<string, unknown>).field_path;
+  const fp = (thresholdValue as Record<string, unknown>)[key];
   return typeof fp === "string" && fp.length > 0 ? fp : null;
+}
+
+function normaliseText(v: string): string {
+  return v.trim().toLowerCase().replace(/\s+/g, " ");
+}
+
+/** Asserted-string enum match: case-insensitive, whole value or any segment. */
+function assertedStringMatches(value: string, allowed: unknown[]): boolean {
+  const want = new Set(
+    allowed.filter((a): a is string => typeof a === "string").map((a) => normaliseText(a)),
+  );
+  if (want.has(normaliseText(value))) return true;
+  return value
+    .split(/[,/;|]/)
+    .map((seg) => normaliseText(seg))
+    .some((seg) => seg.length > 0 && want.has(seg));
 }
 
 function makeFailure(
@@ -192,8 +231,13 @@ function makeFailure(
  * Evaluate a single knockout against the parsed CV. Returns either
  * true (pass) or a failure entry (false-result or null-result).
  */
-function evaluateOne(parsedCv: unknown, k: KnockoutInput): true | KnockoutFailureEntry {
-  if (k.source !== SOURCE_PARSED_CV) {
+function evaluateOne(
+  parsedCv: unknown,
+  k: KnockoutInput,
+  screening: ScreeningAnswersView | undefined,
+): true | KnockoutFailureEntry {
+  const asserted = ASSERTED_SOURCES.has(k.source);
+  if (k.source !== SOURCE_PARSED_CV && !(asserted && screening !== undefined)) {
     return makeFailure(k, readFieldPath(k.thresholdValue), null, "source_not_parsed_cv");
   }
   const fieldPath = readFieldPath(k.thresholdValue);
@@ -202,8 +246,17 @@ function evaluateOne(parsedCv: unknown, k: KnockoutInput): true | KnockoutFailur
       threshold: k.thresholdValue,
     });
   }
-  const value = getByPath(parsedCv, fieldPath);
-  if (value === undefined || value === null) {
+  let value: unknown;
+  if (asserted) {
+    value = screening ? screening[fieldPath] : undefined;
+    if (value === undefined || value === null || value === "") {
+      const fallback = readPathKey(k.thresholdValue, "fallback_field_path");
+      value = fallback ? getByPath(parsedCv, fallback) : undefined;
+    }
+  } else {
+    value = getByPath(parsedCv, fieldPath);
+  }
+  if (value === undefined || value === null || (asserted && value === "")) {
     return makeFailure(k, fieldPath, null, "field_missing");
   }
 
@@ -265,6 +318,7 @@ function evaluateOne(parsedCv: unknown, k: KnockoutInput): true | KnockoutFailur
     const allowedSet = new Set(allowed as unknown[]);
     if (typeof value === "string") {
       if (allowedSet.has(value)) return true;
+      if (asserted && assertedStringMatches(value, allowed as unknown[])) return true;
       return makeFailure(k, fieldPath, false, "value_not_in_allowed", {
         actual: value,
         threshold: { allowed },
@@ -292,6 +346,8 @@ function evaluateOne(parsedCv: unknown, k: KnockoutInput): true | KnockoutFailur
 
 /**
  * Run all knockouts and produce the overall verdict + failure list.
+ * `screening` (PC-7) is the application's screening-answer view; pass it
+ * (even `{}`) to evaluate candidate/partner-asserted knockouts.
  * Pure: no DB writes, no AI calls. Caller writes the result onto
  * `applications.knockout_passed` / `knockout_failures` /
  * `knockout_evaluated_at`.
@@ -299,12 +355,13 @@ function evaluateOne(parsedCv: unknown, k: KnockoutInput): true | KnockoutFailur
 export function evaluateKnockouts(
   parsedCv: unknown,
   knockouts: KnockoutInput[],
+  screening?: ScreeningAnswersView,
 ): KnockoutEvaluation {
   const failures: KnockoutFailureEntry[] = [];
   let failCount = 0;
   let nullCount = 0;
   for (const k of knockouts) {
-    const r = evaluateOne(parsedCv, k);
+    const r = evaluateOne(parsedCv, k, screening);
     if (r === true) continue;
     failures.push(r);
     if (r.result === false) failCount += 1;

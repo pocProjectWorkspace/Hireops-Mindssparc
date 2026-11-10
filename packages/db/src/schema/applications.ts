@@ -5,12 +5,14 @@ import {
   text,
   numeric,
   bigint,
+  integer,
   boolean,
   jsonb,
   timestamp,
   index,
   unique,
   foreignKey,
+  check,
   pgPolicy,
 } from "drizzle-orm/pg-core";
 import { tenants } from "./tenants";
@@ -66,6 +68,19 @@ export const applications = pgTable(
     // desk renders an honest "no expected salary" state rather than inventing a
     // verdict. bigint for headroom, same as offers.
     expectedSalaryInrPaise: bigint("expected_salary_inr_paise", { mode: "bigint" }),
+    // PC-7 (0122) — per-application screening answers. Answers IN TIME for this
+    // requisition (notice / pay / location change between applications), so
+    // they live here, not on the candidate. expected_salary_inr_paise above IS
+    // the expected CTC; current_salary_inr_paise is its current-CTC sibling, same
+    // minor-unit convention. screening_answers_source = the LAST writer:
+    // candidate | recruiter | partner | import | parsed_cv (a notice period
+    // pre-filled from the CV with nothing else supplied). All nullable; write
+    // through apps/api/src/lib/screening-answers.ts so knockouts re-evaluate.
+    noticePeriodDays: integer("notice_period_days"),
+    currentSalaryInrPaise: bigint("current_salary_inr_paise", { mode: "bigint" }),
+    currentLocation: text("current_location"),
+    screeningAnswersSource: text("screening_answers_source"),
+    screeningAnswersUpdatedAt: timestamp("screening_answers_updated_at", { withTimezone: true }),
     // Partner attribution. FKs enforced by 0113 (see header note on the
     // column-targeted SET NULL).
     sourcePartnerId: uuid("source_partner_id"),
@@ -136,6 +151,23 @@ export const applications = pgTable(
       foreignColumns: [partnerUsers.tenantId, partnerUsers.id],
       name: "fk_applications_submitted_by_partner_user",
     }).onDelete("set null"),
+    // PC-7 (0122) — screening-answer guards.
+    check(
+      "applications_notice_period_days_check",
+      sql`${table.noticePeriodDays} IS NULL OR (${table.noticePeriodDays} >= 0 AND ${table.noticePeriodDays} <= 365)`,
+    ),
+    check(
+      "applications_current_salary_check",
+      sql`${table.currentSalaryInrPaise} IS NULL OR ${table.currentSalaryInrPaise} >= 0`,
+    ),
+    check(
+      "applications_current_location_check",
+      sql`${table.currentLocation} IS NULL OR char_length(${table.currentLocation}) <= 200`,
+    ),
+    check(
+      "applications_screening_answers_source_check",
+      sql`${table.screeningAnswersSource} IS NULL OR ${table.screeningAnswersSource} IN ('candidate', 'recruiter', 'partner', 'import', 'parsed_cv')`,
+    ),
     pgPolicy("tenant_isolation", {
       as: "permissive",
       for: "all",

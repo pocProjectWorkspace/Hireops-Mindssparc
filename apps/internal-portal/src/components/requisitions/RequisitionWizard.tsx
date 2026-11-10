@@ -10,6 +10,8 @@ import {
   type JdBiasScan,
   type RequisitionLocationType,
   type RequisitionKnockoutInput,
+  KNOCKOUT_FIELD_CATALOGUE,
+  knockoutFieldDef,
 } from "@hireops/api-types";
 import { trpc, handleTRPCError } from "@/lib/trpc-client";
 import { Button, Card } from "@/components/ui";
@@ -68,15 +70,19 @@ const KNOCKOUT_TYPE_LABELS: Record<RequisitionKnockoutInput["type"], string> = {
   enum: "One of allowed values",
 };
 
-// Common parsed-CV fields a knockout can check, with human labels. HR picks a
-// field instead of typing a machine path; the stored value is the raw path the
-// evaluator resolves. "Other (advanced)" reveals a free-text input for the long
-// tail of parsed-CV paths (e.g. nested skills), preserving full flexibility.
-const KNOCKOUT_FIELD_OPTIONS: { value: string; label: string }[] = [
-  { value: "total_years_experience", label: "Total years of experience" },
-  { value: "personal.location_country", label: "Location (country)" },
-  { value: "skills.technical", label: "Technical skills" },
-];
+// The fields a knockout can check, with human labels — straight from the
+// platform default catalogue (@hireops/api-types KNOCKOUT_FIELD_CATALOGUE). HR
+// picks a field instead of typing a machine path; the stored value is the raw
+// path the evaluator resolves. PC-7 added the screening-answer fields (notice
+// period, expected CTC, current location) — those read the application's
+// answers, and a missing answer is "unknown", never a fail. "Other (advanced)"
+// reveals a free-text input for the long tail of parsed-CV paths.
+const KNOCKOUT_FIELD_OPTIONS: { value: string; label: string }[] = KNOCKOUT_FIELD_CATALOGUE.map(
+  (f) => ({
+    value: f.fieldPath,
+    label: f.source === "parsed_cv" ? f.label : `${f.label} (screening answer)`,
+  }),
+);
 const KNOCKOUT_FIELD_OTHER = "__other__";
 
 interface BasicsState {
@@ -809,8 +815,9 @@ export function RequisitionWizard({
               </Button>
             </div>
             <p className="mb-3 text-xs text-neutral-500">
-              Hard gates evaluated deterministically against the parsed CV at apply time, a
-              candidate who fails is filtered out. No AI involved.
+              Hard gates evaluated deterministically at apply time against the parsed CV or the
+              candidate&rsquo;s screening answers. A candidate who fails is filtered out; a missing
+              answer shows as &ldquo;unknown&rdquo;, not a fail. No AI involved.
             </p>
             {knockouts.length === 0 ? (
               <p className="text-xs text-neutral-500">
@@ -853,7 +860,7 @@ export function RequisitionWizard({
                               )
                             }
                           >
-                            {KNOCKOUT_TYPES.map((t) => (
+                            {(knockoutFieldDef(k.fieldPath)?.types ?? KNOCKOUT_TYPES).map((t) => (
                               <option key={t} value={t}>
                                 {KNOCKOUT_TYPE_LABELS[t]}
                               </option>
@@ -869,13 +876,13 @@ export function RequisitionWizard({
                               setKnockouts(
                                 knockouts.map((x) =>
                                   x.key === k.key
-                                    ? {
-                                        ...x,
-                                        fieldPath:
-                                          e.target.value === KNOCKOUT_FIELD_OTHER
-                                            ? ""
-                                            : e.target.value,
-                                      }
+                                    ? withKnockoutField(
+                                        x,
+                                        e.target.value === KNOCKOUT_FIELD_OTHER
+                                          ? ""
+                                          : e.target.value,
+                                        basics.compBandMax,
+                                      )
                                     : x,
                                 ),
                               )
@@ -909,13 +916,19 @@ export function RequisitionWizard({
                         {k.type !== "boolean" ? (
                           <label className="col-span-2 flex flex-col gap-1 text-xs text-neutral-600">
                             {k.type === "enum" ? "Allowed values" : "Threshold"}
+                            {knockoutFieldDef(k.fieldPath)?.unitHint
+                              ? ` (${knockoutFieldDef(k.fieldPath)?.unitHint})`
+                              : ""}
                             <input
                               className={inputCls}
                               value={k.value}
+                              inputMode={k.type === "enum" ? undefined : "numeric"}
                               placeholder={
                                 k.type === "enum"
                                   ? "Allowed values, comma-separated"
-                                  : "Threshold number"
+                                  : knockoutFieldDef(k.fieldPath)?.valueKind === "money"
+                                    ? "Annual amount, e.g. 1800000"
+                                    : "Threshold number"
                               }
                               onChange={(e) =>
                                 setKnockouts(
@@ -1116,11 +1129,28 @@ function filledSectionCount(sections: JdSections): number {
   return n;
 }
 
+/**
+ * PC-7 — switch a knockout row to another field. A catalogue field snaps the
+ * rule to one it supports; picking expected CTC pre-fills the threshold with
+ * the requisition's comp-band max (the "vs a req value" default) when empty.
+ */
+function withKnockoutField(row: KnockoutRow, fieldPath: string, compBandMax: string): KnockoutRow {
+  const def = knockoutFieldDef(fieldPath);
+  const type = def && !def.types.includes(row.type) ? (def.types[0] ?? row.type) : row.type;
+  const value =
+    def?.valueKind === "money" && row.value.trim() === "" && compBandMax.trim() !== ""
+      ? compBandMax.trim()
+      : row.value;
+  return { ...row, fieldPath, type, value };
+}
+
 function toKnockoutInput(k: KnockoutRow): RequisitionKnockoutInput {
   const base = {
     questionText: k.questionText,
     type: k.type,
-    source: "parsed_cv" as const,
+    // PC-7 — catalogue fields carry their own source (screening fields are
+    // candidate_asserted); "Other (advanced)" paths stay parsed-CV.
+    source: knockoutFieldDef(k.fieldPath)?.source ?? ("parsed_cv" as const),
     fieldPath: k.fieldPath,
   };
   if (k.type === "numeric_min") return { ...base, min: Number(k.value) || 0 };

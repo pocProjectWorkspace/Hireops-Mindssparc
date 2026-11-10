@@ -799,6 +799,13 @@
       "when": 1787616000000,
       "tag": "0121_ai_interview_integrity_and_evidence",
       "breakpoints": true
+    },
+    {
+      "idx": 122,
+      "version": "7",
+      "when": 1787702400000,
+      "tag": "0122_application_screening_answers",
+      "breakpoints": true
     }
   ]
 }
