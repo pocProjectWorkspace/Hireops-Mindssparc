@@ -105,6 +105,7 @@ export const AI_FEATURE_KEYS = [
   "ai_interview_questions",
   "ai_interview_evidence",
   "ask_data",
+  "engagement_reply_signals",
 ] as const;
 export type AiFeatureKey = (typeof AI_FEATURE_KEYS)[number];
 
@@ -203,6 +204,12 @@ export const AI_FEATURE_META: Record<
     description:
       "On the Ask your data page, maps a typed question to ONE question from a fixed catalog of supported analytics questions, plus its filters (period, business unit, requisition). The AI never writes a query and never produces a number — every figure is calculated by HireOps from your live data, and the interpretation is shown so it can be corrected. Exact matches to a suggested question, chip clicks and filter edits never call the model. Disabling makes typed questions point to the suggested questions instead; the suggested questions keep working.",
   },
+  engagement_reply_signals: {
+    label: "Pre-joining reply signals",
+    usageFeatures: ["engagement_reply_signals"],
+    description:
+      "When a candidate who has accepted an offer replies to a pre-joining engagement email, looks for a fixed list of things they may have SAID — another offer, a counter-offer, a joining-date change, doubt about joining, a notice-period problem, or that they are withdrawing — each backed by a verbatim quote from their reply (quotes not found word-for-word in the reply are dropped). It never produces a flight-risk score, probability or rating, and never infers anything about the person (personality, sentiment, tone or any demographic attribute). Each signal alerts the recruiter, who reads the reply and decides. Disabling stores replies without looking for signals; pulse answers still raise their own signals.",
+  },
 };
 
 export const aiSettingsSchema = z.object({
@@ -222,6 +229,7 @@ export const aiSettingsSchema = z.object({
   ai_interview_questions: aiFeatureSettingsSchema.default(featureDefault),
   ai_interview_evidence: aiFeatureSettingsSchema.default(featureDefault),
   ask_data: aiFeatureSettingsSchema.default(featureDefault),
+  engagement_reply_signals: aiFeatureSettingsSchema.default(featureDefault),
   /**
    * Global deterministic PII redaction. When on, candidate-derived prompt
    * text going into scoring + agent-draft calls has emails / phone numbers /

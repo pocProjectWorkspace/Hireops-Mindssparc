@@ -28,6 +28,7 @@ import type { Logger } from "@hireops/observability";
 import { createOnboardingCaseForApplication } from "./onboarding-case";
 import { enqueuePartnerStageChangedEmail } from "./partner-stage-email";
 import { accruePartnerFeeOnHire } from "./partner-commercials";
+import { startPreJoiningJourney } from "./pre-joining/journey";
 
 /** postgres.js tagged-template client (same shape as ctx.sql / poolSql). */
 type PgSqlClient = typeof poolSql;
@@ -126,6 +127,16 @@ export async function runOfferAcceptSideEffects(
     await createOnboardingCaseForApplication(sql, { tenantId, applicationId });
   } catch (err) {
     log.error({ err, offer_id: offerId }, "offers.accept.onboarding_case_failed");
+  }
+
+  // PC-14 — start the pre-joining engagement journey (welcome now, check-ins
+  // until the joining date). A no-op unless the tenant has turned engagement
+  // on; idempotent per application; best-effort like the case above — and the
+  // worker's hourly scan starts any journey this misses.
+  try {
+    await startPreJoiningJourney(sql, { tenantId, applicationId, log });
+  } catch (err) {
+    log.error({ err, offer_id: offerId }, "offers.accept.pre_joining_journey_failed");
   }
 
   await enqueueRecruiterNotice(sql, tenantId, applicationId, "recruiter.offer_accepted", {

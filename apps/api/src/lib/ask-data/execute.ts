@@ -549,12 +549,19 @@ interface DeclinedSqlRow {
 }
 
 const declinedOffers: Executor = async (deps, f) => {
-  const clauses: SQL[] = [dsql`o.tenant_id = ${deps.tenantId}::uuid`, dsql`o.status = 'declined'`];
+  // PC-17 — reneges (accepted, then backed out before joining) are listed with
+  // the declines: same question from the asker's side ("who said no, and
+  // why?"), told apart by the reason text. Date = when the renege was recorded.
+  const clauses: SQL[] = [
+    dsql`o.tenant_id = ${deps.tenantId}::uuid`,
+    dsql`o.status IN ('declined', 'reneged')`,
+  ];
+  const decidedOn = dsql`COALESCE(rn.recorded_at, o.declined_at, o.updated_at)`;
   if (f.window.from) {
-    clauses.push(dsql`COALESCE(o.declined_at, o.updated_at) >= ${f.window.from}::timestamptz`);
+    clauses.push(dsql`${decidedOn} >= ${f.window.from}::timestamptz`);
   }
   if (f.window.to) {
-    clauses.push(dsql`COALESCE(o.declined_at, o.updated_at) <= ${f.window.to}::timestamptz`);
+    clauses.push(dsql`${decidedOn} <= ${f.window.to}::timestamptz`);
   }
   if (f.businessUnitId) clauses.push(dsql`p.business_unit_id = ${f.businessUnitId}::uuid`);
   if (deps.hmMembershipId) clauses.push(dsql`r.hiring_manager_id = ${deps.hmMembershipId}::uuid`);
@@ -569,17 +576,21 @@ const declinedOffers: Executor = async (deps, f) => {
     SELECT
       p.title AS role,
       b.name AS business_unit,
-      COALESCE(o.declined_at, o.updated_at) AS declined_on,
-      NULLIF(btrim(o.declined_reason), '') AS reason,
+      ${decidedOn} AS declined_on,
+      CASE WHEN o.status = 'reneged'
+        THEN 'Reneged after accepting: ' || COALESCE(rn.reason_label, 'reason not recorded')
+        ELSE NULLIF(btrim(o.declined_reason), '')
+      END AS reason,
       ${nameSelect} AS candidate
     FROM public.offers o
+    LEFT JOIN public.offer_reneges rn ON rn.tenant_id = o.tenant_id AND rn.offer_id = o.id
     JOIN public.applications a ON a.tenant_id = o.tenant_id AND a.id = o.application_id
     JOIN public.requisitions r ON r.tenant_id = a.tenant_id AND r.id = a.requisition_id
     JOIN public.positions p ON p.tenant_id = r.tenant_id AND p.id = r.position_id
     LEFT JOIN public.business_units b ON b.tenant_id = p.tenant_id AND b.id = p.business_unit_id
     ${nameJoin}
     WHERE ${dsql.join(clauses, dsql` AND `)}
-    ORDER BY COALESCE(o.declined_at, o.updated_at) DESC
+    ORDER BY ${decidedOn} DESC
     LIMIT 100
   `);
   const raw = asRows<DeclinedSqlRow>(res);
@@ -622,7 +633,7 @@ const declinedOffers: Executor = async (deps, f) => {
     rows,
     summary,
     footnote:
-      "Source: offers. Reason = the decline reason recorded on the offer. Period = when the offer was declined. No candidate contact details are shown" +
+      'Source: offers. Reason = the decline reason recorded on the offer; offers accepted and later reneged are included, marked "Reneged after accepting" with the reason the recruiter recorded. Period = when the offer was declined (or the renege recorded). No candidate contact details are shown' +
       (deps.canSeeCandidateNames
         ? "."
         : "; candidate names are visible to HR and admin roles only.") +

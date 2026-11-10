@@ -56,8 +56,9 @@ export class ResendEmailProvider implements EmailProvider {
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
-          from: this.from,
+          from: msg.fromName ? withDisplayName(this.from, msg.fromName) : this.from,
           to: msg.to,
+          ...(msg.replyTo ? { reply_to: msg.replyTo } : {}),
           subject: msg.subject,
           html: msg.html,
           text: msg.text,
@@ -102,6 +103,19 @@ export class ResendEmailProvider implements EmailProvider {
     }
     return { providerMessageId: payload.id };
   }
+}
+
+/**
+ * PC-14 — swap the display name on an RFC 5322 from address, keeping the
+ * address itself (a tenant may name its sender; it may not change the
+ * verified sending domain). Quotes and angle brackets are stripped from the
+ * name so it cannot break out of the display-name position.
+ */
+export function withDisplayName(from: string, name: string): string {
+  const m = /<([^>]+)>\s*$/.exec(from);
+  const address = (m?.[1] ?? from).trim();
+  const safe = name.replace(/["<>\r\n]/g, "").trim();
+  return safe ? `"${safe}" <${address}>` : from;
 }
 
 async function readBodySafely(res: Response): Promise<string> {

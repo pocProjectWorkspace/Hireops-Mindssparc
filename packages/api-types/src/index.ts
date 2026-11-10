@@ -52,3 +52,10 @@ export * from "./screening-evidence";
 export * from "./workday-handoff";
 export * from "./scheduling-slots";
 export * from "./scheduling";
+export * from "./pre-joining-engagement";
+// Both ./scheduling-slots (PC-8: (tz, epochMs) → weekday/minutes) and
+// ./pre-joining-engagement (PC-14: (Date, tz) → { date, hour }) export a
+// `localParts`. The barrel's `localParts` is the pre-joining one (its callers
+// import it from "@hireops/api-types"); the slot engine's is used only inside
+// ./scheduling-slots and its test, which import it by path.
+export { localParts } from "./pre-joining-engagement";

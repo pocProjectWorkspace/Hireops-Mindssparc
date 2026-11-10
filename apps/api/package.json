@@ -11,7 +11,8 @@
     "./storage": "./src/lib/storage/index.ts",
     "./application-ingest": "./src/lib/application-ingest.ts",
     "./bulk-cv/policy": "./src/lib/bulk-cv/policy.ts",
-    "./scheduling": "./src/lib/interview-scheduling.ts"
+    "./scheduling": "./src/lib/interview-scheduling.ts",
+    "./pre-joining": "./src/lib/pre-joining/index.ts"
   },
   "scripts": {
     "build": "tsc --noEmit",

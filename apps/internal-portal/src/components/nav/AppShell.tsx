@@ -158,7 +158,11 @@ export type PortalNavKey =
   // R1.5b — scheduled report-digest configuration (cadence, recipients, hour)
   | "report-digests"
   // LD-1B — the L&D catalogue + tracks pushed onto a hire's onboarding case
-  | "learning";
+  | "learning"
+  // PC-16 — accepted-not-joined watchlist (facts only) + engagement timeline
+  | "joining-watchlist"
+  // PC-14 — pre-joining engagement settings + company updates (admin)
+  | "pre-joining";
 
 // ONBOARD-1: NavItem is exported so the onboarding journey can render the
 // same nav items the sidebar shows (filtered by role via navItemsForRoles).
@@ -222,6 +226,17 @@ export const MAIN_NAV: NavItem[] = [
     href: "/onboarding",
     icon: <IconOnboarding />,
     roles: ["recruiter", "hr_ops", "people_ops", "admin"],
+  },
+  {
+    // PC-16 — accepted-not-joined candidates during their notice period: last
+    // contact, last check-in answer, open signals (each the candidate's own
+    // words). recruiter + hr_head (TA lead) + admin, matching the
+    // JOINING_WATCHLIST_ROLES API gate.
+    key: "joining-watchlist",
+    label: "Joining watchlist",
+    href: "/joining-watchlist",
+    icon: <IconOnboarding />,
+    roles: ["recruiter", "hr_head", "admin"],
   },
   {
     // OFFBOARD-03: departures are an HR operation — hr_ops + people_ops + admin
@@ -652,6 +667,14 @@ export const ADMIN_NAV: NavItem[] = [
   // LD-1B — the L&D catalogue (pointers at learning hosted elsewhere) + the
   // curated tracks a recruiter pushes onto one hire's onboarding case.
   { key: "learning", label: "Learning", href: "/admin/learning", icon: <IconLearning /> },
+  // PC-14 — pre-joining engagement: cadence, steps, quiet hours, signals,
+  // renege reasons, company updates. (hr_head reaches it from the watchlist.)
+  {
+    key: "pre-joining",
+    label: "Pre-joining engagement",
+    href: "/admin/pre-joining",
+    icon: <IconOnboarding />,
+  },
   // R1.5b — scheduled report digests (cadence, recipients, UTC send hour). The
   // saved block drives the report_digest_scan worker. Reuses IconReports (no
   // dedicated mail/schedule icon exists) — the digest IS the reports pack, on a
@@ -692,6 +715,7 @@ export const MAIN_NAV_SECTIONS: NavSection[] = [
       "approvals",
       "missing-info",
       "interviews",
+      "joining-watchlist",
       "partners",
     ],
   },
@@ -771,6 +795,7 @@ export const ADMIN_NAV_SECTIONS: NavSection[] = [
       "retention-policy",
       "report-digests",
       "learning",
+      "pre-joining",
     ],
   },
   {

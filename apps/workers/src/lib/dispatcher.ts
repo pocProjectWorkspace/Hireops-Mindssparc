@@ -126,7 +126,17 @@ export async function drainOutboxOnce(opts: DispatcherOpts): Promise<{
         overrides,
       );
       const provider: EmailProvider = getEmailProvider(row.tenant_id);
+      // PC-14/15 — pre-joining emails carry a routing Reply-To and an optional
+      // tenant sender display name in their template data.
+      const data = row.template_data ?? {};
+      const replyTo = typeof data.replyTo === "string" && data.replyTo ? data.replyTo : undefined;
+      const fromName =
+        typeof data.senderName === "string" && data.senderName.trim()
+          ? data.senderName.trim()
+          : undefined;
       const result = await provider.send({
+        ...(replyTo ? { replyTo } : {}),
+        ...(fromName ? { fromName } : {}),
         to: row.recipient_email,
         subject: rendered.subject,
         html: rendered.html,

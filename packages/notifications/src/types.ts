@@ -68,7 +68,16 @@ export type TemplateKey =
   | "candidate.interview_slot_offer"
   | "panelist.interview_scheduled"
   | "panelist.interview_rescheduling"
-  | "recruiter.scheduling_alert";
+  | "recruiter.scheduling_alert"
+  // PC-14 — pre-joining engagement journey (candidate, between offer accept
+  // and joining). One key per step so each is separately overridable.
+  | "candidate.pre_joining_welcome"
+  | "candidate.pre_joining_pulse"
+  | "candidate.pre_joining_company_update"
+  | "candidate.pre_joining_two_weeks"
+  | "candidate.pre_joining_one_week"
+  // PC-15 — a pre-joining risk signal (what the candidate said) → recruiter.
+  | "recruiter.joining_risk_signal";
 
 /**
  * A file attached to an outgoing email. Content is base64 (matches Resend's
@@ -97,6 +106,11 @@ export interface EmailMessage {
   /** Optional file attachments (e.g. the interview .ics). Providers that can't
    * carry attachments (LocalEmailProvider) note them but don't fail. */
   attachments?: EmailAttachment[];
+  /** PC-15 — optional Reply-To (pre-joining emails carry a routing token so a
+   * candidate's reply can be matched back to their journey). */
+  replyTo?: string;
+  /** PC-14 — optional From display name; the address stays EMAIL_FROM's. */
+  fromName?: string;
   /** Provenance for dev_email_outbox + structured logs. */
   templateKey: TemplateKey;
   /** Tenant for dev_email_outbox row scope. */

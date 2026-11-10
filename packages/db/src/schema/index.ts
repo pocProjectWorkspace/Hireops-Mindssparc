@@ -138,3 +138,5 @@ export * from "./learning-skill-map";
 export * from "./bulk-cv-upload";
 // In-app interview scheduling — panellist availability + candidate slot offers (PC-8/9/10, 0127)
 export * from "./interview-scheduling";
+// PC-14..17 pre-joining engagement: journeys, touchpoints, pulses, risk signals, reneges (0128)
+export * from "./pre-joining-engagement";

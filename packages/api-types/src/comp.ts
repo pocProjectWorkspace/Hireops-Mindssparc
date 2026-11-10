@@ -116,7 +116,7 @@ export const compDeskRowSchema = z.object({
   // Offer facet (latest non-terminal-or-most-recent offer for the app).
   offerId: z.string().uuid().nullable(),
   offerStatus: z
-    .enum(["drafted", "extended", "accepted", "declined", "expired", "cancelled"])
+    .enum(["drafted", "extended", "accepted", "declined", "expired", "cancelled", "reneged"])
     .nullable(),
   offerBaseInrPaise: z.number().int().nonnegative().nullable(),
 

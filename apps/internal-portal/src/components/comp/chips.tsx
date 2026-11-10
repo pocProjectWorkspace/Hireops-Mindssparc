@@ -55,6 +55,8 @@ const OFFER_STATUS_META: Record<string, { label: string; cls: string }> = {
   declined: { label: "Declined", cls: "bg-status-warning-50 text-status-warning-800" },
   expired: { label: "Expired", cls: "bg-status-warning-50 text-status-warning-800" },
   cancelled: { label: "Cancelled", cls: "bg-neutral-100 text-neutral-500" },
+  // PC-17 — accepted, then the candidate backed out before joining.
+  reneged: { label: "Reneged", cls: "bg-status-error-50 text-status-error-700" },
 };
 
 export function OfferStatusChip({
