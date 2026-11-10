@@ -118,6 +118,7 @@ import {
   missingInfoRequests,
   recruiterBrief,
   assistantActions,
+  bulkCvBatches,
   type ApplicationStage,
   type TenantBoundDb,
 } from "@hireops/db";
@@ -1030,6 +1031,15 @@ import {
   // constraints and the zod enum, which is exactly what happened when
   // 'ai_async' was added.
   type InterviewMode,
+  listBulkCvBatchesInputSchema,
+  listBulkCvBatchesOutputSchema,
+  getBulkCvBatchInputSchema,
+  getBulkCvBatchOutputSchema,
+  retryBulkCvItemsInputSchema,
+  retryBulkCvItemsOutputSchema,
+  type ListBulkCvBatchesOutput,
+  type GetBulkCvBatchOutput,
+  type RetryBulkCvItemsOutput,
 } from "@hireops/api-types";
 import { createClient } from "@supabase/supabase-js";
 import {
@@ -1195,6 +1205,24 @@ import {
   type ScreeningAnswersInput,
 } from "@hireops/api-types";
 import {
+  BULK_CV_ACCEPTING_REQ_STATUSES,
+  BULK_CV_UPLOAD_ROLES,
+  resolveTenantBulkCvLimits,
+} from "../lib/bulk-cv/policy";
+import {
+  getBatchWithItems as getBulkCvBatchWithItems,
+  listBatchesForRequisition as listBulkCvBatchesForRequisition,
+  requeueFailedItems as requeueFailedBulkCvItems,
+} from "../lib/bulk-cv/read";
+import {
+  computeInitialScoringState,
+  findPersonByContact,
+  ingestApplication,
+  normaliseEmail,
+  normalisePhone,
+  parseStoredResume,
+} from "../lib/application-ingest";
+import {
   computeRecruiterUrgency,
   computeMustHavePct,
   computeRiskFlags,
@@ -1293,21 +1321,6 @@ import {
   tokensMatchNeedle,
   tokensCoverSkill,
 } from "../lib/skill-match";
-
-/**
- * Lowercase, drop +suffix in the local part. Gmail dot-stripping is
- * deferred — see persons.emailNormalised comment in @hireops/db.
- */
-function normaliseEmail(email: string): string {
-  const lowered = email.toLowerCase();
-  const atIndex = lowered.indexOf("@");
-  if (atIndex < 0) return lowered;
-  const local = lowered.slice(0, atIndex);
-  const domain = lowered.slice(atIndex + 1);
-  const plusIndex = local.indexOf("+");
-  const trimmedLocal = plusIndex < 0 ? local : local.slice(0, plusIndex);
-  return `${trimmedLocal}@${domain}`;
-}
 
 /**
  * Create (or resolve, if it already exists) a Supabase auth user via the
@@ -1481,10 +1494,6 @@ function partnerInvitationDeadState(
   if (row.revoked_at) return "revoked";
   if (new Date(row.expires_at).getTime() <= Date.now()) return "expired";
   return null;
-}
-
-function normalisePhone(phone: string): string {
-  return phone.replace(/[^0-9]/g, "");
 }
 
 /**
@@ -2492,7 +2501,7 @@ async function resolveMembershipNames(
  * explicit-set idiom the approval-resolution gates use — kept a tiny local
  * helper rather than a framework so each call site reads plainly.
  */
-function requireAnyRole(ctx: HonoTRPCContext, allowed: Set<string>, message: string): void {
+function requireAnyRole(ctx: HonoTRPCContext, allowed: ReadonlySet<string>, message: string): void {
   if (!ctx.roles.some((r) => allowed.has(r))) {
     throw new TRPCError({ code: "FORBIDDEN", message });
   }
@@ -3388,65 +3397,19 @@ function decodeAuditCursor(cursor: string | undefined): { createdAt: Date; id: s
 const PUBLIC_APPLY_ACCEPTING_STATUSES = new Set<string>(["approved", "posted"]);
 
 /**
- * Parser confidence (`parse_metadata.confidence_score`) below this
- * floor skips AI scoring at submit time — the LLM input would be too
- * unreliable to score against. Logged on the application as
- * `ai_score_explanation = { scored_by: 'skipped', reason:
- * 'parser_confidence_below_threshold', confidence: <value> }`. 0.5 is
- * the AI-03 v1 threshold; tunable here, not per-tenant.
- */
-const PARSER_CONFIDENCE_SCORING_FLOOR = 0.5;
-
-/**
- * Decide the scoring fields an application row should carry at insert time,
- * shared by the public apply path (submitApplication) and the partner
- * submission path (partnerSubmitCandidate) so both get IDENTICAL downstream
- * treatment. Returns the synchronous ai_score_explanation for the skipped
- * cases (knockouts failed, parser confidence below floor) and whether an
- * ai_score_outbox row should be enqueued (only when eligible). Pure — no DB.
- */
-function computeInitialScoringState(
-  knockoutPassed: boolean | null,
-  parserConfidence: number | null,
-  evaluatedAt: Date,
-): { initialAiScoreExplanation: Record<string, unknown> | null; outboxEligible: boolean } {
-  if (knockoutPassed === false) {
-    return {
-      initialAiScoreExplanation: {
-        scored_by: "skipped",
-        reason: "knockouts_failed",
-        skipped_at: evaluatedAt.toISOString(),
-      },
-      outboxEligible: false,
-    };
-  }
-  if (parserConfidence !== null && parserConfidence < PARSER_CONFIDENCE_SCORING_FLOOR) {
-    return {
-      initialAiScoreExplanation: {
-        scored_by: "skipped",
-        reason: "parser_confidence_below_threshold",
-        confidence: parserConfidence,
-        skipped_at: evaluatedAt.toISOString(),
-      },
-      outboxEligible: false,
-    };
-  }
-  return { initialAiScoreExplanation: null, outboxEligible: true };
-}
-
-/**
  * Materialise a partner-sourced candidate into the recruitment pipeline:
- * parse the CV, evaluate knockouts, upsert the candidate (one per person per
- * tenant), upsert the application for this req, and enqueue AI scoring when
- * eligible — the same downstream steps submitApplication runs, so a
+ * parse the CV, then hand off to the shared ingest core
+ * (lib/application-ingest.ts — knockouts, candidate upsert, application
+ * upsert, scoring enqueue), the same core the PC-2 bulk-CV drain runs, so a
  * partner-sourced candidate is indistinguishable from a direct applicant to
- * the recruiter (triage, scoring, knockouts all apply). Runs on the partner
- * procedure's tenant-bound tx (ctx.db) so it commits/rolls back atomically
- * with the ownership-claim decision the caller wraps around it.
+ * the recruiter. Runs on the partner procedure's tenant-bound tx (ctx.db) so
+ * it commits/rolls back atomically with the ownership-claim decision the
+ * caller wraps around it.
  *
  * Attribution: application.source = 'partner_empanelled', plus the
  * source_partner_id / submitted_by_partner_user_id / partner_submission_metadata
- * columns the schema pre-wired for exactly this.
+ * columns the schema pre-wired for exactly this. The candidate row (when new)
+ * carries the partner's consent attestation.
  */
 async function ingestPartnerApplication(
   db: TenantBoundDb,
@@ -3470,141 +3433,36 @@ async function ingestPartnerApplication(
   wasNewApplication: boolean;
   parseStatus: "received" | "parse_failed";
 }> {
-  const { tenantId, requisitionId, personId } = args;
-
-  // Parse the CV (same parser the apply path uses).
-  const storage = getStorageClient();
-  let parseStatus: "received" | "parse_failed" = "received";
-  let parsedSkills: unknown = null;
-  let parserConfidence: number | null = null;
-  let yearsOfExperience: number | null = null;
-  try {
-    const obj = await storage.get(args.resumeUploadKey);
-    const parsed = await parseResume(obj.buffer, obj.contentType, { tenantId });
-    parsedSkills = parsed;
-    yearsOfExperience = parsed.total_years_experience;
-    parserConfidence = parsed.parse_metadata.confidence_score;
-    if (parsed.parse_metadata.confidence_score === 0) parseStatus = "parse_failed";
-  } catch (err) {
-    args.log.error({ err, request_id: args.requestId }, "partnerSubmit: parseResume threw");
-    parseStatus = "parse_failed";
-  }
-
-  // Knockout evaluation (deterministic, no AI call) — identical to apply.
-  const knockoutRows = await db
-    .select({
-      id: requisitionKnockouts.id,
-      type: requisitionKnockouts.type,
-      source: requisitionKnockouts.source,
-      questionText: requisitionKnockouts.questionText,
-      thresholdValue: requisitionKnockouts.thresholdValue,
-    })
-    .from(requisitionKnockouts)
-    .where(
-      and(
-        eq(requisitionKnockouts.tenantId, tenantId),
-        eq(requisitionKnockouts.requisitionId, requisitionId),
-      ),
-    )
-    .orderBy(requisitionKnockouts.orderIndex);
-  const knockoutInputs: KnockoutInput[] = knockoutRows.map((r) => ({
-    id: r.id,
-    type: r.type,
-    source: r.source,
-    questionText: r.questionText,
-    thresholdValue: r.thresholdValue,
-  }));
-  // PC-7 — screening answers for a NEW application row (notice pre-filled from
-  // the CV when the partner left it blank) feed the asserted knockouts.
-  const screeningCols = resolveScreeningAnswersForInsert({
-    supplied: args.screening,
-    parsedCv: parsedSkills,
-    source: "partner",
+  const parse = await parseStoredResume(args.resumeUploadKey, {
+    tenantId: args.tenantId,
+    log: args.log,
+    requestId: args.requestId,
+    logLabel: "partnerSubmit",
   });
-  const knockoutEval = evaluateKnockouts(
-    parsedSkills,
-    knockoutInputs,
-    screeningKnockoutView(screeningCols),
-  );
-  const knockoutEvaluatedAt = new Date();
-
-  // Upsert candidate by (tenant, person).
-  const [existingCandidate] = await db
-    .select({ id: candidates.id })
-    .from(candidates)
-    .where(and(eq(candidates.tenantId, tenantId), eq(candidates.personId, personId)))
-    .limit(1);
-  const candidateId = existingCandidate?.id
-    ? existingCandidate.id
-    : await db
-        .insert(candidates)
-        .values({
-          tenantId,
-          personId,
-          source: "partner_empanelled",
-          consentGrantedAt: new Date(),
-          consentVersion: args.consentVersion,
-          currentResumeUrl: args.resumeUploadKey,
-          parsedSkills,
-          yearsOfExperience: yearsOfExperience !== null ? yearsOfExperience.toFixed(1) : null,
-        })
-        .returning({ id: candidates.id })
-        .then((rows) => firstOrThrow(rows, "partner candidate insert").id);
-
-  // Upsert application by (tenant, candidate, req).
-  const [existingApp] = await db
-    .select({ id: applications.id })
-    .from(applications)
-    .where(
-      and(
-        eq(applications.tenantId, tenantId),
-        eq(applications.candidateId, candidateId),
-        eq(applications.requisitionId, requisitionId),
-      ),
-    )
-    .limit(1);
-
-  const { initialAiScoreExplanation, outboxEligible } = computeInitialScoringState(
-    knockoutEval.passed,
-    parserConfidence,
-    knockoutEvaluatedAt,
-  );
-
-  const wasNewApplication = !existingApp?.id;
-  const applicationId = existingApp?.id
-    ? existingApp.id
-    : await db
-        .insert(applications)
-        .values({
-          tenantId,
-          candidateId,
-          requisitionId,
-          source: "partner_empanelled",
-          knockoutPassed: knockoutEval.passed,
-          knockoutFailures: knockoutEval.failures.length > 0 ? knockoutEval.failures : null,
-          knockoutEvaluatedAt,
-          aiScoreExplanation: initialAiScoreExplanation,
-          sourcePartnerId: args.partnerOrgId,
-          submittedByPartnerUserId: args.partnerUserId,
-          partnerSubmissionMetadata: args.partnerSubmissionMetadata,
-          ...screeningCols,
-        })
-        .returning({ id: applications.id })
-        .then((rows) => firstOrThrow(rows, "partner application insert").id);
-
-  // Enqueue AI scoring only on first apply + eligibility — same rule as apply.
-  if (wasNewApplication && outboxEligible) {
-    try {
-      await db.insert(aiScoreOutbox).values({ tenantId, applicationId });
-    } catch (err) {
-      args.log.warn(
-        { err, request_id: args.requestId, application_id: applicationId },
-        "partnerSubmit: ai_score_outbox enqueue failed",
-      );
-    }
-  }
-
-  return { candidateId, applicationId, wasNewApplication, parseStatus };
+  const ingest = await ingestApplication(db, {
+    tenantId: args.tenantId,
+    requisitionId: args.requisitionId,
+    personId: args.personId,
+    resumeUploadKey: args.resumeUploadKey,
+    source: "partner_empanelled",
+    parse,
+    candidateConsent: { grantedAt: new Date(), version: args.consentVersion },
+    screening: { supplied: args.screening, source: "partner" },
+    partner: {
+      partnerOrgId: args.partnerOrgId,
+      partnerUserId: args.partnerUserId,
+      submissionMetadata: args.partnerSubmissionMetadata,
+    },
+    log: args.log,
+    requestId: args.requestId,
+    logLabel: "partnerSubmit",
+  });
+  return {
+    candidateId: ingest.candidateId,
+    applicationId: ingest.applicationId,
+    wasNewApplication: ingest.wasNewApplication,
+    parseStatus: ingest.parseStatus,
+  };
 }
 
 // ─────────────── CAND-02 raw-SQL row shapes (ctx.db.execute reads) ───────────────
@@ -16945,19 +16803,11 @@ export const appRouter = router({
           //    phone so we reuse a person a direct applicant already created.
           //    No fuzzy matching. Lookup only — creation is deferred to the
           //    "created" branch so a blocked submission creates nothing.
-          const [emailMatch] = await db
-            .select({ id: persons.id, linkedinUrl: persons.linkedinUrl })
-            .from(persons)
-            .where(and(eq(persons.tenantId, tenantId), eq(persons.emailNormalised, emailNorm)))
-            .limit(1);
-          const [phoneMatch] = emailMatch
-            ? [undefined]
-            : await db
-                .select({ id: persons.id, linkedinUrl: persons.linkedinUrl })
-                .from(persons)
-                .where(and(eq(persons.tenantId, tenantId), eq(persons.phoneNormalised, phoneNorm)))
-                .limit(1);
-          const existingPerson = emailMatch ?? phoneMatch ?? null;
+          //    Shared with the PC-2 bulk-CV drain (lib/application-ingest.ts).
+          const existingPerson = await findPersonByContact(db, tenantId, {
+            emailNormalised: emailNorm,
+            phoneNormalised: phoneNorm,
+          });
 
           // 3. If the person already exists, inspect their active claim.
           if (existingPerson) {
@@ -23872,6 +23722,80 @@ export const appRouter = router({
         }
 
         return { requestId: saved.id, status: saved.status as MissingInfoStatus };
+      });
+    }),
+
+  // ═══════════ PC-2 — bulk CV upload per requisition ═══════════
+  //
+  // The multipart upload itself is REST (POST /api/upload/bulk-cv,
+  // routes/bulk-cv-upload.ts); these are the drawer's reads + the retry.
+  // Parsing + candidate creation run in the bulk-CV drain (apps/workers).
+  // Gate: BULK_CV_UPLOAD_ROLES (recruiter + admin — the Candidates surface).
+
+  /** listBulkCvBatches — the requisition's recent batches + the effective caps. */
+  listBulkCvBatches: protectedProcedure
+    .input(listBulkCvBatchesInputSchema)
+    .output(listBulkCvBatchesOutputSchema)
+    .query(async ({ ctx, input }): Promise<ListBulkCvBatchesOutput> => {
+      requireAnyRole(ctx, BULK_CV_UPLOAD_ROLES, "Bulk CV upload is a recruiter surface.");
+      const db = requireDb(ctx);
+      const tenantId = ctx.tenantId;
+      if (!tenantId) {
+        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
+      }
+      const [req] = await db
+        .select({ status: requisitions.status })
+        .from(requisitions)
+        .where(and(eq(requisitions.tenantId, tenantId), eq(requisitions.id, input.requisitionId)))
+        .limit(1);
+      if (!req) throw new TRPCError({ code: "NOT_FOUND", message: "Requisition not found" });
+      const [limits, batches] = await Promise.all([
+        resolveTenantBulkCvLimits(tenantId),
+        listBulkCvBatchesForRequisition(db, tenantId, input.requisitionId),
+      ]);
+      return {
+        limits,
+        acceptingUploads: BULK_CV_ACCEPTING_REQ_STATUSES.has(req.status),
+        batches,
+      };
+    }),
+
+  /** getBulkCvBatch — one batch + per-file status (the drawer polls this). */
+  getBulkCvBatch: protectedProcedure
+    .input(getBulkCvBatchInputSchema)
+    .output(getBulkCvBatchOutputSchema)
+    .query(async ({ ctx, input }): Promise<GetBulkCvBatchOutput> => {
+      requireAnyRole(ctx, BULK_CV_UPLOAD_ROLES, "Bulk CV upload is a recruiter surface.");
+      const db = requireDb(ctx);
+      const tenantId = ctx.tenantId;
+      if (!tenantId) {
+        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
+      }
+      const out = await getBulkCvBatchWithItems(db, tenantId, input.batchId);
+      if (!out) throw new TRPCError({ code: "NOT_FOUND", message: "Batch not found" });
+      return out;
+    }),
+
+  /** retryBulkCvItems — re-queue failed items (all retryable ones when itemIds is omitted). */
+  retryBulkCvItems: protectedProcedure
+    .input(retryBulkCvItemsInputSchema)
+    .output(retryBulkCvItemsOutputSchema)
+    .mutation(async ({ ctx, input }): Promise<RetryBulkCvItemsOutput> => {
+      requireAnyRole(ctx, BULK_CV_UPLOAD_ROLES, "Bulk CV upload is a recruiter surface.");
+      return withAudit("retry_bulk_cv_items", ctx, input, async () => {
+        const db = requireDb(ctx);
+        const tenantId = ctx.tenantId;
+        if (!tenantId) {
+          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
+        }
+        const [batch] = await db
+          .select({ id: bulkCvBatches.id })
+          .from(bulkCvBatches)
+          .where(and(eq(bulkCvBatches.tenantId, tenantId), eq(bulkCvBatches.id, input.batchId)))
+          .limit(1);
+        if (!batch) throw new TRPCError({ code: "NOT_FOUND", message: "Batch not found" });
+        const requeued = await requeueFailedBulkCvItems(db, tenantId, input.batchId, input.itemIds);
+        return { requeued };
       });
     }),
 

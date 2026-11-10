@@ -132,3 +132,5 @@ export * from "./learning-resources";
 export * from "./learning-tracks";
 // skill → resource map: the engine behind the per-hire upskilling layer (LD-2A)
 export * from "./learning-skill-map";
+// PC-2 bulk CV upload per requisition (batches + per-file work queue)
+export * from "./bulk-cv-upload";

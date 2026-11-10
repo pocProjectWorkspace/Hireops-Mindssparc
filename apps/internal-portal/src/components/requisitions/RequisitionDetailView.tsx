@@ -12,6 +12,7 @@ import { InterviewPlanSection } from "@/components/interviews/InterviewPlanSecti
 import { RevisionSuggestionsCard } from "@/components/requirements/RevisionSuggestionsCard";
 import { AiAssistedPill, useProvenanceMap } from "@/components/iris/AiAssistedPill";
 import { humanize } from "@/lib/labels";
+import { BulkCvUploadButton } from "./BulkCvUploadDrawer";
 
 /**
  * REQ-02 — requisition detail view. Renders the requisition summary, JD,
@@ -57,6 +58,7 @@ export function RequisitionDetailView({
   canPost,
   canManageInterviews,
   canViewDiverseSlate = false,
+  canUploadCvs = false,
 }: {
   requisitionId: string;
   initial: GetRequisitionDetailOutput;
@@ -66,6 +68,8 @@ export function RequisitionDetailView({
   canManageInterviews: boolean;
   /** PC-26 — admin / hr_head / recruiter see the slate COUNT badge. */
   canViewDiverseSlate?: boolean;
+  /** PC-2: recruiter/admin may bulk-upload CVs once the req is open. */
+  canUploadCvs?: boolean;
 }) {
   const router = useRouter();
   const [error, setError] = useState<string | null>(null);
@@ -224,6 +228,9 @@ export function RequisitionDetailView({
               {r.seniority ? ` · ${r.seniority}` : ""}
             </p>
           </div>
+          {canUploadCvs && (r.status === "approved" || r.status === "posted") ? (
+            <BulkCvUploadButton requisitionId={requisitionId} roleTitle={r.title} />
+          ) : null}
           {canWrite && r.isDraft ? (
             <div className="flex flex-wrap gap-2">
               <Button

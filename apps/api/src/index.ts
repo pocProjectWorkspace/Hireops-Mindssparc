@@ -9,6 +9,7 @@ import { tenantContext, type TenantContextVars } from "./middleware/tenant-conte
 import { optionalAuth, type OptionalAuthVars } from "./middleware/optional-auth";
 import { testRoutes } from "./routes/test";
 import { uploadRoutes } from "./routes/upload";
+import { bulkCvUploadRoutes } from "./routes/bulk-cv-upload";
 import { onboardingDocumentRoutes } from "./routes/onboarding-documents";
 import { candidateDocumentRoutes } from "./routes/candidate-documents";
 import { applicationDocumentRoutes } from "./routes/application-documents";
@@ -78,6 +79,9 @@ app.route("/test", testRoutes);
 // optionalAuth populates c.var.{log,requestId,tenantId,userId,claims}.
 app.use("/api/upload/*", optionalAuth);
 app.route("/api/upload", uploadRoutes);
+// PC-2 bulk CV upload — same optionalAuth mount; the handler enforces JWT +
+// role itself and opens its own short tenant-bound tx after the storage writes.
+app.route("/api/upload/bulk-cv", bulkCvUploadRoutes);
 
 // Onboarding document upload + download (ONBOARD-05). Behind the STRICT
 // tenant-context middleware — these carry heavy PII, so unlike the public

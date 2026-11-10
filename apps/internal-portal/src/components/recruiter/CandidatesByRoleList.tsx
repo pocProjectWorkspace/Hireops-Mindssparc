@@ -17,6 +17,7 @@ import {
 import { trpc } from "@/lib/trpc-client";
 import { AiAssistedPill, useProvenanceMap } from "@/components/iris/AiAssistedPill";
 import { useDrawerRouting } from "@/lib/use-drawer-routing";
+import { BulkCvUploadButton } from "@/components/requisitions/BulkCvUploadDrawer";
 import { useUndoToast } from "@/components/triage/UndoToastProvider";
 import { ScreeningChips } from "@/components/triage/ScreeningChips";
 import { DiverseSlateBadge, DiverseSlateMoveHint } from "@/components/diversity/DiverseSlateBadge";
@@ -107,6 +108,7 @@ const SOURCE_OPTIONS: ApplicationSource[] = [
   "agency_search",
   "talent_pool",
   "whatsapp",
+  "bulk_upload",
 ];
 
 function RowActions({ row, onOpen }: { row: Row; onOpen: () => void }) {
@@ -233,6 +235,15 @@ function GroupAccordion({
         <PhaseChip phase={group.phase} />
         <DiverseSlateBadge requisitionId={group.requisitionId} />
       </button>
+      {open ? (
+        <div className="flex justify-end border-t border-neutral-100 px-5 py-2">
+          <BulkCvUploadButton
+            requisitionId={group.requisitionId}
+            roleTitle={group.roleTitle}
+            size="sm"
+          />
+        </div>
+      ) : null}
 
       {open ? (
         <TableShell className="border-t border-neutral-100">
