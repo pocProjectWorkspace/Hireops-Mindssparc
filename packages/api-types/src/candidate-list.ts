@@ -28,13 +28,14 @@ export type CandidateListPage = z.infer<typeof candidateListPageSchema>;
  * Sort keys for the candidates-by-role list.
  *   - ai_score: applications.ai_score DESC NULLS LAST, then newest (the
  *     existing score ordering).
+ *   - evidence: PC-6 screening evidence — must-haves met (partially met = ½)
+ *     DESC, then not met ASC; unscreened rows last.
  *   - newest:   applications.created_at DESC.
  *
- * PC-6 HOOK: the evidence-screening ticket adds its ordering key here (e.g.
- * "evidence") AND a matching entry in CANDIDATE_LIST_SORT_ORDER
- * (apps/api/src/lib/candidate-list-filters.ts). Nothing else needs touching.
+ * Each key has a matching entry in CANDIDATE_LIST_SORT_ORDER
+ * (apps/api/src/lib/candidate-list-filters.ts).
  */
-export const candidateListSortSchema = z.enum(["ai_score", "newest"]);
+export const candidateListSortSchema = z.enum(["ai_score", "evidence", "newest"]);
 export type CandidateListSort = z.infer<typeof candidateListSortSchema>;
 
 /** Knockout verdict filter: applications.knockout_passed true / false / null. */

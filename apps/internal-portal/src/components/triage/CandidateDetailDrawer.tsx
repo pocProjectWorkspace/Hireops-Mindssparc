@@ -13,6 +13,7 @@ import { AIScoreBadge } from "./AIScoreBadge";
 import { ScreeningChips } from "./ScreeningChips";
 import { ScreeningAnswersSection } from "./ScreeningAnswersSection";
 import { useScreeningScoreVisible } from "@/components/ScreeningScoreProvider";
+import { ScreeningEvidenceSection } from "@/components/screening/ScreeningEvidence";
 import { applicationStageLabel } from "@/lib/labels";
 import { timeAgo } from "@/lib/approval-format";
 import { TERMINAL_NEGATIVE } from "@/components/candidate/candidate-format";
@@ -243,11 +244,19 @@ export function CandidateDetailDrawer() {
         </header>
 
         <div className="flex-1 space-y-5 overflow-y-auto px-6 py-5">
+          {/* PC-6 — screening EVIDENCE first: per must-have verdict, reason and
+              verified verbatim CV quotes. This is the primary screening output. */}
+          {application ? (
+            <ScreeningEvidenceSection evidence={application.screeningEvidence} />
+          ) : null}
+
           {/* AI-score hero (POLISH-01) — ring + top factors, drawn from the
-              application's ai_score_explanation. Honest unscored/skipped states. */}
+              application's ai_score_explanation. Honest unscored/skipped states.
+              With the score hidden (NEW-16) the server omits aiScore and the
+              badge renders no number — only the written factor notes. */}
           {application ? (
             <AIScoreBadge
-              score={application.aiScore}
+              score={scoreVisible ? (application.aiScore ?? null) : null}
               explanation={application.aiScoreExplanation}
               variant="drawer"
               showScore={scoreVisible}

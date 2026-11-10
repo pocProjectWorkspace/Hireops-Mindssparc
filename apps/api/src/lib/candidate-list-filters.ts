@@ -20,6 +20,7 @@ import type {
   CandidateListSort,
 } from "@hireops/api-types";
 import { canSeeScreeningComp } from "./screening-answers";
+import { evidenceOrderSql } from "./screening-evidence-read";
 
 /** Escape LIKE / ILIKE metacharacters so user text matches literally. */
 export function escapeLike(raw: string): string {
@@ -143,8 +144,8 @@ export function whereAll(conditions: SQL[]): SQL | undefined {
  * ORDER BY fragments per sort key. Every order ends on applications.id so
  * offset paging is stable across requests.
  *
- * PC-6 HOOK: add the evidence ordering here, keyed by the new
- * candidateListSortSchema value (packages/api-types/src/candidate-list.ts).
+ * `evidence` (PC-6) references application_screening_evidence, so a query
+ * using it MUST LEFT JOIN that table via screeningEvidenceJoin().
  */
 export const CANDIDATE_LIST_SORT_ORDER: Record<CandidateListSort, SQL[]> = {
   ai_score: [
@@ -152,5 +153,6 @@ export const CANDIDATE_LIST_SORT_ORDER: Record<CandidateListSort, SQL[]> = {
     desc(applications.createdAt),
     desc(applications.id),
   ],
+  evidence: [evidenceOrderSql(), desc(applications.createdAt), desc(applications.id)],
   newest: [desc(applications.createdAt), desc(applications.id)],
 };

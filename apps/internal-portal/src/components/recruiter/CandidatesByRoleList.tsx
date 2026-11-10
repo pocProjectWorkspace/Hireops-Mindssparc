@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { Fragment, useEffect, useMemo, useState } from "react";
 import {
   BULK_MOVE_MAX,
   NEXT_PIPELINE_STAGE,
@@ -39,6 +39,12 @@ import { useScreeningScoreVisible } from "@/components/ScreeningScoreProvider";
 import { BulkActionsBar, skipReasonLabel, type BulkSelection } from "./BulkActionsBar";
 import { ListPager } from "./ListPager";
 import {
+  ScreeningEvidenceRows,
+  ScreeningEvidenceToggle,
+  ScreeningQueueBadge,
+  useExpandedSet,
+} from "@/components/screening/ScreeningEvidence";
+import {
   MatchTierChip,
   MissingInfoCell,
   PhaseChip,
@@ -61,8 +67,13 @@ type Group = Omit<RawGroup, "rows"> & { rows: Row[] };
 /**
  * RECR-02 — the recruiter's "All candidates" surface, grouped into one
  * accordion per requisition (a genuine new surface: there was no grouped
- * candidates table before). Columns: Candidate · Stage · AI Score · Source ·
- * Missing Info · Actions. Everything is REAL, deterministic data — the AI score
+ * candidates table before). Columns: Candidate · Stage · Screening · AI Score
+ * (only when the tenant shows it) · Source · Missing Info · Actions.
+ *
+ * PC-6: "Screening" is the evidence chip ("Must-haves 4/5 met"); clicking it
+ * expands the per-criterion evidence (verdict, reason, verified CV quotes)
+ * under the row. The group header shows "Screening 312 of 400…" while the
+ * requisition's CVs are still queued (PC-4). Everything is REAL, deterministic data — the AI score
  * is applications.ai_score (unscored says so honestly); Missing Info is a
  * deterministic count of absent required fields.
  *
@@ -209,6 +220,9 @@ function GroupAccordion({
   checkDisabled: boolean;
 }) {
   const scoreVisible = useScreeningScoreVisible();
+  const [expanded, toggleExpanded] = useExpandedSet();
+  // Select · Candidate · Stage · Screening · [AI Score] · Source · Missing Info · Actions
+  const columnCount = scoreVisible ? 8 : 7;
   return (
     <div className="overflow-hidden rounded-card border border-neutral-200 bg-white shadow-card">
       <button
@@ -234,6 +248,7 @@ function GroupAccordion({
         ) : null}
         <PhaseChip phase={group.phase} />
         <DiverseSlateBadge requisitionId={group.requisitionId} />
+        <ScreeningQueueBadge queue={group.screeningQueue} />
       </button>
       {open ? (
         <div className="flex justify-end border-t border-neutral-100 px-5 py-2">
@@ -253,6 +268,7 @@ function GroupAccordion({
             </Th>
             <Th>Candidate</Th>
             <Th>Stage</Th>
+            <Th>Screening</Th>
             {scoreVisible ? <Th>AI Score</Th> : null}
             <Th>Source</Th>
             <Th>Missing Info</Th>
@@ -262,78 +278,98 @@ function GroupAccordion({
             {group.rows.map((row) => {
               const name = row.fullName ?? "(no name on file)";
               const selected = selectedCandidateId === row.candidateId;
+              const isExpanded = expanded.has(row.applicationId);
+              const score = row.aiScore ?? null;
               return (
-                <Tr key={row.applicationId} className={cn(selected && "bg-brand-50")}>
-                  <Td className="w-10">
-                    <input
-                      type="checkbox"
-                      aria-label={`Select ${name}`}
-                      checked={isChecked(row.applicationId)}
-                      disabled={checkDisabled}
-                      onChange={(e) => onCheck(row.applicationId, e.target.checked)}
-                      className="h-4 w-4 rounded border-neutral-300 text-brand-600 focus:ring-brand-500"
-                    />
-                  </Td>
-                  <Td>
-                    <div className="flex items-center gap-2.5">
-                      <Avatar name={name} seed={row.candidateId} size="sm" />
-                      <div className="min-w-0">
-                        <div className="flex min-w-0 items-center gap-1.5">
-                          <p className="truncate font-medium text-neutral-900">{name}</p>
-                          <AiAssistedPill row={provenanceByApplicationId.get(row.applicationId)} />
+                <Fragment key={row.applicationId}>
+                  <Tr className={cn(selected && "bg-brand-50")}>
+                    <Td className="w-10">
+                      <input
+                        type="checkbox"
+                        aria-label={`Select ${name}`}
+                        checked={isChecked(row.applicationId)}
+                        disabled={checkDisabled}
+                        onChange={(e) => onCheck(row.applicationId, e.target.checked)}
+                        className="h-4 w-4 rounded border-neutral-300 text-brand-600 focus:ring-brand-500"
+                      />
+                    </Td>
+                    <Td>
+                      <div className="flex items-center gap-2.5">
+                        <Avatar name={name} seed={row.candidateId} size="sm" />
+                        <div className="min-w-0">
+                          <div className="flex min-w-0 items-center gap-1.5">
+                            <p className="truncate font-medium text-neutral-900">{name}</p>
+                            <AiAssistedPill
+                              row={provenanceByApplicationId.get(row.applicationId)}
+                            />
+                          </div>
+                          <p className="truncate text-xs text-neutral-500 tabular-nums">
+                            {row.refCode}
+                            {row.yearsOfExperience != null ? ` · ${row.yearsOfExperience} yrs` : ""}
+                          </p>
+                          {/* PC-7 — screening answers + knockout verdict. */}
+                          <div className="mt-1">
+                            <ScreeningChips screening={row.screening} knockout={row.knockout} />
+                          </div>
                         </div>
-                        <p className="truncate text-xs text-neutral-500 tabular-nums">
-                          {row.refCode}
-                          {row.yearsOfExperience != null ? ` · ${row.yearsOfExperience} yrs` : ""}
-                        </p>
-                        {/* PC-7 — screening answers + knockout verdict. */}
-                        <div className="mt-1">
-                          <ScreeningChips screening={row.screening} knockout={row.knockout} />
-                        </div>
-                      </div>
-                    </div>
-                  </Td>
-                  <Td label="Stage">
-                    <StageBadge stage={row.stage} />
-                  </Td>
-                  {scoreVisible ? (
-                    <Td label="AI Score">
-                      <div className="flex items-center gap-2">
-                        <ScoreValue score={row.aiScore} />
-                        {row.aiScore != null
-                          ? (() => {
-                              const tier =
-                                row.aiScore >= 90
-                                  ? "excellent"
-                                  : row.aiScore >= 75
-                                    ? "good"
-                                    : row.aiScore >= 60
-                                      ? "partial"
-                                      : "below";
-                              return tier !== "below" ? <MatchTierChip tier={tier} /> : null;
-                            })()
-                          : null}
                       </div>
                     </Td>
+                    <Td label="Stage">
+                      <StageBadge stage={row.stage} />
+                    </Td>
+                    <Td label="Screening">
+                      <ScreeningEvidenceToggle
+                        summary={row.evidenceSummary}
+                        open={isExpanded}
+                        onToggle={() => toggleExpanded(row.applicationId)}
+                      />
+                    </Td>
+                    {scoreVisible ? (
+                      <Td label="AI Score">
+                        <div className="flex items-center gap-2">
+                          <ScoreValue score={score} />
+                          {score != null
+                            ? (() => {
+                                const tier =
+                                  score >= 90
+                                    ? "excellent"
+                                    : score >= 75
+                                      ? "good"
+                                      : score >= 60
+                                        ? "partial"
+                                        : "below";
+                                return tier !== "below" ? <MatchTierChip tier={tier} /> : null;
+                              })()
+                            : null}
+                        </div>
+                      </Td>
+                    ) : null}
+                    <Td label="Source" className="text-neutral-700">
+                      {sourceLabel(row.source, sourceLabels, row.partnerOrgName)}
+                    </Td>
+                    <Td label="Missing Info">
+                      <MissingInfoCell info={row.missingInfo} />
+                    </Td>
+                    <Td label="Actions">
+                      <RowActions
+                        row={row}
+                        onOpen={() =>
+                          onOpenRow({
+                            candidateId: row.candidateId,
+                            applicationId: row.applicationId,
+                          })
+                        }
+                      />
+                    </Td>
+                  </Tr>
+                  {isExpanded ? (
+                    <Tr className="bg-neutral-50/60 lg:hover:bg-neutral-50/60">
+                      <Td colSpan={columnCount} className="lg:px-6 lg:py-4">
+                        <ScreeningEvidenceRows applicationId={row.applicationId} />
+                      </Td>
+                    </Tr>
                   ) : null}
-                  <Td label="Source" className="text-neutral-700">
-                    {sourceLabel(row.source, sourceLabels, row.partnerOrgName)}
-                  </Td>
-                  <Td label="Missing Info">
-                    <MissingInfoCell info={row.missingInfo} />
-                  </Td>
-                  <Td label="Actions">
-                    <RowActions
-                      row={row}
-                      onOpen={() =>
-                        onOpenRow({
-                          candidateId: row.candidateId,
-                          applicationId: row.applicationId,
-                        })
-                      }
-                    />
-                  </Td>
-                </Tr>
+                </Fragment>
               );
             })}
           </Tbody>
@@ -382,7 +418,11 @@ export function CandidatesByRoleList({
   const [maxCtcLakh, setMaxCtcLakh] = useState("");
   const [location, setLocation] = useState("");
   const [partner, setPartner] = useState<"" | "yes" | "no">("");
-  const [sort, setSort] = useState<CandidateListSort>("ai_score");
+  // PC-6 — mirrors the server default: score order when the tenant shows the
+  // score, evidence order when it hides it (the score order isn't offered then).
+  const scoreVisible = useScreeningScoreVisible();
+  const defaultSort: CandidateListSort = scoreVisible ? "ai_score" : "evidence";
+  const [sort, setSort] = useState<CandidateListSort>(defaultSort);
   const [offset, setOffset] = useState(0);
   const [limit, setLimit] = useState(DEFAULT_PAGE_SIZE);
   const [openGroups, setOpenGroups] = useState<Record<string, boolean>>({});
@@ -428,12 +468,12 @@ export function CandidatesByRoleList({
 
   const input: ListCandidatesByRequisitionInput = {
     ...filter,
-    ...(sort !== "ai_score" ? { sort } : {}),
+    ...(sort !== defaultSort ? { sort } : {}),
     ...(offset !== 0 || limit !== DEFAULT_PAGE_SIZE ? { page: { offset, limit } } : {}),
   };
   const isDefault =
     Object.keys(filter).length === 0 &&
-    sort === "ai_score" &&
+    sort === defaultSort &&
     offset === 0 &&
     limit === DEFAULT_PAGE_SIZE;
   const query = trpc.listCandidatesByRequisition.useQuery(input, {
@@ -532,7 +572,8 @@ export function CandidatesByRoleList({
             onChange={(e) => setSort(e.target.value as CandidateListSort)}
             className={selectClass}
           >
-            <option value="ai_score">AI score (highest first)</option>
+            {scoreVisible ? <option value="ai_score">AI score (highest first)</option> : null}
+            <option value="evidence">Must-haves met (most first)</option>
             <option value="newest">Newest first</option>
           </select>
         </label>

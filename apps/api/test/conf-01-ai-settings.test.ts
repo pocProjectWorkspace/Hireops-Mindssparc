@@ -52,7 +52,12 @@ import {
   hashStructuredOptions,
   type ParserOutput,
 } from "@hireops/ai-client";
-import { aiScoringResponseSchema, buildAIScoringPrompt } from "@hireops/ai-scoring";
+// PC-6 (PP6): the drain sends the full JD via composeScreeningJd(jd_text, summary).
+import {
+  aiScoringResponseSchema,
+  buildAIScoringPrompt,
+  composeScreeningJd,
+} from "@hireops/ai-scoring";
 import { resolveAiSettings, defaultAiSettings, type AiSettings } from "@hireops/api-types";
 import { drainAiScoreOutboxOnce } from "../../../apps/workers/src/lib/ai-score-drain.js";
 import { createExecutorDeps } from "../../../apps/workers/src/lib/agent-executor-deps.js";
@@ -544,7 +549,10 @@ describe("CONF-01 — per-tenant AI settings", () => {
     // lookup would miss and the drain could never complete.
     const { system, user } = buildAIScoringPrompt({
       positionTitle: "Conf Backend Engineer",
-      jdDescription: "Backend engineer focused on JVM systems.",
+      jdDescription: composeScreeningJd(
+        "# Conf JD body",
+        "Backend engineer focused on JVM systems.",
+      ),
       jdSkills: [],
       parsedCv: PARSED_CV,
     });

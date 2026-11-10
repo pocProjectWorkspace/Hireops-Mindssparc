@@ -22,6 +22,7 @@ import {
 import { MatchTierChip, RiskCell, StageBadge, UrgencyChip, sourceLabel } from "./recruiter-chips";
 import { PageContainer } from "@/components/nav/PageContainer";
 import { useScreeningScoreVisible } from "@/components/ScreeningScoreProvider";
+import { ScreeningEvidenceChip } from "@/components/screening/ScreeningEvidence";
 
 type Output = ListShortlistOutput;
 type RawRow = Output["rows"][number];
@@ -40,6 +41,11 @@ type Row = Omit<RawRow, "aiScoreExplanation"> & { aiScoreExplanation?: unknown }
  * probability. Tiers are honest labels of the score; "Must-have %" is a real
  * skill-overlap ratio (— when not computable); Risk is deterministic flags.
  * No fabricated confidence anywhere.
+ *
+ * PC-6: a "Screening" column carries the evidence chip ("Must-haves 4/5 met",
+ * from the per-criterion CV evidence); the row opens the candidate drawer with
+ * the full evidence. "Order by" switches between the score and the
+ * deterministic evidence order (met desc, partially met = ½, then not met asc).
  */
 
 function noticeLabel(days: number | null): string {
@@ -85,6 +91,9 @@ function ShortlistRowView({
           <MatchTierChip tier={row.tier} />
         </div>
       </Td>
+      <Td label="Screening">
+        <ScreeningEvidenceChip summary={row.evidenceSummary} />
+      </Td>
       <Td numeric label="Must-have" className="text-neutral-700">
         {row.mustHavePct == null ? "—" : `${row.mustHavePct}%`}
       </Td>
@@ -128,14 +137,15 @@ function ScoredShortlistView({
   canManageDefaults?: boolean;
 }) {
   const [threshold, setThreshold] = useState(initial.threshold);
+  const [sort, setSort] = useState<"ai_score" | "evidence">("ai_score");
   const [saveError, setSaveError] = useState<string | null>(null);
   const { open, candidateId } = useDrawerRouting();
   const utils = trpc.useUtils();
 
   const query = trpc.listShortlist.useQuery(
-    { threshold },
+    { threshold, ...(sort === "evidence" ? { sort } : {}) },
     {
-      initialData: threshold === initial.threshold ? initial : undefined,
+      initialData: threshold === initial.threshold && sort === "ai_score" ? initial : undefined,
       placeholderData: (prev) => prev,
     },
   );
@@ -184,8 +194,27 @@ function ScoredShortlistView({
             Threshold {threshold}%
           </Badge>
         </h2>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <span className="text-xs font-medium uppercase tracking-wide text-neutral-500">
+            Order by
+          </span>
+          {(["ai_score", "evidence"] as const).map((s) => (
+            <button
+              key={s}
+              type="button"
+              onClick={() => setSort(s)}
+              aria-pressed={sort === s}
+              className={cn(
+                "rounded-button px-3 py-1.5 text-sm font-medium transition-colors",
+                sort === s
+                  ? "bg-brand-600 text-white"
+                  : "border border-neutral-300 text-neutral-700 hover:bg-neutral-50",
+              )}
+            >
+              {s === "ai_score" ? "Score" : "Evidence"}
+            </button>
+          ))}
+          <span className="ml-2 text-xs font-medium uppercase tracking-wide text-neutral-500">
             Min score
           </span>
           {thresholdOptions.map((t) => (
@@ -259,6 +288,7 @@ function ScoredShortlistView({
               <Th>Candidate</Th>
               <Th>Role</Th>
               <Th>AI Score</Th>
+              <Th>Screening</Th>
               <Th numeric>Must-have</Th>
               <Th>Notice</Th>
               <Th>Stage</Th>
