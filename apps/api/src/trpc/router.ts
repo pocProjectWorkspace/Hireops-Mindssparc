@@ -19,7 +19,7 @@
  * tRPC middleware in trpc-core.ts.
  */
 
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { z } from "zod";
 import { TRPCError } from "@trpc/server";
 import {
@@ -218,9 +218,14 @@ import {
   createRequisitionDraftOutputSchema,
   type CreateRequisitionDraftInput,
   previewWorkdayRequisitionImportOutputSchema,
+  previewWorkdayRequisitionUploadInputSchema,
   importWorkdayRequisitionsInputSchema,
   importWorkdayRequisitionsOutputSchema,
   type ImportWorkdayRequisitionsOutput,
+  type PreviewWorkdayRequisitionImportOutput,
+  type WorkdayRequisitionRow,
+  type WorkdayRowError,
+  type WorkdayUploadFile,
   WORKDAY_SAMPLE_REQUISITIONS,
   WORKDAY_PREVIEW_COLUMNS,
   WORKDAY_IMPORT_SOURCE,
@@ -1058,7 +1063,10 @@ import { createClient } from "@supabase/supabase-js";
 import {
   buildWorkdayPreviewRow,
   mapWorkdayRow,
+  parseWorkdayExportFile,
   workdayJdSections,
+  workdaySampleRows,
+  WorkdayImportFileError,
   type WorkdayTenantLookups,
 } from "../lib/workday-import";
 import {
@@ -5235,90 +5243,120 @@ export const appRouter = router({
       });
     }),
 
-  // ═══════════ Workday import — PoC PREVIEW (no live Workday connection) ═══════════
+  // ═══════════ Workday import — export upload (no live Workday connection) ═══════════
 
   /**
-   * previewWorkdayRequisitionImport — the "Import from Workday" drawer's preview.
-   * Reads the BUILT-IN sample Workday requisition export (there is no live
-   * Workday connection) and validates every mapped field against the tenant's
-   * REAL data: active business units, active members (hiring manager by display
-   * name) and active comp bands (grade by level/name). Each row also carries
-   * whether it was already imported (provenance on the creating state
-   * transition). Same roles as createRequisitionDraft. Read-only.
+   * previewWorkdayRequisitionImport — the drawer's "Use sample data" preview
+   * (DEMO). Reads the BUILT-IN sample Workday requisition export and validates
+   * every mapped field against the tenant's REAL data: active business units,
+   * active members (hiring manager by display name) and active comp bands
+   * (grade by level/name). Each row also carries whether it was already
+   * imported (provenance on the creating state transition). Same roles as
+   * createRequisitionDraft. Read-only.
    */
   previewWorkdayRequisitionImport: protectedProcedure
     .output(previewWorkdayRequisitionImportOutputSchema)
     .query(async ({ ctx }) => {
-      requireAnyRole(
-        ctx,
-        REQUISITION_WRITE_ROLES,
-        "Importing requisitions requires the hiring_manager or admin role",
-      );
-      const db = requireDb(ctx);
-      if (!ctx.tenantId) {
-        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
-      }
-      const tenantId = ctx.tenantId;
-      const membershipId = await resolveActorMembership(db, ctx);
-      const lookups = await loadWorkdayTenantLookups(ctx, db, tenantId);
-      const callerName = membershipId
-        ? (lookups.members.find((m) => m.membershipId === membershipId)?.displayName ?? null)
-        : null;
-      const imported = await loadWorkdayImportedMap(db, tenantId);
-      return {
-        columns: [...WORKDAY_PREVIEW_COLUMNS],
-        rows: WORKDAY_SAMPLE_REQUISITIONS.map((r) =>
-          buildWorkdayPreviewRow(
-            r,
-            lookups,
-            callerName,
-            imported.get(r["Job Requisition ID"]) ?? null,
-          ),
-        ),
-      };
+      const { db, tenantId, membershipId } = await workdayImportGate(ctx);
+      return buildWorkdayImportPreview(ctx, db, tenantId, membershipId, {
+        source: "sample",
+        fileName: null,
+        rows: workdaySampleRows(WORKDAY_SAMPLE_REQUISITIONS),
+        unmappedColumns: [],
+        rowErrors: [],
+      });
     }),
 
   /**
-   * importWorkdayRequisitions — "Import as drafts". For each requested sample
-   * row not already imported, creates a DRAFT requisition through the SAME
-   * chain as createRequisitionDraft (insertRequisitionDraftChain), then seeds
-   * the draft JD (sections + jd_text) and jd_skills from the sample. Workday
-   * provenance + idempotency key = metadata on the creating state transition
-   * ({ source: "workday_import_preview", workdayJobRequisitionId }). Unknown
-   * hiring manager → the caller (flagged in the preview); no matching grade →
-   * no comp band (budget left blank). Same roles as createRequisitionDraft.
+   * previewWorkdayRequisitionUpload — "Upload Workday export". Parses the
+   * uploaded CSV/XLSX server-side (base64 in the body; ≤ 5 MB, ≤ 2,000 rows),
+   * maps headers through WORKDAY_COLUMN_ALIASES and runs the SAME preview
+   * mapping as the sample. A file problem (type, size, missing required
+   * column, …) is a BAD_REQUEST naming the problem; unknown columns and
+   * unimportable rows are returned for display. A mutation only because the
+   * file is too big for a GET query string — it writes nothing.
+   */
+  previewWorkdayRequisitionUpload: protectedProcedure
+    .input(previewWorkdayRequisitionUploadInputSchema)
+    .output(previewWorkdayRequisitionImportOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      const { db, tenantId, membershipId } = await workdayImportGate(ctx);
+      const parsed = parseWorkdayUploadOrThrow(input.file);
+      return buildWorkdayImportPreview(ctx, db, tenantId, membershipId, {
+        source: "upload",
+        fileName: input.file.fileName,
+        ...parsed,
+      });
+    }),
+
+  /**
+   * importWorkdayRequisitions — "Import as drafts". Rows come from the
+   * uploaded export (`file`, re-parsed server-side — client-mapped rows are
+   * never trusted) or, without a file, the built-in demo sample. For each
+   * requested row not already imported, creates a DRAFT requisition through
+   * the SAME chain as createRequisitionDraft (insertRequisitionDraftChain),
+   * then seeds the draft JD (sections + jd_text) and jd_skills from the row.
+   * Workday provenance + idempotency key = metadata on the creating state
+   * transition ({ source: "workday_import_preview", workdayJobRequisitionId }),
+   * so re-uploading the same file reports "already imported". Unknown hiring
+   * manager → the caller (flagged in the preview); no matching grade → no comp
+   * band (budget left blank). One call; rows are processed in batches (the
+   * active-title clash check is one query per batch) and every requested row
+   * gets an outcome. Same roles as createRequisitionDraft.
    */
   importWorkdayRequisitions: protectedProcedure
     .input(importWorkdayRequisitionsInputSchema)
     .output(importWorkdayRequisitionsOutputSchema)
     .mutation(async ({ ctx, input }) => {
-      return withAudit("import_workday_requisitions", ctx, input, async () => {
-        requireAnyRole(
-          ctx,
-          REQUISITION_WRITE_ROLES,
-          "Importing requisitions requires the hiring_manager or admin role",
-        );
-        const db = requireDb(ctx);
-        if (!ctx.tenantId) {
-          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
-        }
-        const tenantId = ctx.tenantId;
-        const membershipId = await resolveActorMembership(db, ctx);
+      // The audit row records WHICH file (name, size, sha256) — never its bytes.
+      const auditInput = {
+        jobRequisitionIds: input.jobRequisitionIds,
+        file: input.file
+          ? {
+              fileName: input.file.fileName,
+              sizeBytes: Math.floor((input.file.contentBase64.length * 3) / 4),
+              sha256: createHash("sha256").update(input.file.contentBase64).digest("hex"),
+            }
+          : null,
+      };
+      return withAudit("import_workday_requisitions", ctx, auditInput, async () => {
+        const { db, tenantId, membershipId } = await workdayImportGate(ctx);
         if (!membershipId) {
           throw new TRPCError({
             code: "FORBIDDEN",
             message: "Creating membership not found for this tenant",
           });
         }
+        const sourceRows = input.file
+          ? parseWorkdayUploadOrThrow(input.file).rows
+          : workdaySampleRows(WORKDAY_SAMPLE_REQUISITIONS);
+        const sourceLabel = input.file
+          ? `the Workday export "${input.file.fileName}"`
+          : "the sample Workday export";
+        const transitionSource = input.file
+          ? `Workday export upload "${input.file.fileName}"`
+          : "sample Workday export, demo";
+        const byId = new Map(sourceRows.map((r) => [r.jobRequisitionId, r]));
         const lookups = await loadWorkdayTenantLookups(ctx, db, tenantId);
         const imported = await loadWorkdayImportedMap(db, tenantId);
-        const wanted = new Set(input.jobRequisitionIds);
 
         const results: ImportWorkdayRequisitionsOutput["results"] = [];
-        for (const row of WORKDAY_SAMPLE_REQUISITIONS) {
-          const jrId = row["Job Requisition ID"];
-          if (!wanted.has(jrId)) continue;
-          const title = row["Job Posting Title"];
+        const toCreate: { row: WorkdayRequisitionRow; resolved: WorkdayResolvedImportRow }[] = [];
+        for (const jrId of [...new Set(input.jobRequisitionIds)]) {
+          const row = byId.get(jrId);
+          if (!row) {
+            results.push({
+              jobRequisitionId: jrId,
+              title: "",
+              outcome: "skipped",
+              requisitionId: null,
+              message: input.file
+                ? "Not an importable row in the uploaded file"
+                : "Not in the sample export",
+            });
+            continue;
+          }
+          const title = row.jobPostingTitle;
           const existing = imported.get(jrId);
           if (existing) {
             results.push({
@@ -5341,85 +5379,118 @@ export const appRouter = router({
             });
             continue;
           }
-          // Pre-check the active-title partial unique so a clash is a clean
-          // per-row skip rather than a 23505 that aborts the whole transaction.
-          const [clash] = await db
-            .select({ id: positions.id })
+          toCreate.push({
+            row,
+            resolved: { ...resolved, businessUnitId: resolved.businessUnitId },
+          });
+        }
+
+        // Batches: one active-title clash query per batch, then the per-row
+        // creation chain. A clash (incl. two rows of THIS file with the same
+        // title + unit) is a clean per-row skip rather than a 23505 that
+        // aborts the whole transaction.
+        const taken = new Set<string>();
+        const clashKey = (buId: string, title: string) => `${buId}\u0000${title}`;
+        for (let i = 0; i < toCreate.length; i += WORKDAY_IMPORT_BATCH_SIZE) {
+          const batch = toCreate.slice(i, i + WORKDAY_IMPORT_BATCH_SIZE);
+          const clashes = await db
+            .select({ businessUnitId: positions.businessUnitId, title: positions.title })
             .from(positions)
             .where(
               and(
                 eq(positions.tenantId, tenantId),
-                eq(positions.businessUnitId, resolved.businessUnitId),
-                eq(positions.title, title),
                 eq(positions.isActive, true),
+                inArray(positions.title, [...new Set(batch.map((b) => b.resolved.title))]),
               ),
-            )
-            .limit(1);
-          if (clash) {
+            );
+          for (const c of clashes) taken.add(clashKey(c.businessUnitId, c.title));
+
+          for (const { row, resolved } of batch) {
+            const jrId = row.jobRequisitionId;
+            const title = resolved.title;
+            const key = clashKey(resolved.businessUnitId, title);
+            if (taken.has(key)) {
+              results.push({
+                jobRequisitionId: jrId,
+                title,
+                outcome: "skipped",
+                requisitionId: null,
+                message: `An active position titled "${title}" already exists in that business unit`,
+              });
+              continue;
+            }
+            taken.add(key);
+
+            const created = await insertRequisitionDraftChain(db, {
+              tenantId,
+              membershipId,
+              input: {
+                title,
+                businessUnitId: resolved.businessUnitId,
+                locationType: "onsite",
+                primaryLocation: resolved.primaryLocation ?? undefined,
+                numberOfOpenings: resolved.numberOfOpenings,
+                targetStartDate: resolved.targetStartDate ?? undefined,
+                compBandId: resolved.compBandId ?? undefined,
+              },
+              hiringManagerId: resolved.hiringManagerMembershipId ?? membershipId,
+              transitionReason: `Imported from Workday ${jrId} (${transitionSource})`,
+              transitionMetadata: {
+                source: WORKDAY_IMPORT_SOURCE,
+                workdayJobRequisitionId: jrId,
+                ...(input.file ? { workdayExportFileName: input.file.fileName } : {}),
+              },
+            });
+            imported.set(jrId, created.requisitionId);
+
+            // Seed the draft JD from the row (same sections shape the
+            // wizard's JD editor writes) and its skills.
+            const sections = workdayJdSections(row, sourceLabel);
+            await db
+              .update(jdVersions)
+              .set({
+                jdText: composeJdText(sections, title),
+                summary: sections.summary,
+                aiMetadata: { sections, source: WORKDAY_IMPORT_SOURCE },
+                updatedAt: new Date(),
+              })
+              .where(
+                and(eq(jdVersions.tenantId, tenantId), eq(jdVersions.id, created.jdVersionId)),
+              );
+            if (row.skills.length > 0) {
+              await db.insert(jdSkills).values(
+                row.skills.map((skillName) => ({
+                  tenantId,
+                  jdVersionId: created.jdVersionId,
+                  skillName,
+                  weight: "1.00",
+                  isRequired: true,
+                })),
+              );
+            }
+
             results.push({
               jobRequisitionId: jrId,
               title,
-              outcome: "skipped",
-              requisitionId: null,
-              message: `An active position titled "${title}" already exists in that business unit`,
+              outcome: "created",
+              requisitionId: created.requisitionId,
+              message: null,
             });
-            continue;
           }
-
-          const created = await insertRequisitionDraftChain(db, {
-            tenantId,
-            membershipId,
-            input: {
-              title,
-              businessUnitId: resolved.businessUnitId,
-              locationType: "onsite",
-              primaryLocation: resolved.primaryLocation,
-              numberOfOpenings: row["Number of Openings"],
-              targetStartDate: resolved.targetStartDate,
-              compBandId: resolved.compBandId ?? undefined,
-            },
-            hiringManagerId: resolved.hiringManagerMembershipId ?? membershipId,
-            transitionReason: `Imported from Workday ${jrId} (sample Workday export, PoC preview)`,
-            transitionMetadata: {
-              source: WORKDAY_IMPORT_SOURCE,
-              workdayJobRequisitionId: jrId,
-            },
-          });
-
-          // Seed the draft JD from the sample (same sections shape the wizard's
-          // JD editor writes) and its skills.
-          const sections = workdayJdSections(row);
-          await db
-            .update(jdVersions)
-            .set({
-              jdText: composeJdText(sections, title),
-              summary: sections.summary,
-              aiMetadata: { sections, source: WORKDAY_IMPORT_SOURCE },
-              updatedAt: new Date(),
-            })
-            .where(and(eq(jdVersions.tenantId, tenantId), eq(jdVersions.id, created.jdVersionId)));
-          await db.insert(jdSkills).values(
-            row.skills.map((skillName) => ({
-              tenantId,
-              jdVersionId: created.jdVersionId,
-              skillName,
-              weight: "1.00",
-              isRequired: true,
-            })),
-          );
-
-          results.push({
-            jobRequisitionId: jrId,
-            title,
-            outcome: "created",
-            requisitionId: created.requisitionId,
-            message: null,
-          });
         }
 
+        // Report in the order the rows appear in the export.
+        const order = new Map(sourceRows.map((r, idx) => [r.jobRequisitionId, idx]));
+        results.sort(
+          (a, b) =>
+            (order.get(a.jobRequisitionId) ?? Number.MAX_SAFE_INTEGER) -
+            (order.get(b.jobRequisitionId) ?? Number.MAX_SAFE_INTEGER),
+        );
         return {
           results,
           createdCount: results.filter((r) => r.outcome === "created").length,
+          alreadyImportedCount: results.filter((r) => r.outcome === "already_imported").length,
+          skippedCount: results.filter((r) => r.outcome === "skipped").length,
         };
       });
     }),
@@ -29751,6 +29822,92 @@ async function loadWorkdayImportedMap(
     if (r.jrId && !out.has(r.jrId)) out.set(r.jrId, r.requisitionId);
   }
   return out;
+}
+
+/** Rows per batch in importWorkdayRequisitions (one clash query per batch). */
+const WORKDAY_IMPORT_BATCH_SIZE = 100;
+
+/** A mapped Workday row whose business unit resolved (importable). */
+type WorkdayResolvedImportRow = ReturnType<typeof mapWorkdayRow>["resolved"] & {
+  businessUnitId: string;
+};
+
+/**
+ * Shared gate for the Workday import procedures: hiring_manager / admin (same
+ * as createRequisitionDraft), a db handle and the tenant.
+ */
+async function workdayImportGate(ctx: HonoTRPCContext): Promise<{
+  db: NonNullable<HonoTRPCContext["db"]>;
+  tenantId: string;
+  membershipId: string | null;
+}> {
+  requireAnyRole(
+    ctx,
+    REQUISITION_WRITE_ROLES,
+    "Importing requisitions requires the hiring_manager or admin role",
+  );
+  const db = requireDb(ctx);
+  if (!ctx.tenantId) {
+    throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
+  }
+  const membershipId = await resolveActorMembership(db, ctx);
+  return { db, tenantId: ctx.tenantId, membershipId };
+}
+
+/** Parse an uploaded Workday export; a file problem becomes a clean BAD_REQUEST. */
+function parseWorkdayUploadOrThrow(file: WorkdayUploadFile) {
+  try {
+    return parseWorkdayExportFile(file);
+  } catch (err) {
+    if (err instanceof WorkdayImportFileError) {
+      throw new TRPCError({ code: "BAD_REQUEST", message: err.message });
+    }
+    throw err;
+  }
+}
+
+/**
+ * The preview payload for a set of normalised Workday rows (sample or upload):
+ * per-row mapping against the tenant's real lookups, the already-imported flag
+ * and the summary counts the drawer shows.
+ */
+async function buildWorkdayImportPreview(
+  ctx: HonoTRPCContext,
+  db: NonNullable<HonoTRPCContext["db"]>,
+  tenantId: string,
+  membershipId: string | null,
+  src: {
+    source: "sample" | "upload";
+    fileName: string | null;
+    rows: WorkdayRequisitionRow[];
+    unmappedColumns: string[];
+    rowErrors: WorkdayRowError[];
+  },
+): Promise<PreviewWorkdayRequisitionImportOutput> {
+  const lookups = await loadWorkdayTenantLookups(ctx, db, tenantId);
+  const callerName = membershipId
+    ? (lookups.members.find((m) => m.membershipId === membershipId)?.displayName ?? null)
+    : null;
+  const imported = await loadWorkdayImportedMap(db, tenantId);
+  const rows = src.rows.map((r) =>
+    buildWorkdayPreviewRow(r, lookups, callerName, imported.get(r.jobRequisitionId) ?? null),
+  );
+  const pending = rows.filter((r) => !r.alreadyImported);
+  return {
+    source: src.source,
+    fileName: src.fileName,
+    columns: [...WORKDAY_PREVIEW_COLUMNS],
+    rows,
+    unmappedColumns: src.unmappedColumns,
+    rowErrors: src.rowErrors,
+    counts: {
+      total: rows.length,
+      ready: pending.filter((r) => r.needsReviewCount === 0).length,
+      needsReview: pending.filter((r) => r.needsReviewCount > 0).length,
+      alreadyImported: rows.length - pending.length,
+      invalid: src.rowErrors.length,
+    },
+  };
 }
 
 /** The Workday JR id a requisition was imported from (preview provenance), else null. */
