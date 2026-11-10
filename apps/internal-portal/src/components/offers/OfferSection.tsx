@@ -6,6 +6,7 @@ import { Badge, Button } from "@/components/ui";
 import type { BadgeTone } from "@/components/ui";
 import { trpc } from "@/lib/trpc-client";
 import { applicationStageLabel } from "@/lib/labels";
+import { WorkdayHandoffPanel } from "./WorkdayHandoffPanel";
 
 /**
  * Offer drafting section inside the CandidateDetailDrawer. Three modes:
@@ -22,6 +23,9 @@ import { applicationStageLabel } from "@/lib/labels";
  *
  *   - terminal offers (accepted / declined / cancelled / expired): show
  *     the offer card with the outcome badge; no actions.
+ *
+ *   - PC-13: below the offers, the "Workday handoff" step (status chip +
+ *     CSV / JSON download) once there's a live or accepted offer.
  *
  * Money lives as paise on the wire; this component is the conversion
  * boundary (paise → INR for display, INR → paise on submit).
@@ -42,7 +46,10 @@ export function OfferSection({ applicationId }: OfferSectionProps) {
   const [showForm, setShowForm] = useState(false);
 
   const invalidate = () =>
-    queryClient.invalidateQueries({ queryKey: [["listOffersByApplication"]] });
+    Promise.all([
+      queryClient.invalidateQueries({ queryKey: [["listOffersByApplication"]] }),
+      queryClient.invalidateQueries({ queryKey: [["getWorkdayHandoff"]] }),
+    ]);
 
   const extend = trpc.extendOffer.useMutation({
     onSuccess: () => {
@@ -158,6 +165,8 @@ export function OfferSection({ applicationId }: OfferSectionProps) {
           </li>
         ))}
       </ul>
+
+      {rows.length > 0 ? <WorkdayHandoffPanel applicationId={applicationId} /> : null}
     </section>
   );
 }
