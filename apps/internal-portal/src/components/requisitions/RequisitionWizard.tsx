@@ -180,6 +180,16 @@ export function RequisitionWizard({
   const [skills, setSkills] = useState<SkillWeightRow[]>([]);
   const [knockouts, setKnockouts] = useState<KnockoutRow[]>([]);
   const [generatingTarget, setGeneratingTarget] = useState<JdSectionKey | "all" | null>(null);
+  // PC-26 — diverse-slate requirement for this role. `min` "" = tenant default.
+  const [diverseSlate, setDiverseSlate] = useState<{ required: boolean; min: string }>({
+    required: false,
+    min: "",
+  });
+  const diverseDefaultsQuery = trpc.getDiverseSlateDefaults.useQuery(undefined, {
+    retry: false,
+    refetchOnWindowFocus: false,
+  });
+  const diverseDefaults = diverseDefaultsQuery.data;
 
   const createDraft = trpc.createRequisitionDraft.useMutation();
   const generateJd = trpc.generateJdDraft.useMutation();
@@ -271,6 +281,10 @@ export function RequisitionWizard({
       compBandId: "",
       compBandMin: d.compBandMin ?? "",
       compBandMax: d.compBandMax ?? "",
+    });
+    setDiverseSlate({
+      required: d.diverseSlateRequired ?? false,
+      min: d.diverseSlateMin != null ? String(d.diverseSlateMin) : "",
     });
     if (d.jdSections) {
       setSections({ ...EMPTY_SECTIONS, ...d.jdSections });
@@ -403,6 +417,7 @@ export function RequisitionWizard({
         compBandMin: basics.compBandMin ? Number(basics.compBandMin) : undefined,
         compBandMax: basics.compBandMax ? Number(basics.compBandMax) : undefined,
         compCurrency: basics.compBandMin || basics.compBandMax ? "INR" : undefined,
+        ...diverseSlateInput(),
       });
       setRid(res.requisitionId);
       setRidInUrl(res.requisitionId, 2);
@@ -449,10 +464,33 @@ export function RequisitionWizard({
     }
   }
 
+  /** PC-26 — the role's diverse-slate fields as the draft mutations take them. */
+  function diverseSlateInput(): { diverseSlateRequired: boolean; diverseSlateMin: number | null } {
+    const n = Math.trunc(Number(diverseSlate.min));
+    return {
+      diverseSlateRequired: diverseSlate.required,
+      diverseSlateMin:
+        diverseSlate.required && diverseSlate.min.trim() && n >= 1 && n <= 20 ? n : null,
+    };
+  }
+
+  async function onContinueFromBasics() {
+    if (!rid) return;
+    setError(null);
+    try {
+      await updateDraft.mutateAsync({ requisitionId: rid, ...diverseSlateInput() });
+      goToStep(2);
+    } catch (err) {
+      setError(errorMessage(err));
+      handleTRPCError(err, { onMessage: () => undefined });
+    }
+  }
+
   async function persistDraft() {
     if (!rid) return;
     await updateDraft.mutateAsync({
       requisitionId: rid,
+      ...diverseSlateInput(),
       sections,
       skills: skills
         .filter((s) => s.skillName.trim().length > 0)
@@ -738,9 +776,45 @@ export function RequisitionWizard({
               />
             </Field>
           </div>
+          {/* PC-26 — diverse-slate requirement. Shown only when the tenant has
+              the feature on (or this draft already carries the flag). Flags the
+              role when its slate is short; never blocks a move or an offer. */}
+          {diverseDefaults?.enabled || diverseSlate.required ? (
+            <div className="mt-5 rounded-lg border border-neutral-200 bg-neutral-50 p-4">
+              <label className="flex items-center gap-2 text-sm font-medium text-neutral-800">
+                <input
+                  type="checkbox"
+                  checked={diverseSlate.required}
+                  onChange={(e) => setDiverseSlate({ ...diverseSlate, required: e.target.checked })}
+                  className="h-4 w-4 rounded border-neutral-300 text-brand-600"
+                />
+                Diverse slate required
+              </label>
+              <p className="mt-1 text-xs text-neutral-500">
+                Flags this role when fewer candidates in its slate (shortlist through offer) have
+                self-identified as diverse than the minimum. A reminder only; it never blocks a move
+                or an offer.
+              </p>
+              {diverseSlate.required ? (
+                <div className="mt-3 max-w-xs">
+                  <Field label="Minimum diverse candidates in slate">
+                    <input
+                      type="number"
+                      min={1}
+                      max={20}
+                      className={inputCls}
+                      value={diverseSlate.min}
+                      onChange={(e) => setDiverseSlate({ ...diverseSlate, min: e.target.value })}
+                      placeholder={`${diverseDefaults?.defaultMin ?? 2} (organisation default)`}
+                    />
+                  </Field>
+                </div>
+              ) : null}
+            </div>
+          ) : null}
           <div className="mt-6 flex justify-end">
             {rid ? (
-              <Button onClick={() => goToStep(2)} disabled={busy}>
+              <Button onClick={() => void onContinueFromBasics()} disabled={busy}>
                 Continue
               </Button>
             ) : (
@@ -1064,6 +1138,12 @@ export function RequisitionWizard({
               }
             />
             <Row label="Openings" value={String(basics.numberOfOpenings)} />
+            {diverseSlate.required ? (
+              <Row
+                label="Diverse slate"
+                value={`Required, minimum ${diverseSlateInput().diverseSlateMin ?? `${diverseDefaults?.defaultMin ?? 2} (organisation default)`}`}
+              />
+            ) : null}
             <Row label="JD sections" value={`${filledSectionCount(sections)} of 7 filled`} />
             <Row
               label="Skills"

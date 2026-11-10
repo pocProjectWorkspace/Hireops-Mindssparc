@@ -5,6 +5,7 @@ import { createServerTRPCCaller } from "@/lib/trpc-server";
 import { AppShell } from "@/components/nav/AppShell";
 import { RoleNotice } from "@/components/nav/RoleNotice";
 import { RequisitionDetailView } from "@/components/requisitions/RequisitionDetailView";
+import { canViewDiverseSlate } from "@hireops/api-types";
 
 export const dynamic = "force-dynamic"; // Auth-gated + reads live requisition state.
 
@@ -85,6 +86,7 @@ export default async function RequisitionDetailPage({
         canDecide={canDecide}
         canPost={canPost}
         canManageInterviews={canManageInterviews}
+        canViewDiverseSlate={canViewDiverseSlate(session.roles)}
       />
     </AppShell>
   );

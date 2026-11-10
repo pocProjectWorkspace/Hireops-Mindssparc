@@ -29,6 +29,7 @@ export * from "./tenant-sources";
 export * from "./candidate-field-policy";
 export * from "./screening-answers";
 export * from "./candidate-list";
+export * from "./diversity-slate";
 export * from "./interview-templates";
 export * from "./admin-approval-routing";
 export * from "./email-template-overrides";

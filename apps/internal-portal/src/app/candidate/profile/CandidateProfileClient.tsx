@@ -7,6 +7,12 @@ import { CandidateShell } from "@/components/candidate/CandidateShell";
 import { trpc } from "@/lib/trpc-client";
 import { TRPCClientError } from "@trpc/client";
 import type { CandidateProfile } from "@hireops/api-types";
+import {
+  DiversitySelfIdFields,
+  selectionsFromAnswers,
+  selectionsToAnswers,
+  type DiversitySelections,
+} from "@/components/diversity/DiversitySelfIdFields";
 
 /** Integer paise → a readable ₹ amount (whole rupees; INR-only Wave 1). */
 function formatInr(paise: number): string {
@@ -49,6 +55,7 @@ export function CandidateProfileClient() {
   return (
     <CandidateShell variant="portal" active="profile">
       <ProfileForm initial={profileQuery.data.profile} />
+      <DiversitySelfIdCard />
     </CandidateShell>
   );
 }
@@ -278,5 +285,78 @@ function ProfileForm({ initial }: { initial: CandidateProfile }) {
         </div>
       </Card>
     </div>
+  );
+}
+
+// ── PC-26 — optional diversity self-identification (own answers only) ──
+
+/**
+ * The candidate's own voluntary self-ID. Saved separately from the profile
+ * form (its own mutation, its own Save) so it is never sent along with the
+ * other fields. Choosing "Prefer not to say" and saving withdraws an answer.
+ * Hidden entirely when the organisation doesn't collect it.
+ */
+function DiversitySelfIdCard() {
+  const utils = trpc.useUtils();
+  const q = trpc.candidateGetDiversitySelfId.useQuery(undefined, { retry: false });
+  const [selections, setSelections] = useState<DiversitySelections | null>(null);
+  const [status, setStatus] = useState<"idle" | "saved" | "error">("idle");
+  const save = trpc.candidateSetDiversitySelfId.useMutation({
+    onSuccess: (res) => {
+      setSelections(selectionsFromAnswers(res.answers));
+      setStatus("saved");
+      void utils.candidateGetDiversitySelfId.invalidate();
+    },
+    onError: () => setStatus("error"),
+  });
+
+  const config = q.data?.config;
+  if (!config || !config.enabled || config.categories.length === 0) return null;
+  const current = selections ?? selectionsFromAnswers(q.data?.answers ?? []);
+
+  return (
+    <Card className="mt-6 flex flex-col gap-4 p-6">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <h2 className="text-sm font-semibold uppercase tracking-wide text-neutral-500">
+          {config.title}
+        </h2>
+        <div className="flex items-center gap-3">
+          {status === "saved" ? (
+            <span className="text-sm font-medium text-status-success-700">Saved</span>
+          ) : null}
+          <Button
+            variant="secondary"
+            onClick={() =>
+              save.mutate({
+                disclosureVersion: config.disclosureVersion,
+                answers: selectionsToAnswers(config, current),
+              })
+            }
+            loading={save.isPending}
+            disabled={save.isPending}
+          >
+            Save diversity answers
+          </Button>
+        </div>
+      </div>
+      {status === "error" ? (
+        <p
+          role="alert"
+          className="rounded-md bg-status-error-50 px-3 py-2 text-sm text-status-error-700"
+        >
+          Couldn&apos;t save just now. Please reload the page and try again.
+        </p>
+      ) : null}
+      <DiversitySelfIdFields
+        config={config}
+        selections={current}
+        onChange={(next) => {
+          setSelections(next);
+          if (status !== "idle") setStatus("idle");
+        }}
+        idPrefix="profile-diversity"
+        showTitle={false}
+      />
+    </Card>
   );
 }

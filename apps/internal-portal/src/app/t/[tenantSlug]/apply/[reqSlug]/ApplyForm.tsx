@@ -8,9 +8,16 @@ import {
   DEFAULT_APPLY_SCREENING_POLICY,
   NOTICE_PERIOD_MAX_DAYS,
   type ApplyScreeningPolicy,
+  type DiversityCaptureConfig,
   type ScreeningAnswersInput,
 } from "@hireops/api-types";
 import { trpc } from "@/lib/trpc-client";
+import {
+  DiversitySelfIdFields,
+  hasAnyAnswer,
+  selectionsToAnswers,
+  type DiversitySelections,
+} from "@/components/diversity/DiversitySelfIdFields";
 
 /**
  * Candidate apply form (CRS-01). Mobile-first single column. Uses
@@ -154,6 +161,8 @@ interface ApplyFormProps {
   reqSlug: string;
   /** PC-7 — which screening questions the tenant requires (default: none). */
   screeningPolicy?: ApplyScreeningPolicy;
+  /** PC-26 — optional diversity self-ID section; absent / disabled = not shown. */
+  diversityCapture?: DiversityCaptureConfig;
 }
 
 const API_BASE =
@@ -168,6 +177,7 @@ export function ApplyForm({
   tenantSlug,
   reqSlug,
   screeningPolicy = DEFAULT_APPLY_SCREENING_POLICY,
+  diversityCapture,
 }: ApplyFormProps) {
   void positionTitle;
   const router = useRouter();
@@ -182,6 +192,8 @@ export function ApplyForm({
   const [currentLocation, setCurrentLocation] = useState("");
   const [resume, setResume] = useState<File | null>(null);
   const [consentGiven, setConsentGiven] = useState(false);
+  // PC-26 — empty = "prefer not to say" for every category (the default).
+  const [diversity, setDiversity] = useState<DiversitySelections>({});
   const [fieldErrors, setFieldErrors] = useState<FieldErrors>({});
   const [submitState, setSubmitState] = useState<
     | { kind: "idle" }
@@ -284,6 +296,14 @@ export function ApplyForm({
         source: mapSourceText(parsed.data.sourceText ?? ""),
         consentVersion: APPLY_FORM_CONSENT_VERSION,
         screening,
+        // PC-26 — sent only when the candidate actively chose an answer.
+        diversitySelfId:
+          diversityCapture?.enabled && hasAnyAnswer(diversity)
+            ? {
+                disclosureVersion: diversityCapture.disclosureVersion,
+                answers: selectionsToAnswers(diversityCapture, diversity),
+              }
+            : undefined,
       });
       const ref = result.applicationId.slice(0, 8);
       router.push(`/t/${tenantSlug}/apply/${reqSlug}/submitted?ref=${ref}`);
@@ -394,6 +414,16 @@ export function ApplyForm({
           />
         </div>
       </fieldset>
+
+      {/* PC-26 — optional, voluntary diversity self-identification. */}
+      {diversityCapture ? (
+        <DiversitySelfIdFields
+          config={diversityCapture}
+          selections={diversity}
+          onChange={setDiversity}
+          idPrefix="apply-diversity"
+        />
+      ) : null}
 
       <div className="flex flex-col gap-1.5">
         <label htmlFor="resume" className="text-sm font-medium text-neutral-700">

@@ -69,6 +69,10 @@ export const requisitions = pgTable(
       .notNull()
       .default(sql`'r-' || replace(gen_random_uuid()::text, '-', '')`),
     reasonForHold: text("reason_for_hold"),
+    // PC-26 (0126) — diverse-slate requirement for this role. Min NULL = the
+    // tenant's diversitySlate.defaultMin. Flags only; never blocks.
+    diverseSlateRequired: boolean("diverse_slate_required").notNull().default(false),
+    diverseSlateMin: integer("diverse_slate_min"),
     createdBy: uuid("created_by"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
@@ -94,6 +98,10 @@ export const requisitions = pgTable(
       sql`${table.status} IN ('draft', 'pending_approval', 'approved', 'on_hold', 'posted', 'filled', 'cancelled', 'closed')`,
     ),
     check("requisitions_openings_check", sql`${table.numberOfOpenings} >= 1`),
+    check(
+      "requisitions_diverse_slate_min_check",
+      sql`${table.diverseSlateMin} IS NULL OR (${table.diverseSlateMin} >= 1 AND ${table.diverseSlateMin} <= 20)`,
+    ),
     check(
       "requisitions_posting_window_check",
       sql`(${table.postedAt} IS NULL OR ${table.expiresAt} IS NULL OR ${table.postedAt} <= ${table.expiresAt})`,

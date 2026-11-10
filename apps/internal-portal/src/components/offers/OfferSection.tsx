@@ -5,6 +5,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { Badge, Button } from "@/components/ui";
 import type { BadgeTone } from "@/components/ui";
 import { trpc } from "@/lib/trpc-client";
+import { DiverseSlateWarning } from "@/components/diversity/DiverseSlateBadge";
 import { applicationStageLabel } from "@/lib/labels";
 
 /**
@@ -181,6 +182,7 @@ function DraftOfferForm({ applicationId, onCreated, onCancel }: DraftFormProps) 
   const baseInrInt = parseInt(baseInr, 10);
   const canSubmit =
     Number.isFinite(baseInrInt) && baseInrInt > 0 && joiningDate.length > 0 && location.length > 0;
+  // PC-26 — the diverse-slate reminder below never feeds canSubmit: it does not block.
 
   return (
     <form
@@ -200,6 +202,7 @@ function DraftOfferForm({ applicationId, onCreated, onCancel }: DraftFormProps) 
         });
       }}
     >
+      <DiverseSlateWarning applicationId={applicationId} action="offer" />
       <NumField label="Base salary (INR per year)" value={baseInr} onChange={setBaseInr} required />
       <NumField
         label="Variable target (INR per year)"

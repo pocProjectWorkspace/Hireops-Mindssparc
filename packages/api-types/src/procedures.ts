@@ -30,6 +30,11 @@ import {
   candidateListSortSchema,
   CANDIDATE_LIST_PAGE_MAX,
 } from "./candidate-list";
+import {
+  DIVERSE_SLATE_MIN_MAX,
+  diversityCaptureConfigSchema,
+  diversitySelfIdSubmissionSchema,
+} from "./diversity-slate";
 
 /**
  * Input + output schemas for the initial six tRPC procedures (API-01).
@@ -70,6 +75,11 @@ export const submitApplicationInputSchema = z.object({
   // fed to the knockout evaluator. Whether a question is required is the
   // tenant's candidate-field policy (resolvePublicRequisition.screeningPolicy).
   screening: screeningAnswersInputSchema.optional(),
+  // PC-26 — OPTIONAL, voluntary diversity self-identification. Written to the
+  // separate candidate_diversity_self_id table only; redacted from the API
+  // audit log; never on the application row. Omitted / "prefer not to say"
+  // = nothing stored.
+  diversitySelfId: diversitySelfIdSubmissionSchema.optional(),
 });
 
 export const submitApplicationOutputSchema = z.object({
@@ -112,6 +122,9 @@ export const resolvePublicRequisitionOutputSchema = z.object({
   positionTitle: z.string(),
   // PC-7 — which screening questions the apply form must require.
   screeningPolicy: applyScreeningPolicySchema,
+  // PC-26 — the optional diversity self-ID section (questions + versioned
+  // disclosure). enabled=false → the form renders no section.
+  diversityCapture: diversityCaptureConfigSchema.optional(),
 });
 
 export type ResolvePublicRequisitionInput = z.infer<typeof resolvePublicRequisitionInputSchema>;
@@ -719,6 +732,9 @@ export const createRequisitionDraftInputSchema = z.object({
   compBandMin: z.number().nonnegative().optional(),
   compBandMax: z.number().nonnegative().optional(),
   compCurrency: z.string().length(3).optional(),
+  // PC-26 — diverse-slate requirement for this role. Min null = tenant default.
+  diverseSlateRequired: z.boolean().optional(),
+  diverseSlateMin: z.number().int().min(1).max(DIVERSE_SLATE_MIN_MAX).nullable().optional(),
 });
 export const createRequisitionDraftOutputSchema = z.object({
   requisitionId: z.string().uuid(),
@@ -760,6 +776,9 @@ export const updateRequisitionDraftInputSchema = z.object({
   sections: jdSectionsSchema.optional(),
   skills: z.array(requisitionSkillInputSchema).max(50).optional(),
   knockouts: z.array(requisitionKnockoutInputSchema).max(30).optional(),
+  // PC-26 — diverse-slate requirement (omitted = untouched; min null = tenant default).
+  diverseSlateRequired: z.boolean().optional(),
+  diverseSlateMin: z.number().int().min(1).max(DIVERSE_SLATE_MIN_MAX).nullable().optional(),
 });
 export const updateRequisitionDraftOutputSchema = z.object({
   ok: z.literal(true),
@@ -876,6 +895,9 @@ export const getRequisitionDetailOutputSchema = z.object({
    * metadata), else null. Optional for back-compat.
    */
   workdayJobRequisitionId: z.string().nullable().optional(),
+  /** PC-26 — the role's diverse-slate setting (the requirement, not any count). */
+  diverseSlateRequired: z.boolean().optional(),
+  diverseSlateMin: z.number().int().nullable().optional(),
 });
 export type GetRequisitionDetailInput = z.infer<typeof getRequisitionDetailInputSchema>;
 export type GetRequisitionDetailOutput = z.infer<typeof getRequisitionDetailOutputSchema>;

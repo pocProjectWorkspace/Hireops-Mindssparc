@@ -545,6 +545,24 @@ import {
   updateScoringWeightsInputSchema,
   updateScoringWeightsOutputSchema,
   resolveScoringWeights,
+  // PC-26 — diverse-slate requirement (counts only; raw self-ID never leaves lib/diversity-slate)
+  DIVERSE_SLATE_VIEW_ROLES,
+  DIVERSE_SLATE_ADMIN_ROLES,
+  DIVERSITY_SELF_ID_DISCLOSURE_VERSION,
+  getDiverseSlateStatusInputSchema,
+  getDiverseSlateStatusOutputSchema,
+  listDiverseSlateStatusesInputSchema,
+  listDiverseSlateStatusesOutputSchema,
+  getDiversitySlateSettingsOutputSchema,
+  updateDiversitySlateSettingsInputSchema,
+  updateDiversitySlateSettingsOutputSchema,
+  getDiverseSlateDefaultsOutputSchema,
+  candidateGetDiversitySelfIdOutputSchema,
+  candidateSetDiversitySelfIdInputSchema,
+  candidateSetDiversitySelfIdOutputSchema,
+  resolveDiversitySlateSettings,
+  toDiversityCaptureConfig,
+  type DiversitySlateSettings,
   getScreeningPrivacyInputSchema,
   getScreeningPrivacyOutputSchema,
   updateScreeningPrivacyInputSchema,
@@ -1162,6 +1180,13 @@ import {
   singleMoveAuditAction,
 } from "../lib/bulk-move";
 import {
+  applySelfIdSubmission,
+  computeDiverseSlateStatus1,
+  computeDiverseSlateStatuses,
+  readOwnSelfId,
+  resolveTenantDiversitySlateDb,
+} from "../lib/diversity-slate";
+import {
   DEFAULT_APPLY_SCREENING_POLICY,
   knockoutFieldDef,
   updateApplicationScreeningAnswersInputSchema,
@@ -1588,6 +1613,12 @@ const REPORTS_READ_ROLES = new Set(["admin", "hr_head", "hr_ops"]);
 // "changes require admin approval" copy on the settings blocks is COPY ONLY
 // for the POC — hr_head edits take effect immediately (flagged in the UI).
 const GOVERNANCE_READ_ROLES = new Set(["admin", "hr_head"]);
+// PC-26 — who may see diverse-slate COUNTS (never per-candidate values) and
+// who may edit the tenant diversitySlate block. Single source: api-types.
+const DIVERSE_SLATE_VIEW_ROLE_SET = new Set<string>(DIVERSE_SLATE_VIEW_ROLES);
+const DIVERSE_SLATE_ADMIN_ROLE_SET = new Set<string>(DIVERSE_SLATE_ADMIN_ROLES);
+// Requisition states whose slate is "live" for the dashboard / shortlist flag.
+const DIVERSE_SLATE_OPEN_REQ_STATUSES = ["approved", "posted", "on_hold"];
 // REQ-03 decision mutation. hr_head (the approver) + admin. recruiter /
 // hiring_manager get FORBIDDEN.
 const REQUISITION_APPROVAL_DECIDE_ROLES = new Set(["admin", "hr_head"]);
@@ -4239,10 +4270,16 @@ export const appRouter = router({
         }
       }
 
+      // PC-26 — the API audit log records THAT a self-ID was given, never the
+      // answers (they live only in candidate_diversity_self_id).
+      const auditInput = {
+        ...input,
+        diversitySelfId: input.diversitySelfId ? "[redacted]" : undefined,
+      };
       return withAudit(
         "submit_application",
         ctx,
-        input,
+        auditInput,
         async () => {
           // 2. Fetch resume from storage, parse it.
           const storage = getStorageClient();
@@ -4491,6 +4528,29 @@ export const appRouter = router({
                 .returning({ id: applications.id })
                 .then((rows) => firstOrThrow(rows, "applications insert").id);
 
+          // PC-26 — optional diversity self-ID. Stored ONLY in the separate
+          // candidate_diversity_self_id table (pool: the public form has no
+          // JWT; the person was resolved above). Best-effort: a failure here
+          // never fails the application, and nothing about it reaches the
+          // application row, scoring or any AI prompt.
+          if (input.diversitySelfId && input.diversitySelfId.answers.length > 0) {
+            try {
+              const dsSettings = await resolveTenantDiversitySlateDb(req.tenantId);
+              await applySelfIdSubmission(poolDb, {
+                tenantId: req.tenantId,
+                personId,
+                submission: input.diversitySelfId,
+                settings: dsSettings,
+                collectedVia: "apply_form",
+              });
+            } catch (err) {
+              ctx.log.warn(
+                { err, request_id: ctx.requestId, application_id: applicationId },
+                "submitApplication: diversity self-ID not stored",
+              );
+            }
+          }
+
           // Enqueue the AI scoring outbox row only on first apply +
           // eligibility (knockouts not failed, parser confidence above
           // floor). The compound unique on (tenant_id, application_id)
@@ -4594,6 +4654,10 @@ export const appRouter = router({
         requisitionId: row.requisitionId,
         positionTitle: row.positionTitle,
         screeningPolicy: await resolveApplyScreeningPolicy(row.tenantId),
+        diversityCapture: toDiversityCaptureConfig(
+          await resolveTenantDiversitySlateDb(row.tenantId),
+          row.tenantDisplayName,
+        ),
       };
     }),
 
@@ -5616,6 +5680,21 @@ export const appRouter = router({
           });
         }
 
+        // PC-26 — diverse-slate requirement (omitted fields untouched).
+        if (input.diverseSlateRequired !== undefined || input.diverseSlateMin !== undefined) {
+          const dsSet: Partial<typeof requisitions.$inferInsert> = { updatedAt: new Date() };
+          if (input.diverseSlateRequired !== undefined) {
+            dsSet.diverseSlateRequired = input.diverseSlateRequired;
+          }
+          if (input.diverseSlateMin !== undefined) dsSet.diverseSlateMin = input.diverseSlateMin;
+          await db
+            .update(requisitions)
+            .set(dsSet)
+            .where(
+              and(eq(requisitions.tenantId, tenantId), eq(requisitions.id, input.requisitionId)),
+            );
+        }
+
         // JD section edits → recompose jd_text, keep sections in ai_metadata.
         if (input.sections) {
           const jdText = composeJdText(input.sections, facet.title);
@@ -5912,6 +5991,8 @@ export const appRouter = router({
           numberOfOpenings: requisitions.numberOfOpenings,
           targetStartDate: requisitions.targetStartDate,
           publicSlug: requisitions.publicSlug,
+          diverseSlateRequired: requisitions.diverseSlateRequired,
+          diverseSlateMin: requisitions.diverseSlateMin,
           tenantSlug: tenants.slug,
           createdAt: requisitions.createdAt,
           positionId: positions.id,
@@ -6102,6 +6183,8 @@ export const appRouter = router({
         latestDecision,
         isDraft: row.status === "draft",
         workdayJobRequisitionId,
+        diverseSlateRequired: row.diverseSlateRequired,
+        diverseSlateMin: row.diverseSlateMin,
       };
     }),
 
@@ -11354,6 +11437,244 @@ export const appRouter = router({
 
         return { ok: true as const, weights: nextBlock };
       });
+    }),
+
+  // ═════════════════════════ PC-26 — diverse-slate requirement ═════════════════════════
+  //
+  // Voluntary candidate self-ID lives in candidate_diversity_self_id (0126),
+  // whose RLS admits candidate JWTs only. Staff see COUNTS per requisition,
+  // computed in lib/diversity-slate on the pool with an explicit tenant
+  // predicate, and only after proving the requisition is visible through the
+  // caller's own RLS client. No procedure here returns a person id or a value
+  // to staff. Flags only — nothing blocks a stage move or an offer.
+
+  /** Slate status for one requisition (by id, or via one of its applications). */
+  getDiverseSlateStatus: protectedProcedure
+    .input(getDiverseSlateStatusInputSchema)
+    .output(getDiverseSlateStatusOutputSchema)
+    .query(async ({ ctx, input }) => {
+      requireAnyRole(
+        ctx,
+        DIVERSE_SLATE_VIEW_ROLE_SET,
+        "Diverse-slate status requires the admin, hr_head or recruiter role",
+      );
+      const db = requireDb(ctx);
+      if (!ctx.tenantId) {
+        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
+      }
+      // Visibility proof through the caller's RLS client.
+      let requisitionId: string | undefined;
+      if (input.requisitionId) {
+        const [r] = await db
+          .select({ id: requisitions.id })
+          .from(requisitions)
+          .where(
+            and(eq(requisitions.tenantId, ctx.tenantId), eq(requisitions.id, input.requisitionId)),
+          )
+          .limit(1);
+        requisitionId = r?.id;
+      } else if (input.applicationId) {
+        const [a] = await db
+          .select({ requisitionId: applications.requisitionId })
+          .from(applications)
+          .where(
+            and(eq(applications.tenantId, ctx.tenantId), eq(applications.id, input.applicationId)),
+          )
+          .limit(1);
+        requisitionId = a?.requisitionId;
+      }
+      if (!requisitionId) {
+        throw new TRPCError({ code: "NOT_FOUND", message: "Requisition not found" });
+      }
+      return computeDiverseSlateStatus1(ctx.tenantId, requisitionId);
+    }),
+
+  /**
+   * Open requisitions that require a diverse slate, with their counts. Feeds
+   * the dashboard tile (onlyShort), the shortlist banner and the list badges.
+   */
+  listDiverseSlateStatuses: protectedProcedure
+    .input(listDiverseSlateStatusesInputSchema)
+    .output(listDiverseSlateStatusesOutputSchema)
+    .query(async ({ ctx, input }) => {
+      requireAnyRole(
+        ctx,
+        DIVERSE_SLATE_VIEW_ROLE_SET,
+        "Diverse-slate status requires the admin, hr_head or recruiter role",
+      );
+      const db = requireDb(ctx);
+      if (!ctx.tenantId) {
+        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
+      }
+      const settings = await resolveTenantDiversitySlateDb(ctx.tenantId);
+      if (!settings.enabled) return { enabled: false, rows: [] };
+      const reqs = await db
+        .select({ id: requisitions.id, title: positions.title })
+        .from(requisitions)
+        .innerJoin(
+          positions,
+          and(
+            eq(positions.tenantId, requisitions.tenantId),
+            eq(positions.id, requisitions.positionId),
+          ),
+        )
+        .where(
+          and(
+            eq(requisitions.tenantId, ctx.tenantId),
+            eq(requisitions.diverseSlateRequired, true),
+            inArray(requisitions.status, DIVERSE_SLATE_OPEN_REQ_STATUSES),
+          ),
+        )
+        .limit(500);
+      const statuses = await computeDiverseSlateStatuses(
+        ctx.tenantId,
+        reqs.map((r) => r.id),
+        settings,
+      );
+      const rows = reqs
+        .map((r) => {
+          const st = statuses.get(r.id);
+          return st ? { ...st, title: r.title ?? null } : null;
+        })
+        .filter((r): r is NonNullable<typeof r> => r !== null)
+        .filter((r) => !input.onlyShort || r.status === "short")
+        .sort((a, b) => (a.title ?? "").localeCompare(b.title ?? ""));
+      return { enabled: true, rows };
+    }),
+
+  /** Wizard defaults: is the toggle offered, and the tenant default minimum. */
+  getDiverseSlateDefaults: protectedProcedure
+    .output(getDiverseSlateDefaultsOutputSchema)
+    .query(async ({ ctx }) => {
+      requireAnyRole(
+        ctx,
+        REQUISITION_READ_ROLES,
+        "Requisition settings require a requisition role",
+      );
+      if (!ctx.tenantId) {
+        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
+      }
+      const settings = await resolveTenantDiversitySlateDb(ctx.tenantId);
+      return { enabled: settings.enabled, defaultMin: settings.defaultMin };
+    }),
+
+  /** Admin: the tenant diversitySlate block (defaults merged). */
+  getDiversitySlateSettings: protectedProcedure
+    .output(getDiversitySlateSettingsOutputSchema)
+    .query(async ({ ctx }) => {
+      requireAnyRole(
+        ctx,
+        DIVERSE_SLATE_ADMIN_ROLE_SET,
+        "Diversity slate settings require the admin or hr_head role",
+      );
+      if (!ctx.tenantId) {
+        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
+      }
+      return resolveTenantDiversitySlateDb(ctx.tenantId);
+    }),
+
+  /**
+   * Admin: save the diversitySlate block — same atomic service-role jsonb `||`
+   * sibling merge as updateScreeningPrivacy (tenants is SELECT-only under RLS).
+   * Audited via api_audit_logs (the block holds config, not personal data).
+   */
+  updateDiversitySlateSettings: protectedProcedure
+    .input(updateDiversitySlateSettingsInputSchema)
+    .output(updateDiversitySlateSettingsOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      return withAudit("update_diversity_slate_settings", ctx, input, async () => {
+        requireAnyRole(
+          ctx,
+          DIVERSE_SLATE_ADMIN_ROLE_SET,
+          "Diversity slate settings require the admin or hr_head role",
+        );
+        if (!ctx.tenantId) {
+          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
+        }
+        const nextBlock: DiversitySlateSettings = resolveDiversitySlateSettings(input);
+        const res = await poolDb.execute(dsql`
+          UPDATE public.tenants
+          SET settings = COALESCE(settings, '{}'::jsonb)
+              || jsonb_build_object('diversitySlate', ${JSON.stringify(nextBlock)}::jsonb)
+          WHERE id = ${ctx.tenantId}::uuid
+          RETURNING id
+        `);
+        const updated = (res as { rows?: unknown[] }).rows ?? (res as unknown[]);
+        if (updated.length !== 1) {
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: "tenant settings update affected an unexpected number of rows",
+          });
+        }
+        return { ok: true as const, settings: nextBlock };
+      });
+    }),
+
+  /** Candidate portal: the capture config + the caller's OWN active answers. */
+  candidateGetDiversitySelfId: candidateProcedure
+    .output(candidateGetDiversitySelfIdOutputSchema)
+    .query(async ({ ctx }) => {
+      const db = ctx.db;
+      if (!db) {
+        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "candidate ctx.db missing" });
+      }
+      const settings = await resolveTenantDiversitySlateDb(ctx.candidate.tenantId);
+      const config = toDiversityCaptureConfig(settings, ctx.candidate.tenantDisplayName);
+      const answers = settings.enabled
+        ? await readOwnSelfId(db, ctx.candidate.tenantId, ctx.candidate.personId)
+        : [];
+      return { config, answers };
+    }),
+
+  /**
+   * Candidate portal: update or withdraw the caller's OWN answers ("prefer
+   * not to say" withdraws). Runs in the candidate's RLS transaction. The API
+   * audit row records which categories were touched, never the values.
+   */
+  candidateSetDiversitySelfId: candidateProcedure
+    .input(candidateSetDiversitySelfIdInputSchema)
+    .output(candidateSetDiversitySelfIdOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      return withAudit(
+        "candidate_set_diversity_self_id",
+        ctx,
+        { categories: input.answers.map((a) => a.categoryKey) },
+        async () => {
+          const db = ctx.db;
+          if (!db) {
+            throw new TRPCError({
+              code: "INTERNAL_SERVER_ERROR",
+              message: "candidate ctx.db missing",
+            });
+          }
+          const tenantId = ctx.candidate.tenantId;
+          const personId = ctx.candidate.personId;
+          const settings = await resolveTenantDiversitySlateDb(tenantId);
+          if (!settings.enabled) {
+            throw new TRPCError({
+              code: "BAD_REQUEST",
+              message: "Diversity self-identification is not collected by this organisation",
+            });
+          }
+          if (input.disclosureVersion !== DIVERSITY_SELF_ID_DISCLOSURE_VERSION) {
+            throw new TRPCError({
+              code: "BAD_REQUEST",
+              message: "The information notice has changed. Please reload the page.",
+            });
+          }
+          await applySelfIdSubmission(db, {
+            tenantId,
+            personId,
+            submission: input,
+            settings,
+            collectedVia: "candidate_portal",
+          });
+          return {
+            config: toDiversityCaptureConfig(settings, ctx.candidate.tenantDisplayName),
+            answers: await readOwnSelfId(db, tenantId, personId),
+          };
+        },
+      );
     }),
 
   // ═════════════════════════ HRHEAD-03 — Governance & Executive Audit ═════════════════════════
@@ -29333,6 +29654,9 @@ async function insertRequisitionDraftChain(
       targetStartDate: input.targetStartDate ?? null,
       isPublic: false,
       createdBy: membershipId,
+      // PC-26 — role-level diverse-slate requirement (min null = tenant default).
+      diverseSlateRequired: input.diverseSlateRequired ?? false,
+      diverseSlateMin: input.diverseSlateMin ?? null,
     })
     .returning({ id: requisitions.id });
   if (!req) {

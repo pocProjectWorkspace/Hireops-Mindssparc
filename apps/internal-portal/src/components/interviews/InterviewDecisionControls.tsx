@@ -7,6 +7,7 @@ import { Badge } from "@/components/ui";
 import type { BadgeTone } from "@/components/ui";
 import { trpc } from "@/lib/trpc-client";
 import type { InterviewRow, InterviewRecommendation } from "@hireops/api-types";
+import { DiverseSlateWarning } from "@/components/diversity/DiverseSlateBadge";
 
 /**
  * INT-04 — recruiter completion + advance controls for a single interview row,
@@ -178,6 +179,13 @@ export function InterviewDecisionControls({
       <div className="mt-2 space-y-2 border-t border-neutral-100 pt-2">
         {summary.data ? (
           <DecisionSummary summary={summary.data} interviewId={interview.id} canReopen={false} />
+        ) : null}
+        {/* PC-26 — non-blocking reminder when the role's diverse slate is short. */}
+        {nextStage ? (
+          <DiverseSlateWarning
+            applicationId={interview.applicationId}
+            action={nextStage === "offer_drafted" ? "offer" : "interview"}
+          />
         ) : null}
         {nextStage ? (
           <div className="flex items-center gap-2">

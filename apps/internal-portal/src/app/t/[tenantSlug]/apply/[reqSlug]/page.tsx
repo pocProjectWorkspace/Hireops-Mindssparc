@@ -73,6 +73,7 @@ export default async function PublicApplyPage({
           tenantSlug={params.tenantSlug}
           reqSlug={params.reqSlug}
           screeningPolicy={resolved.screeningPolicy}
+          diversityCapture={resolved.diversityCapture}
         />
       </Card>
     </CandidateShell>
