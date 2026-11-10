@@ -13,9 +13,14 @@ import {
   type CandidateListSort,
   type IrisProvenanceRow,
   type KnockoutFilter,
+  type LatestSelectionDecision,
 } from "@hireops/api-types";
 import { trpc } from "@/lib/trpc-client";
 import { AiAssistedPill, useProvenanceMap } from "@/components/iris/AiAssistedPill";
+import {
+  SelectionDecisionChip,
+  useLatestSelectionDecisions,
+} from "@/components/assessment/SelectionDecisionChip";
 import { useDrawerRouting } from "@/lib/use-drawer-routing";
 import { BulkCvUploadButton } from "@/components/requisitions/BulkCvUploadDrawer";
 import { useUndoToast } from "@/components/triage/UndoToastProvider";
@@ -206,6 +211,7 @@ function GroupAccordion({
   isChecked,
   onCheck,
   checkDisabled,
+  decisionByApplicationId,
 }: {
   group: Group;
   open: boolean;
@@ -218,6 +224,8 @@ function GroupAccordion({
   onCheck: (applicationId: string, checked: boolean) => void;
   /** "All matching" mode: every row is selected; per-row boxes are locked. */
   checkDisabled: boolean;
+  /** PC-12 — latest selection decision per application (chip only). */
+  decisionByApplicationId: Map<string, LatestSelectionDecision>;
 }) {
   const scoreVisible = useScreeningScoreVisible();
   const [expanded, toggleExpanded] = useExpandedSet();
@@ -315,7 +323,19 @@ function GroupAccordion({
                       </div>
                     </Td>
                     <Td label="Stage">
-                      <StageBadge stage={row.stage} />
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        <StageBadge stage={row.stage} />
+                        {(() => {
+                          const d = decisionByApplicationId.get(row.applicationId);
+                          return d ? (
+                            <SelectionDecisionChip
+                              decision={d.decision}
+                              reasonLabel={d.reasonLabel}
+                              compact
+                            />
+                          ) : null;
+                        })()}
+                      </div>
                     </Td>
                     <Td label="Screening">
                       <ScreeningEvidenceToggle
@@ -493,6 +513,7 @@ export function CandidatesByRoleList({
   // provenance and stay unmarked — the honest persisted-and-consumed flip.
   const applicationIds = useMemo(() => pageRows.map((r) => r.applicationId), [pageRows]);
   const provenanceByApplicationId = useProvenanceMap("application", applicationIds);
+  const decisionByApplicationId = useLatestSelectionDecisions(applicationIds);
 
   // Every group on the page open by default once a single role is picked;
   // otherwise the first group. User toggles override.
@@ -814,6 +835,7 @@ export function CandidatesByRoleList({
                 setChecked(next);
               }}
               checkDisabled={allMatching}
+              decisionByApplicationId={decisionByApplicationId}
             />
           ))}
         </div>
