@@ -365,3 +365,69 @@ export const askDataOutputSchema = z.object({
   suggestions: z.array(askDataSuggestionSchema),
 });
 export type AskDataOutput = z.infer<typeof askDataOutputSchema>;
+
+// ─────────────────────────────── question log (PC-21) ───────────────────────────────
+//
+// Answered questions are logged per tenant + member (ask_data_questions,
+// migration 0131). Two read surfaces:
+//   - "Your recent": the caller's own last questions (deduplicated), each
+//     re-runnable as a chip — intent + params, so a re-run never calls the AI.
+//   - "Popular in your team": the most-asked INTENTS over the last 30 days
+//     among members who share an Ask-your-data role with the caller, limited
+//     to intents the caller's role can run. Intents only — another person's
+//     typed text is never shown to a peer.
+// Admins additionally get the tenant's top typed questions.
+
+export const ASK_DATA_POPULAR_WINDOW_DAYS = 30;
+
+export const askDataHistoryInputSchema = z.object({});
+
+export const askDataRecentItemSchema = z.object({
+  /** What the chip shows: the typed text, or the catalog question for a chip click. */
+  label: z.string(),
+  intent: askDataIntentIdSchema,
+  params: askDataParamsSchema,
+  askedAt: z.string(),
+});
+export type AskDataRecentItem = z.infer<typeof askDataRecentItemSchema>;
+
+export const askDataPopularItemSchema = z.object({
+  intent: askDataIntentIdSchema,
+  /** The catalog question for the intent (never a peer's own wording). */
+  label: z.string(),
+  count: z.number().int(),
+});
+export type AskDataPopularItem = z.infer<typeof askDataPopularItemSchema>;
+
+export const askDataHistoryOutputSchema = z.object({
+  recent: z.array(askDataRecentItemSchema),
+  popular: z.array(askDataPopularItemSchema),
+});
+export type AskDataHistoryOutput = z.infer<typeof askDataHistoryOutputSchema>;
+
+export const askDataTopQuestionsInputSchema = z.object({
+  days: z.number().int().min(1).max(365).default(ASK_DATA_POPULAR_WINDOW_DAYS),
+});
+
+export const askDataTopQuestionsOutputSchema = z.object({
+  days: z.number().int(),
+  intents: z.array(
+    z.object({
+      intent: askDataIntentIdSchema,
+      label: z.string(),
+      count: z.number().int(),
+      askers: z.number().int(),
+    }),
+  ),
+  /** Typed questions (case/whitespace-normalised), most asked first. Admin only. */
+  questions: z.array(
+    z.object({ question: z.string(), intent: askDataIntentIdSchema, count: z.number().int() }),
+  ),
+  /**
+   * Whether an intent can be turned into a weekly emailed digest. False today:
+   * the report-digest worker only renders the executive board pack.
+   */
+  digestSupported: z.boolean(),
+  digestNote: z.string(),
+});
+export type AskDataTopQuestionsOutput = z.infer<typeof askDataTopQuestionsOutputSchema>;

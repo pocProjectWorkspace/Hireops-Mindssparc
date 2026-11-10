@@ -74,3 +74,23 @@ describe("ai-settings: ask_data feature key", () => {
     expect(aiSettingsSchema.parse({ ask_data: { enabled: false } }).ask_data.enabled).toBe(false);
   });
 });
+
+/**
+ * PC-20 — the `report_insights` feature key (written report insights).
+ * Additive-with-defaults; the kill switch hides the Insights box.
+ */
+describe("ai-settings: report_insights feature key", () => {
+  it("is listed with a META entry logging under its own usage feature", () => {
+    expect(AI_FEATURE_KEYS).toContain("report_insights");
+    expect(AI_FEATURE_META.report_insights.usageFeatures).toEqual(["report_insights"]);
+  });
+
+  it("defaults to enabled for a legacy block and honours an explicit disable", () => {
+    expect(aiSettingsSchema.parse({ ask_data: { enabled: false } }).report_insights.enabled).toBe(
+      true,
+    );
+    expect(
+      aiSettingsSchema.parse({ report_insights: { enabled: false } }).report_insights.enabled,
+    ).toBe(false);
+  });
+});

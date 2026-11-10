@@ -156,6 +156,23 @@ import {
 } from "../lib/ask-data/interpret";
 import { loadAskDataLookups } from "../lib/ask-data/execute";
 import { runAskData } from "../lib/ask-data/run";
+// PC-21 — the Ask-your-data question log ("Your recent" / "Popular in your team").
+import {
+  askerRolesFor,
+  loadPopularIntents,
+  loadRecentQuestions,
+  loadTopQuestions,
+  logAskDataQuestion,
+} from "../lib/ask-data/question-log";
+// PC-19 — BU hierarchy for report pickers; PC-20 — written report insights.
+import { loadBusinessUnitTree } from "../lib/reports/bu-tree";
+import {
+  REPORT_INSIGHTS_FEATURE,
+  REPORT_INSIGHTS_SCHEMA_NAME,
+  generateReportInsights,
+  loadReportFigures,
+  reportInsightsAiResponseJsonSchema,
+} from "../lib/reports/insights";
 import {
   getIrisAction,
   listIrisActions,
@@ -402,6 +419,13 @@ import {
   updateReportDigestsInputSchema,
   updateReportDigestsOutputSchema,
   resolveReportDigests,
+  getRoleLabelsInputSchema,
+  getRoleLabelsOutputSchema,
+  updateRoleLabelsInputSchema,
+  updateRoleLabelsOutputSchema,
+  resolveRoleLabels,
+  roleLabelOverridesOf,
+  roleLabelsSchema,
   type ReportDigests,
   getSlaThresholdsInputSchema,
   getSlaThresholdsOutputSchema,
@@ -442,6 +466,14 @@ import {
   // ASK-DATA — "Ask your data" contracts (packages/api-types/src/ask-data.ts).
   ASK_DATA_CATALOG,
   askDataCatalogInputSchema,
+  askDataHistoryInputSchema,
+  askDataHistoryOutputSchema,
+  askDataTopQuestionsInputSchema,
+  askDataTopQuestionsOutputSchema,
+  getReportInsightsInputSchema,
+  getReportInsightsOutputSchema,
+  listReportBusinessUnitsInputSchema,
+  listReportBusinessUnitsOutputSchema,
   askDataCatalogOutputSchema,
   askDataInputSchema,
   askDataOutputSchema,
@@ -1541,6 +1573,8 @@ const HR_METRICS_READ_ROLES = new Set(["admin", "hr_head"]);
 // re-homed catalog entries in a later ticket — until then a catalog
 // report is readable by all three or by none.
 const REPORTS_READ_ROLES = new Set(["admin", "hr_head", "hr_ops"]);
+// PC-19 — the BU-tree picker serves both /reports and /ask-data.
+const REPORT_BU_PICKER_ROLES = new Set([...REPORTS_READ_ROLES, ...ASK_DATA_ROLES]);
 // HRHEAD-03 — the Governance + Executive Audit surfaces (policy blocks, risk
 // flags, compliance score). hr_head (the governance owner) + admin. The
 // "changes require admin approval" copy on the settings blocks is COPY ONLY
@@ -9830,6 +9864,70 @@ export const appRouter = router({
       });
     }),
 
+  // ─────────────────────── getRoleLabels (PC-23) ───────────────────────
+  //
+  // Role DISPLAY labels — tenants.settings.roleLabels over the platform
+  // default. Presentation only: keys, JWT roles and permissions are
+  // untouched. Readable by every signed-in member (the sidebar user chip and
+  // role pickers need it); no tenant data beyond the label strings.
+  getRoleLabels: protectedProcedure
+    .input(getRoleLabelsInputSchema)
+    .output(getRoleLabelsOutputSchema)
+    .query(async ({ ctx }) => {
+      const db = requireDb(ctx);
+      if (!ctx.tenantId) {
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: "protected procedure missing tenantId",
+        });
+      }
+      const [row] = await db
+        .select({ settings: tenants.settings })
+        .from(tenants)
+        .where(eq(tenants.id, ctx.tenantId))
+        .limit(1);
+      const settings = (row?.settings ?? {}) as Record<string, unknown>;
+      const labels = resolveRoleLabels(settings.roleLabels);
+      return { labels, overrides: roleLabelOverridesOf(labels) };
+    }),
+
+  // ─────────────────────── updateRoleLabels (PC-23) ───────────────────────
+  //
+  // Admin write of the role-label overrides. Audited. Stores ONLY entries that
+  // differ from the platform default, under the sibling key `roleLabels` via
+  // the same atomic top-level jsonb `||` merge as updateReportDigests (never
+  // touches `labels`, the stage / recommendation label block).
+  updateRoleLabels: protectedProcedure
+    .input(updateRoleLabelsInputSchema)
+    .output(updateRoleLabelsOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      return withAudit("update_role_labels", ctx, input, async () => {
+        requireAnyRole(ctx, USERS_ADMIN_ROLES, "Role labels are admin-only");
+        if (!ctx.tenantId) {
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: "protected procedure missing tenantId",
+          });
+        }
+        const overrides = roleLabelsSchema.parse(roleLabelOverridesOf(input.overrides));
+        const res = await poolDb.execute(dsql`
+          UPDATE public.tenants
+          SET settings = COALESCE(settings, '{}'::jsonb)
+              || jsonb_build_object('roleLabels', ${JSON.stringify(overrides)}::jsonb)
+          WHERE id = ${ctx.tenantId}::uuid
+          RETURNING id
+        `);
+        const updated = (res as { rows?: unknown[] }).rows ?? (res as unknown[]);
+        if (updated.length !== 1) {
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: "tenant settings update affected an unexpected number of rows",
+          });
+        }
+        return { ok: true as const, overrides };
+      });
+    }),
+
   // ─────────────────────── getSlaThresholds (T4.1) ───────────────────────
   //
   // Read the per-tenant SLA-threshold map (settings.slaThresholds) resolved over
@@ -11239,6 +11337,7 @@ export const appRouter = router({
         })),
         byStatus: report.byStatus,
         truncated: report.truncated,
+        ...(report.byBusinessUnit ? { byBusinessUnit: report.byBusinessUnit } : {}),
       };
     }),
 
@@ -11609,6 +11708,93 @@ export const appRouter = router({
       });
     }),
 
+  // ─────────── listReportBusinessUnits (PC-19 · BU roll-up) ───────────
+  //
+  // The tenant's BU hierarchy, flattened depth-first with depth + top-level
+  // ancestor, for the report and Ask-your-data BU pickers (indented tree).
+  // Separate from listBusinessUnits, which is gated to the requisition-wizard
+  // personas (admin / hiring_manager / recruiter) — hr_head / hr_ops read
+  // reports but cannot call it. Archived units are included (flagged): their
+  // positions still roll up under the parent.
+  listReportBusinessUnits: protectedProcedure
+    .input(listReportBusinessUnitsInputSchema)
+    .output(listReportBusinessUnitsOutputSchema)
+    .query(async ({ ctx }) => {
+      requireAnyRole(
+        ctx,
+        REPORT_BU_PICKER_ROLES,
+        "Business-unit pickers require a reports or Ask-your-data role",
+      );
+      const db = requireDb(ctx);
+      if (!ctx.tenantId) {
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: "protected procedure missing tenantId",
+        });
+      }
+      return { items: await loadBusinessUnitTree(db, ctx.tenantId) };
+    }),
+
+  // ─────────────── getReportInsights (PC-20 · written insights) ───────────────
+  //
+  // 2–4 plain-English sentences atop a report section. The report lib runs
+  // exactly as the section does, `loadReportFigures` reduces its output to a
+  // compact list of named figures (no rows, no people), and the model writes
+  // ONLY from those figures; `postCheckInsights` drops any sentence carrying
+  // a number that is not one of them. Feature `report_insights` (kill-switch
+  // + model in Admin → AI settings); cached 15 min per (tenant, report,
+  // filters, data hash). Disabled / failing AI → no insights, never an error.
+  // A query, not a mutation: the only write is the ai-client usage log.
+  getReportInsights: protectedProcedure
+    .input(getReportInsightsInputSchema)
+    .output(getReportInsightsOutputSchema)
+    .query(async ({ ctx, input }) => {
+      requireAnyRole(
+        ctx,
+        REPORTS_READ_ROLES,
+        "Reports access requires the admin, hr_head or hr_ops role",
+      );
+      const db = requireDb(ctx);
+      if (!ctx.tenantId) {
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: "protected procedure missing tenantId",
+        });
+      }
+      const tenantId = ctx.tenantId;
+      const filters: ReportFilters = input.filters;
+      const aiSettings = await resolveTenantAiSettingsDb(tenantId);
+      const feature = aiSettings.report_insights;
+      // Kill-switch first: a disabled feature does not even run the report.
+      const figures = feature.enabled
+        ? await loadReportFigures(db, tenantId, input.reportKey, filters)
+        : [];
+      const actorMembershipId = feature.enabled ? await resolveActorMembership(db, ctx) : null;
+      return generateReportInsights({
+        tenantId,
+        reportKey: input.reportKey,
+        filters,
+        figures,
+        aiEnabled: feature.enabled,
+        complete: async ({ system, user }) => {
+          const client = await getAIClient(tenantId);
+          return client.completeStructured<unknown>({
+            prompt: user,
+            system,
+            model: feature.model,
+            temperature: 0,
+            // Four short sentences + keys; the tenant ceiling still caps it.
+            maxTokens: Math.min(feature.maxTokens, 700),
+            schema: reportInsightsAiResponseJsonSchema,
+            schemaName: REPORT_INSIGHTS_SCHEMA_NAME,
+            feature: REPORT_INSIGHTS_FEATURE,
+            requestId: ctx.requestId,
+            actorMembershipId,
+          });
+        },
+      });
+    }),
+
   // ─────────────────────── askDataCatalog / askData (ASK-DATA) ───────────────────────
   //
   // "Ask your data" — natural-language analytics over the reporting catalog.
@@ -11703,7 +11889,7 @@ export const appRouter = router({
       const aiSettings = await resolveTenantAiSettingsDb(tenantId);
       const feature = aiSettings.ask_data;
 
-      return runAskData({
+      const answer = await runAskData({
         input,
         lookups,
         aiEnabled: feature.enabled,
@@ -11732,6 +11918,81 @@ export const appRouter = router({
           });
         },
       });
+
+      // PC-21 — log answered questions for "Your recent" / "Popular in your
+      // team". Inside a SAVEPOINT and swallowed on failure: a log write must
+      // never cost the caller their answer (or abort the request tx).
+      if (answer.status === "answered" && answer.interpretation && actorMembershipId) {
+        const interpretation = answer.interpretation;
+        try {
+          await db.transaction(async (sp) => {
+            await logAskDataQuestion(sp, {
+              tenantId,
+              membershipId: actorMembershipId,
+              roles: askerRolesFor(ctx.roles, ASK_DATA_ROLES),
+              question: input.intent ? null : (input.question ?? null),
+              intent: interpretation.intent,
+              params: interpretation.params,
+              source: interpretation.source,
+            });
+          });
+        } catch (err) {
+          console.warn("[askData] question log write failed", err);
+        }
+      }
+      return answer;
+    }),
+
+  // ───────────── askDataHistory (PC-21 · frequent questions) ─────────────
+  //
+  // "Your recent" — the caller's own last questions (re-runnable chips, no
+  // AI); "Popular in your team" — most-asked intents in the last 30 days
+  // among askers sharing an Ask-your-data role with the caller, limited to
+  // intents the caller can run (a hiring manager never sees an intent that
+  // would answer "not available for your role"). Intents only: a peer's
+  // typed wording is never returned.
+  askDataHistory: protectedProcedure
+    .input(askDataHistoryInputSchema)
+    .output(askDataHistoryOutputSchema)
+    .query(async ({ ctx }) => {
+      requireAnyRole(ctx, ASK_DATA_ROLES, "Ask your data isn't available for your role");
+      const db = requireDb(ctx);
+      if (!ctx.tenantId) {
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: "protected procedure missing tenantId",
+        });
+      }
+      const tenantId = ctx.tenantId;
+      const membershipId = await resolveActorMembership(db, ctx);
+      if (!membershipId) return { recent: [], popular: [] };
+      const tenantWide = ctx.roles.some((r) => ASK_DATA_TENANT_WIDE_ROLES.has(r));
+      const recent = await loadRecentQuestions(db, tenantId, membershipId);
+      const popular = await loadPopularIntents(db, tenantId, {
+        callerRoles: askerRolesFor(ctx.roles, ASK_DATA_ROLES),
+        canRun: (intent) => tenantWide || HIRING_MANAGER_SCOPE[intent] !== "none",
+      });
+      return { recent, popular };
+    }),
+
+  // ─────────── askDataTopQuestions (PC-21 · admin view) ───────────
+  //
+  // Admin only: the tenant's top intents (with distinct askers) and top typed
+  // questions over the window, plus whether a question can become a weekly
+  // digest (no — the R1.5 digest renders only the executive pack).
+  askDataTopQuestions: protectedProcedure
+    .input(askDataTopQuestionsInputSchema)
+    .output(askDataTopQuestionsOutputSchema)
+    .query(async ({ ctx, input }) => {
+      requireAnyRole(ctx, USERS_ADMIN_ROLES, "Top questions are admin-only");
+      const db = requireDb(ctx);
+      if (!ctx.tenantId) {
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: "protected procedure missing tenantId",
+        });
+      }
+      return loadTopQuestions(db, ctx.tenantId, input.days);
     }),
 
   // ─────────────────────── getHrMetrics (METRICS-01) ───────────────────────

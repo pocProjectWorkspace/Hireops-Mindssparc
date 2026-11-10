@@ -18,13 +18,29 @@ import { z } from "zod";
 
 import { applicationSourceSchema, applicationStageSchema } from "./enums";
 
+/**
+ * PC-19 — "group by BU level" for the reports that break down by business
+ * unit (requisition aging, headcount vs plan):
+ *   - top_level: every row rolls into its top-level (root) business unit;
+ *   - sub_unit:  rows group under the child of the focus unit that contains
+ *     them — the filtered BU's children, or (unfiltered) each root's children.
+ */
+export const REPORT_BU_GROUP_BY = ["top_level", "sub_unit"] as const;
+export const reportBuGroupBySchema = z.enum(REPORT_BU_GROUP_BY);
+export type ReportBuGroupBy = z.infer<typeof reportBuGroupBySchema>;
+
 export const reportFiltersSchema = z.object({
   /** ISO datetime lower bound on applications.created_at (inclusive). */
   from: z.string().datetime().optional(),
   /** ISO datetime upper bound on applications.created_at (inclusive). */
   to: z.string().datetime().optional(),
-  /** Business unit, resolved through requisitions → positions. */
+  /**
+   * Business unit, resolved through requisitions → positions. ROLLS UP
+   * (PC-19): the unit AND every descendant in the BU hierarchy.
+   */
   businessUnitId: z.string().uuid().optional(),
+  /** PC-19 — optional BU-level breakdown; honoured by aging + headcount only. */
+  buGroupBy: reportBuGroupBySchema.optional(),
   /** A single requisition. */
   requisitionId: z.string().uuid().optional(),
   /** The application's assigned recruiter (tenant_user_memberships.id). */
@@ -110,6 +126,23 @@ export const getRequisitionAgingReportOutputSchema = z.object({
   byStatus: z.array(requisitionAgingStatusRollupSchema),
   /** True when the row cap trimmed the list — the rollup is still complete. */
   truncated: z.boolean(),
+  /**
+   * PC-19 — present only when `buGroupBy` was requested: requisitions in
+   * scope rolled into BU groups, computed over the FULL set (not the capped
+   * rows). Open = not filled / cancelled / closed.
+   */
+  byBusinessUnit: z
+    .array(
+      z.object({
+        businessUnitId: z.string().uuid(),
+        businessUnitName: z.string(),
+        depth: z.number().int(),
+        requisitions: z.number().int(),
+        open: z.number().int(),
+        avgDaysOpen: z.number().nullable(),
+      }),
+    )
+    .optional(),
 });
 
 export type RequisitionAgingRow = z.infer<typeof requisitionAgingRowSchema>;
@@ -360,6 +393,21 @@ export const getHeadcountVsPlanReportOutputSchema = z.object({
   envelopes: z.array(headcountEnvelopeRowSchema),
   totals: headcountVsPlanTotalsSchema,
   unplanned: headcountUnplannedSchema,
+  /** PC-19 — present only when `buGroupBy` was requested: envelopes rolled into BU groups. */
+  byBusinessUnit: z
+    .array(
+      z.object({
+        businessUnitId: z.string().uuid(),
+        businessUnitName: z.string(),
+        depth: z.number().int(),
+        envelopes: z.number().int(),
+        plannedHeadcount: z.number().int(),
+        openingsRequested: z.number().int(),
+        hires: z.number().int(),
+        utilisationPct: z.number().nullable(),
+      }),
+    )
+    .optional(),
 });
 
 export type HeadcountEnvelopeRow = z.infer<typeof headcountEnvelopeRowSchema>;
@@ -1003,3 +1051,89 @@ export type ExecutiveSummaryAiGovernance = z.infer<typeof executiveSummaryAiGove
 export type ExecutiveSummaryDiversity = z.infer<typeof executiveSummaryDiversitySchema>;
 export type GetExecutiveSummaryReportInput = z.infer<typeof getExecutiveSummaryReportInputSchema>;
 export type GetExecutiveSummaryReportOutput = z.infer<typeof getExecutiveSummaryReportOutputSchema>;
+
+// ═══════════════ PC-19 — business-unit tree (report pickers) ═══════════════
+
+/**
+ * One unit of the tenant's BU hierarchy, flattened depth-first (children A→Z
+ * under their parent) so a picker can render it indented with no client tree
+ * logic. `topLevelId` is the unit's root ancestor.
+ */
+export const businessUnitTreeNodeSchema = z.object({
+  id: z.string().uuid(),
+  name: z.string(),
+  parentId: z.string().uuid().nullable(),
+  depth: z.number().int(),
+  topLevelId: z.string().uuid(),
+  isArchived: z.boolean(),
+});
+export type BusinessUnitTreeNode = z.infer<typeof businessUnitTreeNodeSchema>;
+
+export const listReportBusinessUnitsInputSchema = z.object({});
+export const listReportBusinessUnitsOutputSchema = z.object({
+  items: z.array(businessUnitTreeNodeSchema),
+});
+export type ListReportBusinessUnitsOutput = z.infer<typeof listReportBusinessUnitsOutputSchema>;
+
+// ═══════════════ PC-20 — written insights ═══════════════
+//
+// 2–4 short plain-English sentences per report, written by the AI ONLY from a
+// compact JSON of figures the report code already computed (never raw rows,
+// never names of people). Every sentence lists the figure keys it used, and a
+// deterministic post-check drops any sentence carrying a number that is not
+// one of the input figures (after formatting). Empty figures → no insights,
+// no model call.
+
+export const REPORT_INSIGHT_KEYS = [
+  "executive_summary",
+  "requisition_aging",
+  "recruiter_productivity",
+  "pipeline",
+  "headcount_vs_plan",
+  "approval_analytics",
+  "partner_scorecard",
+  "interview_health",
+  "onboarding_readiness",
+] as const;
+export const reportInsightKeySchema = z.enum(REPORT_INSIGHT_KEYS);
+export type ReportInsightKey = z.infer<typeof reportInsightKeySchema>;
+
+export const getReportInsightsInputSchema = z.object({
+  reportKey: reportInsightKeySchema,
+  filters: reportFiltersSchema.default({}),
+});
+export type GetReportInsightsInput = z.infer<typeof getReportInsightsInputSchema>;
+
+export const reportInsightSchema = z.object({
+  text: z.string(),
+  /** The figure keys (from `figures`) this sentence is built on. */
+  figureKeys: z.array(z.string()),
+});
+export type ReportInsight = z.infer<typeof reportInsightSchema>;
+
+export const reportFigureSchema = z.object({
+  key: z.string(),
+  label: z.string(),
+  value: z.number(),
+  unit: z.enum(["count", "days", "hours", "percent", "money"]).optional(),
+});
+export type ReportFigure = z.infer<typeof reportFigureSchema>;
+
+export const getReportInsightsOutputSchema = z.object({
+  /**
+   * ok — insights present (possibly fewer than generated: failed sentences are dropped);
+   * empty — no figures to write about;
+   * disabled — the `report_insights` AI feature is switched off;
+   * unavailable — the model call failed or every sentence failed the check.
+   */
+  status: z.enum(["ok", "empty", "disabled", "unavailable"]),
+  insights: z.array(reportInsightSchema),
+  /** The figures the model was given — rendered in "How this was written". */
+  figures: z.array(reportFigureSchema),
+  /** Sentences removed by the number post-check (count only). */
+  dropped: z.number().int(),
+  promptVersion: z.string(),
+  generatedAt: z.string(),
+  cached: z.boolean(),
+});
+export type GetReportInsightsOutput = z.infer<typeof getReportInsightsOutputSchema>;

@@ -20,6 +20,7 @@ import {
 import { Button } from "@hireops/ui";
 import { Card, Badge } from "@/components/ui";
 import { humanize } from "@/lib/labels";
+import { useRoleLabel } from "@/lib/role-labels";
 import { trpc } from "@/lib/trpc-client";
 
 /**
@@ -49,6 +50,8 @@ const WIRED_ALERT_TYPES: SystemAlertType[] = ["sla_breach"];
 type Tab = "alerts" | "escalation";
 
 export function SystemSetupClient({ initial }: { initial: SystemSetup }) {
+  // PC-23 — role rows read with the tenant's role display names.
+  const roleLabel = useRoleLabel();
   const [tab, setTab] = useState<Tab>("alerts");
 
   const [enabled, setEnabled] = useState(initial.emailAlerts.enabled);
@@ -290,11 +293,11 @@ export function SystemSetupClient({ initial }: { initial: SystemSetup }) {
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
               {LANDING_ROLES.map((role) => (
                 <label key={role} className="flex items-center gap-3 text-sm text-neutral-700">
-                  <span className="w-32 shrink-0">{humanize(role)}</span>
+                  <span className="w-32 shrink-0">{roleLabel(role)}</span>
                   <select
                     className={inputCls}
                     value={landingPages[role] ?? ""}
-                    aria-label={`Landing page for ${humanize(role)}`}
+                    aria-label={`Landing page for ${roleLabel(role)}`}
                     onChange={(e) => {
                       const key = e.target.value as LandingPageKey | "";
                       setLandingPages((cur) =>

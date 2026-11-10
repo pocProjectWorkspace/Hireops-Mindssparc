@@ -23,6 +23,7 @@
  */
 import type { ReactNode } from "react";
 import { cn } from "@/components/ui/cn";
+import { RoleName } from "@/lib/role-labels";
 import {
   IconHome,
   IconTriage,
@@ -769,7 +770,10 @@ function buildSections(
 
 export interface AppShellUser {
   label: string;
+  /** Platform-default role label (server-rendered fallback). */
   role?: string;
+  /** PC-23 — the role KEY, so the chip can show the tenant's display label. */
+  roleKey?: string;
 }
 
 export interface AppShellProps {
@@ -875,7 +879,11 @@ function UserChip({ user, roles }: { user: AppShellUser; roles: string[] }) {
         </span>
         <div className="min-w-0">
           <p className="truncate text-sm font-medium text-sidebar-fg">{user.label}</p>
-          {user.role ? <p className="truncate text-xs text-sidebar-fg-muted">{user.role}</p> : null}
+          {user.role || user.roleKey ? (
+            <p className="truncate text-xs text-sidebar-fg-muted">
+              <RoleName role={user.roleKey} fallback={user.role} />
+            </p>
+          ) : null}
         </div>
       </div>
       <a

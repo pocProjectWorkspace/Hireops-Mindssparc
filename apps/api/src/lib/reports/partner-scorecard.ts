@@ -113,6 +113,8 @@ import type {
   PartnerScorecardRow,
   ReportFilters,
 } from "@hireops/api-types";
+
+import { buSubtreePredicate } from "./bu-tree";
 import { buildApplicationScope } from "./dimensions";
 
 /**
@@ -222,7 +224,7 @@ export function partnerFeeWhere(tenantId: string, filters: ReportFilters): SQL {
   if (filters.from) clauses.push(dsql`f.hired_at >= ${filters.from}::timestamptz`);
   if (filters.to) clauses.push(dsql`f.hired_at <= ${filters.to}::timestamptz`);
   if (filters.businessUnitId) {
-    clauses.push(dsql`fp.business_unit_id = ${filters.businessUnitId}::uuid`);
+    clauses.push(buSubtreePredicate(dsql`fp.business_unit_id`, tenantId, filters.businessUnitId));
   }
   if (filters.requisitionId) {
     clauses.push(dsql`fa.requisition_id = ${filters.requisitionId}::uuid`);
@@ -327,7 +329,9 @@ export async function getPartnerScorecardReport(
     dsql`pa.status = 'active'`,
   ];
   if (filters.businessUnitId) {
-    assignmentClauses.push(dsql`p.business_unit_id = ${filters.businessUnitId}::uuid`);
+    assignmentClauses.push(
+      buSubtreePredicate(dsql`p.business_unit_id`, tenantId, filters.businessUnitId),
+    );
   }
   if (filters.requisitionId) {
     assignmentClauses.push(dsql`pa.requisition_id = ${filters.requisitionId}::uuid`);
