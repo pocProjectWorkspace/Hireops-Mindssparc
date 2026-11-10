@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import Link from "next/link";
 import {
   CLASSIFIER_SIGNAL_DEFINITIONS,
   PRE_JOINING_CADENCE_MAX,
@@ -154,6 +155,11 @@ export function PreJoiningSettingsClient({
               }
             />
             {PRE_JOINING_STEP_LABELS[step.key]}
+            {step.key === "welcome_guide" ? (
+              <Link href="/admin/welcome-content" className="text-xs text-brand-700 underline">
+                Manage welcome content
+              </Link>
+            ) : null}
           </label>
         ))}
         <label className="block text-sm">

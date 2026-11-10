@@ -20,7 +20,10 @@
  *   7. Inside quiet hours → re-parked to the end of the quiet window, the
  *      attempt is refunded.
  *   8. company_update: the next active update not yet sent on this journey;
- *      none left → 'skipped'.
+ *      none left → 'skipped'. welcome_guide (PC-18): no published guide for
+ *      the candidate's business unit (own → ancestor → organisation) →
+ *      'skipped' (no_welcome_guide); otherwise the email links to the
+ *      candidate-portal guide page.
  *   9. Pulse-carrying steps get a signed check-in link (action
  *      candidate.pre_joining_pulse, subject = touchpoint id, expiring the day
  *      after joining); its SHA-256 is stored on the touchpoint.
@@ -53,6 +56,7 @@ import {
   loadPreJoiningSettings,
   PULSE_LINK_ACTION,
   portalBaseUrl,
+  resolveWelcomeGuideForApplication,
   startPreJoiningJourney,
   stopPreJoiningJourney,
 } from "@hireops/api/pre-joining";
@@ -65,6 +69,7 @@ const DEFAULT_BATCH = 20;
 
 const TEMPLATE_BY_STEP: Record<PreJoiningStepKey, TemplateKey> = {
   welcome: "candidate.pre_joining_welcome",
+  welcome_guide: "candidate.pre_joining_welcome_guide",
   pulse: "candidate.pre_joining_pulse",
   company_update: "candidate.pre_joining_company_update",
   two_weeks_to_go: "candidate.pre_joining_two_weeks",
@@ -324,6 +329,17 @@ async function processRow(row: ClaimedRow, now: Date, log: Logger): Promise<Outc
     update = u;
   }
 
+  let guideUrl: string | null = null;
+  if (step === "welcome_guide") {
+    const guide = await resolveWelcomeGuideForApplication(
+      poolSql,
+      row.tenant_id,
+      row.application_id,
+    );
+    if (!guide) return finish(row.id, "skipped", "no_welcome_guide");
+    guideUrl = `${portalBaseUrl()}/candidate/welcome`;
+  }
+
   let pulseUrl: string | null = null;
   let pulseTokenHash: string | null = null;
   if (row.carries_pulse) {
@@ -341,6 +357,7 @@ async function processRow(row: ClaimedRow, now: Date, log: Logger): Promise<Outc
     positionTitle: c.position_title,
     joiningDate: formatJoiningDate(c.joining_date),
     pulseUrl,
+    ...(guideUrl ? { guideUrl } : {}),
     ...(update
       ? {
           updateTitle: update.title,

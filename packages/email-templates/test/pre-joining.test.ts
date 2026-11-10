@@ -27,6 +27,7 @@ function must<V>(v: V | null | undefined, what = "value"): V {
 
 const KEYS: TemplateKey[] = [
   "candidate.pre_joining_welcome",
+  "candidate.pre_joining_welcome_guide",
   "candidate.pre_joining_pulse",
   "candidate.pre_joining_company_update",
   "candidate.pre_joining_two_weeks",
@@ -45,6 +46,25 @@ describe("pre-joining templates", () => {
     expect(r.subject).toBe(interpolateSlot(spec.defaultText, tokens));
     expect(r.html.length).toBeGreaterThan(100);
     expect(r.text).toContain("Priya Sharma".split(" ")[0]);
+  });
+
+  it("welcome guide (PC-18): links to the guide with the default CTA; slot overrides apply", async () => {
+    const data = EMAIL_TEMPLATE_SAMPLE_DATA["candidate.pre_joining_welcome_guide"];
+    const r = await renderTemplate("candidate.pre_joining_welcome_guide", data);
+    expect(r.subject).toBe("Get to know your new team at Your organisation");
+    expect(r.html).toContain("https://portal.example/candidate/welcome");
+    expect(r.text).toContain("Open your welcome guide");
+    expect(r.text).toContain("sign in to your candidate account");
+    const custom = await renderTemplate("candidate.pre_joining_welcome_guide", data, {
+      slots: { guideCta: "Meet the team" },
+    });
+    expect(custom.text).toContain("Meet the team");
+    // Without a guide URL there is no button (the drain never sends that case).
+    const noUrl = await renderTemplate("candidate.pre_joining_welcome_guide", {
+      ...data,
+      guideUrl: null,
+    });
+    expect(noUrl.html).not.toContain("/candidate/welcome");
   });
 
   it("only pulse-carrying steps include the check-in link", async () => {

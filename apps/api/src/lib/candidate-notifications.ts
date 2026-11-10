@@ -79,6 +79,12 @@ const DISPLAY_BY_TEMPLATE: Record<string, CandidateNotificationDisplay> = {
     title: "Welcome aboard",
     fallbackBody: "Thanks for accepting your offer — we're looking forward to your first day.",
   },
+  // PC-18 — the welcome-guide journey step.
+  "candidate.pre_joining_welcome_guide": {
+    category: "general",
+    title: "Your welcome guide",
+    fallbackBody: "Get to know the team you're joining — your welcome guide is ready.",
+  },
   "candidate.pre_joining_pulse": {
     category: "offer",
     title: "Quick check-in",

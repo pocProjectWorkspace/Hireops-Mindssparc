@@ -45,3 +45,4 @@ export * from "./ai-interview";
 export * from "./ai-interview-answers";
 export * from "./workday-import";
 export * from "./pre-joining-engagement";
+export * from "./welcome-guide";

@@ -156,7 +156,9 @@ export type PortalNavKey =
   // PC-16 — accepted-not-joined watchlist (facts only) + engagement timeline
   | "joining-watchlist"
   // PC-14 — pre-joining engagement settings + company updates (admin)
-  | "pre-joining";
+  | "pre-joining"
+  // PC-18 — per-business-unit welcome guide source + generated versions (admin)
+  | "welcome-content";
 
 // ONBOARD-1: NavItem is exported so the onboarding journey can render the
 // same nav items the sidebar shows (filtered by role via navItemsForRoles).
@@ -643,6 +645,14 @@ export const ADMIN_NAV: NavItem[] = [
     href: "/admin/pre-joining",
     icon: <IconOnboarding />,
   },
+  // PC-18 — welcome content per business unit: source material, AI draft
+  // grounded in it, human review + publish.
+  {
+    key: "welcome-content",
+    label: "Welcome content",
+    href: "/admin/welcome-content",
+    icon: <IconLearning />,
+  },
   // R1.5b — scheduled report digests (cadence, recipients, UTC send hour). The
   // saved block drives the report_digest_scan worker. Reuses IconReports (no
   // dedicated mail/schedule icon exists) — the digest IS the reports pack, on a
@@ -762,6 +772,7 @@ export const ADMIN_NAV_SECTIONS: NavSection[] = [
       "report-digests",
       "learning",
       "pre-joining",
+      "welcome-content",
     ],
   },
   {

@@ -106,6 +106,7 @@ export const AI_FEATURE_KEYS = [
   "ai_interview_evidence",
   "ask_data",
   "engagement_reply_signals",
+  "welcome_guide",
 ] as const;
 export type AiFeatureKey = (typeof AI_FEATURE_KEYS)[number];
 
@@ -210,6 +211,12 @@ export const AI_FEATURE_META: Record<
     description:
       "When a candidate who has accepted an offer replies to a pre-joining engagement email, looks for a fixed list of things they may have SAID — another offer, a counter-offer, a joining-date change, doubt about joining, a notice-period problem, or that they are withdrawing — each backed by a verbatim quote from their reply (quotes not found word-for-word in the reply are dropped). It never produces a flight-risk score, probability or rating, and never infers anything about the person (personality, sentiment, tone or any demographic attribute). Each signal alerts the recruiter, who reads the reply and decides. Disabling stores replies without looking for signals; pulse answers still raise their own signals.",
   },
+  welcome_guide: {
+    label: "Pre-joining welcome guide",
+    usageFeatures: ["welcome_guide"],
+    description:
+      "On Admin → Welcome content, turns the source material you write for a business unit (overview, leaders, culture, first week) into a warm, structured welcome guide for new hires. It may only use what you wrote: it is told not to invent names, facts or numbers, and anything it adds anyway — a person not in your leader list, a sentence naming something or giving a number that is not in your source — is removed before you see the draft (and listed so you can check). Nothing reaches a candidate until a person reviews, edits and publishes it. Disabling stops generation; already-published guides stay visible to candidates.",
+  },
 };
 
 export const aiSettingsSchema = z.object({
@@ -230,6 +237,7 @@ export const aiSettingsSchema = z.object({
   ai_interview_evidence: aiFeatureSettingsSchema.default(featureDefault),
   ask_data: aiFeatureSettingsSchema.default(featureDefault),
   engagement_reply_signals: aiFeatureSettingsSchema.default(featureDefault),
+  welcome_guide: aiFeatureSettingsSchema.default(featureDefault),
   /**
    * Global deterministic PII redaction. When on, candidate-derived prompt
    * text going into scoring + agent-draft calls has emails / phone numbers /

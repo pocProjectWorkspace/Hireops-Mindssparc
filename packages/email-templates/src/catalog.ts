@@ -850,6 +850,64 @@ export const EMAIL_TEMPLATE_CATALOG: Record<TemplateKey, EmailTemplateCatalogEnt
     ],
   },
 
+  // PC-18 — pre-joining welcome guide journey step.
+  "candidate.pre_joining_welcome_guide": {
+    templateKey: "candidate.pre_joining_welcome_guide",
+    label: "Pre-joining: welcome guide",
+    description:
+      "Sent shortly after the welcome email (if pre-joining engagement is on and a welcome guide is published for the candidate's business unit or the organisation). Links to the guide in the candidate portal. The guide itself is managed under Admin → Welcome content.",
+    subject: {
+      defaultText: "Get to know your new team at {companyName}",
+      tokens: ["companyName", "candidateName"],
+    },
+    slots: [
+      {
+        slotKey: "heading",
+        label: "Heading",
+        defaultText: "Meet the team you're joining",
+        tokens: ["candidateName", "companyName", "positionTitle", "joiningDate"],
+      },
+      {
+        slotKey: "greeting",
+        label: "Greeting",
+        defaultText: "Hi {candidateName},",
+        tokens: ["candidateName"],
+      },
+      {
+        slotKey: "intro",
+        label: "Intro paragraph",
+        defaultText:
+          "Before your first day on {joiningDate}, take a few minutes to get to know the team you're joining: who you'll meet, how we work, and what your first week will look like. It's all in your welcome guide.",
+        tokens: ["candidateName", "companyName", "positionTitle", "joiningDate"],
+      },
+      {
+        slotKey: "guideCta",
+        label: "Guide button label",
+        defaultText: "Open your welcome guide",
+        tokens: [],
+      },
+      {
+        slotKey: "signInNote",
+        label: "Sign-in note",
+        defaultText: "You'll be asked to sign in to your candidate account to view it.",
+        tokens: [],
+      },
+      {
+        slotKey: "replyNote",
+        label: "Reply note",
+        defaultText:
+          "If anything changes or you have a question, just reply to this email — it reaches your recruiter.",
+        tokens: [],
+      },
+      {
+        slotKey: "signOff",
+        label: "Sign-off",
+        defaultText: "— The {companyName} team",
+        tokens: ["companyName"],
+      },
+    ],
+  },
+
   // PC-14 — pre-joining engagement journey step.
   "candidate.pre_joining_pulse": {
     templateKey: "candidate.pre_joining_pulse",
@@ -1264,6 +1322,13 @@ export const EMAIL_TEMPLATE_SAMPLE_DATA: Record<TemplateKey, Record<string, unkn
     companyName: "Your organisation",
     positionTitle: "Plant Accountant",
     joiningDate: "8 February 2027",
+  },
+  "candidate.pre_joining_welcome_guide": {
+    candidateName: "Priya Sharma",
+    companyName: "Your organisation",
+    positionTitle: "Plant Accountant",
+    joiningDate: "8 February 2027",
+    guideUrl: "https://portal.example/candidate/welcome",
   },
   "candidate.pre_joining_pulse": {
     candidateName: "Priya Sharma",
