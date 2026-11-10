@@ -1128,6 +1128,24 @@ import {
 } from "../lib/req-health";
 import { displayForCandidateNotification } from "../lib/candidate-notifications";
 import {
+  SCREENING_ANSWERS_WRITE_ROLES,
+  canSeeScreeningComp,
+  presentScreeningAnswers,
+  resolveScreeningAnswersForInsert,
+  screeningAnswerColumns,
+  screeningKnockoutView,
+  setApplicationScreeningAnswers,
+  summariseKnockouts,
+} from "../lib/screening-answers";
+import {
+  DEFAULT_APPLY_SCREENING_POLICY,
+  knockoutFieldDef,
+  updateApplicationScreeningAnswersInputSchema,
+  updateApplicationScreeningAnswersOutputSchema,
+  type ApplyScreeningPolicy,
+  type ScreeningAnswersInput,
+} from "@hireops/api-types";
+import {
   computeRecruiterUrgency,
   computeMustHavePct,
   computeRiskFlags,
@@ -2017,6 +2035,37 @@ async function loadCandidateFieldPolicyOverrides(
     });
   }
   return out;
+}
+
+/**
+ * PC-7 — which screening questions the PUBLIC apply form requires. A question is
+ * required only when the tenant SAVED a candidate_field_policy row marking its
+ * catalog key ('notice_period' | 'expected_salary' | 'current_location')
+ * required; the platform default is optional (the catalog's code-default
+ * requiredness is a tracker hint, not a gate — the same honesty rule T2.1
+ * applies to stage gates). Public path → read on the service pool, scoped by
+ * tenant_id. Never throws: a read failure degrades to all-optional.
+ */
+async function resolveApplyScreeningPolicy(tenantId: string): Promise<ApplyScreeningPolicy> {
+  try {
+    const rows = await poolDb
+      .select({
+        fieldKey: candidateFieldPolicy.fieldKey,
+        requiredness: candidateFieldPolicy.requiredness,
+      })
+      .from(candidateFieldPolicy)
+      .where(eq(candidateFieldPolicy.tenantId, tenantId));
+    const required = new Set(
+      rows.filter((r) => r.requiredness === "required").map((r) => r.fieldKey),
+    );
+    return {
+      noticePeriodRequired: required.has("notice_period"),
+      expectedSalaryRequired: required.has("expected_salary"),
+      currentLocationRequired: required.has("current_location"),
+    };
+  } catch {
+    return DEFAULT_APPLY_SCREENING_POLICY;
+  }
 }
 
 /** Build the seven catalog entries the admin editor renders — each field's code
@@ -3350,6 +3399,8 @@ async function ingestPartnerApplication(
     partnerOrgId: string;
     partnerUserId: string;
     partnerSubmissionMetadata: Record<string, unknown>;
+    /** PC-7 — screening answers the partner supplied (stored with source 'partner'). */
+    screening?: ScreeningAnswersInput;
     log: HonoTRPCContext["log"];
     requestId: string;
   },
@@ -3403,7 +3454,18 @@ async function ingestPartnerApplication(
     questionText: r.questionText,
     thresholdValue: r.thresholdValue,
   }));
-  const knockoutEval = evaluateKnockouts(parsedSkills, knockoutInputs);
+  // PC-7 — screening answers for a NEW application row (notice pre-filled from
+  // the CV when the partner left it blank) feed the asserted knockouts.
+  const screeningCols = resolveScreeningAnswersForInsert({
+    supplied: args.screening,
+    parsedCv: parsedSkills,
+    source: "partner",
+  });
+  const knockoutEval = evaluateKnockouts(
+    parsedSkills,
+    knockoutInputs,
+    screeningKnockoutView(screeningCols),
+  );
   const knockoutEvaluatedAt = new Date();
 
   // Upsert candidate by (tenant, person).
@@ -3465,6 +3527,7 @@ async function ingestPartnerApplication(
           sourcePartnerId: args.partnerOrgId,
           submittedByPartnerUserId: args.partnerUserId,
           partnerSubmissionMetadata: args.partnerSubmissionMetadata,
+          ...screeningCols,
         })
         .returning({ id: applications.id })
         .then((rows) => firstOrThrow(rows, "partner application insert").id);
@@ -4161,6 +4224,27 @@ export const appRouter = router({
         });
       }
 
+      // PC-7 — the tenant's candidate-field policy can make a screening
+      // question required on the apply form; enforce it here too so the rule
+      // holds for any client, not just the portal form.
+      {
+        const policy = await resolveApplyScreeningPolicy(req.tenantId);
+        const sa = input.screening ?? {};
+        const missing: string[] = [];
+        if (policy.noticePeriodRequired && sa.noticePeriodDays == null)
+          missing.push("notice period");
+        if (policy.expectedSalaryRequired && sa.expectedSalaryInrPaise == null)
+          missing.push("expected CTC");
+        if (policy.currentLocationRequired && !sa.currentLocation?.trim())
+          missing.push("current location");
+        if (missing.length > 0) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: `Please answer: ${missing.join(", ")}`,
+          });
+        }
+      }
+
       return withAudit(
         "submit_application",
         ctx,
@@ -4215,7 +4299,19 @@ export const appRouter = router({
             questionText: r.questionText,
             thresholdValue: r.thresholdValue,
           }));
-          const knockoutEval = evaluateKnockouts(parsedSkills, knockoutInputs);
+          // PC-7 — the applicant's screening answers (notice pre-filled from
+          // the parsed CV when left blank) feed the candidate-asserted
+          // knockouts and land on the application row in step 5.
+          const screeningCols = resolveScreeningAnswersForInsert({
+            supplied: input.screening,
+            parsedCv: parsedSkills,
+            source: "candidate",
+          });
+          const knockoutEval = evaluateKnockouts(
+            parsedSkills,
+            knockoutInputs,
+            screeningKnockoutView(screeningCols),
+          );
           const knockoutEvaluatedAt = new Date();
 
           // 3. Dedup person by normalised email OR phone within tenant.
@@ -4396,6 +4492,7 @@ export const appRouter = router({
                   knockoutFailures: knockoutEval.failures.length > 0 ? knockoutEval.failures : null,
                   knockoutEvaluatedAt,
                   aiScoreExplanation: initialAiScoreExplanation,
+                  ...screeningCols,
                 })
                 .returning({ id: applications.id })
                 .then((rows) => firstOrThrow(rows, "applications insert").id);
@@ -4502,6 +4599,7 @@ export const appRouter = router({
         tenantDisplayName: row.tenantDisplayName,
         requisitionId: row.requisitionId,
         positionTitle: row.positionTitle,
+        screeningPolicy: await resolveApplyScreeningPolicy(row.tenantId),
       };
     }),
 
@@ -4556,6 +4654,11 @@ export const appRouter = router({
             aiScoreExplanation: applications.aiScoreExplanation,
             aiScoredAt: applications.aiScoredAt,
             currentStage: applications.currentStage,
+            // PC-7 — screening answers + knockout verdict for the drawer chips.
+            ...screeningAnswerColumns,
+            knockoutPassed: applications.knockoutPassed,
+            knockoutFailures: applications.knockoutFailures,
+            knockoutEvaluatedAt: applications.knockoutEvaluatedAt,
             // P0.5 — the sourcing partner's name for the drawer's source chip,
             // same LEFT JOIN as listCandidatesByRequisition so the list and the
             // drawer can never name different agencies for the same row. Rides
@@ -4669,9 +4772,68 @@ export const appRouter = router({
                 aiScoreExplanation: appRow.aiScoreExplanation ?? null,
                 aiScoredAt: toIsoString(appRow.aiScoredAt),
                 partnerOrgName: appRow.partnerOrgName ?? null,
+                screening: presentScreeningAnswers(appRow, row.candidate.parsedSkills, ctx.roles),
+                knockout: summariseKnockouts(
+                  appRow.knockoutPassed,
+                  appRow.knockoutFailures,
+                  appRow.knockoutEvaluatedAt,
+                ),
               }
             : null,
           latestTransition,
+        };
+      });
+    }),
+
+  /**
+   * PC-7 — recruiter edit of an application's screening answers (notice period,
+   * current / expected CTC, current location). Patch semantics (omitted = keep,
+   * null = clear). Writes through the shared setApplicationScreeningAnswers
+   * helper with source 'recruiter', which re-evaluates the requisition's
+   * knockouts against the new values. Pay fields are refused (FORBIDDEN) for a
+   * caller who cannot see pay, and masked on the echo the same way as reads.
+   */
+  updateApplicationScreeningAnswers: protectedProcedure
+    .input(updateApplicationScreeningAnswersInputSchema)
+    .output(updateApplicationScreeningAnswersOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      requireAnyRole(
+        ctx,
+        SCREENING_ANSWERS_WRITE_ROLES as Set<string>,
+        "Editing screening answers requires the recruiter, hr_ops or admin role",
+      );
+      const touchesPay =
+        input.answers.currentSalaryInrPaise !== undefined ||
+        input.answers.expectedSalaryInrPaise !== undefined;
+      if (touchesPay && !canSeeScreeningComp(ctx.roles)) {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: "Your role cannot view or edit candidate pay",
+        });
+      }
+      const db = requireDb(ctx);
+      const tenantId = ctx.tenantId;
+      if (!tenantId) {
+        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
+      }
+      return withAudit("update_application_screening_answers", ctx, input, async () => {
+        const res = await setApplicationScreeningAnswers(db, {
+          tenantId,
+          applicationId: input.applicationId,
+          answers: input.answers,
+          source: "recruiter",
+        });
+        if (!res) {
+          throw new TRPCError({ code: "NOT_FOUND", message: "Application not found" });
+        }
+        return {
+          applicationId: input.applicationId,
+          screening: presentScreeningAnswers(res.stored, res.parsedCv, ctx.roles),
+          knockout: summariseKnockouts(
+            res.knockout?.passed ?? null,
+            res.knockout?.failures ?? null,
+            res.knockoutEvaluatedAt,
+          ),
         };
       });
     }),
@@ -4758,6 +4920,12 @@ export const appRouter = router({
           aiScore: applications.aiScore,
           aiScoreExplanation: applications.aiScoreExplanation,
           createdAt: applications.createdAt,
+          // PC-7 — screening chips + knockout verdict on the triage row.
+          ...screeningAnswerColumns,
+          parsedSkills: candidates.parsedSkills,
+          knockoutPassed: applications.knockoutPassed,
+          knockoutFailures: applications.knockoutFailures,
+          knockoutEvaluatedAt: applications.knockoutEvaluatedAt,
         })
         .from(applications)
         .innerJoin(
@@ -4800,6 +4968,12 @@ export const appRouter = router({
             aiScore: r.aiScore === null ? null : Number(r.aiScore),
             aiScoreExplanation: r.aiScoreExplanation,
             createdAt: r.createdAt.toISOString(),
+            screening: presentScreeningAnswers(r, r.parsedSkills, ctx.roles),
+            knockout: summariseKnockouts(
+              r.knockoutPassed,
+              r.knockoutFailures,
+              r.knockoutEvaluatedAt,
+            ),
           };
         }),
         nextCursor: hasMore ? lastCursor(out) : null,
@@ -5471,7 +5645,9 @@ export const appRouter = router({
                 questionText: k.questionText.trim(),
                 type: k.type,
                 thresholdValue: buildKnockoutThreshold(k),
-                source: k.source,
+                // PC-7 — a catalogue field always gets its catalogue source
+                // (screening fields → candidate_asserted), whatever the client sent.
+                source: knockoutFieldDef(k.fieldPath)?.source ?? k.source,
                 orderIndex: i,
               })),
             );
@@ -16205,6 +16381,7 @@ export const appRouter = router({
                 partnerOrgId,
                 partnerUserId,
                 partnerSubmissionMetadata: submissionMetadata,
+                screening: input.screening,
                 log: ctx.log,
                 requestId: ctx.requestId,
               });
@@ -16317,6 +16494,7 @@ export const appRouter = router({
             partnerOrgId,
             partnerUserId,
             partnerSubmissionMetadata: submissionMetadata,
+            screening: input.screening,
             log: ctx.log,
             requestId: ctx.requestId,
           });
@@ -22135,12 +22313,17 @@ export const appRouter = router({
           resumeUrl: candidates.currentResumeUrl,
           parsedSkills: candidates.parsedSkills,
           yearsOfExperience: candidates.yearsOfExperience,
-          expectedSalaryInrPaise: applications.expectedSalaryInrPaise,
           source: applications.source,
           stage: applications.currentStage,
           stageEnteredAt: applications.stageEnteredAt,
           aiScore: applications.aiScore,
           aiScoreExplanation: applications.aiScoreExplanation,
+          // PC-7 — screening answers (incl. expected_salary_inr_paise, which the
+          // missing-info count reads) + the knockout verdict.
+          ...screeningAnswerColumns,
+          knockoutPassed: applications.knockoutPassed,
+          knockoutFailures: applications.knockoutFailures,
+          knockoutEvaluatedAt: applications.knockoutEvaluatedAt,
           // P0.5 — WHICH partner, not just "a partner". The source enum only
           // says partner_empanelled / partner_adhoc, so a recruiter scanning a
           // list of partner-sourced candidates could not tell two agencies
@@ -22207,7 +22390,9 @@ export const appRouter = router({
         }
         const parsed = narrowParsedSkills(r.parsedSkills);
         const mask = resolveCandidateMasking({ roles: ctx.roles, stage: r.stage, privacy });
-        const noticePeriodDays = parsed.notice_period_days ?? null;
+        // PC-7 — the application's stated notice wins; parsed CV is the fallback.
+        const screening = presentScreeningAnswers(r, r.parsedSkills, ctx.roles);
+        const noticePeriodDays = screening.noticePeriodDays ?? parsed.notice_period_days ?? null;
         const mustHavePct = computeMustHavePct(
           mustHaveByJd.get(r.jdVersionId) ?? [],
           parsed.skills,
@@ -22248,6 +22433,8 @@ export const appRouter = router({
           noticePeriodDays,
           mustHavePct,
           missingInfo,
+          screening,
+          knockout: summariseKnockouts(r.knockoutPassed, r.knockoutFailures, r.knockoutEvaluatedAt),
         });
       }
 
@@ -29040,6 +29227,12 @@ async function resolveTenantDisplayName(tenantId: string): Promise<string> {
  */
 function buildKnockoutThreshold(k: RequisitionKnockoutInput): Record<string, unknown> {
   const base: Record<string, unknown> = { field_path: k.fieldPath };
+  // PC-7 — catalogue fields read from the application's screening answers can
+  // fall back to the parsed CV (notice period) when the answer is missing.
+  const def = knockoutFieldDef(k.fieldPath);
+  if (def?.source === "candidate_asserted" && def.cvFallbackPath) {
+    base.fallback_field_path = def.cvFallbackPath;
+  }
   switch (k.type) {
     case "boolean":
       return { ...base, required: true };

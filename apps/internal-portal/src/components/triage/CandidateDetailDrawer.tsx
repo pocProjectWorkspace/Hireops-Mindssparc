@@ -10,6 +10,8 @@ import { useUndoToast } from "./UndoToastProvider";
 import { OfferSection } from "@/components/offers/OfferSection";
 import { InterviewScheduleSection } from "@/components/interviews/InterviewScheduleSection";
 import { AIScoreBadge } from "./AIScoreBadge";
+import { ScreeningChips } from "./ScreeningChips";
+import { ScreeningAnswersSection } from "./ScreeningAnswersSection";
 import { useScreeningScoreVisible } from "@/components/ScreeningScoreProvider";
 import { applicationStageLabel } from "@/lib/labels";
 import { timeAgo } from "@/lib/approval-format";
@@ -209,7 +211,14 @@ export function CandidateDetailDrawer() {
                         : candidate.source.replace(/_/g, " ")}
                     </Badge>
                   ) : null}
-                  {typeof parsed.notice_period_days === "number" ? (
+                  {/* PC-7 — the application's screening answers (notice falls
+                      back to the parsed CV) + knockout verdict. */}
+                  {application ? (
+                    <ScreeningChips
+                      screening={application.screening}
+                      knockout={application.knockout}
+                    />
+                  ) : typeof parsed.notice_period_days === "number" ? (
                     <Badge tone="info">{parsed.notice_period_days}d notice</Badge>
                   ) : null}
                 </div>
@@ -242,6 +251,21 @@ export function CandidateDetailDrawer() {
               explanation={application.aiScoreExplanation}
               variant="drawer"
               showScore={scoreVisible}
+            />
+          ) : null}
+
+          {/* PC-7 — screening answers (view + recruiter edit) and knockouts. */}
+          {application ? (
+            <ScreeningAnswersSection
+              key={application.id}
+              applicationId={application.id}
+              screening={application.screening}
+              knockout={application.knockout}
+              onSaved={() => {
+                void detail.refetch();
+                queryClient.invalidateQueries({ queryKey: [["listCandidates"]] });
+                queryClient.invalidateQueries({ queryKey: [["listCandidatesByRequisition"]] });
+              }}
             />
           ) : null}
 

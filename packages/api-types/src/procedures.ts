@@ -16,6 +16,12 @@ import {
   aiInterviewEvidenceSchema,
   aiInterviewSessionCardSchema,
 } from "./ai-interview";
+import {
+  applicationScreeningAnswersSchema,
+  applyScreeningPolicySchema,
+  knockoutSummarySchema,
+  screeningAnswersInputSchema,
+} from "./screening-answers";
 
 /**
  * Input + output schemas for the initial six tRPC procedures (API-01).
@@ -51,6 +57,11 @@ export const submitApplicationInputSchema = z.object({
   // (out of scope for API-01) so they're not in this union.
   source: z.enum(["career_site", "referral", "job_board", "whatsapp"]),
   consentVersion: z.string().min(1).max(40),
+  // PC-7 — optional screening answers (notice / current + expected CTC /
+  // current location). Stored on the application with source 'candidate' and
+  // fed to the knockout evaluator. Whether a question is required is the
+  // tenant's candidate-field policy (resolvePublicRequisition.screeningPolicy).
+  screening: screeningAnswersInputSchema.optional(),
 });
 
 export const submitApplicationOutputSchema = z.object({
@@ -91,6 +102,8 @@ export const resolvePublicRequisitionOutputSchema = z.object({
   tenantDisplayName: z.string(),
   requisitionId: z.string().uuid(),
   positionTitle: z.string(),
+  // PC-7 — which screening questions the apply form must require.
+  screeningPolicy: applyScreeningPolicySchema,
 });
 
 export type ResolvePublicRequisitionInput = z.infer<typeof resolvePublicRequisitionInputSchema>;
@@ -146,6 +159,10 @@ export const candidateApplicationScoreSchema = z.object({
   aiScoreExplanation: z.unknown().nullable(),
   aiScoredAt: z.string().nullable(),
   partnerOrgName: z.string().nullable(),
+  // PC-7 — this application's screening answers (CTC null unless the caller's
+  // roles may see pay) and its knockout verdict.
+  screening: applicationScreeningAnswersSchema,
+  knockout: knockoutSummarySchema,
 });
 
 /**
@@ -215,6 +232,9 @@ export const candidateSummarySchema = z.object({
   aiScore: z.number().nullable(),
   aiScoreExplanation: z.unknown().nullable(),
   createdAt: z.string(),
+  // PC-7 — compact screening chips + knockout verdict for the triage row.
+  screening: applicationScreeningAnswersSchema,
+  knockout: knockoutSummarySchema,
 });
 
 export const listCandidatesOutputSchema = z.object({
@@ -284,6 +304,10 @@ export const candidateByRequisitionRowSchema = z.object({
   noticePeriodDays: z.number().nullable(),
   mustHavePct: z.number().nullable(),
   missingInfo: candidateMissingInfoSchema,
+  // PC-7 — screening answers + knockout verdict (noticePeriodDays above now
+  // prefers the application's answer, falling back to the parsed CV).
+  screening: applicationScreeningAnswersSchema,
+  knockout: knockoutSummarySchema,
 });
 
 export const candidatesByRequisitionGroupSchema = z.object({
@@ -3980,6 +4004,8 @@ export const partnerSubmitCandidateInputSchema = z.object({
   consentAttested: z.literal(true),
   ownershipAcknowledged: z.literal(true),
   consentVersion: z.string().min(1).max(40),
+  // PC-7 — optional screening answers the partner supplies (source 'partner').
+  screening: screeningAnswersInputSchema.optional(),
 });
 export type PartnerSubmitCandidateInput = z.infer<typeof partnerSubmitCandidateInputSchema>;
 

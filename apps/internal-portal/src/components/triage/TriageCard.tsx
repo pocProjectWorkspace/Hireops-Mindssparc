@@ -6,6 +6,7 @@ import { Avatar, Badge, ScoreMeter, cn } from "@/components/ui";
 import type { BadgeTone } from "@/components/ui";
 import { applicationStageLabel } from "@/lib/labels";
 import { useScreeningScoreVisible } from "@/components/ScreeningScoreProvider";
+import { ScreeningChips } from "./ScreeningChips";
 
 // Zod's z.unknown() typing makes the property optional in the inferred
 // type, which the strict Row would otherwise reject. Loosen the prop
@@ -91,6 +92,11 @@ export function TriageCard({
           <Badge tone="neutral" className="shrink-0">
             {applicationStageLabel(row.stage)}
           </Badge>
+        </div>
+        {/* PC-7 — notice / location / CTC (pay only if the role may see it) +
+            knockout verdict (fail vs unknown). */}
+        <div className="mt-1">
+          <ScreeningChips screening={row.screening} knockout={row.knockout} />
         </div>
       </div>
 

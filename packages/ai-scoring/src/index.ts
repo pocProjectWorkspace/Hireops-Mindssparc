@@ -19,6 +19,7 @@ export {
   type KnockoutFailureReason,
   type KnockoutType,
   type KnockoutResult,
+  type ScreeningAnswersView,
 } from "./knockouts";
 
 export {
