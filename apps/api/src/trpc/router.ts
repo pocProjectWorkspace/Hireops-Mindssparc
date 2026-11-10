@@ -263,6 +263,15 @@ import {
   listOffersByApplicationOutputSchema,
   listWorkdaySyncsInputSchema,
   listWorkdaySyncsOutputSchema,
+  getWorkdayHandoffInputSchema,
+  getWorkdayHandoffOutputSchema,
+  exportWorkdayHandoffsInputSchema,
+  exportWorkdayHandoffsOutputSchema,
+  WORKDAY_HANDOFF_DEFAULT_COLUMNS,
+  WORKDAY_HANDOFF_EXPORT_MAX_ROWS,
+  WORKDAY_HANDOFF_STATUS_LABELS,
+  type GetWorkdayHandoffOutput,
+  type ExportWorkdayHandoffsOutput,
   upsertInterviewPlanInputSchema,
   upsertInterviewPlanOutputSchema,
   getInterviewPlanInputSchema,
@@ -1070,6 +1079,17 @@ import {
   type WorkdayTenantLookups,
 } from "../lib/workday-import";
 import {
+  buildWorkdayHandoffCsv,
+  buildWorkdayHandoffRecord,
+  dateRangeBounds,
+  deriveWorkdayHandoffStatus,
+  loadWorkdayHandoffSources,
+  workdayHandoffFilenameBase,
+  workdayHandoffJson,
+  workdayReferenceOf,
+  type WorkdayHandoffSource,
+} from "../lib/workday-handoff";
+import {
   parseResume,
   getAIClient,
   resolveTenantAiSettingsDb,
@@ -1730,6 +1750,13 @@ const AI_SETTINGS_ADMIN_ROLES = new Set(["admin"]);
 // (tenant_user_memberships has no authenticated write policy) are authorised
 // by this explicit gate + the ctx.tenantId predicate.
 const USERS_ADMIN_ROLES = new Set(["admin"]);
+
+// PC-13 — Workday handoff record (download + status chip). The roles that work
+// the offer: recruiter (owns the candidate + offer in the drawer), hr_ops (comp
+// desk / offer operations) and admin. hiring_manager / hr_head / panel_member
+// get FORBIDDEN — the record carries PII + base pay. RLS still tenant-scopes the
+// read underneath this gate.
+const WORKDAY_HANDOFF_ROLES = new Set(["admin", "recruiter", "hr_ops"]);
 
 // P0.1A — internal partner administration (create partner orgs, invite partner
 // users, open/close requisitions to a partner). hr_ops runs the vendor
@@ -9332,6 +9359,126 @@ export const appRouter = router({
           simulatedResponse: r.simulatedResponse,
         })),
         nextCursor: hasMore ? lastCursor(out) : null,
+      };
+    }),
+
+  /**
+   * PC-13 — the Workday handoff record for one application: status chip data
+   * (ready / sent-simulated / offer-ready pre-approval) plus the record itself,
+   * pre-rendered as CSV + header-keyed JSON for download. Read-only.
+   */
+  getWorkdayHandoff: protectedProcedure
+    .input(getWorkdayHandoffInputSchema)
+    .output(getWorkdayHandoffOutputSchema)
+    .query(async ({ ctx, input }): Promise<GetWorkdayHandoffOutput> => {
+      requireAnyRole(
+        ctx,
+        WORKDAY_HANDOFF_ROLES,
+        "The Workday handoff record is available to recruiters, HR ops and admins.",
+      );
+      const db = requireDb(ctx);
+      if (!ctx.tenantId) {
+        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
+      }
+      const tenantId = ctx.tenantId;
+      const [src] = await loadWorkdayHandoffSources(db, tenantId, {
+        kind: "application",
+        applicationId: input.applicationId,
+      });
+      if (!src) throw new TRPCError({ code: "NOT_FOUND", message: "Application not found" });
+
+      const columns = WORKDAY_HANDOFF_DEFAULT_COLUMNS.map((c) => ({
+        key: c.key,
+        header: c.header,
+      }));
+      const status = deriveWorkdayHandoffStatus(src.outboxStatus, src.offerStatus);
+      const ref = workdayReferenceOf(src.outboxResponse);
+      const base = {
+        applicationId: src.applicationId,
+        status,
+        statusLabel: WORKDAY_HANDOFF_STATUS_LABELS[status],
+        outboxId: src.outboxId,
+        queuedAt: src.outboxCreatedAt,
+        sentAt: src.outboxSimulatedAt,
+        workdayReference: ref.wid,
+        workdayReferenceDescriptor: ref.descriptor,
+        processedBy: src.outboxClaimedBy,
+        columns,
+      };
+      if (status === "none") {
+        return {
+          ...base,
+          record: null,
+          csv: null,
+          json: null,
+          filenameBase: workdayHandoffFilenameBase(src.fullName, src.applicationId),
+        };
+      }
+      const names = await resolveMembershipNames(
+        ctx,
+        tenantId,
+        [src.hiringManagerMembershipId, src.recruiterMembershipId].filter(
+          (id): id is string => !!id,
+        ),
+      );
+      const record = buildWorkdayHandoffRecord(src, names, new Date());
+      return {
+        ...base,
+        record,
+        csv: buildWorkdayHandoffCsv([record]),
+        json: workdayHandoffJson(record),
+        filenameBase: workdayHandoffFilenameBase(record.legalName, src.applicationId),
+      };
+    }),
+
+  /**
+   * PC-13 — bulk Workday handoff CSV: every queued hire_employee record,
+   * optionally narrowed to a requisition, a status bucket and/or a queued-date
+   * range (inclusive, UTC). Capped at WORKDAY_HANDOFF_EXPORT_MAX_ROWS; the
+   * `truncated` flag tells the caller to narrow the range. Read-only.
+   */
+  exportWorkdayHandoffs: protectedProcedure
+    .input(exportWorkdayHandoffsInputSchema)
+    .output(exportWorkdayHandoffsOutputSchema)
+    .query(async ({ ctx, input }): Promise<ExportWorkdayHandoffsOutput> => {
+      requireAnyRole(
+        ctx,
+        WORKDAY_HANDOFF_ROLES,
+        "The Workday handoff export is available to recruiters, HR ops and admins.",
+      );
+      const db = requireDb(ctx);
+      if (!ctx.tenantId) {
+        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
+      }
+      const tenantId = ctx.tenantId;
+      const { fromTs, toTsExclusive } = dateRangeBounds(input.from, input.to);
+      if (fromTs && toTsExclusive && fromTs >= toTsExclusive) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "'from' must be on or before 'to'" });
+      }
+      const all: WorkdayHandoffSource[] = await loadWorkdayHandoffSources(db, tenantId, {
+        kind: "bulk",
+        requisitionId: input.requisitionId,
+        status: input.status,
+        fromTs,
+        toTsExclusive,
+        limit: WORKDAY_HANDOFF_EXPORT_MAX_ROWS,
+      });
+      const truncated = all.length > WORKDAY_HANDOFF_EXPORT_MAX_ROWS;
+      const sources = all.slice(0, WORKDAY_HANDOFF_EXPORT_MAX_ROWS);
+      const names = await resolveMembershipNames(
+        ctx,
+        tenantId,
+        sources.flatMap((s) =>
+          [s.hiringManagerMembershipId, s.recruiterMembershipId].filter((id): id is string => !!id),
+        ),
+      );
+      const generatedAt = new Date();
+      const records = sources.map((s) => buildWorkdayHandoffRecord(s, names, generatedAt));
+      return {
+        csv: buildWorkdayHandoffCsv(records),
+        rowCount: records.length,
+        truncated,
+        filename: `workday-handoff-${generatedAt.toISOString().slice(0, 10)}.csv`,
       };
     }),
 

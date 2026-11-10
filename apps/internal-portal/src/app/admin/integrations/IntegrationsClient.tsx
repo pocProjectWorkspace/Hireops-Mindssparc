@@ -5,6 +5,7 @@ import type { ReactNode } from "react";
 import type { ListWorkdaySyncsOutput } from "@hireops/api-types";
 import {
   Badge,
+  Button,
   Card,
   EmptyState,
   StatTile,
@@ -19,6 +20,7 @@ import {
 import { PageContainer } from "@/components/nav/PageContainer";
 import { trpc } from "@/lib/trpc-client";
 import { humanizeSentence } from "@/lib/labels";
+import { downloadCsv } from "@/lib/csv";
 
 // Derive the row type from the procedure output, relaxing the two jsonb
 // columns to optional — the tRPC client re-infers `unknown` zod fields as
@@ -86,6 +88,8 @@ export function IntegrationsClient() {
         Outbound sync events to Workday. Running in simulated mode until tenant credentials land —
         every dispatch below is a mock the connector will replay for real once wired.
       </p>
+
+      <HandoffExport rows={rows} />
 
       <section className="mb-6 grid grid-cols-2 gap-4 sm:grid-cols-4">
         <StatTile label="Total events" value={totals.total.toLocaleString()} />
@@ -318,6 +322,130 @@ function SyncRow({
       ) : null}
     </>
   );
+}
+
+/**
+ * PC-13 — bulk Workday handoff file. One CSV of every queued hire record,
+ * narrowed by status bucket, queued-date range and/or requisition. The
+ * requisition options come from the hire payloads already loaded below
+ * (position.requisition_external_id + title). The server builds the CSV with
+ * the platform-default Workday column list (exportWorkdayHandoffs).
+ */
+function HandoffExport({ rows }: { rows: SyncRowData[] }) {
+  const utils = trpc.useUtils();
+  const [status, setStatus] = useState<"all" | "pending" | "sent" | "failed">("all");
+  const [from, setFrom] = useState("");
+  const [to, setTo] = useState("");
+  const [requisitionId, setRequisitionId] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState<string | null>(null);
+
+  const reqOptions = requisitionOptions(rows);
+
+  async function exportCsv() {
+    setBusy(true);
+    setMessage(null);
+    try {
+      const out = await utils.exportWorkdayHandoffs.fetch({
+        status,
+        ...(from ? { from } : {}),
+        ...(to ? { to } : {}),
+        ...(requisitionId ? { requisitionId } : {}),
+      });
+      if (out.rowCount === 0) {
+        setMessage("No handoff records match these filters.");
+        return;
+      }
+      downloadCsv(out.filename, out.csv);
+      setMessage(
+        out.truncated
+          ? `Downloaded the first ${out.rowCount.toLocaleString()} records. Narrow the date range for the rest.`
+          : `Downloaded ${out.rowCount.toLocaleString()} record${out.rowCount === 1 ? "" : "s"}.`,
+      );
+    } catch (err) {
+      setMessage(err instanceof Error ? err.message : "Export failed.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Card className="mb-6">
+      <h3 className="text-sm font-semibold text-neutral-900">Workday handoff file</h3>
+      <p className="mb-3 mt-1 text-xs text-neutral-600">
+        Download the hire records handed back to Workday as one CSV (Workday-friendly column names).
+        Until the live connector is wired, this file is the handoff.
+      </p>
+      <div className="flex flex-wrap items-end gap-3">
+        <label className="block">
+          <span className="text-xs font-medium text-neutral-700">Status</span>
+          <select
+            value={status}
+            onChange={(e) => setStatus(e.target.value as typeof status)}
+            className="mt-1 block rounded border border-neutral-300 p-1.5 text-sm"
+          >
+            <option value="all">All</option>
+            <option value="pending">Pending (ready)</option>
+            <option value="sent">Sent</option>
+            <option value="failed">Failed</option>
+          </select>
+        </label>
+        <label className="block">
+          <span className="text-xs font-medium text-neutral-700">Queued from</span>
+          <input
+            type="date"
+            value={from}
+            onChange={(e) => setFrom(e.target.value)}
+            className="mt-1 block rounded border border-neutral-300 p-1.5 text-sm"
+          />
+        </label>
+        <label className="block">
+          <span className="text-xs font-medium text-neutral-700">Queued to</span>
+          <input
+            type="date"
+            value={to}
+            onChange={(e) => setTo(e.target.value)}
+            className="mt-1 block rounded border border-neutral-300 p-1.5 text-sm"
+          />
+        </label>
+        <label className="block">
+          <span className="text-xs font-medium text-neutral-700">Requisition</span>
+          <select
+            value={requisitionId}
+            onChange={(e) => setRequisitionId(e.target.value)}
+            className="mt-1 block max-w-[16rem] rounded border border-neutral-300 p-1.5 text-sm"
+          >
+            <option value="">All requisitions</option>
+            {reqOptions.map((o) => (
+              <option key={o.id} value={o.id}>
+                {o.label}
+              </option>
+            ))}
+          </select>
+        </label>
+        <Button variant="primary" size="sm" disabled={busy} onClick={() => void exportCsv()}>
+          {busy ? "Preparing…" : "Download CSV"}
+        </Button>
+      </div>
+      {message ? <p className="mt-2 text-xs text-neutral-600">{message}</p> : null}
+    </Card>
+  );
+}
+
+/** Distinct requisitions referenced by the loaded hire payloads. */
+function requisitionOptions(rows: SyncRowData[]): { id: string; label: string }[] {
+  const seen = new Map<string, string>();
+  for (const r of rows) {
+    if (r.eventType !== "hire_employee") continue;
+    const pos = (r.payload as { position?: { requisition_external_id?: unknown; title?: unknown } })
+      ?.position;
+    const id =
+      typeof pos?.requisition_external_id === "string" ? pos.requisition_external_id : null;
+    if (!id || seen.has(id)) continue;
+    const title = typeof pos?.title === "string" ? pos.title : "Requisition";
+    seen.set(id, `${title} · ${id.slice(0, 8)}`);
+  }
+  return [...seen.entries()].map(([id, label]) => ({ id, label }));
 }
 
 function PayloadBlock({ label, value }: { label: string; value: unknown }) {
