@@ -1,11 +1,13 @@
 "use client";
 
-import { useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { ListCandidatesOutput } from "@hireops/api-types";
 import { trpc } from "@/lib/trpc-client";
 import { useFilterChips } from "@/lib/use-filter-chips";
 import { useDrawerRouting } from "@/lib/use-drawer-routing";
 import { Badge } from "@/components/ui";
+import { ListPager } from "@/components/recruiter/ListPager";
+import { HOT_ZONE_PAGE } from "@/lib/triage-paging";
 import { TriageCard } from "./TriageCard";
 
 /**
@@ -20,11 +22,20 @@ import { TriageCard } from "./TriageCard";
  *
  * Hot Zone uses the listCandidates({sort:'sla_breach', filters:{slaBreachOnly:true}})
  * call. Empty state is affirmative ("✓ No SLA breaches"), not absence.
+ *
+ * PC-5 — offset-paged (20 per page) with a server total, so a backlog of 300
+ * breaches is walkable instead of silently capped at 20.
  */
 export function HotZone({ initial }: { initial: ListCandidatesOutput }) {
   const { filters } = useFilterChips();
   const { open, candidateId } = useDrawerRouting();
+  const [offset, setOffset] = useState(0);
+  useEffect(() => {
+    setOffset(0);
+  }, [filters.requisitionId, filters.stage, filters.source]);
 
+  const noFilters =
+    filters.requisitionId === null && filters.stage === null && filters.source === null;
   const query = trpc.listCandidates.useQuery(
     {
       filters: {
@@ -33,18 +44,17 @@ export function HotZone({ initial }: { initial: ListCandidatesOutput }) {
         ...(filters.stage ? { stage: filters.stage } : {}),
         ...(filters.source ? { source: filters.source } : {}),
       },
-      pagination: { limit: 20 },
+      pagination: { limit: HOT_ZONE_PAGE, offset },
       sort: "sla_breach",
     },
     {
-      initialData:
-        filters.requisitionId === null && filters.stage === null && filters.source === null
-          ? initial
-          : undefined,
+      initialData: noFilters && offset === 0 ? initial : undefined,
+      placeholderData: (prev) => prev,
     },
   );
 
   const rows = useMemo(() => query.data?.rows ?? [], [query.data]);
+  const total = query.data?.total ?? rows.length;
 
   return (
     <section
@@ -55,10 +65,21 @@ export function HotZone({ initial }: { initial: ListCandidatesOutput }) {
         <h2 className="text-xs font-semibold uppercase tracking-wider text-status-error-700">
           Hot Zone · SLA Breaches
         </h2>
-        {rows.length > 0 ? (
+        {total > 0 ? (
           <Badge tone="error" pill className="tabular-nums">
-            {rows.length}
+            {total}
           </Badge>
+        ) : null}
+        {total > HOT_ZONE_PAGE ? (
+          <ListPager
+            className="ml-auto"
+            offset={offset}
+            limit={HOT_ZONE_PAGE}
+            shown={rows.length}
+            total={total}
+            onOffsetChange={setOffset}
+            busy={query.isFetching}
+          />
         ) : null}
       </header>
       {rows.length === 0 ? (

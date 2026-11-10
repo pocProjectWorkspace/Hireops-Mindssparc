@@ -11,7 +11,7 @@
  * the user confirms.
  */
 
-import type { ApplicationStage } from "@hireops/api-types";
+import { CANDIDATE_LIST_PAGE_MAX, type ApplicationStage } from "@hireops/api-types";
 import type { IrisCaller, IrisResolvedEntity } from "../registry";
 
 /** Sentence-case a stage token for a human-readable label (e.g. "recruiter_review"
@@ -32,15 +32,29 @@ export async function resolveApplicationsByFilter(
   requisitionId: string,
   fromStage: ApplicationStage,
 ): Promise<IrisResolvedEntity[]> {
-  // The gated read is already stage-filtered server-side; the requisition group
-  // then narrows to this one requisition. Re-filter defensively on stage.
-  const res = await caller.listCandidatesByRequisition({ stage: fromStage });
-  const group = res.groups.find((g) => g.requisitionId === requisitionId);
-  if (!group) return [];
-  return group.rows
-    .filter((r) => r.stage === fromStage)
-    .map((r) => ({
-      entityId: r.applicationId,
-      label: `${r.fullName ?? "Candidate"} — ${humanizeStage(r.stage)}`,
-    }));
+  // The gated read is stage- AND requisition-filtered server-side. PC-5 made it
+  // paged, so walk every page (max page size) — the bulk action must see the
+  // whole matching set, not the first page. Re-filter defensively.
+  const out: IrisResolvedEntity[] = [];
+  const limit = CANDIDATE_LIST_PAGE_MAX;
+  for (let offset = 0; ; offset += limit) {
+    const res = await caller.listCandidatesByRequisition({
+      stage: fromStage,
+      requisitionId,
+      sort: "newest",
+      page: { offset, limit },
+    });
+    for (const g of res.groups) {
+      if (g.requisitionId !== requisitionId) continue;
+      for (const r of g.rows) {
+        if (r.stage !== fromStage) continue;
+        out.push({
+          entityId: r.applicationId,
+          label: `${r.fullName ?? "Candidate"} — ${humanizeStage(r.stage)}`,
+        });
+      }
+    }
+    if (offset + limit >= res.page.total) break;
+  }
+  return out;
 }

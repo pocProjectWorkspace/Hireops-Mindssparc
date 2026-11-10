@@ -22,6 +22,14 @@ import {
   knockoutSummarySchema,
   screeningAnswersInputSchema,
 } from "./screening-answers";
+import {
+  applicationFactFiltersSchema,
+  candidateListFilterSchema,
+  candidateListPageInfoSchema,
+  candidateListPageSchema,
+  candidateListSortSchema,
+  CANDIDATE_LIST_PAGE_MAX,
+} from "./candidate-list";
 
 /**
  * Input + output schemas for the initial six tRPC procedures (API-01).
@@ -202,10 +210,17 @@ export const listCandidatesInputSchema = z.object({
       minAiScore: z.number().min(0).max(100).optional(),
       slaBreachOnly: z.boolean().optional(),
     })
+    // PC-5 — the same SQL fact filters as the candidates-by-role list.
+    .merge(applicationFactFiltersSchema)
     .optional(),
   pagination: z.object({
-    limit: z.number().int().min(1).max(100),
+    limit: z.number().int().min(1).max(CANDIDATE_LIST_PAGE_MAX),
     cursor: z.string().optional(),
+    /**
+     * PC-5 — offset paging. When set, `cursor` is ignored and the output
+     * carries `total` (every matching row) so triage can show "51–100 of 412".
+     */
+    offset: z.number().int().min(0).max(100_000).optional(),
   }),
   sort: z.enum(["recent", "ai_score_desc", "sla_breach"]).default("recent"),
 });
@@ -240,6 +255,8 @@ export const candidateSummarySchema = z.object({
 export const listCandidatesOutputSchema = z.object({
   rows: z.array(candidateSummarySchema),
   nextCursor: z.string().nullable(),
+  /** PC-5 — total matching rows; set only in offset mode, else null. */
+  total: z.number().int().min(0).nullable().optional(),
 });
 
 export type ListCandidatesInput = z.infer<typeof listCandidatesInputSchema>;
@@ -252,10 +269,11 @@ export type ListCandidatesOutput = z.infer<typeof listCandidatesOutputSchema>;
  * requisition. Read-only over existing pipeline data (applications ×
  * candidates × persons × requisitions × jd_skills). No new tables.
  */
-export const listCandidatesByRequisitionInputSchema = z.object({
-  search: z.string().max(120).optional(),
-  stage: applicationStageSchema.optional(),
-  source: applicationSourceSchema.optional(),
+export const listCandidatesByRequisitionInputSchema = candidateListFilterSchema.extend({
+  /** PC-5 — defaults to ai_score (the existing score ordering). */
+  sort: candidateListSortSchema.optional(),
+  /** PC-5 — offset paging; defaults to the first 50. */
+  page: candidateListPageSchema.optional(),
 });
 
 /** Coarse pipeline phase for a requisition, rolled up DETERMINISTICALLY from
@@ -314,13 +332,33 @@ export const candidatesByRequisitionGroupSchema = z.object({
   requisitionId: z.string().uuid(),
   roleTitle: z.string(),
   phase: requisitionPhaseSchema,
+  /** PC-5 — every row of this requisition matching the filters (all pages). */
   candidateCount: z.number().int().min(0),
+  /** The rows of this requisition on the CURRENT page only. */
   rows: z.array(candidateByRequisitionRowSchema),
+});
+
+/** PC-5 — one requisition the filters match, for the role picker. */
+export const candidatesByRequisitionFacetSchema = z.object({
+  requisitionId: z.string().uuid(),
+  roleTitle: z.string(),
+  /** Matching rows under every filter EXCEPT requisitionId. */
+  count: z.number().int().min(0),
 });
 
 export const listCandidatesByRequisitionOutputSchema = z.object({
   groups: z.array(candidatesByRequisitionGroupSchema),
+  /** Every row matching the filters (all pages) — equals page.total. */
   totalCandidates: z.number().int().min(0),
+  /** PC-5 — paging echo + total. Rows of a requisition are contiguous across pages. */
+  page: candidateListPageInfoSchema,
+  /** PC-5 — requisitions matching the non-role filters, largest first. */
+  requisitionFacets: z.array(candidatesByRequisitionFacetSchema),
+  /**
+   * PC-5 — whether the expected-CTC filter is honoured for this caller (pay is
+   * visible to them). When false the filter is ignored and the UI hides it.
+   */
+  compFilterAvailable: z.boolean(),
 });
 
 export type ListCandidatesByRequisitionInput = z.infer<
