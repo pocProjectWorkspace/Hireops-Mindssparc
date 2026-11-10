@@ -55,7 +55,7 @@ export default async function AskDataPage() {
       active="ask-data"
       user={sessionUserChip(session)}
     >
-      <AskDataClient catalog={catalog} />
+      <AskDataClient catalog={catalog} isAdmin={isAdmin} />
     </AppShell>
   );
 }

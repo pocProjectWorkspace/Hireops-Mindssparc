@@ -28,6 +28,7 @@ import type {
 } from "@hireops/api-types";
 
 import * as measures from "../reports/measures";
+import { buSubtreePredicate } from "../reports/bu-tree";
 import { getRequisitionAgingReport } from "../reports/requisition-aging";
 import { getRecruiterProductivityReport } from "../reports/recruiter-productivity";
 import { getApprovalAnalyticsReport } from "../reports/approval-analytics";
@@ -563,7 +564,9 @@ const declinedOffers: Executor = async (deps, f) => {
   if (f.window.to) {
     clauses.push(dsql`${decidedOn} <= ${f.window.to}::timestamptz`);
   }
-  if (f.businessUnitId) clauses.push(dsql`p.business_unit_id = ${f.businessUnitId}::uuid`);
+  if (f.businessUnitId) {
+    clauses.push(buSubtreePredicate(dsql`p.business_unit_id`, deps.tenantId, f.businessUnitId));
+  }
   if (deps.hmMembershipId) clauses.push(dsql`r.hiring_manager_id = ${deps.hmMembershipId}::uuid`);
   // Candidate names are only joined at all for roles allowed to see them.
   const nameSelect = deps.canSeeCandidateNames ? dsql`pe.full_name` : dsql`NULL::text`;

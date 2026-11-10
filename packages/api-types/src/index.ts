@@ -61,3 +61,4 @@ export * from "./pre-joining-engagement";
 // ./scheduling-slots and its test, which import it by path.
 export { localParts } from "./pre-joining-engagement";
 export * from "./welcome-guide";
+export * from "./role-labels";

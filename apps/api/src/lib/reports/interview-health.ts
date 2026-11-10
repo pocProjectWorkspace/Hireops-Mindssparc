@@ -98,6 +98,8 @@ import type {
   ReportFilters,
 } from "@hireops/api-types";
 
+import { buSubtreePredicate } from "./bu-tree";
+
 /**
  * The four `interviews.status` values (text + CHECK, not a pgEnum). Kept as a
  * named constant because three separate FILTER lists below have to agree with
@@ -198,7 +200,7 @@ function scopedInterviewsCte(tenantId: string, filters: ReportFilters): SQL {
       JOIN public.positions p
         ON p.tenant_id = r.tenant_id AND p.id = r.position_id
     `;
-    clauses.push(dsql`p.business_unit_id = ${filters.businessUnitId}::uuid`);
+    clauses.push(buSubtreePredicate(dsql`p.business_unit_id`, tenantId, filters.businessUnitId));
   }
 
   return dsql`

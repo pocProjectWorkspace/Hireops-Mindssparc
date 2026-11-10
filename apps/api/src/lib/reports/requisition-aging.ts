@@ -44,6 +44,7 @@ import type {
 } from "@hireops/api-types";
 
 import { buildRequisitionScope } from "./dimensions";
+import { buGroupFor, indexBusinessUnitTree, loadBusinessUnitTree } from "./bu-tree";
 
 /**
  * The eight `requisitions.status` values in the order the CHECK
@@ -89,6 +90,24 @@ export interface RequisitionAgingReport {
   rows: RequisitionAgingRowBase[];
   byStatus: RequisitionAgingStatusRollup[];
   truncated: boolean;
+  /** PC-19 — only when `filters.buGroupBy` is set. */
+  byBusinessUnit?: RequisitionAgingBuGroup[];
+}
+
+export interface RequisitionAgingBuGroup {
+  businessUnitId: string;
+  businessUnitName: string;
+  depth: number;
+  requisitions: number;
+  open: number;
+  avgDaysOpen: number | null;
+}
+
+interface BuAggSqlRow {
+  business_unit_id: string;
+  requisitions: number;
+  open: number;
+  sum_days_open: number | null;
 }
 
 /** postgres-js returns `{rows: …}`; fall back to the array form (matches measures.ts). */
@@ -244,5 +263,50 @@ export async function getRequisitionAgingReport(
     },
   );
 
-  return { rows, byStatus, truncated };
+  if (!filters.buGroupBy) return { rows, byStatus, truncated };
+
+  // PC-19 — BU-level breakdown. Aggregated per unit in SQL over the FULL
+  // scoped set (never the capped rows), then rolled into top-level / sub-unit
+  // groups through the tree in JS. The average is re-weighted from the sums,
+  // never averaged-of-averages.
+  const buRes = await db.execute(dsql`
+    ${base}
+    SELECT
+      business_unit_id::text AS business_unit_id,
+      COUNT(*)::int AS requisitions,
+      COUNT(*) FILTER (WHERE status NOT IN ('filled', 'cancelled', 'closed'))::int AS open,
+      SUM(days_open)::float8 AS sum_days_open
+    FROM aged
+    GROUP BY business_unit_id
+  `);
+  const tree = indexBusinessUnitTree(await loadBusinessUnitTree(db, tenantId));
+  const groups = new Map<string, RequisitionAgingBuGroup & { sumDays: number }>();
+  for (const r of asRows<BuAggSqlRow>(buRes)) {
+    const g = buGroupFor(tree, r.business_unit_id, filters.buGroupBy, filters.businessUnitId);
+    if (!g) continue;
+    const acc = groups.get(g.id) ?? {
+      businessUnitId: g.id,
+      businessUnitName: g.name,
+      depth: g.depth,
+      requisitions: 0,
+      open: 0,
+      avgDaysOpen: null,
+      sumDays: 0,
+    };
+    acc.requisitions += r.requisitions;
+    acc.open += r.open;
+    acc.sumDays += r.sum_days_open ?? 0;
+    groups.set(g.id, acc);
+  }
+  const byBusinessUnit = [...groups.values()]
+    .map(({ sumDays, ...g }) => ({
+      ...g,
+      avgDaysOpen: g.requisitions > 0 ? Math.round((sumDays / g.requisitions) * 100) / 100 : null,
+    }))
+    .sort(
+      (a, b) =>
+        b.requisitions - a.requisitions || a.businessUnitName.localeCompare(b.businessUnitName),
+    );
+
+  return { rows, byStatus, truncated, byBusinessUnit };
 }

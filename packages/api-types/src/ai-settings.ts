@@ -88,7 +88,7 @@ function featureDefault(): AiFeatureSettings {
  * RO-01, iris_assistant in IRIS — one key governs BOTH Iris AI calls
  * (iris_intent + iris_message_draft), interview_notes in the notetaker
  * phase (N1), ai_interview_questions in N4.2, ai_interview_evidence in N4.4 /
- * AI-INT-2, ask_data in ASK-DATA). */
+ * AI-INT-2, ask_data in ASK-DATA, report_insights in PC-20). */
 export const AI_FEATURE_KEYS = [
   "ai_scoring",
   "jd_generation",
@@ -107,6 +107,7 @@ export const AI_FEATURE_KEYS = [
   "ask_data",
   "engagement_reply_signals",
   "welcome_guide",
+  "report_insights",
 ] as const;
 export type AiFeatureKey = (typeof AI_FEATURE_KEYS)[number];
 
@@ -217,6 +218,12 @@ export const AI_FEATURE_META: Record<
     description:
       "On Admin → Welcome content, turns the source material you write for a business unit (overview, leaders, culture, first week) into a warm, structured welcome guide for new hires. It may only use what you wrote: it is told not to invent names, facts or numbers, and anything it adds anyway — a person not in your leader list, a sentence naming something or giving a number that is not in your source — is removed before you see the draft (and listed so you can check). Nothing reaches a candidate until a person reviews, edits and publishes it. Disabling stops generation; already-published guides stay visible to candidates.",
   },
+  report_insights: {
+    label: "Report insights (written summaries)",
+    usageFeatures: ["report_insights"],
+    description:
+      "Writes 2–4 short plain-English sentences at the top of each report section, explaining what the figures show. The AI sees ONLY the handful of figures the report already calculated (counts, medians, rates and their changes) — never individual records, candidates or people's names — and every number in a sentence is checked against those figures: a sentence carrying any number that is not one of them is dropped before it is shown. Results are cached for 15 minutes per report and filter set. Disabling hides the written insights; the reports and their numbers are unaffected.",
+  },
 };
 
 export const aiSettingsSchema = z.object({
@@ -238,6 +245,7 @@ export const aiSettingsSchema = z.object({
   ask_data: aiFeatureSettingsSchema.default(featureDefault),
   engagement_reply_signals: aiFeatureSettingsSchema.default(featureDefault),
   welcome_guide: aiFeatureSettingsSchema.default(featureDefault),
+  report_insights: aiFeatureSettingsSchema.default(featureDefault),
   /**
    * Global deterministic PII redaction. When on, candidate-derived prompt
    * text going into scoring + agent-draft calls has emails / phone numbers /

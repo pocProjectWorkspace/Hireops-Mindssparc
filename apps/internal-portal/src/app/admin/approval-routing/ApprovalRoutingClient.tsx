@@ -7,11 +7,11 @@ import {
   type ApprovalMatrixSubjectType,
   type ApprovalMatrixApproverRole,
   APPROVAL_MATRIX_APPROVER_ROLES,
-  APPROVER_ROLE_LABELS,
 } from "@hireops/api-types";
 import { Button } from "@hireops/ui";
 import { Card, Badge } from "@/components/ui";
 import { trpc } from "@/lib/trpc-client";
+import { useRoleLabel } from "@/lib/role-labels";
 
 /**
  * Admin Approval Routing (T1.3 / G13, option b).
@@ -60,6 +60,8 @@ const EMPTY_FORM: FormState = {
 
 export function ApprovalRoutingClient({ initial }: { initial: ApprovalMatrixRow[] }) {
   const utils = trpc.useUtils();
+  // PC-23 — approver roles read with the tenant's role display names.
+  const approverLabel = useRoleLabel();
   const query = trpc.listApprovalMatrices.useQuery({}, { initialData: { matrices: initial } });
   const matrices = query.data?.matrices ?? initial;
 
@@ -269,7 +271,7 @@ export function ApprovalRoutingClient({ initial }: { initial: ApprovalMatrixRow[
             >
               {APPROVAL_MATRIX_APPROVER_ROLES.map((r) => (
                 <option key={r} value={r}>
-                  {APPROVER_ROLE_LABELS[r]}
+                  {approverLabel(r)}
                 </option>
               ))}
             </select>
@@ -329,12 +331,6 @@ export function ApprovalRoutingClient({ initial }: { initial: ApprovalMatrixRow[
       </Card>
     </PageContainer>
   );
-}
-
-function approverLabel(role: string): string {
-  if (role === "hr_head") return APPROVER_ROLE_LABELS.hr_head;
-  if (role === "admin") return APPROVER_ROLE_LABELS.admin;
-  return role;
 }
 
 /** Whether a non-active matrix is scheduled (future) or expired (past). */

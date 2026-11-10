@@ -68,6 +68,12 @@ import type {
 } from "@hireops/api-types";
 
 import { buildRequisitionScope } from "./dimensions";
+import {
+  buGroupFor,
+  buSubtreePredicate,
+  indexBusinessUnitTree,
+  loadBusinessUnitTree,
+} from "./bu-tree";
 
 /** postgres-js returns `{rows: …}`; fall back to the array form (matches measures.ts). */
 function asRows<T>(res: unknown): T[] {
@@ -112,7 +118,7 @@ function envelopeWhere(tenantId: string, filters: ReportFilters): SQL {
   if (filters.from) clauses.push(dsql`e.period_end >= ${filters.from}::timestamptz`);
   if (filters.to) clauses.push(dsql`e.period_start <= ${filters.to}::timestamptz`);
   if (filters.businessUnitId) {
-    clauses.push(dsql`e.business_unit_id = ${filters.businessUnitId}::uuid`);
+    clauses.push(buSubtreePredicate(dsql`e.business_unit_id`, tenantId, filters.businessUnitId));
   }
   return dsql.join(clauses, dsql` AND `);
 }
@@ -224,7 +230,44 @@ export async function getHeadcountVsPlanReport(
   const plannedHeadcount = envelopes.reduce((sum, e) => sum + e.plannedHeadcount, 0);
   const openingsRequested = envelopes.reduce((sum, e) => sum + e.openingsRequested, 0);
 
+  // PC-19 — BU-level breakdown over the full envelope set (uncapped).
+  let byBusinessUnit: GetHeadcountVsPlanReportOutput["byBusinessUnit"];
+  if (filters.buGroupBy) {
+    const tree = indexBusinessUnitTree(await loadBusinessUnitTree(db, tenantId));
+    const groups = new Map<string, NonNullable<typeof byBusinessUnit>[number]>();
+    for (const e of envelopes) {
+      const g = buGroupFor(tree, e.businessUnitId, filters.buGroupBy, filters.businessUnitId);
+      if (!g) continue;
+      const acc = groups.get(g.id) ?? {
+        businessUnitId: g.id,
+        businessUnitName: g.name,
+        depth: g.depth,
+        envelopes: 0,
+        plannedHeadcount: 0,
+        openingsRequested: 0,
+        hires: 0,
+        utilisationPct: null,
+      };
+      acc.envelopes += 1;
+      acc.plannedHeadcount += e.plannedHeadcount;
+      acc.openingsRequested += e.openingsRequested;
+      acc.hires += e.hires;
+      groups.set(g.id, acc);
+    }
+    byBusinessUnit = [...groups.values()]
+      .map((g) => ({
+        ...g,
+        utilisationPct: utilisationPct(g.openingsRequested, g.plannedHeadcount),
+      }))
+      .sort(
+        (a, b) =>
+          b.plannedHeadcount - a.plannedHeadcount ||
+          a.businessUnitName.localeCompare(b.businessUnitName),
+      );
+  }
+
   return {
+    ...(byBusinessUnit ? { byBusinessUnit } : {}),
     envelopes,
     totals: {
       envelopes: envelopes.length,

@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { cn } from "@/components/ui/cn";
+import { RoleName } from "@/lib/role-labels";
 import { IconSignOut } from "./nav-icons";
 import type { AppShellUser, NavItem, PortalNavKey } from "./AppShell";
 
@@ -176,8 +177,10 @@ export function MobileNav({
                 </span>
                 <div className="min-w-0">
                   <p className="truncate text-sm font-medium text-sidebar-fg">{user.label}</p>
-                  {user.role ? (
-                    <p className="truncate text-xs text-sidebar-fg-muted">{user.role}</p>
+                  {user.role || user.roleKey ? (
+                    <p className="truncate text-xs text-sidebar-fg-muted">
+                      <RoleName role={user.roleKey} fallback={user.role} />
+                    </p>
                   ) : null}
                 </div>
               </div>

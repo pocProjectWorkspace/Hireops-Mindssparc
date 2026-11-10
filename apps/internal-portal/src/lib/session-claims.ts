@@ -1,4 +1,5 @@
 import { decodeJwt } from "jose";
+import { roleLabel } from "@hireops/api-types";
 
 /**
  * Session shape used internally — flattens the bits we care about so
@@ -62,11 +63,19 @@ export function readSessionClaims(accessToken: string): AuthSession | null {
 
 /**
  * Display label + role for the sidebar user chip. Prefers the email claim;
- * falls back to a generic label. Role is the first membership role,
- * title-cased ("admin" → "Admin"). Pure formatting — no I/O.
+ * falls back to a generic label. Role is the first membership role's
+ * PLATFORM-DEFAULT display label ("hr_head" → "HR Head"); the chip swaps in
+ * the tenant's own label client-side (PC-23, RoleName). Pure — no I/O.
  */
-export function sessionUserChip(session: AuthSession): { label: string; role: string } {
+export function sessionUserChip(session: AuthSession): {
+  label: string;
+  role: string;
+  roleKey?: string;
+} {
   const primary = session.roles[0] ?? "";
-  const role = primary ? primary.charAt(0).toUpperCase() + primary.slice(1).replace(/_/g, " ") : "";
-  return { label: session.email ?? "Signed in", role };
+  return {
+    label: session.email ?? "Signed in",
+    role: roleLabel(primary),
+    ...(primary ? { roleKey: primary } : {}),
+  };
 }

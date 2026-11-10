@@ -1,6 +1,6 @@
 import { describe, it } from "vitest";
 import { strict as assert } from "node:assert";
-import { readSessionClaims } from "../src/lib/session-claims";
+import { readSessionClaims, sessionUserChip } from "../src/lib/session-claims";
 
 /**
  * The wrong-door contract: a candidate or partner authenticates fine against
@@ -51,5 +51,18 @@ describe("readSessionClaims", () => {
 
   it("throws only when the token is genuinely malformed (no sub)", () => {
     assert.throws(() => readSessionClaims(token({ tid: "tenant-1" })), /missing required claim/);
+  });
+});
+
+describe("sessionUserChip (PC-23)", () => {
+  const base = { accessToken: "t", userId: "u", tenantId: "t" };
+
+  it("shows the platform-default role label and carries the role key for the tenant label", () => {
+    const chip = sessionUserChip({ ...base, roles: ["hr_head"], email: "h@example.com" });
+    assert.deepEqual(chip, { label: "h@example.com", role: "HR Head", roleKey: "hr_head" });
+  });
+
+  it("no role → no label and no key", () => {
+    assert.deepEqual(sessionUserChip({ ...base, roles: [] }), { label: "Signed in", role: "" });
   });
 });
