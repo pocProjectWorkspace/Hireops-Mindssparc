@@ -31,6 +31,14 @@ import {
   type OfferDeclinedRecruiterProps,
 } from "./templates/offer-declined-recruiter";
 import { AgentMessage, type AgentMessageProps } from "./templates/agent-message";
+import {
+  PreJoiningEmail,
+  JoiningRiskSignalRecruiter,
+  PRE_JOINING_DEFAULT_COPY,
+  type PreJoiningEmailProps,
+  type PreJoiningVariant,
+  type JoiningRiskSignalRecruiterProps,
+} from "./templates/pre-joining";
 import { PartnerInvitation, type PartnerInvitationProps } from "./templates/partner-invitation";
 import {
   PartnerSubmissionReceived,
@@ -95,6 +103,51 @@ function resolveSubject(
   fallback: string,
 ): string {
   return override ? interpolateSlot(override, tokens) : fallback;
+}
+
+/** PC-14 — TemplateKey → pre-joining variant. */
+const PRE_JOINING_VARIANT_BY_KEY: Partial<Record<TemplateKey, PreJoiningVariant>> = {
+  "candidate.pre_joining_welcome": "welcome",
+  "candidate.pre_joining_pulse": "pulse",
+  "candidate.pre_joining_company_update": "company_update",
+  "candidate.pre_joining_two_weeks": "two_weeks",
+  "candidate.pre_joining_one_week": "one_week",
+};
+
+/** PC-14 — default subject per pre-joining step (mirrors the catalog). */
+export const PRE_JOINING_SUBJECTS: Record<PreJoiningVariant, string> = {
+  welcome: "Welcome to {companyName}, {candidateName}",
+  pulse: "Quick check-in: still on track for {joiningDate}?",
+  company_update: "News from {companyName}: {updateTitle}",
+  two_weeks: "Two weeks until you join {companyName}",
+  one_week: "One week to go: your first day at {companyName}",
+};
+
+async function renderPreJoining(
+  key: TemplateKey,
+  data: Record<string, unknown>,
+  overrides?: EmailTemplateOverrides,
+): Promise<RenderedTemplate> {
+  const variant = PRE_JOINING_VARIANT_BY_KEY[key];
+  if (!variant) throw new Error(`not a pre-joining key: ${key}`);
+  const props = { ...(data as unknown as PreJoiningEmailProps), variant };
+  const element = PreJoiningEmail({ ...props, slots: overrides?.slots });
+  const tokens = {
+    candidateName: props.candidateName,
+    companyName: props.companyName,
+    positionTitle: props.positionTitle,
+    joiningDate: props.joiningDate,
+    updateTitle: props.updateTitle ?? PRE_JOINING_DEFAULT_COPY.company_update.preview,
+  };
+  return {
+    subject: resolveSubject(
+      overrides?.subject,
+      tokens,
+      interpolateSlot(PRE_JOINING_SUBJECTS[variant], tokens),
+    ),
+    html: await render(element),
+    text: await render(element, { plainText: true }),
+  };
 }
 
 export async function renderTemplate(
@@ -374,6 +427,25 @@ export async function renderTemplate(
             companyName: props.companyName,
           },
           `Your claim on ${props.candidateName} expires on ${props.expiresAtFormatted}`,
+        ),
+        html: await render(element),
+        text: await render(element, { plainText: true }),
+      };
+    }
+    case "candidate.pre_joining_welcome":
+    case "candidate.pre_joining_pulse":
+    case "candidate.pre_joining_company_update":
+    case "candidate.pre_joining_two_weeks":
+    case "candidate.pre_joining_one_week":
+      return renderPreJoining(key, data, overrides);
+    case "recruiter.joining_risk_signal": {
+      const props = data as unknown as JoiningRiskSignalRecruiterProps;
+      const element = JoiningRiskSignalRecruiter({ ...props, slots });
+      return {
+        subject: resolveSubject(
+          overrides?.subject,
+          { candidateName: props.candidateName, signalLabel: props.signalLabel },
+          `Pre-joining signal: ${props.candidateName} — ${props.signalLabel}`,
         ),
         html: await render(element),
         text: await render(element, { plainText: true }),

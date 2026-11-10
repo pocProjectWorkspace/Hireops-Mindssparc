@@ -130,3 +130,5 @@ export * from "./learning-resources";
 export * from "./learning-tracks";
 // skill → resource map: the engine behind the per-hire upskilling layer (LD-2A)
 export * from "./learning-skill-map";
+// PC-14..17 pre-joining engagement: journeys, touchpoints, pulses, risk signals, reneges (0128)
+export * from "./pre-joining-engagement";

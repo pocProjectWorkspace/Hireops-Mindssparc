@@ -41,3 +41,11 @@ export {
   PartnerClaimExpiryWarning,
   type PartnerClaimExpiryWarningProps,
 } from "./templates/partner-claim-expiry-warning";
+export {
+  PreJoiningEmail,
+  JoiningRiskSignalRecruiter,
+  PRE_JOINING_DEFAULT_COPY,
+  type PreJoiningEmailProps,
+  type PreJoiningVariant,
+  type JoiningRiskSignalRecruiterProps,
+} from "./templates/pre-joining";

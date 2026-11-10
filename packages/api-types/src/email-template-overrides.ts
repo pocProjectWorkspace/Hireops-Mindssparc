@@ -44,6 +44,13 @@ export const emailTemplateKeySchema = z.enum([
   "partner.submission_received",
   "partner.stage_changed",
   "partner.claim_expiry_warning",
+  // PC-14/15 — pre-joining engagement journey + the recruiter signal alert.
+  "candidate.pre_joining_welcome",
+  "candidate.pre_joining_pulse",
+  "candidate.pre_joining_company_update",
+  "candidate.pre_joining_two_weeks",
+  "candidate.pre_joining_one_week",
+  "recruiter.joining_risk_signal",
 ]);
 export type EmailTemplateKey = z.infer<typeof emailTemplateKeySchema>;
 

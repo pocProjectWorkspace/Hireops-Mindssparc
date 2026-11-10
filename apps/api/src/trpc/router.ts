@@ -577,6 +577,21 @@ import {
   resolveRetentionPolicy,
   effectiveRetentionYears,
   type RetentionPolicy,
+  // PC-14..17 — pre-joining engagement
+  getPreJoiningSettingsOutputSchema,
+  updatePreJoiningSettingsInputSchema,
+  resolvePreJoiningEngagementSettings,
+  type PreJoiningEngagementSettings,
+  companyUpdateInputSchema,
+  companyUpdateRowSchema,
+  startPreJoiningJourneysOutputSchema,
+  listJoiningWatchlistInputSchema,
+  listJoiningWatchlistOutputSchema,
+  type ListJoiningWatchlistOutput,
+  getEngagementTimelineInputSchema,
+  getEngagementTimelineOutputSchema,
+  acknowledgeRiskSignalInputSchema,
+  recordRenegeInputSchema,
   type OverdueDocumentRow,
   getPartnerDefaultsInputSchema,
   getPartnerDefaultsOutputSchema,
@@ -1169,6 +1184,16 @@ import { getStorageClient } from "../lib/storage";
 import { attachDocumentToCase, matchDocumentCollectionTask } from "../lib/onboarding-document";
 import { attachApplicationDocumentBlob } from "../lib/application-document";
 import { acceptOfferAtomically, runOfferAcceptSideEffects } from "../lib/offer-accept";
+import {
+  acknowledgeRiskSignal as acknowledgeRiskSignalLib,
+  applicationInScope as preJoiningApplicationInScope,
+  getEngagementTimeline as getEngagementTimelineLib,
+  listCompanyUpdates as listPreJoiningCompanyUpdatesLib,
+  listJoiningWatchlist as listJoiningWatchlistLib,
+  recordRenege as recordRenegeLib,
+  startJourneysForAcceptedCandidates,
+  upsertCompanyUpdate as upsertPreJoiningCompanyUpdateLib,
+} from "../lib/pre-joining";
 // P0.4/P0.5 — the partner-facing stage email. Extracted from this file so the
 // two raw-SQL offer paths (candidate accept / decline) fire the same enqueue
 // with the same allowlist, payload and dedup key.
@@ -1546,6 +1571,13 @@ const REPORTS_READ_ROLES = new Set(["admin", "hr_head", "hr_ops"]);
 // "changes require admin approval" copy on the settings blocks is COPY ONLY
 // for the POC — hr_head edits take effect immediately (flagged in the UI).
 const GOVERNANCE_READ_ROLES = new Set(["admin", "hr_head"]);
+/**
+ * PC-14..17 — pre-joining engagement. Settings + company updates: admin and
+ * the TA lead (hr_head). Watchlist / timeline / signals / renege: recruiter,
+ * hr_head, admin — a recruiter sees only the applications they own.
+ */
+const PRE_JOINING_ADMIN_ROLES = new Set(["admin", "hr_head"]);
+const JOINING_WATCHLIST_ROLES = new Set(["admin", "hr_head", "recruiter"]);
 // REQ-03 decision mutation. hr_head (the approver) + admin. recruiter /
 // hiring_manager get FORBIDDEN.
 const REQUISITION_APPROVAL_DECIDE_ROLES = new Set(["admin", "hr_head"]);
@@ -2383,6 +2415,30 @@ async function resolveMembershipNames(
  * explicit-set idiom the approval-resolution gates use — kept a tiny local
  * helper rather than a framework so each call site reads plainly.
  */
+function requireTenantId(ctx: HonoTRPCContext): string {
+  if (!ctx.tenantId) {
+    throw new TRPCError({
+      code: "INTERNAL_SERVER_ERROR",
+      message: "protected procedure missing tenantId",
+    });
+  }
+  return ctx.tenantId;
+}
+
+/**
+ * PC-16 — the watchlist scope: admin / hr_head see the whole tenant (null);
+ * a recruiter (without either of those roles) sees only applications they
+ * own, keyed by their membership id. A recruiter with no membership row gets
+ * an impossible id, i.e. an empty scope, never the whole tenant.
+ */
+async function preJoiningRecruiterScope(
+  ctx: HonoTRPCContext,
+  tenantId: string,
+): Promise<string | null> {
+  if (ctx.roles.includes("admin") || ctx.roles.includes("hr_head")) return null;
+  return (await resolveCallerMembershipId(ctx, tenantId)) ?? "00000000-0000-0000-0000-000000000000";
+}
+
 function requireAnyRole(ctx: HonoTRPCContext, allowed: Set<string>, message: string): void {
   if (!ctx.roles.some((r) => allowed.has(r))) {
     throw new TRPCError({ code: "FORBIDDEN", message });
@@ -10065,6 +10121,201 @@ export const appRouter = router({
         }
 
         return { ok: true as const, retentionPolicy: resolveRetentionPolicy(input) };
+      });
+    }),
+
+  // ─────────────────────── PC-14..17 pre-joining engagement ───────────────────────
+  //
+  // Settings live in tenants.settings.preJoiningEngagement (platform default:
+  // disabled). Everything below is FACTS — no risk score exists anywhere.
+
+  getPreJoiningSettings: protectedProcedure
+    .input(z.object({}).default({}))
+    .output(getPreJoiningSettingsOutputSchema)
+    .query(async ({ ctx }): Promise<PreJoiningEngagementSettings> => {
+      requireAnyRole(ctx, PRE_JOINING_ADMIN_ROLES, "Pre-joining settings require hr_head or admin");
+      const tenantId = requireTenantId(ctx);
+      const [row] = await ctx.sql<{ settings: Record<string, unknown> | null }[]>`
+        SELECT settings FROM public.tenants WHERE id = ${tenantId} LIMIT 1
+      `;
+      return resolvePreJoiningEngagementSettings(row?.settings?.preJoiningEngagement);
+    }),
+
+  updatePreJoiningSettings: protectedProcedure
+    .input(updatePreJoiningSettingsInputSchema)
+    .output(z.object({ ok: z.literal(true), settings: getPreJoiningSettingsOutputSchema }))
+    .mutation(async ({ ctx, input }) => {
+      return withAudit("update_pre_joining_settings", ctx, input, async () => {
+        requireAnyRole(
+          ctx,
+          PRE_JOINING_ADMIN_ROLES,
+          "Pre-joining settings require hr_head or admin",
+        );
+        const tenantId = requireTenantId(ctx);
+        // Same atomic sibling-key jsonb merge as updateRetentionPolicy.
+        const updated = await ctx.sql<{ id: string }[]>`
+          UPDATE public.tenants
+          SET settings = COALESCE(settings, '{}'::jsonb)
+              || jsonb_build_object('preJoiningEngagement', ${JSON.stringify(input)}::jsonb)
+          WHERE id = ${tenantId}
+          RETURNING id
+        `;
+        if (updated.length !== 1) {
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: "tenant settings update failed",
+          });
+        }
+        return { ok: true as const, settings: resolvePreJoiningEngagementSettings(input) };
+      });
+    }),
+
+  listPreJoiningCompanyUpdates: protectedProcedure
+    .input(z.object({}).default({}))
+    .output(z.object({ items: z.array(companyUpdateRowSchema) }))
+    .query(async ({ ctx }) => {
+      requireAnyRole(ctx, PRE_JOINING_ADMIN_ROLES, "Company updates require hr_head or admin");
+      return { items: await listPreJoiningCompanyUpdatesLib(ctx.sql, requireTenantId(ctx)) };
+    }),
+
+  upsertPreJoiningCompanyUpdate: protectedProcedure
+    .input(companyUpdateInputSchema)
+    .output(z.object({ id: z.string() }))
+    .mutation(async ({ ctx, input }) => {
+      return withAudit("upsert_pre_joining_company_update", ctx, input, async () => {
+        requireAnyRole(ctx, PRE_JOINING_ADMIN_ROLES, "Company updates require hr_head or admin");
+        const tenantId = requireTenantId(ctx);
+        const membershipId = await resolveCallerMembershipId(ctx, tenantId);
+        const id = await upsertPreJoiningCompanyUpdateLib(ctx.sql, {
+          tenantId,
+          membershipId,
+          input,
+        });
+        if (!id) throw new TRPCError({ code: "NOT_FOUND", message: "Company update not found" });
+        return { id };
+      });
+    }),
+
+  startPreJoiningJourneys: protectedProcedure
+    .input(z.object({}).default({}))
+    .output(startPreJoiningJourneysOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      return withAudit("start_pre_joining_journeys", ctx, input, async () => {
+        requireAnyRole(ctx, PRE_JOINING_ADMIN_ROLES, "Starting journeys requires hr_head or admin");
+        return startJourneysForAcceptedCandidates(ctx.sql, {
+          tenantId: requireTenantId(ctx),
+          log: ctx.log,
+        });
+      });
+    }),
+
+  listJoiningWatchlist: protectedProcedure
+    .input(listJoiningWatchlistInputSchema)
+    .output(listJoiningWatchlistOutputSchema)
+    .query(async ({ ctx }): Promise<ListJoiningWatchlistOutput> => {
+      requireAnyRole(
+        ctx,
+        JOINING_WATCHLIST_ROLES,
+        "The joining watchlist requires recruiter, hr_head or admin",
+      );
+      const tenantId = requireTenantId(ctx);
+      const recruiterMembershipId = await preJoiningRecruiterScope(ctx, tenantId);
+      const [{ rows, reneged }, settingsRow] = await Promise.all([
+        listJoiningWatchlistLib(ctx.sql, { tenantId, recruiterMembershipId }),
+        ctx.sql<{ settings: Record<string, unknown> | null }[]>`
+          SELECT settings FROM public.tenants WHERE id = ${tenantId} LIMIT 1
+        `,
+      ]);
+      const settings = resolvePreJoiningEngagementSettings(
+        settingsRow[0]?.settings?.preJoiningEngagement,
+      );
+      return {
+        engagementEnabled: settings.enabled,
+        rows,
+        reneged,
+        renegeReasons: settings.renegeReasons,
+      };
+    }),
+
+  getEngagementTimeline: protectedProcedure
+    .input(getEngagementTimelineInputSchema)
+    .output(getEngagementTimelineOutputSchema)
+    .query(async ({ ctx, input }) => {
+      requireAnyRole(
+        ctx,
+        JOINING_WATCHLIST_ROLES,
+        "The engagement timeline requires recruiter, hr_head or admin",
+      );
+      const tenantId = requireTenantId(ctx);
+      const recruiterMembershipId = await preJoiningRecruiterScope(ctx, tenantId);
+      const inScope = await preJoiningApplicationInScope(ctx.sql, {
+        tenantId,
+        applicationId: input.applicationId,
+        recruiterMembershipId,
+      });
+      const out = inScope
+        ? await getEngagementTimelineLib(ctx.sql, { tenantId, applicationId: input.applicationId })
+        : null;
+      if (!out) throw new TRPCError({ code: "NOT_FOUND", message: "Application not found" });
+      return out;
+    }),
+
+  acknowledgeRiskSignal: protectedProcedure
+    .input(acknowledgeRiskSignalInputSchema)
+    .output(z.object({ ok: z.literal(true) }))
+    .mutation(async ({ ctx, input }) => {
+      return withAudit("acknowledge_risk_signal", ctx, input, async () => {
+        requireAnyRole(
+          ctx,
+          JOINING_WATCHLIST_ROLES,
+          "Acknowledging a signal requires recruiter, hr_head or admin",
+        );
+        const tenantId = requireTenantId(ctx);
+        const recruiterMembershipId = await preJoiningRecruiterScope(ctx, tenantId);
+        const [sig] = await ctx.sql<{ application_id: string }[]>`
+          SELECT application_id FROM public.candidate_risk_signals
+          WHERE tenant_id = ${tenantId} AND id = ${input.signalId} LIMIT 1
+        `;
+        const inScope =
+          !!sig &&
+          (await preJoiningApplicationInScope(ctx.sql, {
+            tenantId,
+            applicationId: sig.application_id,
+            recruiterMembershipId,
+          }));
+        if (!inScope) throw new TRPCError({ code: "NOT_FOUND", message: "Signal not found" });
+        const membershipId = await resolveCallerMembershipId(ctx, tenantId);
+        await acknowledgeRiskSignalLib(ctx.sql, {
+          tenantId,
+          signalId: input.signalId,
+          membershipId,
+        });
+        return { ok: true as const };
+      });
+    }),
+
+  recordRenege: protectedProcedure
+    .input(recordRenegeInputSchema)
+    .output(z.object({ ok: z.literal(true), renegeId: z.string(), offerId: z.string() }))
+    .mutation(async ({ ctx, input }) => {
+      return withAudit("record_renege", ctx, input, async () => {
+        requireAnyRole(
+          ctx,
+          JOINING_WATCHLIST_ROLES,
+          "Recording a renege requires recruiter, hr_head or admin",
+        );
+        const tenantId = requireTenantId(ctx);
+        const recruiterMembershipId = await preJoiningRecruiterScope(ctx, tenantId);
+        const inScope = await preJoiningApplicationInScope(ctx.sql, {
+          tenantId,
+          applicationId: input.applicationId,
+          recruiterMembershipId,
+        });
+        if (!inScope) throw new TRPCError({ code: "NOT_FOUND", message: "Application not found" });
+        const membershipId = await resolveCallerMembershipId(ctx, tenantId);
+        const r = await recordRenegeLib(ctx.sql, { tenantId, membershipId, input, log: ctx.log });
+        if (!r.ok) throw new TRPCError({ code: r.code, message: r.message });
+        return { ok: true as const, renegeId: r.renegeId, offerId: r.offerId };
       });
     }),
 

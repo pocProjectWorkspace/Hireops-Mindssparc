@@ -805,6 +805,319 @@ export const EMAIL_TEMPLATE_CATALOG: Record<TemplateKey, EmailTemplateCatalogEnt
       },
     ],
   },
+  // PC-14 — pre-joining engagement journey step.
+  "candidate.pre_joining_welcome": {
+    templateKey: "candidate.pre_joining_welcome",
+    label: "Pre-joining: welcome",
+    description: "Sent to a candidate when they accept an offer (if pre-joining engagement is on).",
+    subject: {
+      defaultText: "Welcome to {companyName}, {candidateName}",
+      tokens: ["companyName", "candidateName"],
+    },
+    slots: [
+      {
+        slotKey: "heading",
+        label: "Heading",
+        defaultText: "We're glad you're joining us",
+        tokens: ["candidateName", "companyName", "positionTitle", "joiningDate"],
+      },
+      {
+        slotKey: "greeting",
+        label: "Greeting",
+        defaultText: "Hi {candidateName},",
+        tokens: ["candidateName"],
+      },
+      {
+        slotKey: "intro",
+        label: "Intro paragraph",
+        defaultText:
+          "Thank you for accepting our offer for {positionTitle}. We're looking forward to welcoming you on {joiningDate}. Between now and then we'll check in every so often with news from the team and the practical details for your first day.",
+        tokens: ["candidateName", "companyName", "positionTitle", "joiningDate"],
+      },
+      {
+        slotKey: "replyNote",
+        label: "Reply note",
+        defaultText:
+          "If anything changes or you have a question, just reply to this email — it reaches your recruiter.",
+        tokens: [],
+      },
+      {
+        slotKey: "signOff",
+        label: "Sign-off",
+        defaultText: "— The {companyName} team",
+        tokens: ["companyName"],
+      },
+    ],
+  },
+
+  // PC-14 — pre-joining engagement journey step.
+  "candidate.pre_joining_pulse": {
+    templateKey: "candidate.pre_joining_pulse",
+    label: "Pre-joining: check-in pulse",
+    description:
+      "Periodic check-in during the notice period, with the one-question 'still on track?' link.",
+    subject: {
+      defaultText: "Quick check-in: still on track for {joiningDate}?",
+      tokens: ["joiningDate", "companyName", "candidateName"],
+    },
+    slots: [
+      {
+        slotKey: "heading",
+        label: "Heading",
+        defaultText: "A quick check-in",
+        tokens: ["candidateName", "companyName", "positionTitle", "joiningDate"],
+      },
+      {
+        slotKey: "greeting",
+        label: "Greeting",
+        defaultText: "Hi {candidateName},",
+        tokens: ["candidateName"],
+      },
+      {
+        slotKey: "intro",
+        label: "Intro paragraph",
+        defaultText:
+          "We hope your notice period is going smoothly. One quick question, so we can help early if anything has changed:",
+        tokens: ["candidateName", "companyName", "positionTitle", "joiningDate"],
+      },
+      {
+        slotKey: "pulseQuestion",
+        label: "Check-in question",
+        defaultText: "Are you still on track to join on {joiningDate}?",
+        tokens: ["candidateName", "companyName", "positionTitle", "joiningDate"],
+      },
+      {
+        slotKey: "pulseCta",
+        label: "Check-in button label",
+        defaultText: "Answer the check-in (takes 10 seconds)",
+        tokens: [],
+      },
+      {
+        slotKey: "replyNote",
+        label: "Reply note",
+        defaultText:
+          "If anything changes or you have a question, just reply to this email — it reaches your recruiter.",
+        tokens: [],
+      },
+      {
+        slotKey: "signOff",
+        label: "Sign-off",
+        defaultText: "— The {companyName} team",
+        tokens: ["companyName"],
+      },
+    ],
+  },
+
+  // PC-14 — pre-joining engagement journey step.
+  "candidate.pre_joining_company_update": {
+    templateKey: "candidate.pre_joining_company_update",
+    label: "Pre-joining: company update",
+    description:
+      "Sends the next unsent company update (managed under Admin → Pre-joining engagement). The update's own title, body and links are content, not template copy.",
+    subject: {
+      defaultText: "News from {companyName}: {updateTitle}",
+      tokens: ["companyName", "updateTitle", "candidateName"],
+    },
+    slots: [
+      {
+        slotKey: "greeting",
+        label: "Greeting",
+        defaultText: "Hi {candidateName},",
+        tokens: ["candidateName"],
+      },
+      {
+        slotKey: "intro",
+        label: "Intro paragraph",
+        defaultText: "Here's a little news from the team you'll be joining:",
+        tokens: ["candidateName", "companyName", "positionTitle", "joiningDate"],
+      },
+      {
+        slotKey: "videoLabel",
+        label: "Video link label",
+        defaultText: "Watch the video",
+        tokens: [],
+      },
+      {
+        slotKey: "linkLabel",
+        label: "Link label",
+        defaultText: "Read more",
+        tokens: [],
+      },
+      {
+        slotKey: "replyNote",
+        label: "Reply note",
+        defaultText:
+          "If anything changes or you have a question, just reply to this email — it reaches your recruiter.",
+        tokens: [],
+      },
+      {
+        slotKey: "signOff",
+        label: "Sign-off",
+        defaultText: "— The {companyName} team",
+        tokens: ["companyName"],
+      },
+    ],
+  },
+
+  // PC-14 — pre-joining engagement journey step.
+  "candidate.pre_joining_two_weeks": {
+    templateKey: "candidate.pre_joining_two_weeks",
+    label: "Pre-joining: two weeks to go",
+    description: "Sent 14 days before the joining date, with the check-in link.",
+    subject: {
+      defaultText: "Two weeks until you join {companyName}",
+      tokens: ["companyName", "candidateName", "joiningDate"],
+    },
+    slots: [
+      {
+        slotKey: "heading",
+        label: "Heading",
+        defaultText: "Two weeks to go",
+        tokens: ["candidateName", "companyName", "positionTitle", "joiningDate"],
+      },
+      {
+        slotKey: "greeting",
+        label: "Greeting",
+        defaultText: "Hi {candidateName},",
+        tokens: ["candidateName"],
+      },
+      {
+        slotKey: "intro",
+        label: "Intro paragraph",
+        defaultText:
+          "You join us as {positionTitle} in two weeks, on {joiningDate}. We're getting everything ready for you.",
+        tokens: ["candidateName", "companyName", "positionTitle", "joiningDate"],
+      },
+      {
+        slotKey: "pulseQuestion",
+        label: "Check-in question",
+        defaultText: "Are you still on track to join on {joiningDate}?",
+        tokens: ["candidateName", "companyName", "positionTitle", "joiningDate"],
+      },
+      {
+        slotKey: "pulseCta",
+        label: "Check-in button label",
+        defaultText: "Answer the check-in (takes 10 seconds)",
+        tokens: [],
+      },
+      {
+        slotKey: "replyNote",
+        label: "Reply note",
+        defaultText:
+          "If anything changes or you have a question, just reply to this email — it reaches your recruiter.",
+        tokens: [],
+      },
+      {
+        slotKey: "signOff",
+        label: "Sign-off",
+        defaultText: "— The {companyName} team",
+        tokens: ["companyName"],
+      },
+    ],
+  },
+
+  // PC-14 — pre-joining engagement journey step.
+  "candidate.pre_joining_one_week": {
+    templateKey: "candidate.pre_joining_one_week",
+    label: "Pre-joining: one week to go",
+    description: "Sent 7 days before the joining date with the tenant's first-day information.",
+    subject: {
+      defaultText: "One week to go: your first day at {companyName}",
+      tokens: ["companyName", "candidateName", "joiningDate"],
+    },
+    slots: [
+      {
+        slotKey: "heading",
+        label: "Heading",
+        defaultText: "One week to go",
+        tokens: ["candidateName", "companyName", "positionTitle", "joiningDate"],
+      },
+      {
+        slotKey: "greeting",
+        label: "Greeting",
+        defaultText: "Hi {candidateName},",
+        tokens: ["candidateName"],
+      },
+      {
+        slotKey: "intro",
+        label: "Intro paragraph",
+        defaultText:
+          "You join us on {joiningDate}. Here's what you need to know for your first day:",
+        tokens: ["candidateName", "companyName", "positionTitle", "joiningDate"],
+      },
+      {
+        slotKey: "firstDayFallback",
+        label: "First-day fallback (when no first-day info is configured)",
+        defaultText:
+          "Your recruiter will share your reporting time and location before your first day.",
+        tokens: [],
+      },
+      {
+        slotKey: "replyNote",
+        label: "Reply note",
+        defaultText:
+          "If anything changes or you have a question, just reply to this email — it reaches your recruiter.",
+        tokens: [],
+      },
+      {
+        slotKey: "signOff",
+        label: "Sign-off",
+        defaultText: "— The {companyName} team",
+        tokens: ["companyName"],
+      },
+    ],
+  },
+
+  // PC-15 — a pre-joining risk signal (the candidate's own words) → recruiter.
+  "recruiter.joining_risk_signal": {
+    templateKey: "recruiter.joining_risk_signal",
+    label: "Pre-joining signal (recruiter)",
+    description:
+      "Sent to the application's recruiter when a candidate who accepted an offer says something on the platform signal list (another offer, counter-offer, date change, doubt, notice-period issue, withdrawing) or answers a check-in Unsure / No. Carries the candidate's verbatim words.",
+    subject: {
+      defaultText: "Pre-joining signal: {candidateName} — {signalLabel}",
+      tokens: ["candidateName", "signalLabel"],
+    },
+    slots: [
+      {
+        slotKey: "heading",
+        label: "Heading",
+        defaultText: "Pre-joining signal: {signalLabel}",
+        tokens: ["recruiterName", "candidateName", "positionTitle", "joiningDate", "signalLabel"],
+      },
+      {
+        slotKey: "greeting",
+        label: "Greeting",
+        defaultText: "Hi {recruiterName},",
+        tokens: ["recruiterName"],
+      },
+      {
+        slotKey: "body",
+        label: "Body paragraph",
+        defaultText: "{candidateName} ({positionTitle}, joining {joiningDate}) — {signalLabel}.",
+        tokens: ["recruiterName", "candidateName", "positionTitle", "joiningDate", "signalLabel"],
+      },
+      {
+        slotKey: "note",
+        label: "Note",
+        defaultText:
+          "This is what the candidate said, not a prediction. Read the full message on the timeline and decide what to do.",
+        tokens: [],
+      },
+      {
+        slotKey: "ctaLabel",
+        label: "Link label",
+        defaultText: "Open the engagement timeline",
+        tokens: [],
+      },
+      {
+        slotKey: "signOff",
+        label: "Sign-off",
+        defaultText: "— HireOps",
+        tokens: [],
+      },
+    ],
+  },
 };
 
 /**
@@ -945,5 +1258,52 @@ export const EMAIL_TEMPLATE_SAMPLE_DATA: Record<TemplateKey, Record<string, unkn
     candidateName: "Priya Sharma",
     companyName: "Your organisation",
     expiresAtFormatted: "20 August 2026",
+  },
+  "candidate.pre_joining_welcome": {
+    candidateName: "Priya Sharma",
+    companyName: "Your organisation",
+    positionTitle: "Plant Accountant",
+    joiningDate: "8 February 2027",
+  },
+  "candidate.pre_joining_pulse": {
+    candidateName: "Priya Sharma",
+    companyName: "Your organisation",
+    positionTitle: "Plant Accountant",
+    joiningDate: "8 February 2027",
+    pulseUrl: "https://portal.example/pulse/token",
+  },
+  "candidate.pre_joining_company_update": {
+    candidateName: "Priya Sharma",
+    companyName: "Your organisation",
+    positionTitle: "Plant Accountant",
+    joiningDate: "8 February 2027",
+    updateTitle: "Our new Pune office is open",
+    updateBody: "The team moved into the new office last week.\n\nHere's a short tour.",
+    updateLinkUrl: "https://example.com/news/pune-office",
+    updateVideoUrl: null,
+  },
+  "candidate.pre_joining_two_weeks": {
+    candidateName: "Priya Sharma",
+    companyName: "Your organisation",
+    positionTitle: "Plant Accountant",
+    joiningDate: "8 February 2027",
+    pulseUrl: "https://portal.example/pulse/token",
+  },
+  "candidate.pre_joining_one_week": {
+    candidateName: "Priya Sharma",
+    companyName: "Your organisation",
+    positionTitle: "Plant Accountant",
+    joiningDate: "8 February 2027",
+    firstDayInfo: "Please report to reception at 9:30 AM with a photo ID.",
+  },
+  "recruiter.joining_risk_signal": {
+    recruiterName: "Arjun Mehta",
+    candidateName: "Priya Sharma",
+    positionTitle: "Plant Accountant",
+    joiningDate: "8 February 2027",
+    signalLabel: "Mentions a counter-offer",
+    sourceLabel: "Reply to an engagement email",
+    quote: "my current company has made a counter offer",
+    timelineUrl: "https://portal.example/joining-watchlist/app-id",
   },
 };

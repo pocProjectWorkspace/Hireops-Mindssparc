@@ -8,7 +8,8 @@
     ".": "./src/index.ts",
     "./trpc": "./src/trpc/index.ts",
     "./reports/executive-summary": "./src/lib/reports/executive-summary.ts",
-    "./storage": "./src/lib/storage/index.ts"
+    "./storage": "./src/lib/storage/index.ts",
+    "./pre-joining": "./src/lib/pre-joining/index.ts"
   },
   "scripts": {
     "build": "tsc --noEmit",

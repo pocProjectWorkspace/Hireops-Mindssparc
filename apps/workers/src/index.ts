@@ -16,6 +16,7 @@ import { drainAiScoreOutboxOnce } from "./lib/ai-score-drain";
 import { drainAgentRunOutboxOnce } from "./lib/agent-run-drain";
 import { drainTranscriptOutboxOnce } from "./lib/transcript-drain";
 import { drainAiInterviewEvidenceOnce } from "./lib/ai-interview-evidence-drain";
+import { drainPreJoiningTouchpointsOnce, preJoiningJourneyScan } from "./lib/pre-joining-drain";
 
 /**
  * Worker entrypoint — three concurrent loops:
@@ -62,6 +63,12 @@ const TRANSCRIPT_DRAIN_INTERVAL_MS = 60_000;
  * it lands — see AI_INTERVIEW_EVIDENCE_DEFER_MS), so 5s would buy nothing.
  */
 const AI_INTERVIEW_EVIDENCE_DRAIN_INTERVAL_MS = 30_000;
+/**
+ * PC-14 pre-joining touchpoint drain — 60s. Touchpoints are scheduled to the
+ * hour (10:00 local), so a minute of latency is invisible; the drain only
+ * enqueues into notification_outbox, which the 5s dispatcher then delivers.
+ */
+const PRE_JOINING_DRAIN_INTERVAL_MS = 60_000;
 
 const log = createLogger({ base: { service: "workers" } });
 
@@ -133,6 +140,16 @@ const SCHEDULED_JOBS: ScheduledJob[] = [
     name: "interview_media_purge",
     intervalMs: 24 * 60 * 60_000,
     run: interviewMediaPurgeSweep,
+  },
+  {
+    // PC-14 — for tenants with pre-joining engagement ON: start journeys for
+    // accepted-not-joined candidates that have none (backfill when a tenant
+    // turns it on, and a safety net for an accept whose best-effort start
+    // failed), and complete journeys whose joining date has passed. Hourly:
+    // touchpoints are day-granular.
+    name: "pre_joining_journey_scan",
+    intervalMs: 60 * 60_000,
+    run: preJoiningJourneyScan,
   },
 ];
 
@@ -270,6 +287,17 @@ async function main() {
       const r = await drainAiInterviewEvidenceOnce({ log });
       if (r.claimed > 0 || r.retired > 0) {
         log.info(r, "worker.ai_interview_evidence_drain_pass");
+      }
+    }),
+  );
+
+  // PC-14 pre-joining touchpoint drain — the 9th ad-hoc startLoop; the
+  // worker-registry refactor (open-question #26) is still owed.
+  loops.push(
+    startLoop("pre-joining-drain", PRE_JOINING_DRAIN_INTERVAL_MS, async () => {
+      const r = await drainPreJoiningTouchpointsOnce({ log });
+      if (r.claimed > 0) {
+        log.info(r, "worker.pre_joining_drain_pass");
       }
     }),
   );

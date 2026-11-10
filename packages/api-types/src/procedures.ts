@@ -1009,6 +1009,8 @@ export const offerStatusSchema = z.enum([
   "declined",
   "expired",
   "cancelled",
+  // PC-17 — an accepted offer the candidate later backed out of (offer_reneges).
+  "reneged",
 ]);
 export type OfferStatus = z.infer<typeof offerStatusSchema>;
 

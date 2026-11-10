@@ -37,6 +37,8 @@ const PUBLIC_PREFIXES = [
   // interview has no account to sign in with.
   "/interviews/ai/",
   "/candidate/activate/",
+  // PC-14 — the pre-joining check-in. The signed token is the credential.
+  "/pulse/",
 ];
 
 /**

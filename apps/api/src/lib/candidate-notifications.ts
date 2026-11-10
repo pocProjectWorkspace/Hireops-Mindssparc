@@ -73,6 +73,32 @@ const DISPLAY_BY_TEMPLATE: Record<string, CandidateNotificationDisplay> = {
     title: "Message from the hiring team",
     fallbackBody: "You have a new message from the hiring team.",
   },
+  // PC-14 — pre-joining engagement journey (between offer accept and joining).
+  "candidate.pre_joining_welcome": {
+    category: "offer",
+    title: "Welcome aboard",
+    fallbackBody: "Thanks for accepting your offer — we're looking forward to your first day.",
+  },
+  "candidate.pre_joining_pulse": {
+    category: "offer",
+    title: "Quick check-in",
+    fallbackBody: "Are you still on track for your joining date? Open the email to answer.",
+  },
+  "candidate.pre_joining_company_update": {
+    category: "general",
+    title: "News from the team",
+    fallbackBody: "A little news from the team you're joining.",
+  },
+  "candidate.pre_joining_two_weeks": {
+    category: "offer",
+    title: "Two weeks to go",
+    fallbackBody: "Two weeks until your first day.",
+  },
+  "candidate.pre_joining_one_week": {
+    category: "offer",
+    title: "One week to go",
+    fallbackBody: "Your first day is a week away — check your email for the details.",
+  },
 };
 
 const CATEGORY_HINTS: { match: RegExp; category: CandidateNotificationCategory }[] = [
