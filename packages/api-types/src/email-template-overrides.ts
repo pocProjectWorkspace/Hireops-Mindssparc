@@ -44,6 +44,11 @@ export const emailTemplateKeySchema = z.enum([
   "partner.submission_received",
   "partner.stage_changed",
   "partner.claim_expiry_warning",
+  // PC-8 / PC-9 / PC-10 — in-app interview scheduling.
+  "candidate.interview_slot_offer",
+  "panelist.interview_scheduled",
+  "panelist.interview_rescheduling",
+  "recruiter.scheduling_alert",
 ]);
 export type EmailTemplateKey = z.infer<typeof emailTemplateKeySchema>;
 

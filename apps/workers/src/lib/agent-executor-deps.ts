@@ -1,11 +1,14 @@
 import { sql as poolSql } from "@hireops/db";
 import { getAIClient, resolveTenantAiSettings, maskPiiIf } from "@hireops/ai-client";
+import { proposeSlotsForAgent } from "@hireops/api/scheduling";
 import type {
   AIDraftRequest,
   AIDraftResult,
   ApplicationContext,
   EnqueueEmailRequest,
   ExecutorDeps,
+  ProposeSlotsRequest,
+  ProposeSlotsResult,
 } from "@hireops/agent-actions";
 
 /**
@@ -165,6 +168,16 @@ export function createExecutorDeps(): ExecutorDeps {
         );
       }
       return { outboxId: existingRow.id };
+    },
+
+    async proposeInterviewSlots(
+      tenantId: string,
+      req: ProposeSlotsRequest,
+    ): Promise<ProposeSlotsResult> {
+      // PC-8 — HireOps-held availability (no external calendar). The same
+      // engine as the recruiter's "Find common slots"; tenant-scoped on the
+      // service-role pool like every other port here.
+      return proposeSlotsForAgent(poolSql, tenantId, req);
     },
   };
 }

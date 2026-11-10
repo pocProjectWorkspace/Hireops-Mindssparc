@@ -31,6 +31,16 @@ import {
   type OfferDeclinedRecruiterProps,
 } from "./templates/offer-declined-recruiter";
 import { AgentMessage, type AgentMessageProps } from "./templates/agent-message";
+import { InterviewSlotOffer, type InterviewSlotOfferProps } from "./templates/interview-slot-offer";
+import {
+  PanelistInterviewScheduled,
+  type PanelistInterviewScheduledProps,
+} from "./templates/panelist-interview-scheduled";
+import {
+  PanelistInterviewRescheduling,
+  RecruiterSchedulingAlert,
+  type SchedulingNoticeProps,
+} from "./templates/scheduling-notice";
 import { PartnerInvitation, type PartnerInvitationProps } from "./templates/partner-invitation";
 import {
   PartnerSubmissionReceived,
@@ -374,6 +384,78 @@ export async function renderTemplate(
             companyName: props.companyName,
           },
           `Your claim on ${props.candidateName} expires on ${props.expiresAtFormatted}`,
+        ),
+        html: await render(element),
+        text: await render(element, { plainText: true }),
+      };
+    }
+    case "candidate.interview_slot_offer": {
+      const props = data as unknown as InterviewSlotOfferProps;
+      const element = InterviewSlotOffer({ ...props, slotLines: props.slotLines ?? [], slots });
+      return {
+        subject: resolveSubject(
+          overrides?.subject,
+          { roundName: props.roundName, positionTitle: props.positionTitle },
+          `Choose a time: ${props.roundName} for ${props.positionTitle}`,
+        ),
+        html: await render(element),
+        text: await render(element, { plainText: true }),
+      };
+    }
+    case "panelist.interview_scheduled": {
+      const props = data as unknown as PanelistInterviewScheduledProps;
+      const element = PanelistInterviewScheduled({ ...props, slots });
+      // PC-9 — the panellist gets a REAL .ics too (same UID as the candidate's:
+      // it is the same event).
+      const ics =
+        props.interviewStartIso && props.interviewId
+          ? buildInterviewIcs({
+              interviewId: props.interviewId,
+              candidateName: props.candidateName,
+              companyName: props.companyName,
+              positionTitle: props.positionTitle,
+              roundName: props.roundName,
+              interviewStartIso: props.interviewStartIso,
+              durationMinutes: props.durationMinutes,
+              modeLabel: props.modeLabel,
+              meetingUrl: props.meetingUrl,
+              confirmUrl: "",
+              audience: "panelist",
+              briefUrl: props.briefUrl,
+            })
+          : null;
+      return {
+        subject: resolveSubject(
+          overrides?.subject,
+          { candidateName: props.candidateName, roundName: props.roundName },
+          `Interview booked: ${props.candidateName}, ${props.roundName}`,
+        ),
+        html: await render(element),
+        text: await render(element, { plainText: true }),
+        ...(ics ? { attachments: [ics] } : {}),
+      };
+    }
+    case "panelist.interview_rescheduling": {
+      const props = data as unknown as SchedulingNoticeProps;
+      const element = PanelistInterviewRescheduling({ ...props, slots });
+      return {
+        subject: resolveSubject(
+          overrides?.subject,
+          { candidateName: props.candidateName, roundName: props.roundName },
+          `Rescheduling in progress: ${props.candidateName}, ${props.roundName}`,
+        ),
+        html: await render(element),
+        text: await render(element, { plainText: true }),
+      };
+    }
+    case "recruiter.scheduling_alert": {
+      const props = data as unknown as SchedulingNoticeProps;
+      const element = RecruiterSchedulingAlert({ ...props, slots });
+      return {
+        subject: resolveSubject(
+          overrides?.subject,
+          { candidateName: props.candidateName, roundName: props.roundName },
+          `Action needed: no interview slot for ${props.candidateName} (${props.roundName})`,
         ),
         html: await render(element),
         text: await render(element, { plainText: true }),

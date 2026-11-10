@@ -109,7 +109,20 @@ const KNOWN_CANDIDATE_ACTIONS = new Set([
   "candidate.decline_offer",
 ]);
 
+/**
+ * PC-9 — actions whose subject is an interview_slot_offers row. The pick page
+ * itself is served by /api/interviews/pick/:token (which books); this
+ * registration lets the generic verifier resolve the tenant for the same token.
+ */
+const SLOT_OFFER_ACTIONS = new Set(["candidate.pick_interview_slot"]);
+
 async function resolveTenantBySubject(action: string, subjectId: string): Promise<string | null> {
+  if (SLOT_OFFER_ACTIONS.has(action)) {
+    const rows = await poolSql<{ tenant_id: string }[]>`
+      SELECT tenant_id FROM public.interview_slot_offers WHERE id = ${subjectId} LIMIT 1
+    `;
+    return rows[0]?.tenant_id ?? null;
+  }
   if (KNOWN_CANDIDATE_ACTIONS.has(action)) {
     const rows = await poolSql<{ tenant_id: string }[]>`
       SELECT tenant_id FROM public.candidates WHERE id = ${subjectId} LIMIT 1

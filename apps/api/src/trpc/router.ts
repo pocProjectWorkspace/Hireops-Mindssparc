@@ -1153,6 +1153,8 @@ import {
   type HonoTRPCContext,
 } from "./trpc-core";
 import { withAudit } from "./with-audit";
+import { schedulingProcedures } from "./scheduling-procedures";
+import { loadSchedulingSettings, queuePanelistInvites } from "../lib/interview-scheduling";
 import {
   createOnboardingCaseForApplication as createOnboardingCase,
   ensureDocumentCollectionTasks,
@@ -4131,6 +4133,11 @@ function parseRecruiterBriefContent(
 }
 
 export const appRouter = router({
+  // PC-8 / PC-9 / PC-10 — in-app interview scheduling (availability, slot
+  // proposal, candidate self-pick / reschedule, panellist can't-attend). Flat
+  // names, defined in ./scheduling-procedures.ts to keep this file from growing.
+  ...schedulingProcedures,
+
   // ─────────── public: apply form ───────────
   submitApplication: publicProcedure
     .input(submitApplicationInputSchema)
@@ -30119,6 +30126,33 @@ async function doScheduleRound(
       ctx.log.warn(
         { err, request_id: ctx.requestId, interview_id: interviewId },
         "doScheduleRound: enqueueNotification failed",
+      );
+    }
+
+    // PC-9 — every panellist gets a calendar invite (.ics) too, not just the
+    // candidate. Best-effort like the invitation: it runs on the pool (the
+    // shared scheduling lib serves unauthenticated routes as well) and is the
+    // last write here, so a failure is logged, never fatal to the booking.
+    try {
+      const settings = await loadSchedulingSettings(ctx.sql, app.tenantId);
+      await queuePanelistInvites(ctx.sql, {
+        tenantId: app.tenantId,
+        interviewId,
+        membershipIds: panelIds,
+        candidateName: meta.candidateName,
+        companyName: meta.companyName,
+        positionTitle: meta.positionTitle,
+        roundName: plan.roundName,
+        startMs: scheduledStart.getTime(),
+        durationMinutes,
+        mode,
+        meetingUrl: input.meetingUrl ?? "",
+        timezone: settings.timezone,
+      });
+    } catch (err) {
+      ctx.log.warn(
+        { err, request_id: ctx.requestId, interview_id: interviewId },
+        "doScheduleRound: panelist invites failed",
       );
     }
   }

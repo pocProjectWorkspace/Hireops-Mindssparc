@@ -5,8 +5,9 @@ import { Button } from "@hireops/ui";
 import { Badge, Card, EmptyState } from "@/components/ui";
 import { CandidateShell } from "@/components/candidate/CandidateShell";
 import { trpc } from "@/lib/trpc-client";
-import type { CandidateInterviewRow } from "@hireops/api-types";
+import type { CandidateInterviewRow, CandidateSlotOfferView } from "@hireops/api-types";
 import { MODE_LABEL, formatWhen } from "@/components/candidate/candidate-format";
+import { SlotPicker, pickRefusalMessage } from "@/components/scheduling/SlotPicker";
 
 /**
  * Candidate interviews (CAND-01). Upcoming rounds show the schedule, the
@@ -17,10 +18,17 @@ import { MODE_LABEL, formatWhen } from "@/components/candidate/candidate-format"
  * REFUSALS: no live "Join Interview Room" / in-app video (that's a post-deal
  * connector — the link is the join), no numeric score, no raw panel feedback,
  * no scorecards. The API omits all of those from candidate reads.
+ *
+ * PC-9: open "choose a time" offers are listed at the top (times in the
+ * candidate's own zone); an upcoming round can be rescheduled here, within the
+ * employer's allowance — the current time stands until a new one is picked.
  */
 export function CandidateInterviewsClient() {
   const q = trpc.candidateListMyInterviews.useQuery();
+  const offers = trpc.candidateListMySlotOffers.useQuery();
   const items = q.data?.items ?? [];
+  const openOffers = offers.data?.items ?? [];
+  const reschedulesRemaining = offers.data?.reschedulesRemaining ?? {};
   const upcoming = items
     .filter((iv) => iv.isUpcoming)
     .sort((a, b) => (a.scheduledStart ?? "").localeCompare(b.scheduledStart ?? ""));
@@ -35,6 +43,17 @@ export function CandidateInterviewsClient() {
           <h1 className="text-2xl font-semibold tracking-tight text-neutral-900">My interviews</h1>
           <p className="text-sm text-neutral-600">Your scheduled rounds and past interviews.</p>
         </header>
+
+        {openOffers.length > 0 ? (
+          <section className="flex flex-col gap-3">
+            <h2 className="text-[11px] font-semibold uppercase tracking-wider text-neutral-400">
+              Choose a time
+            </h2>
+            {openOffers.map((o) => (
+              <OfferCard key={o.offerId} offer={o} />
+            ))}
+          </section>
+        ) : null}
 
         {q.isLoading ? (
           <Card className="p-5">
@@ -58,7 +77,14 @@ export function CandidateInterviewsClient() {
                   <p className="text-sm text-neutral-500">No upcoming interviews right now.</p>
                 </Card>
               ) : (
-                upcoming.map((iv) => <UpcomingCard key={iv.interviewId} interview={iv} />)
+                upcoming.map((iv) => (
+                  <UpcomingCard
+                    key={iv.interviewId}
+                    interview={iv}
+                    reschedulesLeft={reschedulesRemaining[iv.interviewId] ?? 0}
+                    hasOpenOffer={openOffers.some((o) => o.replacesInterviewId === iv.interviewId)}
+                  />
+                ))
               )}
             </section>
 
@@ -88,8 +114,72 @@ function InfoRow({ label, value }: { label: string; value: string }) {
   );
 }
 
-function UpcomingCard({ interview }: { interview: CandidateInterviewRow }) {
+/** PC-9 — an open offer: pick one of the times. */
+function OfferCard({ offer }: { offer: CandidateSlotOfferView }) {
   const utils = trpc.useUtils();
+  const [error, setError] = useState<string | null>(null);
+  const [slots, setSlots] = useState(offer.slots);
+  const pick = trpc.candidatePickSlot.useMutation({
+    onSuccess: () => {
+      void utils.candidateListMySlotOffers.invalidate();
+      void utils.candidateListMyInterviews.invalidate();
+    },
+    onError: async (err) => {
+      setError(pickRefusalMessage(err.message));
+      if (err.message === "slot_taken") {
+        const fresh = await utils.candidateGetSlotOffer.fetch({ offerId: offer.offerId });
+        setSlots(fresh.slots);
+      }
+    },
+  });
+  return (
+    <Card className="flex flex-col gap-3 p-5">
+      <div>
+        <p className="text-base font-semibold text-neutral-900">{offer.positionTitle}</p>
+        <p className="text-sm text-neutral-500">
+          {offer.roundName} · {MODE_LABEL[offer.mode] ?? offer.mode} · {offer.durationMinutes} min
+        </p>
+        {offer.reason === "panelist_unavailable" ? (
+          <p className="mt-1 text-sm text-neutral-700">
+            One of your interviewers can no longer make the original time. Please choose a new one.
+          </p>
+        ) : null}
+      </div>
+      <SlotPicker
+        slots={slots}
+        busy={pick.isPending}
+        error={error}
+        onPick={(slotStart) => {
+          setError(null);
+          pick.mutate({ offerId: offer.offerId, slotStart });
+        }}
+      />
+    </Card>
+  );
+}
+
+function UpcomingCard({
+  interview,
+  reschedulesLeft,
+  hasOpenOffer,
+}: {
+  interview: CandidateInterviewRow;
+  reschedulesLeft: number;
+  hasOpenOffer: boolean;
+}) {
+  const utils = trpc.useUtils();
+  const [rescheduleNote, setRescheduleNote] = useState<string | null>(null);
+  const reschedule = trpc.candidateRequestReschedule.useMutation({
+    onSuccess: (res) => {
+      setRescheduleNote(
+        res.offerId
+          ? "New times are listed under “Choose a time” above. Your current time stands until you pick one."
+          : res.message,
+      );
+      void utils.candidateListMySlotOffers.invalidate();
+    },
+    onError: (err) => setRescheduleNote(err.message),
+  });
   const [localConfirmedAt, setLocalConfirmedAt] = useState<string | null>(interview.confirmedAt);
   const [error, setError] = useState<string | null>(null);
   const confirm = trpc.candidateConfirmInterview.useMutation({
@@ -148,6 +238,34 @@ function UpcomingCard({ interview }: { interview: CandidateInterviewRow }) {
         <p role="alert" className="text-sm text-status-error-700">
           {error}
         </p>
+      ) : null}
+
+      {rescheduleNote ? <p className="text-sm text-neutral-600">{rescheduleNote}</p> : null}
+
+      {interview.mode !== "ai_async" && interview.status === "scheduled" && !hasOpenOffer ? (
+        reschedulesLeft > 0 ? (
+          <div>
+            <Button
+              variant="secondary"
+              size="sm"
+              disabled={reschedule.isPending}
+              loading={reschedule.isPending}
+              onClick={() => {
+                setRescheduleNote(null);
+                reschedule.mutate({ interviewId: interview.interviewId });
+              }}
+            >
+              Reschedule
+            </Button>
+            <p className="mt-1 text-xs text-neutral-500">
+              {reschedulesLeft} reschedule{reschedulesLeft === 1 ? "" : "s"} left for this round.
+            </p>
+          </div>
+        ) : (
+          <p className="text-xs text-neutral-500">
+            Need a different time? Please contact your recruiter.
+          </p>
+        )
       ) : null}
 
       {canConfirm ? (

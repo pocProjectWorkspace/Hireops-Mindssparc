@@ -130,3 +130,5 @@ export * from "./learning-resources";
 export * from "./learning-tracks";
 // skill → resource map: the engine behind the per-hire upskilling layer (LD-2A)
 export * from "./learning-skill-map";
+// In-app interview scheduling — panellist availability + candidate slot offers (PC-8/9/10, 0127)
+export * from "./interview-scheduling";

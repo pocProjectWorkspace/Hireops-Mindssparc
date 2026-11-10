@@ -805,6 +805,164 @@ export const EMAIL_TEMPLATE_CATALOG: Record<TemplateKey, EmailTemplateCatalogEnt
       },
     ],
   },
+
+  // ─── PC-8 / PC-9 / PC-10 — in-app interview scheduling ───
+
+  "candidate.interview_slot_offer": {
+    templateKey: "candidate.interview_slot_offer",
+    label: "Choose an interview time",
+    description:
+      "Sent to a candidate with a private link to pick an interview time — on a first booking, when they ask to reschedule, or when a panellist can no longer attend.",
+    subject: {
+      defaultText: "Choose a time: {roundName} for {positionTitle}",
+      tokens: ["roundName", "positionTitle"],
+    },
+    slots: [
+      {
+        slotKey: "heading",
+        label: "Heading",
+        defaultText: "Choose your interview time",
+        tokens: [],
+      },
+      {
+        slotKey: "greeting",
+        label: "Greeting",
+        defaultText: "Hi {candidateName},",
+        tokens: ["candidateName"],
+      },
+      {
+        slotKey: "intro",
+        label: "Intro (first booking)",
+        defaultText:
+          "You're invited to the {roundName} round for the {positionTitle} role at {companyName}. Pick the time that suits you best.",
+        tokens: ["roundName", "positionTitle", "companyName"],
+      },
+      {
+        slotKey: "introReschedule",
+        label: "Intro (reschedule)",
+        defaultText:
+          "Here are new times for your {roundName} round for {positionTitle}. Pick the one that suits you best.",
+        tokens: ["roundName", "positionTitle"],
+      },
+      {
+        slotKey: "introPanelUnavailable",
+        label: "Intro (an interviewer can't attend)",
+        defaultText:
+          "Unfortunately one of your interviewers can no longer make the time we agreed for your {roundName} round for {positionTitle}. We're sorry for the change. Please pick a new time below.",
+        tokens: ["roundName", "positionTitle"],
+      },
+      { slotKey: "ctaLabel", label: "Button label", defaultText: "Choose a time", tokens: [] },
+      {
+        slotKey: "privateNote",
+        label: "Private-link note",
+        defaultText:
+          "The page shows these times in your own time zone. This link is private to you and works until {expiresAtFormatted}.",
+        tokens: ["expiresAtFormatted"],
+      },
+      {
+        slotKey: "signOff",
+        label: "Sign-off",
+        defaultText: CANDIDATE_SIGN_OFF,
+        tokens: ["companyName"],
+      },
+    ],
+  },
+
+  "panelist.interview_scheduled": {
+    templateKey: "panelist.interview_scheduled",
+    label: "Panellist: interview booked",
+    description:
+      "Sent to each panellist (with a calendar file) when a candidate books a round by picking a time.",
+    subject: {
+      defaultText: "Interview booked: {candidateName}, {roundName}",
+      tokens: ["candidateName", "roundName"],
+    },
+    slots: [
+      { slotKey: "heading", label: "Heading", defaultText: "Interview booked", tokens: [] },
+      {
+        slotKey: "greeting",
+        label: "Greeting",
+        defaultText: "Hi {panelistName},",
+        tokens: ["panelistName"],
+      },
+      {
+        slotKey: "intro",
+        label: "Intro paragraph",
+        defaultText:
+          "{candidateName} has booked the {roundName} round for {positionTitle}. You're on the panel. The calendar file is attached.",
+        tokens: ["candidateName", "roundName", "positionTitle"],
+      },
+      {
+        slotKey: "ctaLabel",
+        label: "Button label",
+        defaultText: "Open the interview brief",
+        tokens: [],
+      },
+      {
+        slotKey: "footer",
+        label: "Can't-attend note",
+        defaultText:
+          "If you can no longer attend, use \u201cCan't attend\u201d on the brief and the candidate will be offered new times automatically.",
+        tokens: [],
+      },
+    ],
+  },
+
+  "panelist.interview_rescheduling": {
+    templateKey: "panelist.interview_rescheduling",
+    label: "Rescheduling in progress",
+    description:
+      "Sent to the recruiter and the remaining panellists when a panellist can't attend and the candidate has been offered new times.",
+    subject: {
+      defaultText: "Rescheduling in progress: {candidateName}, {roundName}",
+      tokens: ["candidateName", "roundName"],
+    },
+    slots: [
+      { slotKey: "heading", label: "Heading", defaultText: "Rescheduling in progress", tokens: [] },
+      {
+        slotKey: "greeting",
+        label: "Greeting",
+        defaultText: "Hi {recipientName},",
+        tokens: ["recipientName"],
+      },
+      {
+        slotKey: "intro",
+        label: "Intro paragraph",
+        defaultText:
+          "The {roundName} round with {candidateName} for {positionTitle} is being rescheduled. The candidate has been sent new times to choose from; you'll get a fresh invite once they pick one.",
+        tokens: ["roundName", "candidateName", "positionTitle"],
+      },
+      { slotKey: "ctaLabel", label: "Button label", defaultText: "Open interviews", tokens: [] },
+    ],
+  },
+
+  "recruiter.scheduling_alert": {
+    templateKey: "recruiter.scheduling_alert",
+    label: "Recruiter: no common interview slot",
+    description:
+      "Sent to the requisition's recruiter when no time could be found when the whole panel is free.",
+    subject: {
+      defaultText: "Action needed: no interview slot for {candidateName} ({roundName})",
+      tokens: ["candidateName", "roundName"],
+    },
+    slots: [
+      { slotKey: "heading", label: "Heading", defaultText: "No common interview slot", tokens: [] },
+      {
+        slotKey: "greeting",
+        label: "Greeting",
+        defaultText: "Hi {recipientName},",
+        tokens: ["recipientName"],
+      },
+      {
+        slotKey: "intro",
+        label: "Intro paragraph",
+        defaultText:
+          "We couldn't find a time when the whole panel is free for the {roundName} round with {candidateName} ({positionTitle}). Please widen the panel, ask a panellist to add availability, or schedule a time manually.",
+        tokens: ["roundName", "candidateName", "positionTitle"],
+      },
+      { slotKey: "ctaLabel", label: "Button label", defaultText: "Open interviews", tokens: [] },
+    ],
+  },
 };
 
 /**
@@ -945,5 +1103,44 @@ export const EMAIL_TEMPLATE_SAMPLE_DATA: Record<TemplateKey, Record<string, unkn
     candidateName: "Priya Sharma",
     companyName: "Your organisation",
     expiresAtFormatted: "20 August 2026",
+  },
+  "candidate.interview_slot_offer": {
+    candidateName: "Priya Sharma",
+    companyName: "Your organisation",
+    positionTitle: "Plant Accountant",
+    roundName: "Panel Round 1",
+    durationMinutes: 45,
+    reason: "initial",
+    slotLines: ["Tue 4 Aug, 10:00 (UTC)", "Wed 5 Aug, 14:30 (UTC)", "Thu 6 Aug, 11:00 (UTC)"],
+    expiresAtFormatted: "Fri 7 Aug, 10:00 (UTC)",
+    pickUrl: "https://portal.example/interviews/pick/token",
+  },
+  "panelist.interview_scheduled": {
+    panelistName: "Asha Nair",
+    candidateName: "Priya Sharma",
+    companyName: "Your organisation",
+    positionTitle: "Plant Accountant",
+    roundName: "Panel Round 1",
+    interviewWhenFormatted: "Tue 4 Aug, 10:00 (UTC)",
+    modeLabel: "Video",
+    durationMinutes: 45,
+    meetingUrl: "https://meet.example/abc",
+    briefUrl: "https://portal.example/panel/interview-id",
+  },
+  "panelist.interview_rescheduling": {
+    recipientName: "Asha Nair",
+    candidateName: "Priya Sharma",
+    positionTitle: "Plant Accountant",
+    roundName: "Panel Round 1",
+    detail: "A panellist can no longer attend (travel).",
+    actionUrl: "https://portal.example/interviews",
+  },
+  "recruiter.scheduling_alert": {
+    recipientName: "Asha Nair",
+    candidateName: "Priya Sharma",
+    positionTitle: "Plant Accountant",
+    roundName: "Panel Round 1",
+    detail: "Panel: 2 members, 45 minutes, next 14 days.",
+    actionUrl: "https://portal.example/interviews",
   },
 };
