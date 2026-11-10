@@ -22,6 +22,8 @@ export * from "./audit-logs";
 export * from "./application-source";
 export * from "./tenant-application-sources";
 export * from "./candidate-field-policy";
+// PC-26 voluntary diversity self-ID (aggregate slate counts only)
+export * from "./candidate-diversity-self-id";
 export * from "./application-stage";
 export * from "./persons";
 export * from "./candidates";

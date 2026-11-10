@@ -12,6 +12,7 @@ import { AiAssistedPill, useProvenanceMap } from "@/components/iris/AiAssistedPi
 import { useDrawerRouting } from "@/lib/use-drawer-routing";
 import { useUndoToast } from "@/components/triage/UndoToastProvider";
 import { ScreeningChips } from "@/components/triage/ScreeningChips";
+import { DiverseSlateBadge, DiverseSlateMoveHint } from "@/components/diversity/DiverseSlateBadge";
 import {
   Avatar,
   Badge,
@@ -136,6 +137,7 @@ function RowActions({ row, onOpen }: { row: Row; onOpen: () => void }) {
 
   return (
     <div className="flex items-center justify-end gap-1">
+      <DiverseSlateMoveHint applicationId={row.applicationId} nextStage={next} />
       <button
         type="button"
         onClick={onOpen}
@@ -205,6 +207,7 @@ function GroupAccordion({
           {group.candidateCount} {group.candidateCount === 1 ? "candidate" : "candidates"}
         </Badge>
         <PhaseChip phase={group.phase} />
+        <DiverseSlateBadge requisitionId={group.requisitionId} />
       </button>
 
       {open ? (

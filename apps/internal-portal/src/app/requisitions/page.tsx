@@ -5,6 +5,7 @@ import { RoleNotice } from "@/components/nav/RoleNotice";
 import { RequisitionsListV2 } from "@/components/requirements/RequisitionsListV2";
 import { RequisitionsCardGrid } from "@/components/requirements/RequisitionsCardGrid";
 import { WorkdayImportButton } from "@/components/requisitions/WorkdayImportDrawer";
+import { canViewDiverseSlate } from "@hireops/api-types";
 
 export const dynamic = "force-dynamic"; // Auth-gated + reads live requisition state.
 
@@ -88,9 +89,16 @@ export default async function RequisitionsPage({
       }
     >
       {isRecruiterView ? (
-        <RequisitionsCardGrid initial={initial} />
+        <RequisitionsCardGrid
+          initial={initial}
+          showDiverseSlate={canViewDiverseSlate(session.roles)}
+        />
       ) : (
-        <RequisitionsListV2 initial={initial} initialStatus={status ?? "all"} />
+        <RequisitionsListV2
+          initial={initial}
+          initialStatus={status ?? "all"}
+          showDiverseSlate={canViewDiverseSlate(session.roles)}
+        />
       )}
     </AppShell>
   );

@@ -134,6 +134,7 @@ const NAV_HELP: Record<string, string> = {
   "panel-pools": "Interviewer pools for panels.",
   "sla-thresholds": "SLA hours per pipeline stage.",
   "governance-policy": "Governance and compliance rules.",
+  "diversity-slate": "Diverse-slate minimums and voluntary self-ID questions.",
   "retention-policy": "Data retention rules.",
 };
 

@@ -147,6 +147,8 @@ export type PortalNavKey =
   | "sla-thresholds"
   // T4.2 — configurable governance/compliance policy
   | "governance-policy"
+  // PC-26 — diverse-slate requirement (tenant diversitySlate block)
+  | "diversity-slate"
   // T4.3 — document retention policy + overdue register
   | "retention-policy"
   // R1.5b — scheduled report-digest configuration (cadence, recipients, hour)
@@ -609,6 +611,14 @@ export const ADMIN_NAV: NavItem[] = [
     href: "/admin/governance-policy",
     icon: <IconGovernancePolicy />,
   },
+  // PC-26 — diverse-slate settings: whether voluntary self-ID is collected, the
+  // default minimum, the counted stages and which answers count.
+  {
+    key: "diversity-slate",
+    label: "Diverse slate",
+    href: "/admin/diversity-slate",
+    icon: <IconGovernancePolicy />,
+  },
   // T4.3 — document retention policy. The per-type retention years drive the
   // honest "documents past retention" register (erasure stays a manual process).
   {
@@ -734,6 +744,7 @@ export const ADMIN_NAV_SECTIONS: NavSection[] = [
       "interview-templates",
       "sla-thresholds",
       "governance-policy",
+      "diversity-slate",
       "retention-policy",
       "report-digests",
       "learning",

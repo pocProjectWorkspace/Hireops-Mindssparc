@@ -6,6 +6,7 @@ import { useRouter } from "next/navigation";
 import type { GetRequisitionDetailOutput } from "@hireops/api-types";
 import { trpc, handleTRPCError } from "@/lib/trpc-client";
 import { Badge, Button, Card } from "@/components/ui";
+import { DiverseSlateBadge } from "@/components/diversity/DiverseSlateBadge";
 import type { BadgeTone } from "@/components/ui";
 import { InterviewPlanSection } from "@/components/interviews/InterviewPlanSection";
 import { RevisionSuggestionsCard } from "@/components/requirements/RevisionSuggestionsCard";
@@ -55,6 +56,7 @@ export function RequisitionDetailView({
   canDecide,
   canPost,
   canManageInterviews,
+  canViewDiverseSlate = false,
 }: {
   requisitionId: string;
   initial: GetRequisitionDetailOutput;
@@ -62,6 +64,8 @@ export function RequisitionDetailView({
   canDecide: boolean;
   canPost: boolean;
   canManageInterviews: boolean;
+  /** PC-26 — admin / hr_head / recruiter see the slate COUNT badge. */
+  canViewDiverseSlate?: boolean;
 }) {
   const router = useRouter();
   const [error, setError] = useState<string | null>(null);
@@ -204,6 +208,15 @@ export function RequisitionDetailView({
               <AiAssistedPill row={provenance.get(requisitionId)} />
               {r.workdayJobRequisitionId ? (
                 <Badge tone="info">Imported from Workday · {r.workdayJobRequisitionId}</Badge>
+              ) : null}
+              {r.diverseSlateRequired ? (
+                canViewDiverseSlate && !r.isDraft ? (
+                  <DiverseSlateBadge requisitionId={requisitionId} />
+                ) : (
+                  <Badge tone="neutral" pill>
+                    Diverse slate required
+                  </Badge>
+                )
               ) : null}
             </div>
             <p className="mt-1 text-sm text-neutral-600">

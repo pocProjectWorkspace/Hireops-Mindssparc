@@ -7,6 +7,8 @@ import { RecruiterDashboard } from "@/components/dashboard/RecruiterDashboard";
 import { AdminDashboard } from "@/components/dashboard/AdminDashboard";
 import { PanelDashboard } from "@/components/panel/PanelDashboard";
 import { RequirementOwnerDashboard } from "@/components/requirements/RequirementOwnerDashboard";
+import { DiverseSlateShortRoles } from "@/components/diversity/DiverseSlateShortRoles";
+import { canViewDiverseSlate } from "@hireops/api-types";
 
 export const dynamic = "force-dynamic"; // Auth-gated, per-session data.
 
@@ -60,6 +62,11 @@ export default async function DashboardPage() {
       active="home"
       user={sessionUserChip(session)}
     >
+      {/* PC-26 — TA / HR tile: open roles short of their diverse slate (counts
+          only). Renders nothing when the tenant has the feature off. */}
+      {(isAdmin || isHrHead || isRecruiter) && canViewDiverseSlate(session.roles) ? (
+        <DiverseSlateShortRoles variant="tile" />
+      ) : null}
       {isAdmin ? (
         <AdminDashboard
           initialExtras={await caller.getAdminDashboardExtras()}
