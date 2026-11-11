@@ -1,5 +1,12 @@
 export * from "./tenants";
 export * from "./tenant-encryption-keys";
+// C1-F3 (0133) — organisation + job architecture + tenant lookups
+export * from "./legal-entities";
+export * from "./locations";
+export * from "./job-functions";
+export * from "./job-levels";
+export * from "./job-profiles";
+export * from "./tenant-lookups";
 export * from "./business-units";
 export * from "./comp-bands";
 export * from "./panel-pools";

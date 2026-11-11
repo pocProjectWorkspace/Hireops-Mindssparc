@@ -149,6 +149,10 @@ export type PortalNavKey =
   | "comp-bands"
   // T3.3 — panel-pool library (G16)
   | "panel-pools"
+  // C1-F3 — organisation (entities, locations), job architecture, tenant lists
+  | "organisation"
+  | "job-architecture"
+  | "lists"
   // T4.1 — tenant-configurable SLA thresholds
   | "sla-thresholds"
   // CFG-LITE — tenant display labels (stage + interview-recommendation wording)
@@ -643,6 +647,30 @@ export const ADMIN_NAV: NavItem[] = [
     href: "/admin/panel-pools",
     icon: <IconPanelPools />,
   },
+  // C1-F3 — organisation inside the tenant: legal entities, locations
+  // (country → region → city) and business unit ↔ entity.
+  {
+    key: "organisation",
+    label: "Organisation",
+    href: "/admin/organisation",
+    icon: <IconBusinessUnits />,
+  },
+  // C1-F3 — job architecture: functions, levels (grades), job profiles. Drives
+  // the requisition wizard's profile / level / function pickers.
+  {
+    key: "job-architecture",
+    label: "Job architecture",
+    href: "/admin/job-architecture",
+    icon: <IconCompBands />,
+  },
+  // C1-F3 — tenant lists over platform defaults (employment / requisition
+  // types, hold, decline, renege and separation reasons, asset types).
+  {
+    key: "lists",
+    label: "Lists",
+    href: "/admin/lists",
+    icon: <IconSources />,
+  },
   // CFG-LITE — tenant display labels: stage wording per audience (staff /
   // candidate / partner) + interview-recommendation wording. Wording only —
   // canonical stage + recommendation keys never change. Reuses IconBranding.
@@ -843,7 +871,14 @@ export const ADMIN_NAV_SECTIONS: NavSection[] = [
   },
   {
     heading: "Admin · Org structure",
-    keys: ["business-units", "comp-bands", "panel-pools"],
+    keys: [
+      "organisation",
+      "business-units",
+      "job-architecture",
+      "comp-bands",
+      "panel-pools",
+      "lists",
+    ],
   },
 ];
 

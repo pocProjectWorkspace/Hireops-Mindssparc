@@ -44,12 +44,22 @@ export interface WorkdayCompBandLookup {
   id: string;
   name: string;
   level: string | null;
+  /** C1-F3 — the band's structured level scope, when set. */
+  jobLevelId?: string | null;
+}
+/** C1-F3 — a tenant job level (grade); the Workday grade maps onto `key`. */
+export interface WorkdayJobLevelLookup {
+  id: string;
+  key: string;
+  label: string;
 }
 
 export interface WorkdayTenantLookups {
   businessUnits: WorkdayBusinessUnitLookup[];
   members: WorkdayMemberLookup[];
   compBands: WorkdayCompBandLookup[];
+  /** C1-F3 — active job levels. Optional: absent = no level mapping. */
+  jobLevels?: WorkdayJobLevelLookup[];
 }
 
 /** Lower-case, strip punctuation/dashes, collapse whitespace. */
@@ -76,6 +86,21 @@ export function matchCompBand<T extends WorkdayCompBandLookup>(
   const byLevel = bands.find((b) => b.level && normaliseName(b.level) === g);
   if (byLevel) return byLevel;
   return bands.find((b) => normaliseName(b.name).split(" ").includes(g)) ?? null;
+}
+
+/**
+ * C1-F3 — Workday Compensation Grade → tenant job level, by KEY only (exact,
+ * case/punctuation-insensitive: "IN-12" = "in12" = "IN12"). The key is the
+ * stable grade code; no label or fuzzy matching — a grade either is a level
+ * the tenant defined or it is flagged for review.
+ */
+export function matchJobLevel<T extends WorkdayJobLevelLookup>(
+  grade: string,
+  levels: T[],
+): T | null {
+  const g = normaliseName(grade).replace(/ /g, "");
+  if (!g) return null;
+  return levels.find((l) => normaliseName(l.key).replace(/ /g, "") === g) ?? null;
 }
 
 /**
@@ -223,6 +248,8 @@ export interface WorkdayResolvedRow {
   businessUnitId: string | null;
   hiringManagerMembershipId: string | null;
   compBandId: string | null;
+  /** C1-F3 — the tenant job level the grade mapped to (by key), else null. */
+  jobLevelId: string | null;
   primaryLocation: string | null;
   numberOfOpenings: number;
   targetStartDate: string | null;
@@ -335,7 +362,27 @@ export function mapWorkdayRow(
   });
 
   const grade = row.compensationGrade.trim();
-  const band = matchCompBand(grade, lookups.compBands);
+  // C1-F3 — grade → job level by key (when the tenant has defined levels).
+  // A band pinned to that level wins over the free-text level/name match.
+  const levels = lookups.jobLevels ?? [];
+  const jobLevel = levels.length > 0 ? matchJobLevel(grade, levels) : null;
+  const band =
+    (jobLevel ? lookups.compBands.find((b) => b.jobLevelId === jobLevel.id) : undefined) ??
+    matchCompBand(grade, lookups.compBands);
+  if (levels.length > 0) {
+    push({
+      workdayField: "Compensation Grade",
+      workdayValue: grade,
+      hireopsField: "Job level",
+      hireopsValue: jobLevel ? `${jobLevel.label} (${jobLevel.key})` : null,
+      status: jobLevel ? "mapped" : grade ? "needs_review" : "not_imported",
+      note: jobLevel
+        ? null
+        : grade
+          ? `No job level with key ${grade} — add it in Admin → Job architecture, or pick the level on the draft`
+          : "No grade in the export — level left blank",
+    });
+  }
   push({
     workdayField: "Compensation Grade",
     workdayValue: grade,
@@ -390,6 +437,7 @@ export function mapWorkdayRow(
       businessUnitId: bu.unit?.id ?? null,
       hiringManagerMembershipId: hm?.membershipId ?? null,
       compBandId: band?.id ?? null,
+      jobLevelId: jobLevel?.id ?? null,
       primaryLocation,
       numberOfOpenings: openings.value,
       targetStartDate: date.iso,

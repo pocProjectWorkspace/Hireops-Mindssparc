@@ -518,7 +518,7 @@ function WorkdayImportDrawer({ onClose }: { onClose: () => void }) {
                         </Thead>
                         <Tbody>
                           {current.mapping.map((m) => (
-                            <Tr key={m.workdayField}>
+                            <Tr key={`${m.workdayField}:${m.hireopsField}`}>
                               <Td label="Workday field" className="font-medium text-neutral-900">
                                 {m.workdayField}
                               </Td>

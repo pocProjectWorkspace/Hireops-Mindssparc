@@ -12,6 +12,7 @@ import {
   pgPolicy,
 } from "drizzle-orm/pg-core";
 import { tenants } from "./tenants";
+import { legalEntities } from "./legal-entities";
 
 /**
  * Intra-tenant org structure. Recruiters, requisitions, and partners will
@@ -43,6 +44,10 @@ export const businessUnits = pgTable(
     // picker but stay valid for positions already attached to them.
     isArchived: boolean("is_archived").notNull().default(false),
 
+    // C1-F3 (0133) — the legal entity this unit belongs to (entity → country
+    // → BU → location). Nullable: units predating 0133 carry none.
+    legalEntityId: uuid("legal_entity_id"),
+
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
@@ -53,6 +58,7 @@ export const businessUnits = pgTable(
     unique("uniq_business_units_tenant_id_id").on(table.tenantId, table.id),
     index("idx_business_units_tenant").on(table.tenantId),
     index("idx_business_units_parent").on(table.parentBusinessUnitId),
+    index("idx_business_units_legal_entity").on(table.tenantId, table.legalEntityId),
     foreignKey({
       columns: [table.tenantId],
       foreignColumns: [tenants.id],
@@ -64,6 +70,11 @@ export const businessUnits = pgTable(
       foreignColumns: [table.tenantId, table.id],
       name: "fk_business_units_parent",
     }).onDelete("set null"),
+    foreignKey({
+      columns: [table.tenantId, table.legalEntityId],
+      foreignColumns: [legalEntities.tenantId, legalEntities.id],
+      name: "fk_business_units_legal_entity",
+    }).onDelete("restrict"),
     pgPolicy("tenant_isolation", {
       as: "permissive",
       for: "all",
