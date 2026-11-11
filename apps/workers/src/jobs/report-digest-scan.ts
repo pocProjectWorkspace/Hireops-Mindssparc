@@ -55,6 +55,8 @@ export async function reportDigestScan(log: Logger): Promise<void> {
     { tenant_id: string; slug: string; display_name: string; settings: unknown }[]
   >`
     SELECT id::text AS tenant_id, slug, display_name, settings FROM public.tenants
+    -- C1-F10 (D3): only active tenants are scanned.
+    WHERE status = 'active'
   `;
 
   const portalBase = process.env.NEXT_PUBLIC_SITE_URL ?? "http://localhost:3002";

@@ -1390,6 +1390,8 @@ import {
 } from "./trpc-core";
 import { withAudit } from "./with-audit";
 import { schedulingProcedures } from "./scheduling-procedures";
+import { platformProcedures } from "./platform-procedures";
+import { requireModule } from "../lib/platform/tenant-access";
 import { loadSchedulingSettings, queuePanelistInvites } from "../lib/interview-scheduling";
 import {
   createOnboardingCaseForApplication as createOnboardingCase,
@@ -4286,6 +4288,10 @@ export const appRouter = router({
   // proposal, candidate self-pick / reschedule, panellist can't-attend). Flat
   // names, defined in ./scheduling-procedures.ts to keep this file from growing.
   ...schedulingProcedures,
+
+  // C1-F10 — platform console (operators only) + the sign-in doors' lifecycle
+  // check. Flat platform* names, defined in ./platform-procedures.ts.
+  ...platformProcedures,
 
   // ─────────── public: apply form ───────────
   submitApplication: publicProcedure
@@ -8058,6 +8064,7 @@ export const appRouter = router({
     .input(setInterviewRecordingRequestedInputSchema)
     .output(setInterviewRecordingRequestedOutputSchema)
     .mutation(async ({ ctx, input }) => {
+      await requireModule(ctx, "notetaker");
       requireAnyRole(
         ctx,
         INTERVIEW_MANAGE_ROLES,
@@ -8111,6 +8118,7 @@ export const appRouter = router({
     .input(startInterviewMediaUploadInputSchema)
     .output(startInterviewMediaUploadOutputSchema)
     .mutation(async ({ ctx, input }) => {
+      await requireModule(ctx, "notetaker");
       requireAnyRole(
         ctx,
         INTERVIEW_MANAGE_ROLES,
@@ -8254,6 +8262,7 @@ export const appRouter = router({
     .input(generateAiInterviewQuestionsInputSchema)
     .output(generateAiInterviewQuestionsOutputSchema)
     .mutation(async ({ ctx, input }) => {
+      await requireModule(ctx, "ai_interview");
       requireAnyRole(
         ctx,
         INTERVIEW_MANAGE_ROLES,
@@ -8286,6 +8295,7 @@ export const appRouter = router({
     .input(approveAiInterviewQuestionsInputSchema)
     .output(approveAiInterviewQuestionsOutputSchema)
     .mutation(async ({ ctx, input }) => {
+      await requireModule(ctx, "ai_interview");
       requireAnyRole(
         ctx,
         INTERVIEW_MANAGE_ROLES,
@@ -8332,6 +8342,7 @@ export const appRouter = router({
     .input(issueAiInterviewSessionInputSchema)
     .output(issueAiInterviewSessionOutputSchema)
     .mutation(async ({ ctx, input }) => {
+      await requireModule(ctx, "ai_interview");
       requireAnyRole(
         ctx,
         INTERVIEW_MANAGE_ROLES,
@@ -9761,6 +9772,7 @@ export const appRouter = router({
     .input(listWorkdaySyncsInputSchema)
     .output(listWorkdaySyncsOutputSchema)
     .query(async ({ ctx, input }) => {
+      await requireModule(ctx, "workday_handoff");
       requireAnyRole(ctx, USERS_ADMIN_ROLES, "Integration health is admin-only");
       const db = requireDb(ctx);
       const limit = input.pagination.limit;
@@ -9807,6 +9819,7 @@ export const appRouter = router({
     .input(getWorkdayHandoffInputSchema)
     .output(getWorkdayHandoffOutputSchema)
     .query(async ({ ctx, input }): Promise<GetWorkdayHandoffOutput> => {
+      await requireModule(ctx, "workday_handoff");
       requireAnyRole(
         ctx,
         WORKDAY_HANDOFF_ROLES,
@@ -9877,6 +9890,7 @@ export const appRouter = router({
     .input(exportWorkdayHandoffsInputSchema)
     .output(exportWorkdayHandoffsOutputSchema)
     .query(async ({ ctx, input }): Promise<ExportWorkdayHandoffsOutput> => {
+      await requireModule(ctx, "workday_handoff");
       requireAnyRole(
         ctx,
         WORKDAY_HANDOFF_ROLES,
@@ -11269,6 +11283,7 @@ export const appRouter = router({
     .input(z.object({}).default({}))
     .output(getPreJoiningSettingsOutputSchema)
     .query(async ({ ctx }): Promise<PreJoiningEngagementSettings> => {
+      await requireModule(ctx, "pre_joining_engagement");
       requireAnyRole(ctx, PRE_JOINING_ADMIN_ROLES, "Pre-joining settings require hr_head or admin");
       const tenantId = requireTenantId(ctx);
       const [row] = await ctx.sql<{ settings: Record<string, unknown> | null }[]>`
@@ -11281,6 +11296,7 @@ export const appRouter = router({
     .input(updatePreJoiningSettingsInputSchema)
     .output(z.object({ ok: z.literal(true), settings: getPreJoiningSettingsOutputSchema }))
     .mutation(async ({ ctx, input }) => {
+      await requireModule(ctx, "pre_joining_engagement");
       return withAudit("update_pre_joining_settings", ctx, input, async () => {
         requireAnyRole(
           ctx,
@@ -11310,6 +11326,7 @@ export const appRouter = router({
     .input(z.object({}).default({}))
     .output(z.object({ items: z.array(companyUpdateRowSchema) }))
     .query(async ({ ctx }) => {
+      await requireModule(ctx, "pre_joining_engagement");
       requireAnyRole(ctx, PRE_JOINING_ADMIN_ROLES, "Company updates require hr_head or admin");
       return { items: await listPreJoiningCompanyUpdatesLib(ctx.sql, requireTenantId(ctx)) };
     }),
@@ -11318,6 +11335,7 @@ export const appRouter = router({
     .input(companyUpdateInputSchema)
     .output(z.object({ id: z.string() }))
     .mutation(async ({ ctx, input }) => {
+      await requireModule(ctx, "pre_joining_engagement");
       return withAudit("upsert_pre_joining_company_update", ctx, input, async () => {
         requireAnyRole(ctx, PRE_JOINING_ADMIN_ROLES, "Company updates require hr_head or admin");
         const tenantId = requireTenantId(ctx);
@@ -11336,6 +11354,7 @@ export const appRouter = router({
     .input(z.object({}).default({}))
     .output(startPreJoiningJourneysOutputSchema)
     .mutation(async ({ ctx, input }) => {
+      await requireModule(ctx, "pre_joining_engagement");
       return withAudit("start_pre_joining_journeys", ctx, input, async () => {
         requireAnyRole(ctx, PRE_JOINING_ADMIN_ROLES, "Starting journeys requires hr_head or admin");
         return startJourneysForAcceptedCandidates(ctx.sql, {
@@ -11349,6 +11368,7 @@ export const appRouter = router({
     .input(listJoiningWatchlistInputSchema)
     .output(listJoiningWatchlistOutputSchema)
     .query(async ({ ctx }): Promise<ListJoiningWatchlistOutput> => {
+      await requireModule(ctx, "pre_joining_engagement");
       requireAnyRole(
         ctx,
         JOINING_WATCHLIST_ROLES,
@@ -11377,6 +11397,7 @@ export const appRouter = router({
     .input(getEngagementTimelineInputSchema)
     .output(getEngagementTimelineOutputSchema)
     .query(async ({ ctx, input }) => {
+      await requireModule(ctx, "pre_joining_engagement");
       requireAnyRole(
         ctx,
         JOINING_WATCHLIST_ROLES,
@@ -11465,6 +11486,7 @@ export const appRouter = router({
     .input(z.object({}).default({}))
     .output(listWelcomeScopesOutputSchema)
     .query(async ({ ctx }) => {
+      await requireModule(ctx, "welcome_guide");
       requireAnyRole(ctx, PRE_JOINING_ADMIN_ROLES, "Welcome content requires hr_head or admin");
       const tenantId = requireTenantId(ctx);
       const [scopes, generationEnabled] = await Promise.all([
@@ -11478,6 +11500,7 @@ export const appRouter = router({
     .input(welcomeScopeInputSchema)
     .output(getWelcomeContentOutputSchema)
     .query(async ({ ctx, input }) => {
+      await requireModule(ctx, "welcome_guide");
       requireAnyRole(ctx, PRE_JOINING_ADMIN_ROLES, "Welcome content requires hr_head or admin");
       const out = await getWelcomeContentLib(ctx.sql, {
         tenantId: requireTenantId(ctx),
@@ -11491,6 +11514,7 @@ export const appRouter = router({
     .input(upsertWelcomeSourceInputSchema)
     .output(z.object({ id: z.string() }))
     .mutation(async ({ ctx, input }) => {
+      await requireModule(ctx, "welcome_guide");
       return withAudit("upsert_welcome_source", ctx, input, async () => {
         requireAnyRole(ctx, PRE_JOINING_ADMIN_ROLES, "Welcome content requires hr_head or admin");
         const tenantId = requireTenantId(ctx);
@@ -11510,6 +11534,7 @@ export const appRouter = router({
     .input(welcomeScopeInputSchema)
     .output(welcomeGuideVersionSchema)
     .mutation(async ({ ctx, input }) => {
+      await requireModule(ctx, "welcome_guide");
       return withAudit("generate_welcome_guide", ctx, input, async () => {
         requireAnyRole(ctx, PRE_JOINING_ADMIN_ROLES, "Welcome content requires hr_head or admin");
         const tenantId = requireTenantId(ctx);
@@ -11529,6 +11554,7 @@ export const appRouter = router({
     .input(updateWelcomeGuideDraftInputSchema)
     .output(welcomeGuideVersionSchema)
     .mutation(async ({ ctx, input }) => {
+      await requireModule(ctx, "welcome_guide");
       return withAudit("update_welcome_guide_draft", ctx, input, async () => {
         requireAnyRole(ctx, PRE_JOINING_ADMIN_ROLES, "Welcome content requires hr_head or admin");
         const tenantId = requireTenantId(ctx);
@@ -11548,6 +11574,7 @@ export const appRouter = router({
     .input(welcomeGuideIdInputSchema)
     .output(z.object({ ok: z.literal(true), version: z.number().int() }))
     .mutation(async ({ ctx, input }) => {
+      await requireModule(ctx, "welcome_guide");
       return withAudit("publish_welcome_guide", ctx, input, async () => {
         requireAnyRole(ctx, PRE_JOINING_ADMIN_ROLES, "Welcome content requires hr_head or admin");
         const tenantId = requireTenantId(ctx);
@@ -11566,6 +11593,7 @@ export const appRouter = router({
     .input(welcomeGuideIdInputSchema)
     .output(z.object({ ok: z.literal(true) }))
     .mutation(async ({ ctx, input }) => {
+      await requireModule(ctx, "welcome_guide");
       return withAudit("discard_welcome_guide_draft", ctx, input, async () => {
         requireAnyRole(ctx, PRE_JOINING_ADMIN_ROLES, "Welcome content requires hr_head or admin");
         const r = await discardWelcomeGuideDraftLib(ctx.sql, {
@@ -11581,6 +11609,7 @@ export const appRouter = router({
     .input(welcomeGuideIdInputSchema)
     .output(welcomeGuideVersionSchema)
     .mutation(async ({ ctx, input }) => {
+      await requireModule(ctx, "welcome_guide");
       return withAudit("create_welcome_draft_from_version", ctx, input, async () => {
         requireAnyRole(ctx, PRE_JOINING_ADMIN_ROLES, "Welcome content requires hr_head or admin");
         const tenantId = requireTenantId(ctx);
@@ -12527,6 +12556,7 @@ export const appRouter = router({
     .input(getDiverseSlateStatusInputSchema)
     .output(getDiverseSlateStatusOutputSchema)
     .query(async ({ ctx, input }) => {
+      await requireModule(ctx, "diversity_slate");
       requireAnyRole(
         ctx,
         DIVERSE_SLATE_VIEW_ROLE_SET,
@@ -12571,6 +12601,7 @@ export const appRouter = router({
     .input(listDiverseSlateStatusesInputSchema)
     .output(listDiverseSlateStatusesOutputSchema)
     .query(async ({ ctx, input }) => {
+      await requireModule(ctx, "diversity_slate");
       requireAnyRole(
         ctx,
         DIVERSE_SLATE_VIEW_ROLE_SET,
@@ -12620,6 +12651,7 @@ export const appRouter = router({
   getDiverseSlateDefaults: protectedProcedure
     .output(getDiverseSlateDefaultsOutputSchema)
     .query(async ({ ctx }) => {
+      await requireModule(ctx, "diversity_slate");
       requireAnyRole(
         ctx,
         REQUISITION_READ_ROLES,
@@ -12636,6 +12668,7 @@ export const appRouter = router({
   getDiversitySlateSettings: protectedProcedure
     .output(getDiversitySlateSettingsOutputSchema)
     .query(async ({ ctx }) => {
+      await requireModule(ctx, "diversity_slate");
       requireAnyRole(
         ctx,
         DIVERSE_SLATE_ADMIN_ROLE_SET,
@@ -12656,6 +12689,7 @@ export const appRouter = router({
     .input(updateDiversitySlateSettingsInputSchema)
     .output(updateDiversitySlateSettingsOutputSchema)
     .mutation(async ({ ctx, input }) => {
+      await requireModule(ctx, "diversity_slate");
       return withAudit("update_diversity_slate_settings", ctx, input, async () => {
         requireAnyRole(
           ctx,
@@ -12688,6 +12722,7 @@ export const appRouter = router({
   candidateGetDiversitySelfId: candidateProcedure
     .output(candidateGetDiversitySelfIdOutputSchema)
     .query(async ({ ctx }) => {
+      await requireModule(ctx, "diversity_slate");
       const db = ctx.db;
       if (!db) {
         throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "candidate ctx.db missing" });
@@ -12709,6 +12744,7 @@ export const appRouter = router({
     .input(candidateSetDiversitySelfIdInputSchema)
     .output(candidateSetDiversitySelfIdOutputSchema)
     .mutation(async ({ ctx, input }) => {
+      await requireModule(ctx, "diversity_slate");
       return withAudit(
         "candidate_set_diversity_self_id",
         ctx,
@@ -13531,6 +13567,7 @@ export const appRouter = router({
     .input(getReportInsightsInputSchema)
     .output(getReportInsightsOutputSchema)
     .query(async ({ ctx, input }) => {
+      await requireModule(ctx, "report_insights");
       requireAnyRole(
         ctx,
         REPORTS_READ_ROLES,
@@ -13605,6 +13642,7 @@ export const appRouter = router({
     .input(askDataCatalogInputSchema)
     .output(askDataCatalogOutputSchema)
     .query(async ({ ctx }) => {
+      await requireModule(ctx, "ask_data");
       requireAnyRole(ctx, ASK_DATA_ROLES, "Ask your data isn't available for your role");
       const db = requireDb(ctx);
       if (!ctx.tenantId) {
@@ -13634,6 +13672,7 @@ export const appRouter = router({
     .input(askDataInputSchema)
     .output(askDataOutputSchema)
     .mutation(async ({ ctx, input }) => {
+      await requireModule(ctx, "ask_data");
       requireAnyRole(ctx, ASK_DATA_ROLES, "Ask your data isn't available for your role");
       const db = requireDb(ctx);
       if (!ctx.tenantId) {
@@ -13738,6 +13777,7 @@ export const appRouter = router({
     .input(askDataHistoryInputSchema)
     .output(askDataHistoryOutputSchema)
     .query(async ({ ctx }) => {
+      await requireModule(ctx, "ask_data");
       requireAnyRole(ctx, ASK_DATA_ROLES, "Ask your data isn't available for your role");
       const db = requireDb(ctx);
       if (!ctx.tenantId) {
@@ -13767,6 +13807,7 @@ export const appRouter = router({
     .input(askDataTopQuestionsInputSchema)
     .output(askDataTopQuestionsOutputSchema)
     .query(async ({ ctx, input }) => {
+      await requireModule(ctx, "ask_data");
       requireAnyRole(ctx, USERS_ADMIN_ROLES, "Top questions are admin-only");
       const db = requireDb(ctx);
       if (!ctx.tenantId) {
@@ -16036,6 +16077,7 @@ export const appRouter = router({
     .input(listOnboardingCasesInputSchema)
     .output(listOnboardingCasesOutputSchema)
     .query(async ({ ctx, input }) => {
+      await requireModule(ctx, "onboarding");
       // RBAC-01 — onboarding is a recruiter + HR-ops surface.
       requireAnyRole(ctx, ONBOARDING_MANAGE_ROLES, "Onboarding is not available for your role");
       const db = requireDb(ctx);
@@ -16154,6 +16196,7 @@ export const appRouter = router({
     .input(getOnboardingCaseDetailInputSchema)
     .output(getOnboardingCaseDetailOutputSchema)
     .query(async ({ ctx, input }) => {
+      await requireModule(ctx, "onboarding");
       const db = requireDb(ctx);
       if (!ctx.tenantId) {
         throw new TRPCError({
@@ -16368,6 +16411,7 @@ export const appRouter = router({
     .input(updateOnboardingTaskStatusInputSchema)
     .output(updateOnboardingTaskStatusOutputSchema)
     .mutation(async ({ ctx, input }) => {
+      await requireModule(ctx, "onboarding");
       return withAudit("update_onboarding_task_status", ctx, input, async () => {
         const db = requireDb(ctx);
         if (!ctx.tenantId) {
@@ -16439,6 +16483,7 @@ export const appRouter = router({
     .input(updateOnboardingCaseInputSchema)
     .output(updateOnboardingCaseOutputSchema)
     .mutation(async ({ ctx, input }) => {
+      await requireModule(ctx, "onboarding");
       return withAudit("update_onboarding_case", ctx, input, async () => {
         const db = requireDb(ctx);
         if (!ctx.tenantId) {
@@ -16614,6 +16659,7 @@ export const appRouter = router({
     .input(attachOnboardingDocumentInputSchema)
     .output(attachOnboardingDocumentOutputSchema)
     .mutation(async ({ ctx, input }) => {
+      await requireModule(ctx, "onboarding");
       return withAudit("attach_onboarding_document", ctx, input, async () => {
         const db = requireDb(ctx);
         if (!ctx.tenantId) {
@@ -16677,6 +16723,7 @@ export const appRouter = router({
     .input(verifyOnboardingDocumentInputSchema)
     .output(verifyOnboardingDocumentOutputSchema)
     .mutation(async ({ ctx, input }) => {
+      await requireModule(ctx, "onboarding");
       return withAudit("verify_onboarding_document", ctx, input, async () => {
         const db = requireDb(ctx);
         if (!ctx.tenantId) {
@@ -16766,6 +16813,7 @@ export const appRouter = router({
     .input(rejectOnboardingDocumentInputSchema)
     .output(rejectOnboardingDocumentOutputSchema)
     .mutation(async ({ ctx, input }) => {
+      await requireModule(ctx, "onboarding");
       return withAudit("reject_onboarding_document", ctx, input, async () => {
         const db = requireDb(ctx);
         if (!ctx.tenantId) {
@@ -19765,6 +19813,7 @@ export const appRouter = router({
     .input(candidateUpdateLearningProgressInputSchema)
     .output(candidateUpdateLearningProgressOutputSchema)
     .mutation(async ({ ctx, input }) => {
+      await requireModule(ctx, "learning");
       return withAudit("candidate_update_learning_progress", ctx, input, async () => {
         const db = ctx.db;
         if (!db) {
@@ -19856,6 +19905,7 @@ export const appRouter = router({
   candidateGetMyWelcomeGuide: candidateProcedure
     .output(candidateGetMyWelcomeGuideOutputSchema)
     .query(async ({ ctx }) => {
+      await requireModule(ctx, "welcome_guide");
       return getCandidateWelcomeGuideLib(ctx.sql, {
         tenantId: ctx.candidate.tenantId,
         personId: ctx.candidate.personId,
@@ -19871,6 +19921,7 @@ export const appRouter = router({
     .input(candidateMarkWelcomeSectionViewedInputSchema)
     .output(z.object({ ok: z.literal(true) }))
     .mutation(async ({ ctx, input }) => {
+      await requireModule(ctx, "welcome_guide");
       const r = await markWelcomeSectionViewedLib(ctx.sql, {
         tenantId: ctx.candidate.tenantId,
         personId: ctx.candidate.personId,
@@ -20558,6 +20609,7 @@ export const appRouter = router({
     .input(listMarketBenchmarksInputSchema)
     .output(listMarketBenchmarksOutputSchema)
     .query(async ({ ctx }) => {
+      await requireModule(ctx, "market_intel");
       requireAnyRole(
         ctx,
         MARKET_INTEL_READ_ROLES,
@@ -20586,6 +20638,7 @@ export const appRouter = router({
     .input(upsertMarketBenchmarkInputSchema)
     .output(upsertMarketBenchmarkOutputSchema)
     .mutation(async ({ ctx, input }) => {
+      await requireModule(ctx, "market_intel");
       return withAudit("upsert_market_benchmark", ctx, input, async () => {
         requireAnyRole(ctx, MARKET_BENCHMARK_ADMIN_ROLES, "Editing benchmarks is admin-only");
         const db = requireDb(ctx);
@@ -25231,6 +25284,7 @@ export const appRouter = router({
     .input(listBulkCvBatchesInputSchema)
     .output(listBulkCvBatchesOutputSchema)
     .query(async ({ ctx, input }): Promise<ListBulkCvBatchesOutput> => {
+      await requireModule(ctx, "bulk_cv_upload");
       requireAnyRole(ctx, BULK_CV_UPLOAD_ROLES, "Bulk CV upload is a recruiter surface.");
       const db = requireDb(ctx);
       const tenantId = ctx.tenantId;
@@ -25259,6 +25313,7 @@ export const appRouter = router({
     .input(getBulkCvBatchInputSchema)
     .output(getBulkCvBatchOutputSchema)
     .query(async ({ ctx, input }): Promise<GetBulkCvBatchOutput> => {
+      await requireModule(ctx, "bulk_cv_upload");
       requireAnyRole(ctx, BULK_CV_UPLOAD_ROLES, "Bulk CV upload is a recruiter surface.");
       const db = requireDb(ctx);
       const tenantId = ctx.tenantId;
@@ -25275,6 +25330,7 @@ export const appRouter = router({
     .input(retryBulkCvItemsInputSchema)
     .output(retryBulkCvItemsOutputSchema)
     .mutation(async ({ ctx, input }): Promise<RetryBulkCvItemsOutput> => {
+      await requireModule(ctx, "bulk_cv_upload");
       requireAnyRole(ctx, BULK_CV_UPLOAD_ROLES, "Bulk CV upload is a recruiter surface.");
       return withAudit("retry_bulk_cv_items", ctx, input, async () => {
         const db = requireDb(ctx);
@@ -26128,6 +26184,7 @@ export const appRouter = router({
     .input(listLearningResourcesInputSchema)
     .output(listLearningResourcesOutputSchema)
     .query(async ({ ctx, input }) => {
+      await requireModule(ctx, "learning");
       requireAnyRole(
         ctx,
         LEARNING_ADMIN_ROLES,
@@ -26162,6 +26219,7 @@ export const appRouter = router({
     .input(upsertLearningResourceInputSchema)
     .output(upsertLearningResourceOutputSchema)
     .mutation(async ({ ctx, input }) => {
+      await requireModule(ctx, "learning");
       return withAudit("upsert_learning_resource", ctx, input, async () => {
         requireAnyRole(
           ctx,
@@ -26248,6 +26306,7 @@ export const appRouter = router({
     .input(archiveLearningResourceInputSchema)
     .output(archiveLearningResourceOutputSchema)
     .mutation(async ({ ctx, input }) => {
+      await requireModule(ctx, "learning");
       return withAudit("archive_learning_resource", ctx, input, async () => {
         requireAnyRole(
           ctx,
@@ -26285,6 +26344,7 @@ export const appRouter = router({
     .input(listLearningTracksInputSchema)
     .output(listLearningTracksOutputSchema)
     .query(async ({ ctx, input }) => {
+      await requireModule(ctx, "learning");
       requireAnyRole(
         ctx,
         LEARNING_ADMIN_ROLES,
@@ -26323,6 +26383,7 @@ export const appRouter = router({
     .input(upsertLearningTrackInputSchema)
     .output(upsertLearningTrackOutputSchema)
     .mutation(async ({ ctx, input }) => {
+      await requireModule(ctx, "learning");
       return withAudit("upsert_learning_track", ctx, input, async () => {
         requireAnyRole(
           ctx,
@@ -26406,6 +26467,7 @@ export const appRouter = router({
     .input(setLearningTrackItemsInputSchema)
     .output(setLearningTrackItemsOutputSchema)
     .mutation(async ({ ctx, input }) => {
+      await requireModule(ctx, "learning");
       return withAudit("set_learning_track_items", ctx, input, async () => {
         requireAnyRole(
           ctx,
@@ -26511,6 +26573,7 @@ export const appRouter = router({
     .input(assignLearningToCaseInputSchema)
     .output(assignLearningToCaseOutputSchema)
     .mutation(async ({ ctx, input }) => {
+      await requireModule(ctx, "learning");
       return withAudit("assign_learning_to_case", ctx, input, async () => {
         // The PUSH is an onboarding act, not a config act — hence the
         // onboarding gate rather than LEARNING_ADMIN_ROLES.
@@ -26801,6 +26864,7 @@ export const appRouter = router({
     .input(listLearningSkillMapInputSchema)
     .output(listLearningSkillMapOutputSchema)
     .query(async ({ ctx, input }) => {
+      await requireModule(ctx, "learning");
       requireAnyRole(
         ctx,
         LEARNING_ADMIN_ROLES,
@@ -26843,6 +26907,7 @@ export const appRouter = router({
     .input(upsertLearningSkillMappingInputSchema)
     .output(upsertLearningSkillMappingOutputSchema)
     .mutation(async ({ ctx, input }) => {
+      await requireModule(ctx, "learning");
       return withAudit("upsert_learning_skill_mapping", ctx, input, async () => {
         requireAnyRole(
           ctx,
@@ -26932,6 +26997,7 @@ export const appRouter = router({
     .input(deleteLearningSkillMappingInputSchema)
     .output(deleteLearningSkillMappingOutputSchema)
     .mutation(async ({ ctx, input }) => {
+      await requireModule(ctx, "learning");
       return withAudit("delete_learning_skill_mapping", ctx, input, async () => {
         requireAnyRole(
           ctx,
@@ -26991,6 +27057,7 @@ export const appRouter = router({
     .input(getSuggestedLearningForCaseInputSchema)
     .output(getSuggestedLearningForCaseOutputSchema)
     .query(async ({ ctx, input }) => {
+      await requireModule(ctx, "learning");
       // Reading one specific hire's suggestions is an onboarding act, not a
       // config act — hence the onboarding gate, matching the push.
       requireAnyRole(ctx, ONBOARDING_MANAGE_ROLES, "Onboarding is not available for your role");

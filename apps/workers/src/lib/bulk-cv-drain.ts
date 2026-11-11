@@ -69,6 +69,7 @@ import {
 } from "@hireops/api/application-ingest";
 import { BULK_CV_ACCEPTING_REQ_STATUSES } from "@hireops/api/bulk-cv/policy";
 import { StorageNotFoundError } from "@hireops/api/storage";
+import { tenantGateSql } from "./tenant-gate";
 
 /** Attempts before a row goes terminal. */
 export const BULK_CV_ATTEMPT_CAP = 3;
@@ -158,9 +159,11 @@ export async function drainBulkCvOnce(opts: BulkCvDrainOpts): Promise<BulkCvDrai
         updated_at = now()
     WHERE id IN (
       SELECT id FROM public.bulk_cv_items
-      WHERE (status = 'queued' AND (lease_expires_at IS NULL OR lease_expires_at <= now()))
+      WHERE ((status = 'queued' AND (lease_expires_at IS NULL OR lease_expires_at <= now()))
          OR (status = 'parsing' AND lease_expires_at < now()
-             AND attempt_count < ${BULK_CV_ATTEMPT_CAP})
+             AND attempt_count < ${BULK_CV_ATTEMPT_CAP}))
+      -- C1-F10: skip rows of non-active tenants (D3) + module off (D4).
+        ${tenantGateSql("bulk_cv_items", "bulk_cv_upload")}
       ORDER BY created_at
       LIMIT ${batchSize}
       FOR UPDATE SKIP LOCKED

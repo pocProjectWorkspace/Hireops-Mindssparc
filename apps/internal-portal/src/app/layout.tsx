@@ -6,10 +6,12 @@ import { TenantBrandingProvider } from "@/components/nav/TenantBrandingProvider"
 import { loadChromeBranding } from "@/lib/tenant-branding";
 import { ScreeningScoreProvider } from "@/components/ScreeningScoreProvider";
 import { TenantLabelsProvider } from "@/components/TenantLabelsProvider";
+import { TenantModulesProvider } from "@/components/TenantModulesProvider";
 import {
   loadScreeningScoreBands,
   loadScreeningScoreVisible,
   loadTenantLabels,
+  loadTenantModules,
 } from "@/lib/tenant-ui-settings";
 import "../styles/globals.css";
 
@@ -27,12 +29,15 @@ export const metadata: Metadata = {
  * configured, which is what keeps the default chrome unchanged.
  */
 export default async function RootLayout({ children }: { children: React.ReactNode }) {
-  const [branding, screeningScoreVisible, screeningScoreBands, tenantLabels] = await Promise.all([
-    loadChromeBranding(),
-    loadScreeningScoreVisible(),
-    loadScreeningScoreBands(),
-    loadTenantLabels(),
-  ]);
+  const [branding, screeningScoreVisible, screeningScoreBands, tenantLabels, tenantModules] =
+    await Promise.all([
+      loadChromeBranding(),
+      loadScreeningScoreVisible(),
+      loadScreeningScoreBands(),
+      loadTenantLabels(),
+      // C1-F10 — module entitlements, so the nav hides modules the tenant lacks.
+      loadTenantModules(),
+    ]);
 
   return (
     <html lang="en">
@@ -41,7 +46,9 @@ export default async function RootLayout({ children }: { children: React.ReactNo
           <TRPCProvider>
             <TenantBrandingProvider branding={branding}>
               <ScreeningScoreProvider visible={screeningScoreVisible} bands={screeningScoreBands}>
-                <TenantLabelsProvider labels={tenantLabels}>{children}</TenantLabelsProvider>
+                <TenantLabelsProvider labels={tenantLabels}>
+                  <TenantModulesProvider modules={tenantModules}>{children}</TenantModulesProvider>
+                </TenantLabelsProvider>
               </ScreeningScoreProvider>
             </TenantBrandingProvider>
             <DevBanner />

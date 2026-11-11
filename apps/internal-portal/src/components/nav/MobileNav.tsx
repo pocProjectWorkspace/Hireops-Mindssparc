@@ -4,6 +4,7 @@ import { useState } from "react";
 import { cn } from "@/components/ui/cn";
 import { RoleName } from "@/lib/role-labels";
 import { IconSignOut } from "./nav-icons";
+import { useModuleFilter } from "@/components/TenantModulesProvider";
 import type { AppShellUser, NavItem, PortalNavKey } from "./AppShell";
 
 /**
@@ -69,8 +70,8 @@ function BottomTab({ item, active }: { item: NavItem; active: boolean }) {
 }
 
 export function MobileNav({
-  primary,
-  more,
+  primary: primaryIn,
+  more: moreIn,
   active,
   user,
 }: {
@@ -80,6 +81,12 @@ export function MobileNav({
   user: AppShellUser;
 }) {
   const [open, setOpen] = useState(false);
+  // C1-F10 (D4): drop modules the tenant does not have, then re-split so the
+  // tab bar still shows the first four VISIBLE destinations.
+  const moduleEnabled = useModuleFilter();
+  const visible = [...primaryIn, ...moreIn].filter((i) => moduleEnabled(i.module));
+  const primary = visible.slice(0, primaryIn.length);
+  const more = visible.slice(primaryIn.length);
   const moreActive = more.some((i) => i.key === active);
   const initial = (user.label.trim()[0] ?? "?").toUpperCase();
 

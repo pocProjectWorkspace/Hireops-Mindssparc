@@ -44,6 +44,8 @@ const PLATFORM_TABLES_ALLOWLIST = new Set<string>([
   "users", // platform-level user profile (user-scoped via id = auth.uid(), survives tenant deletion)
   "scheduled_job_runs", // worker bookkeeping; service_role only, no authenticated reads (Module 3)
   "document_types", // tenant-agnostic onboarding reference table (no tenant_id); RLS+FORCE with a permissive SELECT policy for authenticated reads, writes seeded via migration (ONBOARD-01)
+  "platform_operators", // C1-F10 platform operators — NOT a tenant role; RLS+FORCE with NO policies (service role only), resolved server-side from the auth user id
+  "platform_audit_log", // C1-F10 platform action trail; tenant_id is nullable metadata, not an isolation key; RLS+FORCE with NO policies (service role only), append-only trigger
 ]);
 
 interface TableRow {

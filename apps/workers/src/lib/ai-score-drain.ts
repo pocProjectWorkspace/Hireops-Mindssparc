@@ -69,6 +69,7 @@ import {
   maskPiiIf,
   type ParserOutput,
 } from "@hireops/ai-client";
+import { tenantGateSql } from "./tenant-gate";
 
 export interface DrainOpts {
   /** Rows claimed per pass. Raised to `concurrency` if smaller. */
@@ -245,6 +246,8 @@ export async function drainAiScoreOutboxOnce(opts: DrainOpts): Promise<{
       SELECT id FROM public.ai_score_outbox
       WHERE status = 'pending'
         ${opts.onlyTenantId ? poolSql`AND tenant_id = ${opts.onlyTenantId}` : poolSql``}
+      -- C1-F10: skip rows of non-active tenants (D3).
+        ${tenantGateSql("ai_score_outbox")}
       ORDER BY created_at
       LIMIT ${batchSize}
       FOR UPDATE SKIP LOCKED

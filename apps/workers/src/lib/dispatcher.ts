@@ -3,6 +3,7 @@ import { sql as poolSql } from "@hireops/db";
 import { getEmailProvider, type EmailProvider, type TemplateKey } from "@hireops/notifications";
 import { renderTemplate, type EmailTemplateOverrides } from "@hireops/email-templates";
 import type { Logger } from "@hireops/observability";
+import { tenantGateSql } from "./tenant-gate";
 
 /**
  * Outbox drain — one pass:
@@ -97,6 +98,9 @@ export async function drainOutboxOnce(opts: DispatcherOpts): Promise<{
       SELECT id FROM public.notification_outbox
       WHERE status = 'pending'
         AND (scheduled_for IS NULL OR scheduled_for <= now())
+      -- C1-F10: skip rows of non-active tenants (D3) — no email is sent for a
+      -- suspended tenant; the row stays pending until reactivation.
+        ${tenantGateSql("notification_outbox")}
       ORDER BY priority, created_at
       LIMIT ${batchSize}
       FOR UPDATE SKIP LOCKED

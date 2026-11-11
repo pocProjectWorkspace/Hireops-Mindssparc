@@ -4,6 +4,7 @@ import { useState, type FormEvent } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Button, Input } from "@hireops/ui";
 import { getSupabaseBrowserClient } from "@/lib/supabase-client";
+import { trpc } from "@/lib/trpc-client";
 
 /**
  * Partner email + password login. Wave 1 has no magic-link / MFA / SSO
@@ -22,6 +23,7 @@ export function LoginForm() {
   const [password, setPassword] = useState("");
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const utils = trpc.useUtils();
 
   async function handleSubmit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
@@ -36,6 +38,18 @@ export function LoginForm() {
       if (error) {
         setErrorMsg(error.message);
         return;
+      }
+      // C1-F10 (D3): refuse sign-in, with the reason, when the hiring
+      // organisation's access is suspended / ended.
+      try {
+        const access = await utils.client.accountAccessStatus.query({ audience: "partner" });
+        if (access.access === "tenant_inactive") {
+          await supabase.auth.signOut();
+          setErrorMsg(access.message);
+          return;
+        }
+      } catch {
+        // partnerProcedure still refuses a suspended tenant; carry on.
       }
       const dest = searchParams.get("from") ?? "/";
       router.replace(dest);

@@ -51,9 +51,12 @@ export async function stageStaleScan(log: Logger): Promise<void> {
     FROM public.agent_triggers t
     JOIN public.automation_agents aa
       ON aa.id = t.agent_id AND aa.tenant_id = t.tenant_id
+    JOIN public.tenants tn ON tn.id = t.tenant_id
     WHERE t.trigger_type = 'stage_stale'
       AND aa.enabled = true
       AND aa.retired_at IS NULL
+      -- C1-F10 (D3): only active tenants are scanned.
+      AND tn.status = 'active'
   `;
 
   let agentsScanned = 0;

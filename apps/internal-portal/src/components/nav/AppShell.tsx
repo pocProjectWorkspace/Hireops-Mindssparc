@@ -22,7 +22,7 @@
  * shell.
  */
 import type { ReactNode } from "react";
-import { cn } from "@/components/ui/cn";
+import type { PlatformModuleKey } from "@hireops/api-types";
 import { RoleName } from "@/lib/role-labels";
 import {
   IconHome,
@@ -72,6 +72,7 @@ import {
   IconSignOut,
 } from "./nav-icons";
 import { MobileNav } from "./MobileNav";
+import { NavGroup } from "./NavGroup";
 import { BrandWordmark } from "./BrandWordmark";
 import { PlatformFooter } from "./PlatformFooter";
 import { IrisProvider } from "@/components/iris/IrisProvider";
@@ -183,6 +184,13 @@ export interface NavItem {
    * session is admin, the super-role that sees everything.
    */
   roles?: string[];
+  /**
+   * C1-F10 (D4) — the platform module this surface belongs to. When the
+   * tenant has the module switched off the item is hidden (NavGroup /
+   * MobileNav read the entitlements from TenantModulesProvider). Omitted →
+   * core surface, always shown subject to `roles`.
+   */
+  module?: PlatformModuleKey;
 }
 
 export const MAIN_NAV: NavItem[] = [
@@ -229,6 +237,7 @@ export const MAIN_NAV: NavItem[] = [
     key: "onboarding",
     label: "Onboarding",
     href: "/onboarding",
+    module: "onboarding",
     icon: <IconOnboarding />,
     roles: ["recruiter", "hr_ops", "people_ops", "admin"],
   },
@@ -240,6 +249,7 @@ export const MAIN_NAV: NavItem[] = [
     key: "joining-watchlist",
     label: "Joining watchlist",
     href: "/joining-watchlist",
+    module: "pre_joining_engagement",
     icon: <IconOnboarding />,
     roles: ["recruiter", "hr_head", "admin"],
   },
@@ -355,6 +365,7 @@ export const MAIN_NAV: NavItem[] = [
     key: "ask-data",
     label: "Ask your data",
     href: "/ask-data",
+    module: "ask_data",
     icon: <IconAskData />,
     roles: ["hr_head", "hr_ops", "recruiter", "hiring_manager", "admin"],
   },
@@ -384,6 +395,7 @@ export const MAIN_NAV: NavItem[] = [
     key: "market-intelligence",
     label: "Market intel",
     href: "/market-intelligence",
+    module: "market_intel",
     icon: <IconMarketIntel />,
     roles: ["hr_head", "admin"],
   },
@@ -479,6 +491,7 @@ export const MAIN_NAV: NavItem[] = [
     key: "availability",
     label: "My availability",
     href: "/availability",
+    module: "scheduling",
     icon: <IconInterviews />,
     roles: ["panel_member", "hiring_manager", "recruiter", "admin"],
   },
@@ -509,6 +522,7 @@ export const MAIN_NAV: NavItem[] = [
     key: "partners",
     label: "Partners",
     href: "/partners",
+    module: "partner_portal",
     icon: <IconBusinessUnits />,
     roles: ["admin", "hr_ops"],
   },
@@ -647,6 +661,7 @@ export const ADMIN_NAV: NavItem[] = [
     key: "scheduling-settings",
     label: "Interview scheduling",
     href: "/admin/scheduling",
+    module: "scheduling",
     icon: <IconInterviews />,
   },
   // T4.2 — configurable governance/compliance policy. The compliance-score
@@ -663,6 +678,7 @@ export const ADMIN_NAV: NavItem[] = [
     key: "diversity-slate",
     label: "Diverse slate",
     href: "/admin/diversity-slate",
+    module: "diversity_slate",
     icon: <IconGovernancePolicy />,
   },
   // T4.3 — document retention policy. The per-type retention years drive the
@@ -675,13 +691,20 @@ export const ADMIN_NAV: NavItem[] = [
   },
   // LD-1B — the L&D catalogue (pointers at learning hosted elsewhere) + the
   // curated tracks a recruiter pushes onto one hire's onboarding case.
-  { key: "learning", label: "Learning", href: "/admin/learning", icon: <IconLearning /> },
+  {
+    key: "learning",
+    label: "Learning",
+    href: "/admin/learning",
+    module: "learning",
+    icon: <IconLearning />,
+  },
   // PC-14 — pre-joining engagement: cadence, steps, quiet hours, signals,
   // renege reasons, company updates. (hr_head reaches it from the watchlist.)
   {
     key: "pre-joining",
     label: "Pre-joining engagement",
     href: "/admin/pre-joining",
+    module: "pre_joining_engagement",
     icon: <IconOnboarding />,
   },
   // PC-18 — welcome content per business unit: source material, AI draft
@@ -690,6 +713,7 @@ export const ADMIN_NAV: NavItem[] = [
     key: "welcome-content",
     label: "Welcome content",
     href: "/admin/welcome-content",
+    module: "welcome_guide",
     icon: <IconLearning />,
   },
   // R1.5b — scheduled report digests (cadence, recipients, UTC send hour). The
@@ -888,57 +912,6 @@ function Wordmark() {
   return (
     <div className="flex items-center gap-2.5 border-b border-sidebar-border bg-sidebar-brand px-4 py-[1.15rem]">
       <BrandWordmark />
-    </div>
-  );
-}
-
-function NavItemLink({ item, active }: { item: NavItem; active: boolean }) {
-  return (
-    <a
-      href={item.href}
-      aria-current={active ? "page" : undefined}
-      className={cn(
-        "relative flex items-center gap-2.5 rounded-md px-3 py-2 text-sm transition-colors",
-        active
-          ? "bg-sidebar-active font-medium text-sidebar-active-fg"
-          : "font-normal text-sidebar-fg-muted hover:bg-sidebar-elevated hover:text-sidebar-fg",
-      )}
-    >
-      {active ? (
-        <span
-          aria-hidden
-          className="absolute inset-y-1.5 left-0 w-0.5 rounded-full bg-sidebar-accent"
-        />
-      ) : null}
-      <span className={cn("shrink-0", active ? "text-sidebar-accent" : "text-current opacity-80")}>
-        {item.icon}
-      </span>
-      {item.label}
-    </a>
-  );
-}
-
-function NavGroup({
-  heading,
-  items,
-  active,
-}: {
-  heading?: string;
-  items: NavItem[];
-  active?: PortalNavKey;
-}) {
-  return (
-    <div className="px-3">
-      {heading ? (
-        <p className="px-3 pb-1.5 pt-4 text-[11px] font-semibold uppercase tracking-wider text-sidebar-fg-muted">
-          {heading}
-        </p>
-      ) : null}
-      <nav className="flex flex-col gap-0.5">
-        {items.map((item) => (
-          <NavItemLink key={item.key} item={item} active={active === item.key} />
-        ))}
-      </nav>
     </div>
   );
 }

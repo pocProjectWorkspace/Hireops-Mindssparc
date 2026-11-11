@@ -75,6 +75,7 @@ import {
 } from "../lib/interview-scheduling";
 import { candidateProcedure, protectedProcedure, type HonoTRPCContext } from "./trpc-core";
 import { withAudit } from "./with-audit";
+import { requireModule } from "../lib/platform/tenant-access";
 
 /** Recruiter-side scheduling actions — same set as scheduleInterview. */
 const INTERVIEW_MANAGE_ROLES = new Set(["admin", "hiring_manager", "recruiter"]);
@@ -382,6 +383,7 @@ export const schedulingProcedures = {
     .input(proposeInterviewSlotsInputSchema)
     .output(proposeInterviewSlotsOutputSchema)
     .query(async ({ ctx, input }) => {
+      await requireModule(ctx, "scheduling");
       requireAnyRole(ctx, INTERVIEW_MANAGE_ROLES, "You don't have access to interview scheduling.");
       const tenantId = requireTenant(ctx);
       return run(async () => {
@@ -414,6 +416,7 @@ export const schedulingProcedures = {
     .input(offerInterviewSlotsInputSchema)
     .output(offerInterviewSlotsOutputSchema)
     .mutation(async ({ ctx, input }) => {
+      await requireModule(ctx, "scheduling");
       requireAnyRole(
         ctx,
         INTERVIEW_MANAGE_ROLES,
@@ -529,6 +532,7 @@ export const schedulingProcedures = {
   candidateListMySlotOffers: candidateProcedure
     .output(candidateListMySlotOffersOutputSchema)
     .query(async ({ ctx }) => {
+      await requireModule(ctx, "scheduling");
       const { tenantId, personId } = ctx.candidate;
       const offers = await ctx.sql<{ id: string }[]>`
         SELECT o.id::text
@@ -573,6 +577,7 @@ export const schedulingProcedures = {
     .input(candidateGetSlotOfferInputSchema)
     .output(candidateGetSlotOfferOutputSchema)
     .query(async ({ ctx, input }) => {
+      await requireModule(ctx, "scheduling");
       const row = await ownedOffer(ctx.sql, ctx.candidate, input.offerId);
       return candidateOfferView(ctx.sql, row);
     }),
@@ -587,6 +592,7 @@ export const schedulingProcedures = {
     .input(candidateRequestRescheduleInputSchema)
     .output(candidateRequestRescheduleOutputSchema)
     .mutation(async ({ ctx, input }) => {
+      await requireModule(ctx, "scheduling");
       const { tenantId, personId } = ctx.candidate;
       return withAudit("candidate_request_reschedule", ctx, input, async () =>
         run(async () => {
@@ -668,6 +674,7 @@ export const schedulingProcedures = {
     .input(candidatePickSlotInputSchema)
     .output(candidatePickSlotOutputSchema)
     .mutation(async ({ ctx, input }) => {
+      await requireModule(ctx, "scheduling");
       const row = await ownedOffer(ctx.sql, ctx.candidate, input.offerId);
       return withAudit("candidate_pick_slot", ctx, input, async () => {
         const res = await bookOfferSlot(ctx.sql, {

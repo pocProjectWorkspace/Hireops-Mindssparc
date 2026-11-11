@@ -1,4 +1,5 @@
 import { Card } from "@/components/ui";
+import { TENANT_INACTIVE_GENERIC_MESSAGE } from "@hireops/api-types";
 import { getDeploymentBrand } from "@/lib/brand-env";
 
 /**
@@ -7,7 +8,7 @@ import { getDeploymentBrand } from "@/lib/brand-env";
  * Kyndryl recruiter (who has a tenant_user_membership but no partner_users
  * row) is turned away. Honest, calm, with a route back out.
  */
-export function NotAPartner({ email }: { email?: string }) {
+export function NotAPartner({ email, suspended = false }: { email?: string; suspended?: boolean }) {
   // Rendered for a non-partner identity, so partnerGetMe (and with it the
   // tenant's display name) is unavailable — fall back to deployment branding.
   const brandName = getDeploymentBrand().name;
@@ -25,39 +26,58 @@ export function NotAPartner({ email }: { email?: string }) {
             HireOps <span className="font-normal text-neutral-500">Partners</span>
           </span>
         </div>
-        <Card className="shadow-2">
-          <h1 className="text-lg font-semibold tracking-tight text-neutral-900">
-            Not a partner account
-          </h1>
-          <p className="mt-2 text-sm text-neutral-600">
-            {email ? (
-              <>
-                <span className="font-medium text-neutral-800">{email}</span> is signed in, but it
-                isn&apos;t linked to a sourcing-partner organisation.
-              </>
-            ) : (
-              <>This account isn&apos;t linked to a sourcing-partner organisation.</>
-            )}{" "}
-            If you&apos;re{" "}
-            {brandName ? `a ${brandName} employee` : "an employee of the hiring organisation"} or a
-            candidate, please use the portal meant for you.
-          </p>
-          <p className="mt-3 text-sm text-neutral-500">
-            Think this is a mistake? Contact your{" "}
-            {brandName
-              ? `${brandName} point of contact`
-              : "point of contact at the hiring organisation"}{" "}
-            to have your partner access provisioned.
-          </p>
-          <div className="mt-6">
-            <a
-              href="/logout"
-              className="inline-flex h-9 items-center justify-center rounded-button bg-brand-600 px-4 text-sm font-medium text-white transition-colors hover:bg-brand-700"
-            >
-              Sign out
-            </a>
-          </div>
-        </Card>
+        {suspended ? (
+          // C1-F10: the partner account is real; the hiring organisation's
+          // HireOps access is suspended or has ended.
+          <Card className="shadow-2">
+            <h1 className="text-lg font-semibold tracking-tight text-neutral-900">
+              Access not available
+            </h1>
+            <p className="mt-2 text-sm text-neutral-600">{TENANT_INACTIVE_GENERIC_MESSAGE}</p>
+            <div className="mt-6">
+              <a
+                href="/logout"
+                className="inline-flex h-9 items-center justify-center rounded-button bg-brand-600 px-4 text-sm font-medium text-white transition-colors hover:bg-brand-700"
+              >
+                Sign out
+              </a>
+            </div>
+          </Card>
+        ) : (
+          <Card className="shadow-2">
+            <h1 className="text-lg font-semibold tracking-tight text-neutral-900">
+              Not a partner account
+            </h1>
+            <p className="mt-2 text-sm text-neutral-600">
+              {email ? (
+                <>
+                  <span className="font-medium text-neutral-800">{email}</span> is signed in, but it
+                  isn&apos;t linked to a sourcing-partner organisation.
+                </>
+              ) : (
+                <>This account isn&apos;t linked to a sourcing-partner organisation.</>
+              )}{" "}
+              If you&apos;re{" "}
+              {brandName ? `a ${brandName} employee` : "an employee of the hiring organisation"} or
+              a candidate, please use the portal meant for you.
+            </p>
+            <p className="mt-3 text-sm text-neutral-500">
+              Think this is a mistake? Contact your{" "}
+              {brandName
+                ? `${brandName} point of contact`
+                : "point of contact at the hiring organisation"}{" "}
+              to have your partner access provisioned.
+            </p>
+            <div className="mt-6">
+              <a
+                href="/logout"
+                className="inline-flex h-9 items-center justify-center rounded-button bg-brand-600 px-4 text-sm font-medium text-white transition-colors hover:bg-brand-700"
+              >
+                Sign out
+              </a>
+            </div>
+          </Card>
+        )}
       </div>
     </main>
   );

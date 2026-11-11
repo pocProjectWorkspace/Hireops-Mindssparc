@@ -308,6 +308,9 @@ export async function purgeExpiredInterviewMedia(
  * to INTERVIEW_MEDIA_RETENTION_DAYS — the value the sweep used to hard-code.
  * Defaults are never re-derived here.
  */
+// C1-F10: DELIBERATELY NOT gated on tenant lifecycle. Deleting audio past its
+// retention window is a data-protection duty owed to candidates, not a service
+// to the tenant — a suspended or churned tenant's audio must still go on time.
 async function loadInterviewAudioDaysByTenant(sql: SqlHandle): Promise<Map<string, number>> {
   const rows = await sql<{ tenant_id: string; settings: unknown }[]>`
     SELECT id::text AS tenant_id, settings FROM public.tenants

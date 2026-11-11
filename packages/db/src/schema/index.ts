@@ -145,3 +145,5 @@ export * from "./interview-scheduling";
 export * from "./pre-joining-engagement";
 // PC-18 welcome guide per business unit: sources, versioned guides, read receipts (0130)
 export * from "./welcome-guides";
+// C1-F10 platform layer: operators, platform audit trail, module entitlements (0134)
+export * from "./platform";

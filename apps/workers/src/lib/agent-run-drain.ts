@@ -61,6 +61,7 @@ import {
   type ExecutorDeps,
 } from "@hireops/agent-actions";
 import { createExecutorDeps } from "./agent-executor-deps";
+import { tenantGateSql } from "./tenant-gate";
 
 export interface AgentDrainOpts {
   batchSize?: number;
@@ -122,6 +123,8 @@ export async function drainAgentRunOutboxOnce(opts: AgentDrainOpts): Promise<{
       SELECT id FROM public.agent_run_outbox
       WHERE status = 'pending'
         AND (locked_until IS NULL OR locked_until < now())
+      -- C1-F10: skip rows of non-active tenants (D3).
+        ${tenantGateSql("agent_run_outbox")}
       ORDER BY enqueued_at
       LIMIT ${batchSize}
       FOR UPDATE SKIP LOCKED

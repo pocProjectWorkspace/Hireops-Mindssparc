@@ -94,6 +94,7 @@ import {
   INTERVIEW_NOTES_SCHEMA_NAME,
   type InterviewNotesAiResponse,
 } from "./interview-notes-prompt";
+import { tenantGateSql } from "./tenant-gate";
 
 /**
  * How long a claimed row is treated as legitimately in flight.
@@ -237,6 +238,19 @@ export async function drainTranscriptOutboxOnce(
     WHERE id IN (
       SELECT id FROM public.transcript_outbox
       WHERE status = 'pending'
+      -- C1-F10: skip rows of non-active tenants (D3), and (D4) recordings whose
+      -- module is switched off: an AI-round recording needs ai_interview,
+      -- any other recording (manual upload / vendor bot) needs notetaker.
+        ${tenantGateSql("transcript_outbox")}
+        AND NOT EXISTS (
+          SELECT 1 FROM public.interview_recordings gate_r
+            JOIN public.tenant_modules gate_m
+              ON gate_m.tenant_id = gate_r.tenant_id AND gate_m.enabled = false
+             AND gate_m.module_key = CASE WHEN gate_r.source = 'ai_interview'
+                                          THEN 'ai_interview' ELSE 'notetaker' END
+           WHERE gate_r.id = transcript_outbox.recording_id
+             AND gate_r.tenant_id = transcript_outbox.tenant_id
+        )
       ORDER BY created_at
       LIMIT ${batchSize}
       FOR UPDATE SKIP LOCKED

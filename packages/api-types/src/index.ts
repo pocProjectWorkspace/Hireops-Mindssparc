@@ -64,3 +64,4 @@ export * from "./welcome-guide";
 export * from "./role-labels";
 export * from "./tenant-labels";
 export * from "./urgency-settings";
+export * from "./platform";
