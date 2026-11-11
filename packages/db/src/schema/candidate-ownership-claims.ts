@@ -7,6 +7,7 @@ import {
   index,
   uniqueIndex,
   unique,
+  check,
   foreignKey,
   pgPolicy,
 } from "drizzle-orm/pg-core";
@@ -15,9 +16,14 @@ import { persons } from "./persons";
 import { partnerOrgs } from "./partner-orgs";
 import { partnerUsers } from "./partner-users";
 import { applications } from "./applications";
+import { requisitions } from "./requisitions";
 import { ownershipClaimStatusEnum } from "./ownership-claim-status";
 
 /**
+ * BUG-12 (0132): a claim also carries its exclusivity SCOPE (org_wide |
+ * req_only, from the owning org's MSA at claim time); "one active claim per
+ * person" below is now "one active org-wide claim per person".
+ *
  * The claim-window state machine — the org's live MSA exclusivity_window_days
  * once terms are agreed, otherwise the tenant fallback
  * (tenants.settings.partnerDefaults.claimWindowDays, schema default 90 days —
@@ -63,14 +69,33 @@ export const candidateOwnershipClaims = pgTable(
     releasedAt: timestamp("released_at", { withTimezone: true }),
     releasedReason: text("released_reason"),
     supersededByClaimId: uuid("superseded_by_claim_id"),
+    /**
+     * C1-BUGS BUG-12 (0132) — the owning org's MSA exclusivity scope,
+     * snapshotted at claim time: 'org_wide' covers every requisition;
+     * 'req_only' covers only `requisition_id`. See apps/api lib/partner-claims.ts.
+     */
+    exclusivityScope: text("exclusivity_scope").notNull().default("org_wide"),
+    /** The requisition a req_only claim is limited to; NULL for org_wide. */
+    requisitionId: uuid("requisition_id"),
   },
   (table) => [
     unique("uniq_candidate_ownership_claims_tenant_id_id").on(table.tenantId, table.id),
-    // THE constraint that prevents two active claims for the same person.
-    // See file-level comment for why the predicate is status-only.
+    // THE constraint that prevents two active ORG-WIDE claims for the same
+    // person. See file-level comment for why the predicate has no now().
+    // BUG-12 (0132): req_only claims are unique per (person, requisition)
+    // instead; app logic (person advisory lock) keeps an org_wide claim from
+    // being taken over another org's req_only claim on the same req.
     uniqueIndex("uniq_active_claim_per_person")
       .on(table.tenantId, table.personId)
-      .where(sql`status = 'active'`),
+      .where(sql`status = 'active' AND exclusivity_scope = 'org_wide'`),
+    uniqueIndex("uniq_active_req_claim_per_person")
+      .on(table.tenantId, table.personId, table.requisitionId)
+      .where(sql`status = 'active' AND exclusivity_scope = 'req_only'`),
+    check(
+      "candidate_ownership_claims_scope_check",
+      sql`(${table.exclusivityScope} = 'org_wide' AND ${table.requisitionId} IS NULL)
+       OR (${table.exclusivityScope} = 'req_only' AND ${table.requisitionId} IS NOT NULL)`,
+    ),
     index("idx_claims_partner_status_claimed").on(
       table.tenantId,
       table.partnerOrgId,
@@ -96,6 +121,11 @@ export const candidateOwnershipClaims = pgTable(
       foreignColumns: [partnerUsers.tenantId, partnerUsers.id],
       name: "fk_claims_partner_user",
     }).onDelete("set null"),
+    foreignKey({
+      columns: [table.tenantId, table.requisitionId],
+      foreignColumns: [requisitions.tenantId, requisitions.id],
+      name: "fk_claims_requisition",
+    }).onDelete("cascade"),
     foreignKey({
       columns: [table.tenantId, table.claimedViaApplicationId],
       foreignColumns: [applications.tenantId, applications.id],

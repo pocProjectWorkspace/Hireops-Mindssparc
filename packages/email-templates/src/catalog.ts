@@ -758,7 +758,7 @@ export const EMAIL_TEMPLATE_CATALOG: Record<TemplateKey, EmailTemplateCatalogEnt
     templateKey: "partner.claim_expiry_warning",
     label: "Partner claim expiring",
     description:
-      "Sent once, seven days before a partner's 90-day candidate ownership claim expires.",
+      "Sent once, ahead of a partner's candidate ownership claim expiring — the lead time is the tenant's partner setting (default 14 days).",
     subject: {
       defaultText: "Your claim on {candidateName} expires on {expiresAtFormatted}",
       tokens: ["candidateName", "expiresAtFormatted", "companyName"],

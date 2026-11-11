@@ -247,7 +247,7 @@ describe("CAND-03 candidate profile + notifications", () => {
     >`
       SELECT phone_primary, phone_normalised, location_country FROM public.persons WHERE id = ${PERSON_A}`;
     assert.equal(p?.phone_primary, "+91 90000 12345");
-    assert.equal(p?.phone_normalised, "919000012345");
+    assert.equal(p?.phone_normalised, "+919000012345", "BUG-5: E.164 from the person country");
     assert.equal(p?.location_country, "IN");
 
     // parsed_skills shallow-merged — pre-existing keys preserved.

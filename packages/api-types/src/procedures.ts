@@ -4086,8 +4086,8 @@ export const partnerSubmitCandidateFieldsSchema = z.object({
 /**
  * partnerSubmitCandidate input. `consentAttested` collapses the wireflows'
  * three DPDPA/accuracy checkboxes; `ownershipAcknowledged` is the ownership-
- * claim attestation ("By submitting, you claim ownership … the 90-day
- * exclusivity window starts now"). Both are z.literal(true) so a submission
+ * claim attestation (window + scope from the org's terms — see
+ * partnerOwnershipAttestation / PARTNER_CONSENT_VERSION). Both are z.literal(true) so a submission
  * that didn't tick them fails validation server-side, not just in the UI.
  */
 export const partnerSubmitCandidateInputSchema = z.object({
@@ -5059,9 +5059,10 @@ export type CandidateStageStep = (typeof CANDIDATE_STAGE_STEPS)[number];
 
 export const requestCandidateActivationInputSchema = z.object({
   email: z.string().email(),
-  // Which tenant to activate against. The candidate login page carries this
-  // (single-tenant POC defaults to kyndryl-poc); a tenant-scoped path or a
-  // slug keeps the endpoint from having to enumerate tenants.
+  // Which tenant to activate against. The candidate login page derives it
+  // from the route (/t/<slug>/candidate/login), ?tenant=, or the deployment's
+  // NEXT_PUBLIC_DEFAULT_TENANT_SLUG (BUG-13 — no client default); a slug keeps
+  // the endpoint from having to enumerate tenants.
   tenantSlug: z
     .string()
     .min(1)
@@ -5750,7 +5751,7 @@ export type ListApplicationDocumentCandidatesOutput = z.infer<
   typeof listApplicationDocumentCandidatesOutputSchema
 >;
 
-/** Requestable document types (from the tenant-agnostic document_types table). */
+/** Requestable document types (platform document_types rows + the tenant's own). */
 export const requestableDocumentTypeSchema = z.object({
   id: z.string().uuid(),
   code: z.string(),

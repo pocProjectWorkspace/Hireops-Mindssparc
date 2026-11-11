@@ -25,6 +25,8 @@
 import { TRPCError } from "@trpc/server";
 import { and, asc, desc, eq, gt, isNull, sql } from "drizzle-orm";
 import {
+  db as poolDb,
+  tenants,
   applications,
   candidateOwnershipClaims,
   partnerAssignments,
@@ -46,8 +48,31 @@ import type {
   RevokePartnerInvitationOutput,
 } from "@hireops/api-types";
 import { createPartnerInvitation, revokePartnerInvitationForTenant } from "./partner-admin";
-import { tenantStageLabelOverride, type TenantLabels } from "@hireops/api-types";
+import {
+  resolveClaimExpiryWarningDays,
+  tenantStageLabelOverride,
+  type TenantLabels,
+} from "@hireops/api-types";
 import { resolveTenantLabelsDb } from "./tenant-labels";
+
+/**
+ * BUG-9 — the tenant's claim-expiry warning lead time
+ * (settings.partnerDefaults.claimExpiryWarningDays, platform default 14), the
+ * same number the worker's warning email uses. Unscoped pool + explicit id
+ * predicate (the resolveTenantLabelsDb read discipline). Never throws.
+ */
+async function resolveClaimExpiryWarningDaysDb(tenantId: string): Promise<number> {
+  try {
+    const [row] = await poolDb
+      .select({ settings: tenants.settings })
+      .from(tenants)
+      .where(eq(tenants.id, tenantId))
+      .limit(1);
+    return resolveClaimExpiryWarningDays(row?.settings ?? null);
+  } catch {
+    return resolveClaimExpiryWarningDays(null);
+  }
+}
 
 /**
  * The role gate for the three team procedures. FORBIDDEN with an identical
@@ -246,8 +271,6 @@ export async function setPartnerTeammateActive(
 const NEW_REQ_DAYS = 7;
 /** How long a submission may sit at one stage before it needs chasing. */
 const STALE_STAGE_DAYS = 14;
-/** How close an ownership window has to be to expiry to be worth flagging. */
-const CLAIM_EXPIRY_WARN_DAYS = 14;
 /** The feed is a nudge list, not a report. */
 const FEED_CAP = 20;
 /**
@@ -416,6 +439,7 @@ export async function getPartnerAttentionFeed(
 
   const items: PartnerAttentionItem[] = [];
   const labels = await resolveTenantLabelsDb(tenantId);
+  const claimExpiryWarnDays = await resolveClaimExpiryWarningDaysDb(tenantId);
 
   for (const r of newReqRows) {
     items.push({
@@ -458,7 +482,7 @@ export async function getPartnerAttentionFeed(
     // Expiry is the date the item is ABOUT, so it is the item's occurredAt —
     // which also sorts the soonest-to-lapse windows to the top of the feed.
     const daysToExpiry = wholeDaysBetween(now, r.expiresAt);
-    if (daysToExpiry <= CLAIM_EXPIRY_WARN_DAYS) {
+    if (daysToExpiry <= claimExpiryWarnDays) {
       items.push({
         kind: "claim_expiring",
         title: `Your ownership of ${who} expires in ${daysToExpiry} days`,

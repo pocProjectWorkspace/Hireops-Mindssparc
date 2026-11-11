@@ -51,6 +51,9 @@ export const positions = pgTable(
     jobFunction: text("function"),
     locationType: locationTypeEnum("location_type").notNull().default("onsite"),
     primaryLocation: text("primary_location"),
+    // C1-BUGS BUG-6 (0132) — the wizard's employment type, used by JD
+    // generation. Free text for now; a tenant taxonomy key later (F3 / TX4).
+    employmentType: text("employment_type"),
     compBandMin: numeric("comp_band_min", { precision: 12, scale: 2 }),
     compBandMax: numeric("comp_band_max", { precision: 12, scale: 2 }),
     compCurrency: char("comp_currency", { length: 3 }),
@@ -78,6 +81,10 @@ export const positions = pgTable(
     check(
       "positions_comp_range_check",
       sql`(${table.compBandMin} IS NULL OR ${table.compBandMax} IS NULL OR ${table.compBandMin} <= ${table.compBandMax})`,
+    ),
+    check(
+      "positions_employment_type_len_check",
+      sql`${table.employmentType} IS NULL OR char_length(${table.employmentType}) <= 120`,
     ),
     check(
       "positions_retired_coherence_check",

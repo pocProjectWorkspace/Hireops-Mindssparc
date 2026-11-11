@@ -91,17 +91,16 @@ function mapSourceText(text: string): "career_site" | "referral" | "job_board" |
 }
 
 /**
- * Indian-10-digit OR E.164. Country code auto-prepended (+91) when the
- * user enters a bare 10-digit number. The server re-normalises to
- * digits-only for dedup; this client-side step is for storage shape.
+ * E.164 input is compacted ("+91 98765-43210" → "+919876543210"); anything
+ * else is sent as typed. The server places a bare national number in the
+ * applicant's / tenant's country for dedup (BUG-5) — no client-side country
+ * is assumed here.
  */
 function normalisePhoneForSubmit(raw: string): string {
   const trimmed = raw.trim();
   if (/^\+\d{8,15}$/.test(trimmed.replace(/[\s-]/g, ""))) {
     return trimmed.replace(/[\s-]/g, "");
   }
-  const digits = trimmed.replace(/[^0-9]/g, "");
-  if (digits.length === 10) return `+91${digits}`;
   return trimmed; // let server-side validation reject malformed input
 }
 
@@ -343,7 +342,7 @@ export function ApplyForm({
         type="tel"
         required
         autoComplete="tel"
-        hint="10 digits (we&rsquo;ll add +91) or full international format."
+        hint="Best with the country code, e.g. +44 20 7946 0958."
         value={phone}
         onChange={(e) => setPhone(e.target.value)}
         error={fieldErrors.phone}
