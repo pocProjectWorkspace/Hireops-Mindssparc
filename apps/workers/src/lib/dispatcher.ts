@@ -79,6 +79,20 @@ async function loadTemplateOverrides(
   return overrides.subject || overrides.slots ? overrides : undefined;
 }
 
+/**
+ * C1-F11 — the tenant's sender DISPLAY NAME (settings.communications.senderName,
+ * set in the setup wizard). The address stays the deployment's EMAIL_FROM. A
+ * per-email senderName in the template data (pre-joining journey) wins.
+ */
+async function loadTenantSenderName(tenantId: string): Promise<string | undefined> {
+  const [row] = await poolSql<{ sender_name: string | null }[]>`
+    SELECT settings -> 'communications' ->> 'senderName' AS sender_name
+    FROM public.tenants WHERE id = ${tenantId}
+  `;
+  const name = row?.sender_name?.trim();
+  return name ? name.slice(0, 80) : undefined;
+}
+
 export async function drainOutboxOnce(opts: DispatcherOpts): Promise<{
   claimed: number;
   sent: number;
@@ -137,7 +151,7 @@ export async function drainOutboxOnce(opts: DispatcherOpts): Promise<{
       const fromName =
         typeof data.senderName === "string" && data.senderName.trim()
           ? data.senderName.trim()
-          : undefined;
+          : await loadTenantSenderName(row.tenant_id);
       const result = await provider.send({
         ...(replyTo ? { replyTo } : {}),
         ...(fromName ? { fromName } : {}),

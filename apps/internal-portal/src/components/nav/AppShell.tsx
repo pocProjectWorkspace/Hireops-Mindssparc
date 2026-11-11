@@ -172,7 +172,10 @@ export type PortalNavKey =
   // PC-14 — pre-joining engagement settings + company updates (admin)
   | "pre-joining"
   // PC-18 — per-business-unit welcome guide source + generated versions (admin)
-  | "welcome-content";
+  | "welcome-content"
+  // C1-F11 — the tenant setup wizard + configuration export / import
+  | "tenant-setup"
+  | "config-transfer";
 
 // ONBOARD-1: NavItem is exported so the onboarding journey can render the
 // same nav items the sidebar shows (filtered by role via navItemsForRoles).
@@ -586,10 +589,19 @@ export const ADMIN_NAV: NavItem[] = [
     icon: <IconBiasShield />,
   },
   { key: "messaging", label: "Messaging", href: "/admin/messaging", icon: <IconMessaging /> },
+  // C1-F11 — the tenant setup wizard (organisation → go-live checklist).
+  { key: "tenant-setup", label: "Tenant setup", href: "/setup", icon: <IconSystemSetup /> },
   {
     key: "system-setup",
     label: "System setup",
     href: "/admin/system-setup",
+    icon: <IconSystemSetup />,
+  },
+  // C1-F11 — configuration export / import (JSON, dry-run diff before apply).
+  {
+    key: "config-transfer",
+    label: "Config export / import",
+    href: "/admin/config-transfer",
     icon: <IconSystemSetup />,
   },
   // T1.3 — configurable approval routing (G13, option b).
@@ -851,7 +863,9 @@ export const ADMIN_NAV_SECTIONS: NavSection[] = [
   {
     heading: "Admin · Configuration",
     keys: [
+      "tenant-setup",
       "system-setup",
+      "config-transfer",
       "sources",
       "approval-routing",
       "email-templates",

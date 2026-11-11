@@ -1401,6 +1401,7 @@ import {
 import { withAudit } from "./with-audit";
 import { schedulingProcedures } from "./scheduling-procedures";
 import { platformProcedures } from "./platform-procedures";
+import { provisioningProcedures } from "./provisioning-procedures";
 import { requireModule } from "../lib/platform/tenant-access";
 import { orgArchitectureProcedures } from "./org-architecture-procedures";
 import { loadSchedulingSettings, queuePanelistInvites } from "../lib/interview-scheduling";
@@ -4363,6 +4364,8 @@ export const appRouter = router({
   // C1-F10 — platform console (operators only) + the sign-in doors' lifecycle
   // check. Flat platform* names, defined in ./platform-procedures.ts.
   ...platformProcedures,
+  // C1-F11 — tenant provisioning, starter packs, setup wizard, config export/import.
+  ...provisioningProcedures,
 
   // ─────────── public: apply form ───────────
   submitApplication: publicProcedure

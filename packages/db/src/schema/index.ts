@@ -154,3 +154,5 @@ export * from "./pre-joining-engagement";
 export * from "./welcome-guides";
 // C1-F10 platform layer: operators, platform audit trail, module entitlements (0134)
 export * from "./platform";
+// C1-F11 provisioning jobs (0135)
+export * from "./tenant-provisioning-jobs";

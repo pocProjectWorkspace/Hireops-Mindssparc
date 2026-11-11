@@ -125,6 +125,8 @@ const NAV_HELP: Record<string, string> = {
   "bias-shield": "Bias detection and anonymisation controls.",
   messaging: "Messaging templates and channels.",
   "system-setup": "Core tenant configuration.",
+  "tenant-setup": "Step-by-step setup and the go-live checklist.",
+  "config-transfer": "Export or import this organisation's configuration.",
   "approval-routing": "Who approves what, and in what order.",
   "email-templates": "Email templates for candidate comms.",
   "candidate-fields": "Custom candidate fields.",

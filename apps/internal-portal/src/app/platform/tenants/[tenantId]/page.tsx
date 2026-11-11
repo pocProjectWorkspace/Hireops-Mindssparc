@@ -5,6 +5,7 @@ import { createPlatformServerTRPCCaller } from "@/lib/trpc-server";
 import { PlatformShell, TenantStatusBadge } from "@/components/platform/PlatformShell";
 import { Card } from "@/components/ui";
 import { TenantControls } from "./TenantControls";
+import { ProvisioningPanel } from "./ProvisioningPanel";
 
 export const dynamic = "force-dynamic";
 
@@ -18,8 +19,11 @@ export default async function PlatformTenantPage({ params }: { params: { tenantI
   const caller = createPlatformServerTRPCCaller(op.userId);
   const me = await caller.platformWhoami();
   let data;
+  let provisioning;
   try {
     data = await caller.platformGetTenant({ tenantId: params.tenantId });
+    provisioning = (await caller.platformGetProvisioningStatus({ tenantId: params.tenantId }))
+      .status;
   } catch (err) {
     if (err instanceof TRPCError && (err.code === "NOT_FOUND" || err.code === "BAD_REQUEST")) {
       notFound();
@@ -68,6 +72,7 @@ export default async function PlatformTenantPage({ params }: { params: { tenantI
           canWrite={me.canWrite}
         />
       </div>
+      <ProvisioningPanel tenantId={t.id} status={provisioning} canWrite={me.canWrite} />
       <Card className="mt-6">
         <h2 className="mb-3 text-sm font-semibold">Platform audit (latest 20)</h2>
         {data.recentAudit.length === 0 ? (

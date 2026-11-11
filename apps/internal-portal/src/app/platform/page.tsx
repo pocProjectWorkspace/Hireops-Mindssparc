@@ -20,6 +20,16 @@ export default async function PlatformTenantsPage() {
 
   return (
     <PlatformShell title="Tenants" active="tenants" operator={me}>
+      {me.canWrite ? (
+        <div className="mb-4">
+          <a
+            href="/platform/tenants/new"
+            className="inline-flex rounded-md bg-brand-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-brand-700"
+          >
+            Create tenant
+          </a>
+        </div>
+      ) : null}
       <TableShell>
         <Thead>
           <Th>Tenant</Th>
