@@ -7,6 +7,10 @@ import type {
   PartnerOrgSummary,
   PartnerTierValue,
 } from "@hireops/api-types";
+import {
+  CLAIM_EXPIRY_WARNING_DAYS_MAX,
+  PLATFORM_CLAIM_EXPIRY_WARNING_DAYS,
+} from "@hireops/api-types";
 import { Input, Select, Button } from "@hireops/ui";
 import { Card, Badge, EmptyState, TableShell, Thead, Th, Tbody, Tr, Td } from "@/components/ui";
 import { PageContainer } from "@/components/nav/PageContainer";
@@ -150,21 +154,38 @@ function PartnerDefaultsCard() {
   // query the moment it lands without an effect, and an in-progress edit is
   // never clobbered by a refetch.
   const [draft, setDraft] = useState<string | null>(null);
+  // BUG-9 — the claim-expiry warning lead time (feed + email), same pattern.
+  const [warnDraft, setWarnDraft] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const saved = query.data?.claimWindowDays ?? null;
   const value = draft ?? (saved === null ? "" : String(saved));
   const parsed = Number(value.trim());
-  const valid = value.trim() !== "" && Number.isInteger(parsed) && parsed >= 1 && parsed <= 365;
-  const dirty = saved !== null && value.trim() !== String(saved);
+  const windowValid =
+    value.trim() !== "" && Number.isInteger(parsed) && parsed >= 1 && parsed <= 365;
+
+  const savedWarn = query.data?.claimExpiryWarningDays ?? null;
+  const warnValue = warnDraft ?? (savedWarn === null ? "" : String(savedWarn));
+  const warnParsed = Number(warnValue.trim());
+  const warnValid =
+    warnValue.trim() !== "" &&
+    Number.isInteger(warnParsed) &&
+    warnParsed >= 1 &&
+    warnParsed <= CLAIM_EXPIRY_WARNING_DAYS_MAX;
+
+  const valid = windowValid && warnValid;
+  const dirty =
+    (saved !== null && value.trim() !== String(saved)) ||
+    (savedWarn !== null && warnValue.trim() !== String(savedWarn));
 
   const update = trpc.updatePartnerDefaults.useMutation({
     onSuccess: async (res) => {
       setDraft(null);
+      setWarnDraft(null);
       setError(null);
       setNotice(
-        `Saved. Partners without an MSA now get a ${res.partnerDefaults.claimWindowDays}-day claim window on their next submission.`,
+        `Saved. Partners without an MSA now get a ${res.partnerDefaults.claimWindowDays}-day claim window on their next submission; partners are warned ${res.partnerDefaults.claimExpiryWarningDays} days before a claim expires.`,
       );
       await utils.getPartnerDefaults.invalidate();
     },
@@ -209,16 +230,38 @@ function PartnerDefaultsCard() {
             setError(null);
           }}
           error={
-            value.trim() !== "" && !valid ? "Enter a whole number of days, 1 to 365." : undefined
+            value.trim() !== "" && !windowValid
+              ? "Enter a whole number of days, 1 to 365."
+              : undefined
           }
           hint="Between 1 and 365 days. Default 90."
+        />
+        <Input
+          className="w-72"
+          label="Warn partners before a claim expires (days)"
+          type="number"
+          min={1}
+          max={CLAIM_EXPIRY_WARNING_DAYS_MAX}
+          value={warnValue}
+          disabled={query.isLoading}
+          onChange={(e) => {
+            setWarnDraft(e.target.value);
+            setNotice(null);
+            setError(null);
+          }}
+          error={
+            warnValue.trim() !== "" && !warnValid
+              ? `Enter a whole number of days, 1 to ${CLAIM_EXPIRY_WARNING_DAYS_MAX}.`
+              : undefined
+          }
+          hint={`Dashboard flag and reminder email, every claim. Default ${PLATFORM_CLAIM_EXPIRY_WARNING_DAYS}.`}
         />
         <Button
           onClick={() => {
             if (!valid) return;
             setNotice(null);
             setError(null);
-            update.mutate({ claimWindowDays: parsed });
+            update.mutate({ claimWindowDays: parsed, claimExpiryWarningDays: warnParsed });
           }}
           disabled={!valid || !dirty || update.isPending || query.isLoading}
         >

@@ -17,6 +17,10 @@ import {
 import { tenants } from "./tenants";
 import { businessUnits } from "./business-units";
 import { compBands } from "./comp-bands";
+import { locations } from "./locations";
+import { jobProfiles } from "./job-profiles";
+import { jobFunctions } from "./job-functions";
+import { jobLevels } from "./job-levels";
 import { tenantUserMemberships } from "./tenant-user-memberships";
 import { locationTypeEnum } from "./location-type";
 
@@ -51,6 +55,9 @@ export const positions = pgTable(
     jobFunction: text("function"),
     locationType: locationTypeEnum("location_type").notNull().default("onsite"),
     primaryLocation: text("primary_location"),
+    // C1-BUGS BUG-6 (0132) — the wizard's employment type, used by JD
+    // generation. Free text for now; a tenant taxonomy key later (F3 / TX4).
+    employmentType: text("employment_type"),
     compBandMin: numeric("comp_band_min", { precision: 12, scale: 2 }),
     compBandMax: numeric("comp_band_max", { precision: 12, scale: 2 }),
     compCurrency: char("comp_currency", { length: 3 }),
@@ -59,6 +66,13 @@ export const positions = pgTable(
     // band's min/max/currency are COPIED onto the comp_* columns above, so an
     // edited value shows as a divergence from the linked band.
     compBandId: uuid("comp_band_id"),
+    // C1-F3 (0133) — structured org + job architecture links (all nullable).
+    // The free-text level / function / primary_location above stay as the
+    // back-compat display fallback for rows without a structured link.
+    locationId: uuid("location_id"),
+    jobProfileId: uuid("job_profile_id"),
+    jobFunctionId: uuid("job_function_id"),
+    jobLevelId: uuid("job_level_id"),
     hiringManagerId: uuid("hiring_manager_id"),
     workdayPositionWid: text("workday_position_wid"),
     isActive: boolean("is_active").notNull().default(true),
@@ -78,6 +92,10 @@ export const positions = pgTable(
     check(
       "positions_comp_range_check",
       sql`(${table.compBandMin} IS NULL OR ${table.compBandMax} IS NULL OR ${table.compBandMin} <= ${table.compBandMax})`,
+    ),
+    check(
+      "positions_employment_type_len_check",
+      sql`${table.employmentType} IS NULL OR char_length(${table.employmentType}) <= 120`,
     ),
     check(
       "positions_retired_coherence_check",
@@ -101,6 +119,31 @@ export const positions = pgTable(
       foreignColumns: [compBands.tenantId, compBands.id],
       name: "fk_positions_comp_band",
     }).onDelete("restrict"),
+    // C1-F3 (0133) — RESTRICT: these objects are deactivated, never deleted.
+    foreignKey({
+      columns: [table.tenantId, table.locationId],
+      foreignColumns: [locations.tenantId, locations.id],
+      name: "fk_positions_location",
+    }).onDelete("restrict"),
+    foreignKey({
+      columns: [table.tenantId, table.jobProfileId],
+      foreignColumns: [jobProfiles.tenantId, jobProfiles.id],
+      name: "fk_positions_job_profile",
+    }).onDelete("restrict"),
+    foreignKey({
+      columns: [table.tenantId, table.jobFunctionId],
+      foreignColumns: [jobFunctions.tenantId, jobFunctions.id],
+      name: "fk_positions_job_function",
+    }).onDelete("restrict"),
+    foreignKey({
+      columns: [table.tenantId, table.jobLevelId],
+      foreignColumns: [jobLevels.tenantId, jobLevels.id],
+      name: "fk_positions_job_level",
+    }).onDelete("restrict"),
+    index("idx_positions_location").on(table.tenantId, table.locationId),
+    index("idx_positions_job_profile").on(table.tenantId, table.jobProfileId),
+    index("idx_positions_job_function").on(table.tenantId, table.jobFunctionId),
+    index("idx_positions_job_level").on(table.tenantId, table.jobLevelId),
     foreignKey({
       columns: [table.tenantId, table.createdBy],
       foreignColumns: [tenantUserMemberships.tenantId, tenantUserMemberships.id],

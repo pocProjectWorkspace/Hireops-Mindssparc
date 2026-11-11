@@ -222,6 +222,9 @@ export async function slaImminentScan(log: Logger): Promise<void> {
 async function loadSystemSetupByTenant(): Promise<Map<string, SystemSetup>> {
   const rows = await poolSql<{ tenant_id: string; settings: unknown }[]>`
     SELECT id::text AS tenant_id, settings FROM public.tenants
+    -- C1-F10 (D3): only active tenants are scanned (no alert for a suspended
+    -- tenant; their CASE branches and escalation rules are simply absent).
+    WHERE status = 'active'
   `;
   const map = new Map<string, SystemSetup>();
   for (const r of rows) {
@@ -245,6 +248,9 @@ async function loadSlaThresholdsByTenant(): Promise<
 > {
   const rows = await poolSql<{ tenant_id: string; settings: unknown }[]>`
     SELECT id::text AS tenant_id, settings FROM public.tenants
+    -- C1-F10 (D3): only active tenants are scanned (no alert for a suspended
+    -- tenant; their CASE branches and escalation rules are simply absent).
+    WHERE status = 'active'
   `;
   const map = new Map<string, Record<ApplicationStage, number | null>>();
   for (const r of rows) {
@@ -383,6 +389,8 @@ export async function agentApprovalTtlScan(
     WHERE ar.status = 'pending'
       AND ar.ttl_at IS NOT NULL
       AND ar.ttl_at <= now()
+      -- C1-F10 (D3): a suspended tenant's approvals do not auto-resolve.
+      AND EXISTS (SELECT 1 FROM public.tenants t WHERE t.id = ar.tenant_id AND t.status = 'active')
   `;
 
   if (rows.length === 0) {

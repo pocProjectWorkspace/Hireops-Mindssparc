@@ -184,6 +184,8 @@ describe("workday import — row mapping", () => {
       businessUnitId: "u2",
       hiringManagerMembershipId: "m1",
       compBandId: "b1",
+      // C1-F3 — no job levels in these lookups, so no level mapping.
+      jobLevelId: null,
       primaryLocation: "Hyderabad",
       numberOfOpenings: 2,
       targetStartDate: "2026-11-19",

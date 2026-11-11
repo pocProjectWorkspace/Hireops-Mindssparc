@@ -5,7 +5,7 @@ import { RoleNotice } from "@/components/nav/RoleNotice";
 import { UndoToastProvider } from "@/components/triage/UndoToastProvider";
 import { CandidateDetailDrawer } from "@/components/triage/CandidateDetailDrawer";
 import { CandidatesByRoleList } from "@/components/recruiter/CandidatesByRoleList";
-import type { TenantSourceRow } from "@hireops/api-types";
+import { sourceLabelOverrides, type TenantSourceRow } from "@hireops/api-types";
 
 export const dynamic = "force-dynamic"; // Auth-gated + reads live pipeline state.
 
@@ -51,12 +51,11 @@ export default async function CandidatesPage() {
     .listTenantSources({})
     .catch(() => ({ rows: [] as TenantSourceRow[] }));
 
-  // The registry (G04) drives the recruiter surface's source labels + filter:
-  // only ENABLED channels contribute an override label and a filter option.
+  // The registry (G04) drives the recruiter surface's source labels + filter.
+  // BUG-7: every relabel applies (a disabled channel's past candidates keep the
+  // tenant's name for it); only ENABLED channels are offered as a filter.
   const enabledSourceRows = sourcesRes.rows.filter((r) => r.enabled);
-  const sourceLabels = Object.fromEntries(
-    enabledSourceRows.map((r) => [r.sourceEnum, r.label] as const),
-  );
+  const sourceLabels = sourceLabelOverrides(sourcesRes.rows);
   const enabledSources = enabledSourceRows.map((r) => r.sourceEnum);
 
   return (

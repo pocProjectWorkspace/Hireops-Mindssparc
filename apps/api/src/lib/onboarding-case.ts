@@ -50,8 +50,13 @@ export function dayZeroHireBusinessKey(caseId: string): string {
   return `day_zero_hire:case:${caseId}`;
 }
 
-/** requirements.md §7.3 — probation defaults to 90 days (configurable to 180). */
-const DEFAULT_PROBATION_DAYS = 90;
+/**
+ * requirements.md §7.3 — probation defaults to 90 days. Used only when the
+ * accepted offer carries no probation term (legacy offers drafted before
+ * HROPS-02, or offers created through a path that does not set it). The
+ * offer's `probation_months` is the source of truth (BUG-3).
+ */
+export const DEFAULT_PROBATION_DAYS = 90;
 
 /** requirements.md §7.3 — structured check-ins at day 7 / 14 / 30. */
 const CHECK_IN_DAYS = [7, 14, 30] as const;
@@ -95,9 +100,48 @@ function addDaysUtcDate(dateStr: string | null, days: number): string | null {
 }
 
 /**
+ * BUG-3 — derive the case's probation from the accepted offer's
+ * `probation_months`. With a known start date the probation ends on the same
+ * calendar day N months later (clamped to the month's last day, e.g. 30 Nov +
+ * 3 months = 28/29 Feb) and `probationDays` is the exact day count, so the
+ * probation-review task (start + probationDays) lands on that end date. With
+ * no start date, a month counts as 30 days. A null/invalid term falls back to
+ * DEFAULT_PROBATION_DAYS. Pure — exported for unit tests.
+ */
+export function resolveProbation(
+  expectedStartDate: string | null,
+  probationMonths: number | null | undefined,
+): { probationDays: number; probationEndsAt: string | null } {
+  const months =
+    probationMonths === null ||
+    probationMonths === undefined ||
+    !Number.isInteger(probationMonths) ||
+    probationMonths < 0
+      ? null
+      : probationMonths;
+  if (months === null) {
+    return {
+      probationDays: DEFAULT_PROBATION_DAYS,
+      probationEndsAt: addDaysUtcDate(expectedStartDate, DEFAULT_PROBATION_DAYS),
+    };
+  }
+  const start = expectedStartDate ? new Date(`${expectedStartDate}T00:00:00.000Z`) : null;
+  if (!start || Number.isNaN(start.getTime())) {
+    return { probationDays: months * 30, probationEndsAt: null };
+  }
+  const y = start.getUTCFullYear();
+  const m = start.getUTCMonth() + months;
+  const lastDayOfTarget = new Date(Date.UTC(y, m + 1, 0)).getUTCDate();
+  const end = new Date(Date.UTC(y, m, Math.min(start.getUTCDate(), lastDayOfTarget)));
+  const probationDays = Math.round((end.getTime() - start.getTime()) / 86_400_000);
+  return { probationDays, probationEndsAt: end.toISOString().slice(0, 10) };
+}
+
+/**
  * Insert one `document_collection` task per applicable document_types row —
  * the geography-agnostic rows (geography_code IS NULL) plus the rows
  * matching the case's geography — for the pre_boarding lifecycle stage.
+ * Only platform rows (tenant_id NULL) and the case tenant's own rows apply.
  * Guarded by NOT EXISTS on the document-type reference in `metadata`, so it
  * is safe to call both at case creation (adds all applicable types) and on
  * a later geography change (soft-adds only the newly-applicable types,
@@ -126,6 +170,18 @@ export async function ensureDocumentCollectionTasks(
     FROM public.document_types dt
     WHERE dt.required_for_lifecycle_stage = 'pre_boarding'
       AND (dt.geography_code IS NULL OR dt.geography_code = ${geographyCode})
+      -- BUG-4: platform types + this tenant's own types only (poolSql is
+      -- service-role, so RLS does not scope this read).
+      AND (dt.tenant_id IS NULL OR dt.tenant_id = ${tenantId})
+      -- A tenant row with the same code replaces the platform type (and a
+      -- tenant row that is not pre_boarding therefore opts the tenant out).
+      AND NOT (
+        dt.tenant_id IS NULL
+        AND EXISTS (
+          SELECT 1 FROM public.document_types tdt
+          WHERE tdt.tenant_id = ${tenantId} AND tdt.code = dt.code
+        )
+      )
       AND NOT EXISTS (
         SELECT 1
         FROM public.onboarding_tasks t
@@ -187,12 +243,17 @@ async function createStandardTasks(
       dueAtIso: addDaysUtcIso(expectedStartDate, day),
       metadata: { checkInDay: day } as Record<string, unknown>,
     })),
-    {
-      taskType: "probation_review",
-      title: "Probation review",
-      dueAtIso: addDaysUtcIso(expectedStartDate, probationDays),
-      metadata: { probationDays },
-    },
+    // An offer with no probation (0 months) gets no probation review.
+    ...(probationDays > 0
+      ? [
+          {
+            taskType: "probation_review",
+            title: "Probation review",
+            dueAtIso: addDaysUtcIso(expectedStartDate, probationDays),
+            metadata: { probationDays } as Record<string, unknown>,
+          },
+        ]
+      : []),
   ];
 
   for (const task of tasks) {
@@ -234,6 +295,7 @@ export async function createOnboardingCaseForApplication(
       candidate_id: string;
       geography_code: string | null;
       expected_start_date: string | null;
+      probation_months: number | null;
     }[]
   >`
     SELECT
@@ -245,7 +307,19 @@ export async function createOnboardingCaseForApplication(
         WHERE o.tenant_id = a.tenant_id
           AND o.application_id = a.id
           AND o.status = 'accepted'
-      ) AS expected_start_date
+      ) AS expected_start_date,
+      (
+        -- BUG-3: the probation term of the same accepted offer whose
+        -- joining_date sets the start (latest joining date, then latest
+        -- acceptance).
+        SELECT o.probation_months
+        FROM public.offers o
+        WHERE o.tenant_id = a.tenant_id
+          AND o.application_id = a.id
+          AND o.status = 'accepted'
+        ORDER BY o.joining_date DESC NULLS LAST, o.updated_at DESC
+        LIMIT 1
+      ) AS probation_months
     FROM public.applications a
     JOIN public.candidates c ON c.id = a.candidate_id AND c.tenant_id = a.tenant_id
     JOIN public.persons p ON p.id = c.person_id AND p.tenant_id = a.tenant_id
@@ -260,8 +334,10 @@ export async function createOnboardingCaseForApplication(
 
   const geographyCode = resolveGeographyCode(row.geography_code);
   const expectedStartDate = row.expected_start_date;
-  const probationDays = DEFAULT_PROBATION_DAYS;
-  const probationEndsAt = addDaysUtcDate(expectedStartDate, probationDays);
+  const { probationDays, probationEndsAt } = resolveProbation(
+    expectedStartDate,
+    row.probation_months === null ? null : Number(row.probation_months),
+  );
 
   // 2. Idempotent case insert. unique(tenant_id, application_id) (0049)
   //    collapses a double-accept / backfill to a single row.

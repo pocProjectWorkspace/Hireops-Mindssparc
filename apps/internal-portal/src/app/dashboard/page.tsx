@@ -31,6 +31,10 @@ export default async function DashboardPage() {
   // admin gets the bespoke admin console home (AD-01) — governance tiles + tasks
   // + quick actions. Takes precedence over every other persona branch.
   const isAdmin = session.roles.includes("admin");
+  const setup = isAdmin ? await caller.getTenantSetup({}) : null;
+  const setupPending = Boolean(
+    setup && setup.starterPack !== null && setup.onboardingStatus !== "completed",
+  );
   // hr_head (but not the admin superset) gets the bespoke surface.
   const isHrHead = session.roles.includes("hr_head") && !session.roles.includes("admin");
   // panel_member (but not the admin superset, and not also an hr_head) gets the
@@ -66,6 +70,17 @@ export default async function DashboardPage() {
           only). Renders nothing when the tenant has the feature off. */}
       {(isAdmin || isHrHead || isRecruiter) && canViewDiverseSlate(session.roles) ? (
         <DiverseSlateShortRoles variant="tile" />
+      ) : null}
+      {/* C1-F11 — until go-live, admins of a console-provisioned tenant (it carries
+          a starter-pack marker) are pointed at the setup wizard. Tenants made by
+          seed scripts before F11 never see the banner. */}
+      {isAdmin && setupPending ? (
+        <div className="mx-4 mt-4 rounded-md border border-status-info-200 bg-status-info-50 px-4 py-3 text-sm text-status-info-800 lg:mx-8">
+          Your organisation&apos;s setup is not finished.{" "}
+          <a href="/setup" className="font-medium underline">
+            Continue tenant setup
+          </a>
+        </div>
       ) : null}
       {isAdmin ? (
         <AdminDashboard

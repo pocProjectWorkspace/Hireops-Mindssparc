@@ -9,6 +9,7 @@ import { slaImminentScan } from "./jobs/sla-imminent-scan";
 import { stageStaleScan } from "./jobs/stage-stale-scan";
 import { aiBudgetScan } from "./jobs/ai-budget-scan";
 import { ownershipClaimSweep } from "./jobs/ownership-claim-sweep";
+import { offerExpiryScan } from "./jobs/offer-expiry-scan";
 import { reportDigestScan } from "./jobs/report-digest-scan";
 import { interviewMediaPurgeSweep } from "./jobs/interview-media-purge";
 import { drainWorkdayOutboxOnce } from "./lib/workday-simulation-drain";
@@ -110,6 +111,15 @@ const SCHEDULED_JOBS: ScheduledJob[] = [
     name: "ownership_claim_sweep",
     intervalMs: 15 * 60_000,
     run: ownershipClaimSweep,
+  },
+  {
+    // C1-BUGS BUG-10 — flip past-expiry EXTENDED offers to 'expired'
+    // (idempotent; the offers audit trigger records each flip). Reads already
+    // treat an overdue offer as expired, so the cadence only bounds how long
+    // the stored status lags.
+    name: "offer_expiry_scan",
+    intervalMs: 15 * 60_000,
+    run: offerExpiryScan,
   },
   {
     // R1.5a — email opted-in tenants the executive board-pack headline numbers

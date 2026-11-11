@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  PLATFORM_CLAIM_EXPIRY_WARNING_DAYS,
   defaultPartnerDefaults,
   partnerDefaultsSchema,
   resolvePartnerDefaults,
@@ -23,16 +24,27 @@ import {
 
 describe("resolvePartnerDefaults", () => {
   it("an unconfigured tenant resolves to the historical 90-day window", () => {
-    expect(defaultPartnerDefaults()).toEqual({ claimWindowDays: 90 });
-    expect(resolvePartnerDefaults({})).toEqual({ claimWindowDays: 90 });
+    const def = { claimWindowDays: 90, claimExpiryWarningDays: PLATFORM_CLAIM_EXPIRY_WARNING_DAYS };
+    expect(defaultPartnerDefaults()).toEqual(def);
+    expect(resolvePartnerDefaults({})).toEqual(def);
     expect(resolvePartnerDefaults(undefined)).toEqual(defaultPartnerDefaults());
     expect(resolvePartnerDefaults(null)).toEqual(defaultPartnerDefaults());
   });
 
   it("a configured window round-trips", () => {
-    expect(resolvePartnerDefaults({ claimWindowDays: 45 })).toEqual({ claimWindowDays: 45 });
-    expect(resolvePartnerDefaults({ claimWindowDays: 1 })).toEqual({ claimWindowDays: 1 });
-    expect(resolvePartnerDefaults({ claimWindowDays: 365 })).toEqual({ claimWindowDays: 365 });
+    const w = PLATFORM_CLAIM_EXPIRY_WARNING_DAYS;
+    expect(resolvePartnerDefaults({ claimWindowDays: 45 })).toEqual({
+      claimWindowDays: 45,
+      claimExpiryWarningDays: w,
+    });
+    expect(resolvePartnerDefaults({ claimWindowDays: 1 })).toEqual({
+      claimWindowDays: 1,
+      claimExpiryWarningDays: w,
+    });
+    expect(resolvePartnerDefaults({ claimWindowDays: 365 })).toEqual({
+      claimWindowDays: 365,
+      claimExpiryWarningDays: w,
+    });
   });
 
   it("a malformed block falls back to the default rather than throwing", () => {
@@ -50,6 +62,7 @@ describe("resolvePartnerDefaults", () => {
   it("unknown sibling keys are dropped, not carried through", () => {
     expect(resolvePartnerDefaults({ claimWindowDays: 60, feePercent: 12 })).toEqual({
       claimWindowDays: 60,
+      claimExpiryWarningDays: PLATFORM_CLAIM_EXPIRY_WARNING_DAYS,
     });
   });
 });
@@ -67,6 +80,9 @@ describe("partnerDefaultsSchema (the write path)", () => {
   });
 
   it("an empty write is valid and means 'the default window'", () => {
-    expect(partnerDefaultsSchema.parse({})).toEqual({ claimWindowDays: 90 });
+    expect(partnerDefaultsSchema.parse({})).toEqual({
+      claimWindowDays: 90,
+      claimExpiryWarningDays: PLATFORM_CLAIM_EXPIRY_WARNING_DAYS,
+    });
   });
 });

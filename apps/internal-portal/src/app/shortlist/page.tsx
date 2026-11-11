@@ -6,6 +6,7 @@ import { UndoToastProvider } from "@/components/triage/UndoToastProvider";
 import { CandidateDetailDrawer } from "@/components/triage/CandidateDetailDrawer";
 import { ShortlistView } from "@/components/recruiter/ShortlistView";
 import { DiverseSlateShortRoles } from "@/components/diversity/DiverseSlateShortRoles";
+import { sourceLabelOverrides, type TenantSourceRow } from "@hireops/api-types";
 
 export const dynamic = "force-dynamic"; // Auth-gated + reads live scored pipeline.
 
@@ -46,6 +47,11 @@ export default async function ShortlistPage() {
   // Seed from the tenant's configured shortlist default (T2.3 / G08) — omit
   // threshold so the procedure resolves tenants.settings.shortlistDefaults.
   const initial = await caller.listShortlist({});
+  // BUG-7 — the tenant's source relabels (G04 registry), as on Candidates.
+  const sourcesRes = await caller
+    .listTenantSources({})
+    .catch(() => ({ rows: [] as TenantSourceRow[] }));
+  const sourceLabels = sourceLabelOverrides(sourcesRes.rows);
 
   return (
     <UndoToastProvider>
@@ -58,7 +64,7 @@ export default async function ShortlistPage() {
       >
         {/* PC-26 — roles short of their diverse slate (counts only). */}
         <DiverseSlateShortRoles variant="banner" />
-        <ShortlistView initial={initial} canManageDefaults={isAdmin} />
+        <ShortlistView initial={initial} canManageDefaults={isAdmin} sourceLabels={sourceLabels} />
         <CandidateDetailDrawer />
       </AppShell>
     </UndoToastProvider>

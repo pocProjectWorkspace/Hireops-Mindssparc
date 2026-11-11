@@ -21,6 +21,8 @@ const PUBLIC_PATHS = new Set<string>([
   "/privacy",
   "/terms",
   "/candidate/login",
+  // C1-F11 — staff invitation landing (the invite link signs in; the page sets a password).
+  "/accept-invite",
 ]);
 
 // Path prefixes that are always public (candidate-side flows). Each

@@ -3,8 +3,10 @@
 import { useState, type FormEvent } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Button, Input } from "@hireops/ui";
+import { TENANT_INACTIVE_GENERIC_MESSAGE } from "@hireops/api-types";
 import { getSupabaseBrowserClient } from "@/lib/supabase-client";
 import { readSessionClaims } from "@/lib/session-claims";
+import { trpc } from "@/lib/trpc-client";
 
 /**
  * Email + password login. Wave 1 has no magic-link / SSO / signup —
@@ -30,9 +32,15 @@ export function LoginForm() {
   const searchParams = useSearchParams();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const reason = searchParams.get("reason");
   const [errorMsg, setErrorMsg] = useState<string | null>(
-    searchParams.get("reason") === "not-internal" ? NOT_INTERNAL_MSG : null,
+    reason === "not-internal"
+      ? NOT_INTERNAL_MSG
+      : reason === "tenant-inactive"
+        ? TENANT_INACTIVE_GENERIC_MESSAGE
+        : null,
   );
+  const utils = trpc.useUtils();
   const [submitting, setSubmitting] = useState(false);
 
   async function handleSubmit(e: FormEvent<HTMLFormElement>) {
@@ -51,8 +59,28 @@ export function LoginForm() {
       }
       const token = data.session?.access_token;
       if (!token || readSessionClaims(token) === null) {
+        // C1-F10: no `tid` has three causes, told apart server-side — a
+        // platform operator (→ the platform console, stays signed in), a
+        // member of a suspended/churned tenant (the auth hook issues no tid
+        // for a non-active tenant → the lifecycle message), or a candidate /
+        // partner at the wrong door.
+        let message = NOT_INTERNAL_MSG;
+        if (token) {
+          try {
+            const access = await utils.client.accountAccessStatus.query({ audience: "internal" });
+            if (access.platformOperator && access.access !== "ok") {
+              router.replace("/platform");
+              router.refresh();
+              navigating = true;
+              return;
+            }
+            if (access.access === "tenant_inactive" && access.message) message = access.message;
+          } catch {
+            // Fall through to the wrong-door message.
+          }
+        }
         await supabase.auth.signOut();
-        setErrorMsg(NOT_INTERNAL_MSG);
+        setErrorMsg(message);
         return;
       }
       // "/" resolves the tenant's landing page for this user's role (app/page.tsx).

@@ -47,6 +47,7 @@ import {
   type BulkCvUploadResponse,
 } from "@hireops/api-types";
 import type { OptionalAuthVars } from "../middleware/optional-auth";
+import { isModuleEnabled, tenantIsActive } from "../lib/platform/tenant-access";
 import { getStorageClient } from "../lib/storage";
 import { countsForBatches, emptyCounts } from "../lib/bulk-cv/read";
 import { expandUpload, type AcceptedCv, type UploadedFile } from "../lib/bulk-cv/expand";
@@ -90,6 +91,13 @@ bulkCvUploadRoutes.post("/", async (c) => {
   const { tenantId, userId, roles, claims, log, requestId } = c.var;
   if (!tenantId || !userId || !claims) return c.json({ error: "unauthorized" }, 401);
   if (!hasBulkCvUploadRole(roles)) return c.json({ error: "forbidden" }, 403);
+  // C1-F10: lifecycle (D3) + module entitlement (D4), before any upload work.
+  if (!(await tenantIsActive(poolSql, tenantId))) {
+    return c.json({ error: "forbidden", reason: "tenant_suspended" }, 403);
+  }
+  if (!(await isModuleEnabled(poolSql, tenantId, "bulk_cv_upload"))) {
+    return c.json({ error: "forbidden", reason: "module_disabled:bulk_cv_upload" }, 403);
+  }
 
   let body: Record<string, string | File | (string | File)[]>;
   try {

@@ -5,7 +5,8 @@
  * Coverage:
  *   1.  createOnboardingCaseForApplication (IN hire) → case + full checklist
  *       (10 document tasks + 7 standard tasks), check-in metadata + due dates,
- *       probation_ends_at = start + 90 days.
+ *       probation_ends_at = start + 90 days (no probation on the offer → default).
+ *   1b. BUG-3 — a 6-month offer probation drives the case + review task.
  *   2.  Idempotency — a second create for the same application is a no-op
  *       (created:false, same case, no duplicate tasks).
  *   3.  Geography scoping — a PH hire gets the common + PH document set (9).
@@ -116,6 +117,8 @@ interface SeedHireOpts {
   suffix: string;
   country: string | null;
   acceptedJoiningDate?: string; // YYYY-MM-DD → inserts an accepted offer
+  /** C1-BUGS BUG-3 — the accepted offer's probation term (NULL when omitted). */
+  probationMonths?: number;
   stage?: string;
 }
 interface Hire {
@@ -148,9 +151,10 @@ async function seedHire(opts: SeedHireOpts): Promise<Hire> {
     await poolSql`
       INSERT INTO public.offers
         (tenant_id, application_id, drafted_by_membership_id, base_salary_inr_paise,
-         joining_date, location, expiry_at, status)
+         joining_date, location, expiry_at, status, probation_months)
       VALUES (${testTenantId}, ${applicationId}, ${testMembershipId}, ${4_200_000 * 100},
-              ${opts.acceptedJoiningDate}, 'Bengaluru', now() + interval '7 days', 'accepted')
+              ${opts.acceptedJoiningDate}, 'Bengaluru', now() + interval '7 days', 'accepted',
+              ${opts.probationMonths ?? null})
     `;
   }
   return { personId, candidateId, applicationId };
@@ -343,6 +347,36 @@ describe("ONBOARD-02 — onboarding case lifecycle", () => {
     expectedProbationEnd.setUTCDate(expectedProbationEnd.getUTCDate() + 90);
     assert.equal(caseRow?.probationEndsAt, expectedProbationEnd.toISOString().slice(0, 10));
     assert.equal(caseRow?.expectedStartDate, start);
+  });
+
+  it("1b. BUG-3 — the case takes the accepted offer's probation, not a fixed 90 days", async () => {
+    const start = "2027-01-15";
+    const hire = await seedHire({
+      suffix: "probation-6m",
+      country: "IN",
+      acceptedJoiningDate: start,
+      probationMonths: 6,
+    });
+    const env = await trpcMutation<{ caseId: string; created: boolean; geographyCode: string }>(
+      "createOnboardingCaseForApplication",
+      { applicationId: hire.applicationId },
+      { jwt },
+    );
+    assert.ok(!isError(env), `create error: ${JSON.stringify(env)}`);
+    const caseId = (env as TRPCSuccess<{ caseId: string }>).result.data.caseId;
+    const [caseRow] = await poolDb
+      .select()
+      .from(onboardingCases)
+      .where(eq(onboardingCases.id, caseId));
+    assert.equal(caseRow?.probationEndsAt, "2027-07-15", "start + 6 calendar months");
+    assert.equal(caseRow?.probationDays, 181);
+    const [review] = await poolDb
+      .select()
+      .from(onboardingTasks)
+      .where(
+        and(eq(onboardingTasks.caseId, caseId), eq(onboardingTasks.taskType, "probation_review")),
+      );
+    assert.equal(review?.dueAt?.toISOString().slice(0, 10), "2027-07-15");
   });
 
   it("2. is idempotent — a second create is a no-op", async () => {

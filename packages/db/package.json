@@ -39,6 +39,7 @@
     "db:seed:solenis-partner-login": "tsx src/scripts/seed-solenis-partner-login.ts",
     "db:seed:learning-demo": "tsx src/scripts/seed-learning-demo.ts",
     "db:seed:candidate-logins": "tsx src/scripts/seed-candidate-portal-logins.ts",
+    "db:seed:platform-operator": "tsx src/scripts/seed-platform-operator.ts",
     "db:groom:demo-data": "tsx src/scripts/groom-demo-data.ts",
     "db:store:demo-ai-credential": "tsx src/scripts/store-demo-ai-credential.ts"
   },

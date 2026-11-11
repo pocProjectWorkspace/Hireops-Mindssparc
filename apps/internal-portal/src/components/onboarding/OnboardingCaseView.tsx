@@ -17,6 +17,7 @@ import { trpc } from "@/lib/trpc-client";
 import { getSupabaseBrowserClient } from "@/lib/supabase-client";
 import { Badge, Button, Card, EmptyState } from "@/components/ui";
 import { AssignLearningPanel } from "./AssignLearningPanel";
+import { useModuleFilter } from "@/components/TenantModulesProvider";
 import {
   CASE_STATUS_META,
   TASK_STATUS_META,
@@ -93,6 +94,9 @@ export function OnboardingCaseView({
     { initialData: initial, staleTime: 5_000, refetchOnWindowFocus: true },
   );
 
+  // C1-F10 (D4): the learning push is the `learning` module — hide it when off.
+  const moduleOn = useModuleFilter();
+
   const data = query.data ?? initial;
   const { case: c, documents } = data;
   const tasks: TaskItem[] = data.tasks;
@@ -141,7 +145,7 @@ export function OnboardingCaseView({
       <Checklist tasks={tasks} />
 
       {/* Learning push (LD-1B) — pushed items land in the checklist above. */}
-      <AssignLearningPanel caseId={caseId} />
+      {moduleOn("learning") ? <AssignLearningPanel caseId={caseId} /> : null}
 
       {/* Documents */}
       <DocumentsSection caseId={caseId} tasks={tasks} documents={documents} />

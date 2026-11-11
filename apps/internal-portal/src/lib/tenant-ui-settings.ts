@@ -5,6 +5,8 @@ import {
   resolveLandingHref,
   resolveSystemSetup,
   resolveTenantLabels,
+  resolveTenantModules,
+  type PlatformModuleKey,
   type ScreeningScoreBands,
   type TenantLabels,
 } from "@hireops/api-types";
@@ -113,3 +115,30 @@ export const loadTenantLabels = cache(async (): Promise<TenantLabels | null> => 
     return null;
   }
 });
+
+/**
+ * C1-F10 (D4) — the signed-in tenant's module entitlements (tenant_modules;
+ * a missing row means enabled), so the nav can hide modules the tenant does
+ * not have. Display-only: every module's procedures enforce the same map
+ * server-side. Signed-out visitors and any failure resolve to null, which the
+ * nav treats as "everything enabled" (the pre-F10 behaviour).
+ */
+export const loadTenantModules = cache(
+  async (): Promise<Record<PlatformModuleKey, boolean> | null> => {
+    try {
+      const session = await getOptionalSession();
+      if (!session) return null;
+      const rows = await poolSql<{ module_key: string; enabled: boolean }[]>`
+        SELECT module_key, enabled FROM public.tenant_modules
+        WHERE tenant_id = ${session.tenantId}
+      `;
+      return resolveTenantModules(
+        rows.map((r) => ({ moduleKey: r.module_key, enabled: r.enabled })),
+      );
+    } catch (err) {
+      if (typeof (err as { digest?: unknown } | null)?.digest === "string") throw err;
+      console.warn("[tenant-ui-settings] falling back to all modules enabled", err);
+      return null;
+    }
+  },
+);

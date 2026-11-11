@@ -2965,6 +2965,7 @@ async function main() {
       FROM public.document_types dt
       WHERE dt.required_for_lifecycle_stage = 'pre_boarding'
         AND (dt.geography_code IS NULL OR dt.geography_code = ${spec.country})
+        AND (dt.tenant_id IS NULL OR dt.tenant_id = ${tid})
     `;
 
       // standard tasks (mirror of createStandardTasks): IT, buddy, training,
@@ -3070,6 +3071,7 @@ async function main() {
       SELECT id::text AS id, name FROM public.document_types
       WHERE required_for_lifecycle_stage = 'pre_boarding'
         AND (geography_code IS NULL OR geography_code = 'IN')
+        AND (tenant_id IS NULL OR tenant_id = ${tid})
       ORDER BY code
       LIMIT 2
     `;

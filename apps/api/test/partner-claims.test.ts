@@ -94,6 +94,11 @@ const PC_CLAIM_STALE = "00000000-0000-4000-8000-0000000a0695";
 const PC_PERSON_B = "00000000-0000-4000-8000-0000000a06f9";
 const PC_CLAIM_B = "00000000-0000-4000-8000-0000000a0699";
 
+// C1-BUGS Test 5 (BUG-12 req_only scope + BUG-5 phone dedup).
+const PC_REQ_2 = "00000000-0000-4000-8000-0000000a06d2";
+const PC_PERSON_REQONLY = "00000000-0000-4000-8000-0000000a06fa";
+const PC_CLAIM_REQONLY = "00000000-0000-4000-8000-0000000a069a";
+
 const TENANT_SLUG = "synth-partner-claims";
 
 // No auth.users FK on partner_users.user_id, so a random uuid is a legitimate
@@ -498,5 +503,82 @@ describe("P0.3 ownership-claim lifecycle (sweep + internal release)", () => {
       "NOT_FOUND",
       "cross-tenant listPartnerOrgClaims",
     );
+  });
+  it("Test 5 (C1-BUGS BUG-12 + BUG-5): req_only claims cover only their req; phones match across +91 / bare", async () => {
+    // A second req, assigned to ORG_1.
+    await poolSql`INSERT INTO public.requisitions (id, tenant_id, position_id, jd_version_id, primary_recruiter_id, hiring_manager_id, status, is_public) VALUES (${PC_REQ_2}, ${PC_TENANT}, ${PC_POSITION}, ${PC_JD}, ${PC_MEMBERSHIP}, ${PC_MEMBERSHIP}, 'posted', true)`;
+    await poolSql`INSERT INTO public.partner_assignments (tenant_id, partner_org_id, requisition_id, assigned_by_membership_id, status) VALUES (${PC_TENANT}, ${PC_ORG_1}, ${PC_REQ_2}, ${PC_MEMBERSHIP}, 'active')`;
+
+    // ORG_2 holds a LIVE req_only claim on REQ_1. The person's phone is stored
+    // in the legacy digits-only form (with the country code), as rows written
+    // before BUG-5 are.
+    await poolSql`INSERT INTO public.persons (id, tenant_id, full_name, email_primary, email_normalised, phone_primary, phone_normalised) VALUES (${PC_PERSON_REQONLY}, ${PC_TENANT}, 'Req Only Candidate', 'req.only@example.com', 'req.only@example.com', '+919845000555', '919845000555')`;
+    await poolSql`INSERT INTO public.candidate_ownership_claims (id, tenant_id, person_id, partner_org_id, claimed_at, expires_at, status, exclusivity_scope, requisition_id) VALUES (${PC_CLAIM_REQONLY}, ${PC_TENANT}, ${PC_PERSON_REQONLY}, ${PC_ORG_2}, now() - interval '1 day', now() + interval '89 days', 'active', 'req_only', ${PC_REQ_1})`;
+
+    const partner = makePartnerCaller(PARTNER_AUTH_1);
+    // Different email, bare 10-digit phone: BUG-5 must still find the person.
+    const submit = (requisitionId: string) =>
+      partner.partnerSubmitCandidate({
+        requisitionId,
+        resumeUploadKey: STORAGE_KEY,
+        candidate: {
+          fullName: "Req Only Candidate",
+          email: "req.only.other@example.com",
+          phone: "98450 00555",
+          locationCountry: "IN",
+        },
+        consentAttested: true as const,
+        ownershipAcknowledged: true as const,
+        consentVersion: CONSENT_VERSION,
+      });
+
+    // Same req as ORG_2's req_only claim → blocked.
+    const blocked = await submit(PC_REQ_1);
+    assert.equal(blocked.outcome, "duplicate_blocked", "req_only claim blocks its own req");
+
+    // A different req → allowed: ORG_1 gets its own claim on the SAME person.
+    const created = await submit(PC_REQ_2);
+    assert.equal(created.outcome, "created", "req_only claim does not cover another req");
+    if (created.outcome !== "created") return;
+    assert.equal(
+      created.personId,
+      PC_PERSON_REQONLY,
+      "BUG-5: bare 10-digit phone matched +91 person",
+    );
+    const [c] = await poolSql<{ exclusivity_scope: string; requisition_id: string | null }[]>`
+      SELECT exclusivity_scope, requisition_id FROM public.candidate_ownership_claims WHERE id = ${created.claimId}
+    `;
+    assert.equal(c?.exclusivity_scope, "org_wide", "ORG_1 has no MSA → org-wide claim");
+    assert.equal(c?.requisition_id, null);
+    assert.equal((await claimById(PC_CLAIM_REQONLY))?.status, "active", "ORG_2's claim untouched");
+
+    // With a req_only MSA, a new claim snapshots req_only + the req.
+    await poolSql`INSERT INTO public.partner_msa (tenant_id, partner_org_id, fee_model, fee_percent, exclusivity_window_days, exclusivity_scope) VALUES (${PC_TENANT}, ${PC_ORG_1}, 'percentage_ctc', 10, 60, 'req_only')`;
+    const terms = await partner.partnerGetClaimTerms({});
+    assert.deepEqual(terms, { claimWindowDays: 60, exclusivityScope: "req_only", source: "msa" });
+    const fresh = await partner.partnerSubmitCandidate({
+      requisitionId: PC_REQ_2,
+      resumeUploadKey: STORAGE_KEY,
+      candidate: {
+        fullName: "Fresh Req Only",
+        email: "fresh.req.only@example.com",
+        phone: "+91 98450 00777",
+        locationCountry: "IN",
+      },
+      consentAttested: true as const,
+      ownershipAcknowledged: true as const,
+      consentVersion: CONSENT_VERSION,
+    });
+    assert.equal(fresh.outcome, "created");
+    if (fresh.outcome !== "created") return;
+    const [f] = await poolSql<{ exclusivity_scope: string; requisition_id: string | null }[]>`
+      SELECT exclusivity_scope, requisition_id FROM public.candidate_ownership_claims WHERE id = ${fresh.claimId}
+    `;
+    assert.equal(f?.exclusivity_scope, "req_only");
+    assert.equal(f?.requisition_id, PC_REQ_2);
+    const [p] = await poolSql<{ phone_normalised: string }[]>`
+      SELECT phone_normalised FROM public.persons WHERE id = ${fresh.personId}
+    `;
+    assert.equal(p?.phone_normalised, "+919845000777", "new persons store E.164");
   });
 });

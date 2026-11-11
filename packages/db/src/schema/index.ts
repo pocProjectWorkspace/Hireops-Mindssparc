@@ -1,5 +1,12 @@
 export * from "./tenants";
 export * from "./tenant-encryption-keys";
+// C1-F3 (0133) — organisation + job architecture + tenant lookups
+export * from "./legal-entities";
+export * from "./locations";
+export * from "./job-functions";
+export * from "./job-levels";
+export * from "./job-profiles";
+export * from "./tenant-lookups";
 export * from "./business-units";
 export * from "./comp-bands";
 export * from "./panel-pools";
@@ -145,3 +152,7 @@ export * from "./interview-scheduling";
 export * from "./pre-joining-engagement";
 // PC-18 welcome guide per business unit: sources, versioned guides, read receipts (0130)
 export * from "./welcome-guides";
+// C1-F10 platform layer: operators, platform audit trail, module entitlements (0134)
+export * from "./platform";
+// C1-F11 provisioning jobs (0135)
+export * from "./tenant-provisioning-jobs";

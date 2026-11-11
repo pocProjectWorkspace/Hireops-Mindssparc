@@ -766,6 +766,20 @@ export const createRequisitionDraftInputSchema = z.object({
   // PC-26 — diverse-slate requirement for this role. Min null = tenant default.
   diverseSlateRequired: z.boolean().optional(),
   diverseSlateMin: z.number().int().min(1).max(DIVERSE_SLATE_MIN_MAX).nullable().optional(),
+  /**
+   * C1-F3 — structured org + job architecture (all optional; each must be the
+   * tenant's and active). A job profile fills function / level when they are
+   * omitted (level = the profile range's lower bound) and a picked level must
+   * sit inside the profile's range. A location id also fills primaryLocation
+   * (the free-text display fallback) when that is omitted.
+   */
+  jobProfileId: z.string().uuid().optional(),
+  jobFunctionId: z.string().uuid().optional(),
+  jobLevelId: z.string().uuid().optional(),
+  locationId: z.string().uuid().optional(),
+  /** Tenant-lookup keys (employment_type / requisition_type); must resolve active. */
+  employmentTypeKey: z.string().max(40).optional(),
+  requisitionTypeKey: z.string().max(40).optional(),
 });
 export const createRequisitionDraftOutputSchema = z.object({
   requisitionId: z.string().uuid(),
@@ -929,6 +943,22 @@ export const getRequisitionDetailOutputSchema = z.object({
   /** PC-26 — the role's diverse-slate setting (the requirement, not any count). */
   diverseSlateRequired: z.boolean().optional(),
   diverseSlateMin: z.number().int().nullable().optional(),
+  /**
+   * C1-F3 — structured links (null when the draft predates them or none was
+   * picked) and their current labels. Optional for back-compat.
+   */
+  jobProfileId: z.string().uuid().nullable().optional(),
+  jobProfileTitle: z.string().nullable().optional(),
+  jobFunctionId: z.string().uuid().nullable().optional(),
+  jobFunctionLabel: z.string().nullable().optional(),
+  jobLevelId: z.string().uuid().nullable().optional(),
+  jobLevelLabel: z.string().nullable().optional(),
+  locationId: z.string().uuid().nullable().optional(),
+  locationName: z.string().nullable().optional(),
+  employmentTypeKey: z.string().nullable().optional(),
+  employmentTypeLabel: z.string().nullable().optional(),
+  requisitionTypeKey: z.string().nullable().optional(),
+  requisitionTypeLabel: z.string().nullable().optional(),
 });
 export type GetRequisitionDetailInput = z.infer<typeof getRequisitionDetailInputSchema>;
 export type GetRequisitionDetailOutput = z.infer<typeof getRequisitionDetailOutputSchema>;
@@ -4086,8 +4116,8 @@ export const partnerSubmitCandidateFieldsSchema = z.object({
 /**
  * partnerSubmitCandidate input. `consentAttested` collapses the wireflows'
  * three DPDPA/accuracy checkboxes; `ownershipAcknowledged` is the ownership-
- * claim attestation ("By submitting, you claim ownership … the 90-day
- * exclusivity window starts now"). Both are z.literal(true) so a submission
+ * claim attestation (window + scope from the org's terms — see
+ * partnerOwnershipAttestation / PARTNER_CONSENT_VERSION). Both are z.literal(true) so a submission
  * that didn't tick them fails validation server-side, not just in the UI.
  */
 export const partnerSubmitCandidateInputSchema = z.object({
@@ -5059,9 +5089,10 @@ export type CandidateStageStep = (typeof CANDIDATE_STAGE_STEPS)[number];
 
 export const requestCandidateActivationInputSchema = z.object({
   email: z.string().email(),
-  // Which tenant to activate against. The candidate login page carries this
-  // (single-tenant POC defaults to kyndryl-poc); a tenant-scoped path or a
-  // slug keeps the endpoint from having to enumerate tenants.
+  // Which tenant to activate against. The candidate login page derives it
+  // from the route (/t/<slug>/candidate/login), ?tenant=, or the deployment's
+  // NEXT_PUBLIC_DEFAULT_TENANT_SLUG (BUG-13 — no client default); a slug keeps
+  // the endpoint from having to enumerate tenants.
   tenantSlug: z
     .string()
     .min(1)
@@ -5750,7 +5781,7 @@ export type ListApplicationDocumentCandidatesOutput = z.infer<
   typeof listApplicationDocumentCandidatesOutputSchema
 >;
 
-/** Requestable document types (from the tenant-agnostic document_types table). */
+/** Requestable document types (platform document_types rows + the tenant's own). */
 export const requestableDocumentTypeSchema = z.object({
   id: z.string().uuid(),
   code: z.string(),

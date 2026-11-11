@@ -6,6 +6,7 @@ import { Button, Input, type InputType } from "@hireops/ui";
 import { Card } from "@/components/ui";
 import { trpc } from "@/lib/trpc-client";
 import { getSupabaseBrowserClient } from "@/lib/supabase-client";
+import { resolveCandidateTenantSlug } from "@/lib/candidate-tenant";
 
 /**
  * Candidate sign-in + first-time activation request.
@@ -17,14 +18,22 @@ import { getSupabaseBrowserClient } from "@/lib/supabase-client";
  *     "if the email exists, we've sent a link" confirmation (no enumeration).
  */
 
-const DEFAULT_TENANT_SLUG = process.env.NEXT_PUBLIC_DEFAULT_TENANT_SLUG?.trim() || "kyndryl-poc";
-
 type Mode = "signin" | "activate";
 
-export function CandidateLoginClient() {
+/**
+ * BUG-13 — the tenant for activation comes from the route
+ * (/t/<slug>/candidate/login), else ?tenant=, else the deployment's
+ * NEXT_PUBLIC_DEFAULT_TENANT_SLUG; never a hard-coded client slug. With none,
+ * activation asks the candidate to use their application email's link.
+ */
+export function CandidateLoginClient({ routeTenantSlug }: { routeTenantSlug?: string } = {}) {
   const router = useRouter();
   const searchParams = useSearchParams();
-  const tenantSlug = searchParams.get("tenant")?.trim() || DEFAULT_TENANT_SLUG;
+  const tenantSlug = resolveCandidateTenantSlug({
+    routeSlug: routeTenantSlug,
+    querySlug: searchParams.get("tenant"),
+    deploymentDefault: process.env.NEXT_PUBLIC_DEFAULT_TENANT_SLUG,
+  });
 
   const [mode, setMode] = useState<Mode>("signin");
   const [email, setEmail] = useState(searchParams.get("email") ?? "");
@@ -34,6 +43,7 @@ export function CandidateLoginClient() {
   const [activationSent, setActivationSent] = useState(false);
 
   const requestActivation = trpc.requestCandidateActivation.useMutation();
+  const utils = trpc.useUtils();
 
   async function handleSignIn(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
@@ -46,6 +56,19 @@ export function CandidateLoginClient() {
         setErrorMsg("That email and password didn't match. Try again, or activate your account.");
         return;
       }
+      // C1-F10 (D3): the hiring organisation's access may be suspended — say so
+      // here and sign back out, rather than landing on a portal that refuses
+      // every read.
+      try {
+        const access = await utils.client.accountAccessStatus.query({ audience: "candidate" });
+        if (access.access === "tenant_inactive") {
+          await supabase.auth.signOut();
+          setErrorMsg(access.message);
+          return;
+        }
+      } catch {
+        // The portal itself still refuses a suspended tenant; carry on.
+      }
       router.replace("/candidate");
       router.refresh();
     } finally {
@@ -57,6 +80,7 @@ export function CandidateLoginClient() {
     e.preventDefault();
     setErrorMsg(null);
     setSubmitting(true);
+    if (!tenantSlug) return; // the form is not rendered without a tenant
     try {
       await requestActivation.mutateAsync({ email, tenantSlug });
       setActivationSent(true);
@@ -148,6 +172,25 @@ export function CandidateLoginClient() {
             </button>
           </p>
         </form>
+      ) : !tenantSlug ? (
+        <div className="flex flex-col gap-4 text-center">
+          <p className="text-sm text-neutral-600">
+            We couldn&rsquo;t tell which employer this account is with. Open the sign-in link in the
+            email you received when you applied, and activate from there.
+          </p>
+          <p className="text-sm text-neutral-600">
+            <button
+              type="button"
+              className="font-medium text-brand-600 underline"
+              onClick={() => {
+                setMode("signin");
+                setErrorMsg(null);
+              }}
+            >
+              Back to sign in
+            </button>
+          </p>
+        </div>
       ) : (
         <form
           onSubmit={handleActivate}

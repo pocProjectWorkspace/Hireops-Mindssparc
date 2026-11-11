@@ -89,7 +89,7 @@ export const onboardingCases = pgTable(
       "onboarding_cases_status_check",
       sql`${table.status} IN ('pre_boarding', 'day_zero', 'in_progress', 'completed', 'cancelled')`,
     ),
-    check("onboarding_cases_probation_days_check", sql`${table.probationDays} BETWEEN 1 AND 180`),
+    check("onboarding_cases_probation_days_check", sql`${table.probationDays} BETWEEN 0 AND 731`),
 
     foreignKey({
       columns: [table.tenantId, table.applicationId],

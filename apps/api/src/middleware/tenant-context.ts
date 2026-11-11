@@ -40,6 +40,8 @@ import { withTenantContext, type JwtClaims, type TenantBoundDb } from "@hireops/
 import type { Logger } from "@hireops/observability";
 import { baseLog, sentry } from "../lib/observability";
 import { verifyJwt, extractBearerToken } from "../lib/jwt";
+import { tenantIsActive } from "../lib/platform/tenant-access";
+import { sql as poolSql } from "@hireops/db";
 
 export interface TenantContextVars {
   tenantId: string;
@@ -83,6 +85,13 @@ export const tenantContext: MiddlewareHandler<{
       "auth: jwt missing tid/sub",
     );
     return c.json({ error: "unauthorized", reason: "missing_tenant_claim" }, 401);
+  }
+
+  // C1-F10 (D3): a token issued before the tenant was suspended still carries
+  // its tid — refuse it here, the same as the tRPC tenant middleware.
+  if (!(await tenantIsActive(poolSql, tenantId))) {
+    baseLog.warn({ request_id: requestId, tenant_id: tenantId }, "auth: tenant not active");
+    return c.json({ error: "forbidden", reason: "tenant_suspended" }, 403);
   }
 
   const userAgent = c.req.header("user-agent") ?? null;

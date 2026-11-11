@@ -52,6 +52,9 @@ export interface AskDataExecDeps {
   /** CFG-LITE — the tenant's display labels (staff stage wording). Omitted →
    * platform default wording. */
   stageLabels?: TenantLabels | null;
+  /** BUG-7 / NEW-8 — the tenant's source relabels (sourceEnum → label, from
+   * the G04 registry). Omitted → platform default wording. */
+  sourceLabels?: Readonly<Record<string, string>> | null;
 }
 
 /** postgres-js returns `{rows: …}`; fall back to the array form (matches measures.ts). */
@@ -134,6 +137,11 @@ const SOURCE_LABELS: Record<string, string> = {
   whatsapp: "WhatsApp",
   bulk_upload: "Bulk upload",
 };
+
+/** Source wording: tenant relabel → platform default → humanized key (BUG-7). */
+export function sourceName(deps: Pick<AskDataExecDeps, "sourceLabels">, source: string): string {
+  return deps.sourceLabels?.[source] ?? SOURCE_LABELS[source] ?? humanize(source);
+}
 
 /** snake_case → "Sentence case". */
 function humanize(value: string): string {
@@ -446,7 +454,7 @@ const hiresBySource: Executor = async (deps, f) => {
   const mix = await measures.sourceMix(deps.db, deps.tenantId, reportFilters(f));
   const rows = mix
     .map((m) => ({
-      source: SOURCE_LABELS[m.source] ?? humanize(m.source),
+      source: sourceName(deps, m.source),
       applications: m.applications,
       hires: m.hires,
       conversion: pct(m.hires, m.applications),
