@@ -646,7 +646,14 @@ describe("PC-6 / PC-4 — evidence-based screening", () => {
         screeningQueue: { pending: number; total: number };
         rows: (Record<string, unknown> & { applicationId: string })[];
       }[];
-    }>("listCandidatesByRequisition", {}, recruiterJwt);
+    }>(
+      // PC-5 — the by-role list is paged largest-role-first, so on a busy
+      // shared tenant this 2-application requisition may not be on page 1.
+      // Filter to it, as the role picker does.
+      "listCandidatesByRequisition",
+      { requisitionId: R_REQ },
+      recruiterJwt,
+    );
     const g = list.groups.find((x) => x.requisitionId === R_REQ);
     assert.ok(g, "our requisition group is listed");
     assert.deepEqual(g.screeningQueue, { pending: 1, total: 2 });
@@ -690,7 +697,11 @@ describe("PC-6 / PC-4 — evidence-based screening", () => {
     interface Rows {
       groups: { requisitionId: string; rows: { applicationId: string }[] }[];
     }
-    const byScore = await trpcQuery<Rows>("listCandidatesByRequisition", {}, recruiterJwt);
+    const byScore = await trpcQuery<Rows>(
+      "listCandidatesByRequisition",
+      { requisitionId: R_REQ },
+      recruiterJwt,
+    );
     assert.deepEqual(
       byScore.groups.find((x) => x.requisitionId === R_REQ)?.rows.map((r) => r.applicationId),
       [R_APP_A, R_APP_B],
@@ -698,7 +709,7 @@ describe("PC-6 / PC-4 — evidence-based screening", () => {
     );
     const byEvidence = await trpcQuery<Rows>(
       "listCandidatesByRequisition",
-      { sort: "evidence" },
+      { requisitionId: R_REQ, sort: "evidence" },
       recruiterJwt,
     );
     assert.deepEqual(
