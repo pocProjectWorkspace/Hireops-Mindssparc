@@ -1,7 +1,11 @@
 import { Hono } from "hono";
 import { sql as poolSql, db as poolDb } from "@hireops/db";
 import { verifyLink } from "@hireops/notifications";
-import { offerAcceptRequestSchema, offerDeclineRequestSchema } from "@hireops/api-types";
+import {
+  effectiveOfferStatus,
+  offerAcceptRequestSchema,
+  offerDeclineRequestSchema,
+} from "@hireops/api-types";
 import { baseLog } from "../lib/observability";
 import {
   acceptOfferAtomically,
@@ -119,7 +123,8 @@ offersRoutes.get("/preview/:token", async (c) => {
   return c.json({
     ok: true,
     offerId: row.id,
-    status: row.status,
+    // BUG-10 — an overdue extended offer reads as expired.
+    status: effectiveOfferStatus(row.status, toDate(row.expiry_at)),
     candidateFullName: row.candidate_full_name,
     candidateEmail: row.candidate_email,
     companyName: row.company_name,

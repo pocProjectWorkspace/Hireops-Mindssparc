@@ -59,8 +59,8 @@ export type ListMarketBenchmarksOutput = z.infer<typeof listMarketBenchmarksOutp
 
 /**
  * Admin upsert of a single benchmark row, keyed by (tenant, role_title). The
- * source_note carries a sensible default so an admin who just tweaks a number
- * still records the honesty label.
+ * source_note is REQUIRED (BUG-15): the platform never invents a source label
+ * for a figure — the admin names where the number came from.
  */
 export const upsertMarketBenchmarkInputSchema = z.object({
   roleTitle: z.string().min(1).max(200),
@@ -71,7 +71,8 @@ export const upsertMarketBenchmarkInputSchema = z.object({
   competitorDemand: benchmarkLevelSchema,
   recommendedRounds: z.number().int().nonnegative().max(20),
   trendingSkills: z.array(trendingSkillSchema).max(20).default([]),
-  sourceNote: z.string().min(1).max(300).default("Curated benchmark — update quarterly"),
+  // BUG-15 — required: every figure names its source; no invented default label.
+  sourceNote: z.string().trim().min(1, "Name the source of this figure").max(300),
   // Omitted → null (the upsert writes `?? null`).
   sourceUrl: benchmarkSourceUrlSchema.nullable().optional(),
   sourcePublishedOn: benchmarkPublishedOnSchema.nullable().optional(),
@@ -82,7 +83,7 @@ export const upsertMarketBenchmarkInputSchema = z.object({
  * table, the Feasibility card and the feasibility prompt so all three read
  * identically. Null parts are omitted, e.g.
  *   "Michael Page India Salary Guide 2026 · published 2026-01-15 · N=412"
- *   "Curated benchmark — update quarterly"
+ *   "Internal comp survey"
  */
 export function formatBenchmarkCitation(row: {
   sourceNote: string;
@@ -196,3 +197,25 @@ export const generateRequisitionFeasibilityOutputSchema = z.object({
 export type GenerateRequisitionFeasibilityOutput = z.infer<
   typeof generateRequisitionFeasibilityOutputSchema
 >;
+
+/**
+ * C1-BUGS BUG-15 — what the Market intelligence header may say about sources.
+ * It may only name a source when every row agrees on it; with several it
+ * counts them (each row carries its own citation); with none it says nothing
+ * — never a made-up "curated / update quarterly" label. Pure.
+ */
+export type BenchmarkSourceSummary =
+  | { kind: "none" }
+  | { kind: "single"; note: string }
+  | { kind: "multiple"; count: number };
+
+export function summariseBenchmarkSources(
+  rows: readonly { sourceNote: string | null | undefined }[],
+): BenchmarkSourceSummary {
+  const distinct = [
+    ...new Set(rows.map((r) => (r.sourceNote ?? "").trim()).filter((n) => n.length > 0)),
+  ];
+  if (distinct.length === 0) return { kind: "none" };
+  if (distinct.length === 1) return { kind: "single", note: distinct[0] as string };
+  return { kind: "multiple", count: distinct.length };
+}

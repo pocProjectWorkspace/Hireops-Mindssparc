@@ -1207,9 +1207,10 @@ const HUDSON_CONTACT = "gbs.india@hudson-partners.test";
 
 // ─────────────────────────── 12. document types ───────────────────────────
 //
-// document_types is a tenant-AGNOSTIC reference table (no tenant_id) keyed on
-// `code`. Aadhaar Card / PAN Card / Education Certificate already ship in the
-// migration seed; these are the ones from their joining-document list that do not.
+// These are TENANT-owned document_types rows (tenant_id = this tenant,
+// migration 0132 / C1-BUGS BUG-4) so they never reach another tenant's
+// checklist. Aadhaar Card / PAN Card / Education Certificate already ship as
+// platform rows; these are the ones from their joining-document list that do not.
 interface DocTypeSeed {
   n: number;
   code: string;
@@ -2006,11 +2007,12 @@ async function main(): Promise<void> {
     for (const d of DOC_TYPES) {
       await sql`
         INSERT INTO public.document_types
-          (id, code, name, geography_code, required_for_lifecycle_stage, retention_years, updated_at)
-        VALUES (${mkId(KIND.documentType, d.n)}, ${d.code}, ${d.name}, ${d.geographyCode},
+          (id, tenant_id, code, name, geography_code, required_for_lifecycle_stage,
+           retention_years, updated_at)
+        VALUES (${mkId(KIND.documentType, d.n)}, ${tid}, ${d.code}, ${d.name}, ${d.geographyCode},
                 'pre_boarding', ${d.retentionYears}, now())
-        ON CONFLICT (code) DO UPDATE SET
-          name = EXCLUDED.name, geography_code = EXCLUDED.geography_code,
+        ON CONFLICT (id) DO UPDATE SET
+          tenant_id = EXCLUDED.tenant_id, name = EXCLUDED.name, geography_code = EXCLUDED.geography_code,
           required_for_lifecycle_stage = EXCLUDED.required_for_lifecycle_stage,
           retention_years = EXCLUDED.retention_years, updated_at = now()
       `;
@@ -2201,7 +2203,10 @@ async function runUndo(sql: SqlClient, tid: string): Promise<void> {
     DELETE FROM public.market_benchmarks
      WHERE tenant_id = ${tid} AND role_title IN ${sql(ROLE_TITLES)}
   `;
-  await sql`DELETE FROM public.document_types WHERE code IN ${sql(DOC_TYPE_CODES)}`;
+  await sql`
+    DELETE FROM public.document_types
+     WHERE tenant_id = ${tid} AND code IN ${sql(DOC_TYPE_CODES)}
+  `;
 
   console.log(
     `  ✓ removed every ${ID_PREFIX}-* row + the ${ROLE_TITLES.length} Solenis benchmarks`,

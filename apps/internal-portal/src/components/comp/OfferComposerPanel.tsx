@@ -192,7 +192,7 @@ export function OfferComposerPanel({
           onChange={(e) => setTermsHtml(e.target.value)}
           rows={4}
           className="mt-1 w-full rounded border border-neutral-300 p-2 text-sm"
-          placeholder="Standard at-will employment, confidentiality, etc."
+          placeholder="Any additional terms for this offer (optional)."
         />
       </label>
 

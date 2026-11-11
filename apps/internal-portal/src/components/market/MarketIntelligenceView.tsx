@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { formatBenchmarkCitation } from "@hireops/api-types";
+import { formatBenchmarkCitation, summariseBenchmarkSources } from "@hireops/api-types";
 import type {
   ListMarketBenchmarksOutput,
   MarketBenchmarkRow,
@@ -97,11 +97,8 @@ export function MarketIntelligenceView({
   // agrees. The moment two rows carry different notes the header counts the
   // distinct sources instead. Every row prints its own citation (note · date ·
   // N, linked when a URL is recorded) under its role title regardless.
-  const distinctSourceNotes = [
-    ...new Set(rows.map((r) => r.sourceNote.trim()).filter((n) => n.length > 0)),
-  ];
-  const sourceNotesDiffer = distinctSourceNotes.length > 1;
-  const sourceNote = distinctSourceNotes[0] ?? "Curated benchmark — update quarterly";
+  // BUG-15: with no source recorded the header names none (no invented label).
+  const sources = summariseBenchmarkSources(rows);
 
   return (
     <>
@@ -110,12 +107,16 @@ export function MarketIntelligenceView({
         subtitle={
           <>
             Curated salary + hiring benchmarks by role.{" "}
-            <span className="font-medium text-neutral-600">
-              {sourceNotesDiffer
-                ? `${distinctSourceNotes.length} sources — cited per benchmark below`
-                : sourceNote}
-              .
-            </span>{" "}
+            {sources.kind !== "none" ? (
+              <>
+                <span className="font-medium text-neutral-600">
+                  {sources.kind === "multiple"
+                    ? `${sources.count} sources — cited per benchmark below`
+                    : sources.note}
+                  .
+                </span>{" "}
+              </>
+            ) : null}
             These are reference figures maintained by your team, not a live market feed.
           </>
         }
@@ -252,6 +253,11 @@ function BenchmarkEditForm({ row, onDone }: { row: MarketBenchmarkRow; onDone: (
       setError("Median must be a non-negative number of lakhs per annum.");
       return;
     }
+    // BUG-15 — the source is required; the platform never invents one.
+    if (!sourceNote.trim()) {
+      setError("Name the source of these figures (e.g. the survey or report).");
+      return;
+    }
     // Citation fields: empty → null (the citation simply omits that part).
     const trimmedSampleN = sampleN.trim();
     const sampleNValue = trimmedSampleN === "" ? null : Number(trimmedSampleN);
@@ -273,7 +279,7 @@ function BenchmarkEditForm({ row, onDone }: { row: MarketBenchmarkRow; onDone: (
           .map((s) => s.trim())
           .filter(Boolean)
           .slice(0, 20),
-        sourceNote: sourceNote.trim() || "Curated benchmark — update quarterly",
+        sourceNote: sourceNote.trim(),
         sourceUrl: sourceUrl.trim() || null,
         sourcePublishedOn: sourcePublishedOn.trim() || null,
         sampleN: sampleNValue,

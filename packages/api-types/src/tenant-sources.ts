@@ -78,3 +78,24 @@ export const setTenantSourceEnabledOutputSchema = z.object({
   row: tenantSourceRowSchema,
 });
 export type SetTenantSourceEnabledOutput = z.infer<typeof setTenantSourceEnabledOutputSchema>;
+
+// ─────────────────────────── label overrides (BUG-7) ───────────────────────────
+
+/**
+ * C1-BUGS BUG-7 — the tenant's source relabels as a `sourceEnum → label` map,
+ * for every recruiter surface that shows an application's source (shortlist,
+ * candidates list, Ask-data). A relabel applies whether or not the channel is
+ * still ENABLED: disabling a channel stops new intake, it does not rename the
+ * candidates who already came through it. (The candidates-list FILTER still
+ * offers enabled channels only — that is a separate concern.) Pure.
+ */
+export function sourceLabelOverrides(
+  rows: readonly Pick<TenantSourceRow, "sourceEnum" | "label">[],
+): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const r of rows) {
+    const label = r.label.trim();
+    if (label.length > 0) out[r.sourceEnum] = label;
+  }
+  return out;
+}

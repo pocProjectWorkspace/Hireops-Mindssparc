@@ -522,6 +522,7 @@ async function main(): Promise<void> {
           FROM public.document_types dt
          WHERE dt.required_for_lifecycle_stage = 'pre_boarding'
            AND (dt.geography_code IS NULL OR dt.geography_code = 'IN')
+           AND (dt.tenant_id IS NULL OR dt.tenant_id = ${tid})
       `;
       await sql`
         INSERT INTO public.onboarding_tasks (tenant_id, case_id, task_type, status, title)

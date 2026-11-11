@@ -28,8 +28,9 @@ export interface PartnerClaimExpiryWarningProps {
  * P0.4 — "your exclusivity on this candidate lapses soon".
  *
  * Sent by the worker (warnExpiringOwnershipClaims, in the ownership-claim sweep
- * job) once per claim, seven days out. The claim itself is the 90-day
- * exclusivity window candidate_ownership_claims describes: while it is active
+ * job) once per claim, the tenant's claimExpiryWarningDays ahead (C1-BUGS
+ * BUG-9; platform default 14). The claim itself is the exclusivity window
+ * candidate_ownership_claims describes (MSA or tenant default): while it is active
  * no other partner can submit that person; once it expires the person is free
  * for anyone to submit again, including a different agency.
  *

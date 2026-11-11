@@ -33,6 +33,8 @@ export default async function SubmitPage() {
   }
 
   const reqs = await caller.partnerListAssignedRequisitions();
+  // BUG-8 — the real window + scope for the ownership attestation.
+  const claimTerms = await caller.partnerGetClaimTerms({});
 
   return (
     <PartnerShell
@@ -41,7 +43,11 @@ export default async function SubmitPage() {
       active="submit"
       isOrgAdmin={me.role === "partner_admin"}
     >
-      <SubmitCandidateForm reqs={reqs.items} tenantName={me.tenantDisplayName} />
+      <SubmitCandidateForm
+        reqs={reqs.items}
+        tenantName={me.tenantDisplayName}
+        claimTerms={claimTerms}
+      />
     </PartnerShell>
   );
 }

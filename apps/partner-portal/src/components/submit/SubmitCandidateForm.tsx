@@ -6,7 +6,10 @@ import { Button, Input } from "@hireops/ui";
 import { useSearchParams } from "next/navigation";
 import {
   NOTICE_PERIOD_MAX_DAYS,
+  PARTNER_CONSENT_VERSION,
+  partnerOwnershipAttestation,
   type PartnerAssignedRequisitionRow,
+  type PartnerClaimTerms,
   type PartnerSubmitCandidateOutput,
   type ScreeningAnswersInput,
 } from "@hireops/api-types";
@@ -22,8 +25,10 @@ import { Card, Badge } from "@/components/ui";
  * ownership → the three dedup outcomes.
  *
  * Consent copy is the wireflows' verbatim attestation; the ownership
- * acknowledgement is its own required checkbox (the "you claim ownership …
- * 90-day window starts now" statement).
+ * acknowledgement is its own required checkbox. BUG-8: its window + scope come
+ * from the org's real terms (partnerGetClaimTerms — live MSA, else the tenant
+ * default), never a fixed "MSA §4.2 … 90-day"; the wording is versioned by
+ * PARTNER_CONSENT_VERSION in @hireops/api-types.
  */
 
 const MAX_RESUME_BYTES = 10 * 1024 * 1024;
@@ -31,8 +36,6 @@ const ALLOWED_RESUME_MIME = new Set([
   "application/pdf",
   "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
 ]);
-// Versioned so a claim/candidate row records which consent text was attested.
-const PARTNER_CONSENT_VERSION = "partner-msa-v1-2026-05";
 
 const API_BASE =
   process.env.NEXT_PUBLIC_API_BASE ??
@@ -44,8 +47,6 @@ function normalisePhoneForSubmit(raw: string): string {
   if (/^\+\d{8,15}$/.test(trimmed.replace(/[\s-]/g, ""))) {
     return trimmed.replace(/[\s-]/g, "");
   }
-  const digits = trimmed.replace(/[^0-9]/g, "");
-  if (digits.length === 10) return `+91${digits}`;
   return trimmed;
 }
 
@@ -109,9 +110,12 @@ type FieldErrors = Partial<Record<keyof z.infer<typeof fieldSchema>, string>>;
 export function SubmitCandidateForm({
   reqs,
   tenantName,
+  claimTerms,
 }: {
   reqs: PartnerAssignedRequisitionRow[];
   tenantName: string;
+  /** BUG-8 — the ownership terms this org submits under. */
+  claimTerms: PartnerClaimTerms;
 }) {
   const searchParams = useSearchParams();
   const preselectReq = searchParams.get("req");
@@ -352,7 +356,7 @@ export function SubmitCandidateForm({
           label="Phone"
           type="tel"
           required
-          hint="10 digits (we&rsquo;ll add +91) or full international format."
+          hint="Best with the country code, e.g. +44 20 7946 0958."
           value={phone}
           onChange={(e) => setPhone(e.target.value)}
           error={fieldErrors.phone}
@@ -491,10 +495,7 @@ export function SubmitCandidateForm({
             onChange={(e) => setOwnershipAcknowledged(e.target.checked)}
             className="mt-1 h-5 w-5 shrink-0 rounded border-neutral-300 text-brand-600 focus:ring-2 focus:ring-brand-500"
           />
-          <span>
-            By submitting, I claim ownership of this candidate per {tenantName}&rsquo;s MSA Section
-            4.2. The 90-day exclusivity window starts now if this submission is accepted.
-          </span>
+          <span>{partnerOwnershipAttestation(claimTerms, tenantName)}</span>
         </label>
         {fieldErrors.ownershipAcknowledged && (
           <p className="ml-8 text-sm text-status-error-700">{fieldErrors.ownershipAcknowledged}</p>

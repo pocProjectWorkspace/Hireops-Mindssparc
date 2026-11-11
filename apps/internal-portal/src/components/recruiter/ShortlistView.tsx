@@ -59,11 +59,13 @@ function ShortlistRowView({
   index,
   selected,
   onOpen,
+  sourceLabels,
 }: {
   row: Row;
   index: number;
   selected: boolean;
   onOpen: () => void;
+  sourceLabels?: Record<string, string>;
 }) {
   const name = row.fullName ?? "(no name on file)";
   return (
@@ -76,7 +78,9 @@ function ShortlistRowView({
           <Avatar name={name} seed={row.candidateId} size="sm" />
           <div className="min-w-0">
             <p className="truncate font-medium text-neutral-900">{name}</p>
-            <p className="truncate text-xs text-neutral-500">{sourceLabel(row.source)}</p>
+            <p className="truncate text-xs text-neutral-500">
+              {sourceLabel(row.source, sourceLabels)}
+            </p>
           </div>
         </div>
       </Td>
@@ -113,7 +117,12 @@ function ShortlistRowView({
   );
 }
 
-export function ShortlistView(props: { initial: Output; canManageDefaults?: boolean }) {
+export function ShortlistView(props: {
+  initial: Output;
+  canManageDefaults?: boolean;
+  /** BUG-7 — tenant source relabels (sourceEnum → label). */
+  sourceLabels?: Record<string, string>;
+}) {
   // The shortlist is a threshold over the AI score; with the score hidden for
   // this tenant there is nothing honest to show here.
   if (!useScreeningScoreVisible()) {
@@ -132,9 +141,11 @@ export function ShortlistView(props: { initial: Output; canManageDefaults?: bool
 function ScoredShortlistView({
   initial,
   canManageDefaults = false,
+  sourceLabels,
 }: {
   initial: Output;
   canManageDefaults?: boolean;
+  sourceLabels?: Record<string, string>;
 }) {
   const [threshold, setThreshold] = useState(initial.threshold);
   const [sort, setSort] = useState<"ai_score" | "evidence">("ai_score");
@@ -301,6 +312,7 @@ function ScoredShortlistView({
                   key={row.applicationId}
                   row={row}
                   index={i + 1}
+                  sourceLabels={sourceLabels}
                   selected={candidateId === row.candidateId}
                   onOpen={() =>
                     open({ candidateId: row.candidateId, applicationId: row.applicationId })

@@ -1,6 +1,7 @@
 import { sql as poolSql, db as poolDb } from "@hireops/db";
 import { enqueueNotification } from "@hireops/notifications";
 import type { Logger } from "@hireops/observability";
+import { CLAIM_EXPIRY_WARNING_DAYS_MAX, resolveClaimExpiryWarningDays } from "@hireops/api-types";
 
 /**
  * P0.3 — candidate-ownership-claim expiry sweep.
@@ -30,7 +31,7 @@ import type { Logger } from "@hireops/observability";
  *
  * P0.4 added the WARNING half (warnExpiringOwnershipClaims, below) to this same
  * job rather than a new schedule: it reads the same table on the same cadence
- * and the two halves are the same fact seven days apart. The state machine
+ * and the two halves are the same fact a tenant-configured number of days apart. The state machine
  * still emails nothing — every send in this file is the warning.
  *
  * Cadence: 15 minutes, matching the sla / stage-stale scans. Expiry boundaries
@@ -61,8 +62,13 @@ export async function sweepExpiredOwnershipClaims(sql: SqlHandle): Promise<numbe
   return rows.length;
 }
 
-/** How far ahead of expiry the partner is warned. */
-const CLAIM_EXPIRY_WARNING_DAYS = 7;
+/**
+ * How far ahead of expiry the partner is warned is TENANT config (BUG-9):
+ * `settings.partnerDefaults.claimExpiryWarningDays`, platform default 14 — the
+ * same number the partner portal's attention feed uses. The scan reads up to
+ * the widest allowed horizon and filters per tenant in code, so the resolver
+ * (and its never-throw fallback) is the one in @hireops/api-types.
+ */
 
 const MONTHS = [
   "January",
@@ -107,6 +113,21 @@ interface ExpiringClaimRow {
   partner_full_name: string;
   candidate_name: string | null;
   company_name: string;
+  tenant_settings: unknown;
+}
+
+/**
+ * True when a claim expiring at `expiresAt` is inside its tenant's warning
+ * window as of `now` (and not already past). Pure — exported for tests.
+ */
+export function isWithinClaimWarningWindow(
+  expiresAt: Date,
+  now: Date,
+  tenantSettings: unknown,
+): boolean {
+  const ms = expiresAt.getTime() - now.getTime();
+  if (ms <= 0) return false;
+  return ms <= resolveClaimExpiryWarningDays(tenantSettings) * 86_400_000;
 }
 
 /**
@@ -115,8 +136,9 @@ interface ExpiringClaimRow {
  *
  * Without this the lapse is silent: the sweep above flips the status and the
  * partner finds out only when a resubmission comes back "duplicate blocked",
- * by which point another agency may already own the candidate. Seven days is
- * enough notice to act (push the candidate, or talk to the client).
+ * by which point another agency may already own the candidate. The lead time
+ * is the tenant's claimExpiryWarningDays (platform default 14) — the same
+ * number the partner portal's attention feed flags at.
  *
  * Scoped to claims that are still ACTIVE and expire within the window — the
  * upper bound is exclusive of already-past rows because those are the sweep's
@@ -131,7 +153,7 @@ interface ExpiringClaimRow {
  *
  * dedupKey is `claim_expiry_warn:<claimId>`, so the warning fires ONCE per
  * claim for all time regardless of how often the 15-minute job re-runs inside
- * the seven-day window. Cross-tenant + service-role for the same reason the
+ * the warning window. Cross-tenant + service-role for the same reason the
  * sweep is (documented worker posture). Returns the number of warnings newly
  * enqueued.
  *
@@ -145,7 +167,8 @@ export async function warnExpiringOwnershipClaims(sql: SqlHandle): Promise<numbe
            pu.email        AS partner_email,
            pu.full_name    AS partner_full_name,
            p.full_name     AS candidate_name,
-           t.display_name  AS company_name
+           t.display_name  AS company_name,
+           t.settings      AS tenant_settings
       FROM public.candidate_ownership_claims c
       JOIN public.partner_users pu
         ON pu.id = c.claimed_via_partner_user_id
@@ -158,11 +181,13 @@ export async function warnExpiringOwnershipClaims(sql: SqlHandle): Promise<numbe
         ON t.id = c.tenant_id
      WHERE c.status = 'active'
        AND c.expires_at > now()
-       AND c.expires_at <= now() + make_interval(days => ${CLAIM_EXPIRY_WARNING_DAYS})
+       AND c.expires_at <= now() + make_interval(days => ${CLAIM_EXPIRY_WARNING_DAYS_MAX})
   `;
 
+  const now = new Date();
   let warned = 0;
   for (const row of rows) {
+    if (!isWithinClaimWarningWindow(new Date(row.expires_at), now, row.tenant_settings)) continue;
     try {
       await enqueueNotification(poolDb, {
         tenantId: row.tenant_id,

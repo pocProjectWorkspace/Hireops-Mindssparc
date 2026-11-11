@@ -65,6 +65,7 @@ import {
   normaliseEmail,
   normalisePhone,
   parseStoredResume,
+  resolvePhoneCountry,
   type ResumeParser,
 } from "@hireops/api/application-ingest";
 import { BULK_CV_ACCEPTING_REQ_STATUSES } from "@hireops/api/bulk-cv/policy";
@@ -306,9 +307,10 @@ async function processItem(
   const email = trimOrNull(personal.email, 320);
   const phone = trimOrNull(personal.phone, 64);
   const emailNorm = email ? normaliseEmail(email) : null;
-  const phoneNormRaw = phone ? normalisePhone(phone) : "";
-  const phoneNorm = phoneNormRaw.length >= 6 ? phoneNormRaw : null;
-  if (!emailNorm && !phoneNorm) throw new ItemError("no_contact_details", true);
+  // Plausibility on the digits; the stored form (E.164, BUG-5) needs the
+  // tenant's default country, so it is resolved inside the tenant-bound tx.
+  const phoneUsable = phone !== null && normalisePhone(phone).length >= 6;
+  if (!emailNorm && !phoneUsable) throw new ItemError("no_contact_details", true);
 
   // ── 3. One tenant-bound tx as the uploader ───────────────────────────
   const claims = {
@@ -320,6 +322,14 @@ async function processItem(
   return withTenantContext(
     claims,
     async ({ db }) => {
+      const phoneNorm =
+        phone && phoneUsable
+          ? normalisePhone(
+              phone,
+              await resolvePhoneCountry(db, row.tenant_id, iso2OrNull(personal.location_country)),
+            )
+          : null;
+
       // Serialise concurrent items for the same identity (same email or
       // phone in two files of one batch). Sorted so two locks cannot deadlock.
       const lockKeys = [emailNorm ? `e:${emailNorm}` : null, phoneNorm ? `p:${phoneNorm}` : null]

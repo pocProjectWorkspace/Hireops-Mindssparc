@@ -30,20 +30,27 @@
  * and is owned by the apply-form work, so it was left untouched here.
  */
 
-import { and, eq } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import {
   aiScoreOutbox,
   applications,
   candidates,
   persons,
   requisitionKnockouts,
+  tenants,
   type ApplicationSource,
   type TenantBoundDb,
 } from "@hireops/db";
 import { evaluateKnockouts, type KnockoutInput } from "@hireops/ai-scoring";
 import { parseResume, type ParserOutput } from "@hireops/ai-client";
 import type { Logger } from "@hireops/observability";
-import type { ScreeningAnswersInput, ScreeningAnswersSource } from "@hireops/api-types";
+import {
+  normalisePhone as normalisePhoneE164,
+  phoneMatchKeys,
+  resolveTenantDefaultCountry,
+  type ScreeningAnswersInput,
+  type ScreeningAnswersSource,
+} from "@hireops/api-types";
 import { getStorageClient } from "./storage";
 import { resolveScreeningAnswersForInsert, screeningKnockoutView } from "./screening-answers";
 
@@ -64,9 +71,44 @@ export function normaliseEmail(email: string): string {
   return `${trimmedLocal}@${domain}`;
 }
 
-/** Digits only. */
-export function normalisePhone(phone: string): string {
-  return phone.replace(/[^0-9]/g, "");
+/**
+ * C1-BUGS BUG-5 — E.164 when the number's country is known (explicit "+"/"00"
+ * prefix, else the person's country, else the tenant's `defaultCountry`
+ * setting); digits only when it is not. No platform default country. See
+ * @hireops/api-types phone.ts.
+ */
+export function normalisePhone(phone: string, country?: string | null): string {
+  return normalisePhoneE164(phone, country);
+}
+
+/**
+ * The country used to place a bare national phone number: the person's own
+ * country when supplied, else the tenant's `settings.defaultCountry`, else
+ * null. Reads tenants (RLS: a tenant-bound db reads its own row; the
+ * service-role pool reads any). Never throws for a missing row.
+ */
+export async function resolvePhoneCountry(
+  db: Pick<TenantBoundDb, "select">,
+  tenantId: string,
+  personCountry: string | null | undefined,
+): Promise<string | null> {
+  const own = personCountry?.trim().toUpperCase();
+  if (own && own.length === 2) return own;
+  const [row] = await db
+    .select({ settings: tenants.settings })
+    .from(tenants)
+    .where(eq(tenants.id, tenantId))
+    .limit(1);
+  return resolveTenantDefaultCountry(row?.settings ?? null);
+}
+
+/**
+ * The `persons.phone_normalised` values a normalised phone may be stored as —
+ * E.164 plus the pre-BUG-5 digits-only forms — so a lookup finds people
+ * written before the fix. Use with `inArray`.
+ */
+export function phoneLookupKeys(phoneNormalised: string): string[] {
+  return phoneMatchKeys(phoneNormalised);
 }
 
 // ─────────────────────────── scoring decision ───────────────────────────
@@ -222,12 +264,17 @@ export async function findPersonByContact(
     if (emailMatch) return emailMatch;
   }
   if (contact.phoneNormalised) {
+    // BUG-5: match the E.164 value AND the legacy digits-only forms.
     const [phoneMatch] = await db
       .select(cols)
       .from(persons)
       .where(
-        and(eq(persons.tenantId, tenantId), eq(persons.phoneNormalised, contact.phoneNormalised)),
+        and(
+          eq(persons.tenantId, tenantId),
+          inArray(persons.phoneNormalised, phoneLookupKeys(contact.phoneNormalised)),
+        ),
       )
+      .orderBy(persons.createdAt)
       .limit(1);
     if (phoneMatch) return phoneMatch;
   }

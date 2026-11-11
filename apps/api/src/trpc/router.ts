@@ -446,6 +446,8 @@ import {
   resolveStageLabel,
   resolveStageLabelMap,
   resolveTenantLabels,
+  sourceLabelOverrides,
+  effectiveOfferStatus,
   getTenantLabelsInputSchema,
   getTenantLabelsOutputSchema,
   updateTenantLabelsInputSchema,
@@ -717,6 +719,8 @@ import {
   updatePartnerDefaultsOutputSchema,
   resolvePartnerDefaults,
   type PartnerDefaults,
+  partnerGetClaimTermsInputSchema,
+  partnerGetClaimTermsOutputSchema,
   INTERNAL_TENANT_ROLES,
   type ScoringWeights,
   type TenantUserAdminRow,
@@ -1355,6 +1359,7 @@ import {
   listBatchesForRequisition as listBulkCvBatchesForRequisition,
   requeueFailedItems as requeueFailedBulkCvItems,
 } from "../lib/bulk-cv/read";
+import { newClaimScope, resolveClaimForSubmission } from "../lib/partner-claims";
 import {
   computeInitialScoringState,
   findPersonByContact,
@@ -1362,6 +1367,8 @@ import {
   normaliseEmail,
   normalisePhone,
   parseStoredResume,
+  phoneLookupKeys,
+  resolvePhoneCountry,
 } from "../lib/application-ingest";
 import {
   computeRecruiterUrgency,
@@ -1674,6 +1681,16 @@ function requireDb(ctx: HonoTRPCContext) {
     });
   }
   return ctx.db;
+}
+
+/**
+ * C1-BUGS BUG-4 — the document_types rows a tenant may use: the platform
+ * catalogue (tenant_id NULL) plus its own rows. RLS
+ * (tenant_isolation_select, migration 0132) enforces the same; the explicit
+ * predicate keeps the read honest on any service-role path too.
+ */
+function documentTypeVisibleTo(tenantId: string) {
+  return dsql`(${documentTypes.tenantId} IS NULL OR ${documentTypes.tenantId} = ${tenantId})`;
 }
 
 // ─────────── CAND-02 — candidate self-service profile read ───────────
@@ -3813,6 +3830,7 @@ async function loadCompDeskAssembled(
       id: offers.id,
       applicationId: offers.applicationId,
       status: offers.status,
+      expiryAt: offers.expiryAt,
       baseSalaryInrPaise: offers.baseSalaryInrPaise,
       createdAt: offers.createdAt,
     })
@@ -3911,7 +3929,8 @@ async function loadCompDeskAssembled(
       reasons: ruleResult ? ruleResult.reasons : [],
       offerId: offer?.id ?? null,
       offerStatus: offer
-        ? (offer.status as
+        ? // BUG-10 — an overdue extended offer reads as expired.
+          (effectiveOfferStatus(offer.status, offer.expiryAt) as
             | "drafted"
             | "extended"
             | "accepted"
@@ -4432,7 +4451,12 @@ export const appRouter = router({
           //       (ticket: "let the partner dedup audit surface it").
           //   (d) no matches → create new person.
           const emailNorm = normaliseEmail(input.applicant.email);
-          const phoneNorm = normalisePhone(input.applicant.phone);
+          // BUG-5: E.164 using the applicant's country, else the tenant's
+          // defaultCountry setting; the lookup also matches legacy forms.
+          const phoneNorm = normalisePhone(
+            input.applicant.phone,
+            await resolvePhoneCountry(poolDb, req.tenantId, input.applicant.locationCountry),
+          );
           const [emailMatch] = await poolDb
             .select({
               id: persons.id,
@@ -4451,7 +4475,13 @@ export const appRouter = router({
               linkedinUrl: persons.linkedinUrl,
             })
             .from(persons)
-            .where(and(eq(persons.tenantId, req.tenantId), eq(persons.phoneNormalised, phoneNorm)))
+            .where(
+              and(
+                eq(persons.tenantId, req.tenantId),
+                inArray(persons.phoneNormalised, phoneLookupKeys(phoneNorm)),
+              ),
+            )
+            .orderBy(persons.createdAt)
             .limit(1);
 
           let personId: string;
@@ -5746,7 +5776,7 @@ export const appRouter = router({
           locationType: facet.locationType,
           primaryLocation: facet.primaryLocation,
           seniority: facet.level,
-          employmentType: null,
+          employmentType: facet.employmentType,
           companyName,
           skills: skillRows.map((s) => ({
             skillName: s.skillName,
@@ -7591,7 +7621,8 @@ export const appRouter = router({
         rows: rows.map((r) => ({
           id: r.id,
           applicationId: r.applicationId,
-          status: r.status as
+          // BUG-10 — an overdue extended offer reads as expired.
+          status: effectiveOfferStatus(r.status, r.expiryAt) as
             | "drafted"
             | "extended"
             | "accepted"
@@ -11638,7 +11669,8 @@ export const appRouter = router({
       // policy. Only codes with a REAL number can produce an overdue doc.
       const typeRows = await db
         .select({ code: documentTypes.code, retentionYears: documentTypes.retentionYears })
-        .from(documentTypes);
+        .from(documentTypes)
+        .where(documentTypeVisibleTo(tenantId));
       const effByCode = typeRows
         .map((t) => ({
           code: t.code,
@@ -13683,6 +13715,16 @@ export const appRouter = router({
           hmMembershipId,
           hmRequisitionIds,
           stageLabels: await resolveTenantLabelsDb(tenantId),
+          // BUG-7 / NEW-8 — the tenant's source relabels.
+          sourceLabels: sourceLabelOverrides(
+            await db
+              .select({
+                sourceEnum: tenantApplicationSources.sourceEnum,
+                label: tenantApplicationSources.label,
+              })
+              .from(tenantApplicationSources)
+              .where(eq(tenantApplicationSources.tenantId, tenantId)),
+          ),
         },
         complete: async ({ system, user }) => {
           const client = await getAIClient(tenantId);
@@ -15984,8 +16026,8 @@ export const appRouter = router({
    * reference rows (retention years per geography). admin + hr_head (surfaced
    * on /admin/users AND the HRHEAD-03 /governance page). No mutations this
    * ticket — enforcement automation is a future work package. document_types
-   * is a tenant-agnostic reference table with a permissive authenticated
-   * SELECT policy, so ctx.db reads it fine.
+   * = platform rows + this tenant's own rows (BUG-4, 0132), readable under
+   * ctx.db's RLS.
    */
   getDocumentRetention: protectedProcedure
     .input(getDocumentRetentionInputSchema)
@@ -16010,6 +16052,7 @@ export const appRouter = router({
           retentionYears: documentTypes.retentionYears,
         })
         .from(documentTypes)
+        .where(documentTypeVisibleTo(requireTenantId(ctx)))
         .orderBy(
           dsql`${documentTypes.geographyCode} ASC NULLS FIRST`,
           documentTypes.retentionYears,
@@ -16229,8 +16272,8 @@ export const appRouter = router({
         )
         .orderBy(onboardingTasks.createdAt, onboardingTasks.id);
 
-      // document_types is a reference table with a permissive read policy
-      // for any authenticated caller, so this join resolves the name under
+      // document_types is readable (platform rows + own tenant's rows, 0132)
+      // by any authenticated caller, so this join resolves the name under
       // the RLS-scoped ctx.db (unlike the buddy/manager names below).
       const documentRows = await db
         .select({
@@ -16636,12 +16679,12 @@ export const appRouter = router({
           throw new TRPCError({ code: "NOT_FOUND", message: "Onboarding case not found" });
         }
 
-        // document_types is a tenant-agnostic reference table with a permissive
-        // read policy — validate the id for a clean 404 instead of an FK error.
+        // document_types = platform rows + this tenant's own (BUG-4) —
+        // validate the id for a clean 404 instead of an FK error.
         const [dtRow] = await db
           .select({ id: documentTypes.id })
           .from(documentTypes)
-          .where(eq(documentTypes.id, input.documentTypeId))
+          .where(and(eq(documentTypes.id, input.documentTypeId), documentTypeVisibleTo(tenantId)))
           .limit(1);
         if (!dtRow) {
           throw new TRPCError({ code: "NOT_FOUND", message: "Document type not found" });
@@ -17908,6 +17951,46 @@ export const appRouter = router({
     }),
 
   /**
+   * partnerGetClaimTerms (C1-BUGS BUG-8) — the ownership terms this partner
+   * org submits under: its live MSA's exclusivity window + scope, else the
+   * tenant's partner default window (org-wide). The SAME resolution
+   * partnerSubmitCandidate applies when it creates the claim, so the submit
+   * form's attestation states what will actually happen. Window and scope
+   * only — fees and the rest of the MSA stay staff-side.
+   */
+  partnerGetClaimTerms: partnerProcedure
+    .input(partnerGetClaimTermsInputSchema)
+    .output(partnerGetClaimTermsOutputSchema)
+    .query(async ({ ctx }) => {
+      const db = ctx.db;
+      if (!db) {
+        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "partner ctx.db missing" });
+      }
+      const { tenantId, partnerOrgId } = ctx.partner;
+      const liveMsa = await getLivePartnerMsa(db, tenantId, partnerOrgId);
+      if (liveMsa) {
+        return {
+          claimWindowDays: liveMsa.exclusivityWindowDays,
+          exclusivityScope: liveMsa.exclusivityScope === "req_only" ? "req_only" : "org_wide",
+          source: "msa" as const,
+        };
+      }
+      const [row] = await db
+        .select({ settings: tenants.settings })
+        .from(tenants)
+        .where(eq(tenants.id, tenantId))
+        .limit(1);
+      const partnerDefaults = resolvePartnerDefaults(
+        ((row?.settings ?? {}) as Record<string, unknown>).partnerDefaults,
+      );
+      return {
+        claimWindowDays: partnerDefaults.claimWindowDays,
+        exclusivityScope: "org_wide" as const,
+        source: "tenant_default" as const,
+      };
+    }),
+
+  /**
    * partnerListAssignedRequisitions — the reqs Kyndryl has opened to this
    * partner org (partner_assignments status='active'), joined to
    * requisitions + positions for the dashboard cards. Capped for POC scale.
@@ -18124,8 +18207,9 @@ export const appRouter = router({
    * decision tree (§3.5) inside the partnerProcedure tenant-bound tx so the
    * whole thing commits or rolls back atomically:
    *
-   *   (a) no active claim → create candidate + application + ownership claim
-   *       (90-day window) + dedup-attempt(accepted). The candidate enters the
+   *   (a) no covering active claim → create candidate + application + ownership
+   *       claim (window + scope from the org's MSA, else the tenant default;
+   *       BUG-12) + dedup-attempt(accepted). The candidate enters the
    *       SAME recruiter pipeline as a direct applicant (parse/knockout/score).
    *   (b) active claim owned by ANOTHER partner → reject; record a
    *       dedup-attempt(block_active_claim). The response reveals only how many
@@ -18186,7 +18270,12 @@ export const appRouter = router({
           }
 
           const emailNorm = normaliseEmail(input.candidate.email);
-          const phoneNorm = normalisePhone(input.candidate.phone);
+          // BUG-5: E.164 using the candidate's country, else the tenant's
+          // defaultCountry setting (findPersonByContact matches legacy forms).
+          const phoneNorm = normalisePhone(
+            input.candidate.phone,
+            await resolvePhoneCountry(db, tenantId, input.candidate.locationCountry),
+          );
           const submissionMetadata: Record<string, unknown> = {
             source: "partner_portal_submit",
             requisitionId: input.requisitionId,
@@ -18207,14 +18296,27 @@ export const appRouter = router({
             phoneNormalised: phoneNorm,
           });
 
-          // 3. If the person already exists, inspect their active claim.
+          // 3. If the person already exists, inspect their active claims.
+          //    BUG-12: a claim's exclusivity is org_wide (covers every req)
+          //    or req_only (covers only the req it was made on), snapshotted
+          //    from the owning org's MSA at claim time. A person may hold
+          //    several req_only claims (different reqs, different orgs) but
+          //    at most one org_wide claim (partial unique, 0132). The person
+          //    lock serialises concurrent submissions of the same person, so
+          //    the read-decide-insert below cannot interleave.
+          let personHasActiveClaims = false;
           if (existingPerson) {
-            const [claim] = await db
+            await db.execute(
+              dsql`SELECT pg_advisory_xact_lock(hashtextextended(${`partner_claim:${tenantId}:${existingPerson.id}`}, 0))`,
+            );
+            const activeClaims = await db
               .select({
                 id: candidateOwnershipClaims.id,
                 partnerOrgId: candidateOwnershipClaims.partnerOrgId,
                 claimedAt: candidateOwnershipClaims.claimedAt,
                 claimedViaApplicationId: candidateOwnershipClaims.claimedViaApplicationId,
+                exclusivityScope: candidateOwnershipClaims.exclusivityScope,
+                requisitionId: candidateOwnershipClaims.requisitionId,
               })
               .from(candidateOwnershipClaims)
               .where(
@@ -18224,9 +18326,16 @@ export const appRouter = router({
                   eq(candidateOwnershipClaims.status, "active"),
                 ),
               )
-              .limit(1);
+              .orderBy(candidateOwnershipClaims.claimedAt);
+            personHasActiveClaims = activeClaims.length > 0;
+            const decision = resolveClaimForSubmission(
+              activeClaims,
+              partnerOrgId,
+              input.requisitionId,
+            );
 
-            if (claim && claim.partnerOrgId !== partnerOrgId) {
+            if (decision.kind === "blocked") {
+              const claim = decision.claim;
               // (b) owned by ANOTHER partner → reject. Record the block; do
               // NOT create person/candidate/application/claim.
               await db.insert(candidateDedupAttempts).values({
@@ -18246,7 +18355,8 @@ export const appRouter = router({
               return { outcome: "duplicate_blocked", blockedDaysAgo };
             }
 
-            if (claim && claim.partnerOrgId === partnerOrgId) {
+            if (decision.kind === "own") {
+              const claim = decision.claim;
               // (c) owned by THIS partner → add a second application for this
               // req under the existing claim (no new claim — the partial
               // unique already holds one active claim for this person).
@@ -18326,8 +18436,9 @@ export const appRouter = router({
                 parseStatus: ingest.parseStatus,
               };
             }
-            // Person exists but has NO active claim (expired/released) →
-            // falls through to the "created" branch to make a fresh claim.
+            // Person exists but NO active claim covers this req (none at
+            // all — expired/released — or only other orgs' req_only claims on
+            // other reqs) → falls through to "created" for a fresh claim.
           }
 
           // 4. (a) create. Resolve or create the person first.
@@ -18337,7 +18448,9 @@ export const appRouter = router({
           if (existingPerson) {
             personId = existingPerson.id;
             dedupDecision = "link_existing";
-            dedupReason = "reclaimed_no_active_claim";
+            dedupReason = personHasActiveClaims
+              ? "claimed_outside_req_only_claims"
+              : "reclaimed_no_active_claim";
             if (!existingPerson.linkedinUrl && input.candidate.linkedinUrl) {
               await db
                 .update(persons)
@@ -18398,6 +18511,8 @@ export const appRouter = router({
             ((tenantSettingsRow?.settings ?? {}) as Record<string, unknown>).partnerDefaults,
           );
           const claimWindowDays = liveMsa?.exclusivityWindowDays ?? partnerDefaults.claimWindowDays;
+          // BUG-12 — snapshot the MSA's exclusivity scope onto the claim.
+          const claimScope = newClaimScope(liveMsa?.exclusivityScope, input.requisitionId);
           const claimedAt = new Date();
           const expiresAt = new Date(claimedAt.getTime() + claimWindowDays * 86_400_000);
           let claimId: string;
@@ -18412,6 +18527,8 @@ export const appRouter = router({
                 claimedViaApplicationId: ingest.applicationId,
                 claimedAt,
                 expiresAt,
+                exclusivityScope: claimScope.exclusivityScope,
+                requisitionId: claimScope.requisitionId,
                 status: "active",
                 releasedReason: null,
               })
@@ -19415,7 +19532,8 @@ export const appRouter = router({
         offer: {
           offerId: row.offer_id,
           applicationId: row.application_id,
-          status: row.status,
+          // BUG-10 — an overdue extended offer reads as expired.
+          status: effectiveOfferStatus(row.status, row.expiry_at as string | Date),
           companyName: row.company_name,
           positionTitle: row.position_title,
           baseSalaryInrPaise: Number(row.base_salary_inr_paise),
@@ -19713,12 +19831,17 @@ export const appRouter = router({
             throw new TRPCError({ code: "NOT_FOUND", message: "onboarding_case_not_found" });
           }
 
-          // document_types is a tenant-agnostic reference table — validate the
-          // id for a clean 404 instead of an FK error.
+          // document_types = platform rows + this tenant's own (BUG-4) —
+          // validate the id for a clean 404 instead of an FK error.
           const [dtRow] = await db
             .select({ id: documentTypes.id })
             .from(documentTypes)
-            .where(eq(documentTypes.id, input.documentTypeId))
+            .where(
+              and(
+                eq(documentTypes.id, input.documentTypeId),
+                documentTypeVisibleTo(ctx.candidate.tenantId),
+              ),
+            )
             .limit(1);
           if (!dtRow) {
             throw new TRPCError({ code: "NOT_FOUND", message: "document_type_not_found" });
@@ -22454,9 +22577,9 @@ export const appRouter = router({
     }),
 
   /**
-   * listRequestableDocumentTypes — the tenant-agnostic document_types catalogue,
-   * for the "Request documents" modal. Reads the reference table (permissive
-   * SELECT policy); no tenant scoping (the table has no tenant_id).
+   * listRequestableDocumentTypes — the document_types catalogue for the
+   * "Request documents" modal: platform rows + the caller tenant's own rows
+   * (BUG-4, migration 0132).
    */
   listRequestableDocumentTypes: protectedProcedure
     .output(listRequestableDocumentTypesOutputSchema)
@@ -22471,6 +22594,7 @@ export const appRouter = router({
           geographyCode: documentTypes.geographyCode,
         })
         .from(documentTypes)
+        .where(documentTypeVisibleTo(requireTenantId(ctx)))
         .orderBy(dsql`${documentTypes.geographyCode} ASC NULLS FIRST`, documentTypes.name);
       return {
         items: rows.map((r) => ({
@@ -22515,7 +22639,9 @@ export const appRouter = router({
         const typeRows = await db
           .select({ id: documentTypes.id })
           .from(documentTypes)
-          .where(inArray(documentTypes.id, input.documentTypeIds));
+          .where(
+            and(inArray(documentTypes.id, input.documentTypeIds), documentTypeVisibleTo(tenantId)),
+          );
         const validTypeIds = new Set(typeRows.map((t) => t.id));
         const requestTypes = input.documentTypeIds.filter((id) => validTypeIds.has(id));
         if (requestTypes.length === 0) {
@@ -22904,7 +23030,25 @@ export const appRouter = router({
           if (input.phone !== undefined) {
             const phone = input.phone && input.phone.length > 0 ? input.phone : null;
             personSet.phonePrimary = phone;
-            personSet.phoneNormalised = phone ? normalisePhone(phone) : null;
+            if (phone) {
+              // BUG-5: E.164 using the (possibly just-edited) person country,
+              // else the tenant's defaultCountry setting.
+              let personCountry: string | null = input.locationCountry ?? null;
+              if (input.locationCountry === undefined) {
+                const [p] = await db
+                  .select({ c: persons.locationCountry })
+                  .from(persons)
+                  .where(and(eq(persons.tenantId, tenantId), eq(persons.id, personId)))
+                  .limit(1);
+                personCountry = p?.c ?? null;
+              }
+              personSet.phoneNormalised = normalisePhone(
+                phone,
+                await resolvePhoneCountry(db, tenantId, personCountry),
+              );
+            } else {
+              personSet.phoneNormalised = null;
+            }
           }
           if (input.locationCity !== undefined) {
             personSet.locationCity =
@@ -31022,6 +31166,8 @@ async function insertRequisitionDraftChain(
         level: input.seniority ?? null,
         locationType: input.locationType,
         primaryLocation: input.primaryLocation ?? null,
+        // BUG-6 — keep the wizard's employment type for JD generation.
+        employmentType: input.employmentType?.trim() || null,
         compBandMin: compBandMin !== undefined ? String(compBandMin) : null,
         compBandMax: compBandMax !== undefined ? String(compBandMax) : null,
         compCurrency: compCurrency ?? null,
@@ -31378,6 +31524,7 @@ interface DraftRequisitionFacet {
   locationType: string;
   primaryLocation: string | null;
   level: string | null;
+  employmentType: string | null;
   jdVersionId: string;
   jdText: string;
   jdSummary: string | null;
@@ -31400,6 +31547,7 @@ async function loadDraftRequisitionFacet(
       locationType: positions.locationType,
       primaryLocation: positions.primaryLocation,
       level: positions.level,
+      employmentType: positions.employmentType,
       jdVersionId: jdVersions.id,
       jdText: jdVersions.jdText,
       jdSummary: jdVersions.summary,
@@ -31429,6 +31577,7 @@ async function loadDraftRequisitionFacet(
     locationType: row.locationType,
     primaryLocation: row.primaryLocation ?? null,
     level: row.level ?? null,
+    employmentType: row.employmentType ?? null,
     jdVersionId: row.jdVersionId,
     jdText: row.jdText,
     jdSummary: row.jdSummary ?? null,

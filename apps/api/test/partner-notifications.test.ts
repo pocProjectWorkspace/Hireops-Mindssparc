@@ -447,11 +447,11 @@ describe("P0.4 partner-facing notifications", () => {
     assert.equal(
       (await outboxByDedupKey(`claim_expiry_warn:${PN_CLAIM_LATER}`)).length,
       0,
-      "a claim 30 days out is outside the 7-day window — no warning",
+      "a claim 30 days out is outside the (default 14-day) warning window — no warning",
     );
 
     // Once per claim, EVER: the job re-runs every 15 minutes for the whole
-    // seven days, and the dedup key is what stops that becoming 672 emails.
+    // warning window, and the dedup key is what stops that becoming hundreds of emails.
     await warnExpiringOwnershipClaims(poolSql);
     assert.equal(
       (await outboxByDedupKey(`claim_expiry_warn:${PN_CLAIM_SOON}`)).length,
