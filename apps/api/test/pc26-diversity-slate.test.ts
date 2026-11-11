@@ -206,7 +206,7 @@ describe("PC-26 diverse slate", () => {
     await cleanup();
     await poolSql`INSERT INTO public.tenants (id, slug, display_name, primary_region, status, settings)
       VALUES (${T}, 'synth-pc26', 'PC-26 Synth', 'ap-northeast-1', 'active',
-              ${poolSql.json({ diversitySlate: SETTINGS } as never)})`;
+              ${JSON.stringify({ diversitySlate: SETTINGS })}::jsonb)`;
     await poolSql`INSERT INTO public.business_units (id, tenant_id, name, slug) VALUES (${BU}, ${T}, 'PC26 BU', 'pc26-bu')`;
     await poolSql`INSERT INTO public.tenant_user_memberships (id, tenant_id, user_id, roles, status, business_unit_id)
       VALUES (${MEM}, ${T}, ${staffUserId}, ARRAY['recruiter','admin']::tenant_role[], 'active', ${BU})`;
@@ -238,7 +238,7 @@ describe("PC-26 diverse slate", () => {
       await poolSql`INSERT INTO public.candidate_diversity_self_id
           (tenant_id, person_id, category_key, value, disclosure_version, collected_via, withdrawn_at)
         VALUES (${T}, ${P[i]!}, 'pc26cat', ${value}, ${DIVERSITY_SELF_ID_DISCLOSURE_VERSION}, 'apply_form',
-                ${withdrawn ? new Date() : null})`;
+                ${withdrawn ? new Date().toISOString() : null}::timestamptz)`;
     }
     // P2 owns the candidate portal account.
     await poolSql`INSERT INTO public.candidate_accounts (tenant_id, person_id, user_id, status, activated_at)
@@ -311,7 +311,7 @@ describe("PC-26 diverse slate", () => {
       const off = await adminCaller.listDiverseSlateStatuses({ onlyShort: false });
       assert.deepEqual(off, { enabled: false, rows: [] });
     } finally {
-      await poolSql`UPDATE public.tenants SET settings = ${poolSql.json({ diversitySlate: SETTINGS } as never)} WHERE id = ${T}`;
+      await poolSql`UPDATE public.tenants SET settings = ${JSON.stringify({ diversitySlate: SETTINGS })}::jsonb WHERE id = ${T}`;
     }
     assert.equal((await slate()).diverseInSlate, 2);
   });
@@ -399,9 +399,12 @@ describe("PC-26 diverse slate", () => {
       const d = await caller.getCandidateById({ id: C[i]!, applicationId: A[i]! });
       assert.ok(!LEAK.test(JSON.stringify(d)), `getCandidateById P${i + 1}`);
     }
-    const list = await caller.listCandidates({ filters: { requisitionId: REQ } } as never);
+    const list = await caller.listCandidates({
+      filters: { requisitionId: REQ },
+      pagination: { limit: 50 },
+    });
     assert.ok(!LEAK.test(JSON.stringify(list)), "listCandidates");
-    const byRole = await caller.listCandidatesByRequisition({});
+    const byRole = await caller.listCandidatesByRequisition({ requisitionId: REQ });
     assert.ok(!LEAK.test(JSON.stringify(byRole)), "listCandidatesByRequisition");
     const status = await caller.getDiverseSlateStatus({ requisitionId: REQ });
     assert.ok(!JSON.stringify(status).includes(P[0]!), "slate status carries no person id");

@@ -166,6 +166,19 @@ async function cleanup(): Promise<void> {
   }
 }
 
+/**
+ * `selected` goes through transitionApplicationStage and so respects the T2.1
+ * candidate-field policy gate. Its CODE DEFAULT (MISSING_INFO_FIELDS) requires
+ * Expected Salary, Notice Period and Availability Date before offer_drafted, in
+ * every environment with or without candidate_field_policy rows — so the
+ * fixtures carry them (same shape as hr-round-assessment.test.ts). parsed_skills
+ * must be an OBJECT: the reader is `parsed_skills->>'notice_period_days'`.
+ */
+const EXPECTED_SALARY_PAISE = 250_000_000; // ₹25L
+function parsedSkills(skills: string[]): Record<string, unknown> {
+  return { skills, notice_period_days: 60, availability_date: "2026-12-01" };
+}
+
 async function seedFixtures(): Promise<void> {
   await poolSql`INSERT INTO public.business_units (id, tenant_id, name, slug) VALUES (${BU}, ${tenantId}, 'PC11 BU', 'pc11-bu')`;
   await poolSql`
@@ -189,16 +202,17 @@ async function seedFixtures(): Promise<void> {
   await poolSql`
     INSERT INTO public.candidates (id, tenant_id, person_id, source, consent_version, parsed_skills)
     VALUES
-      (${CAND1}, ${tenantId}, ${PERSON1}, 'career_site', 'v1', ${JSON.stringify(["SAP", "IFRS"])}::jsonb),
-      (${CAND2}, ${tenantId}, ${PERSON2}, 'career_site', 'v1', ${JSON.stringify(["Excel"])}::jsonb),
-      (${CAND3}, ${tenantId}, ${PERSON3}, 'career_site', 'v1', ${JSON.stringify(["Tally"])}::jsonb)`;
+      (${CAND1}, ${tenantId}, ${PERSON1}, 'career_site', 'v1', ${JSON.stringify(parsedSkills(["SAP", "IFRS"]))}::jsonb),
+      (${CAND2}, ${tenantId}, ${PERSON2}, 'career_site', 'v1', ${JSON.stringify(parsedSkills(["Excel"]))}::jsonb),
+      (${CAND3}, ${tenantId}, ${PERSON3}, 'career_site', 'v1', ${JSON.stringify(parsedSkills(["Tally"]))}::jsonb)`;
   await poolSql`
     INSERT INTO public.applications
-      (id, tenant_id, candidate_id, requisition_id, source, current_stage, stage_entered_at)
+      (id, tenant_id, candidate_id, requisition_id, source, current_stage, stage_entered_at,
+       expected_salary_inr_paise)
     VALUES
-      (${APP1}, ${tenantId}, ${CAND1}, ${REQ_A}, 'career_site', 'tech_interview', now()),
-      (${APP2}, ${tenantId}, ${CAND2}, ${REQ_A}, 'career_site', 'tech_interview', now()),
-      (${APP3}, ${tenantId}, ${CAND3}, ${REQ_B}, 'career_site', 'tech_interview', now())`;
+      (${APP1}, ${tenantId}, ${CAND1}, ${REQ_A}, 'career_site', 'tech_interview', now(), ${EXPECTED_SALARY_PAISE}),
+      (${APP2}, ${tenantId}, ${CAND2}, ${REQ_A}, 'career_site', 'tech_interview', now(), ${EXPECTED_SALARY_PAISE}),
+      (${APP3}, ${tenantId}, ${CAND3}, ${REQ_B}, 'career_site', 'tech_interview', now(), ${EXPECTED_SALARY_PAISE})`;
 
   await poolSql`
     INSERT INTO public.interviews

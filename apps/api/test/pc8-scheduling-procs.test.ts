@@ -439,6 +439,10 @@ describe("PC-8/9/10 — scheduling procedures (migration 0127)", () => {
     assert.equal(listed.needsReschedule[0]?.interviewId, IV_A);
   });
 
+  // ~12 sequential procedure calls, each a dozen-plus pooler round-trips
+  // (offer view, availability, booking, audit). Measured ~80s on the shared
+  // Supabase pooler with steady per-step progress — slow, not hung — so the
+  // 60s default is too tight for this one test.
   it("5. candidate portal: own offers only, pick, reschedule allowance", async () => {
     if (skip("5")) return;
     const a = candidate(CAND_AUTH_A);
@@ -488,5 +492,5 @@ describe("PC-8/9/10 — scheduling procedures (migration 0127)", () => {
       slotStart: r1.slots[0]!.start,
     });
     await expectCode(a.candidateRequestReschedule({ interviewId: booked.interviewId }), "CONFLICT");
-  });
+  }, 180_000);
 });
