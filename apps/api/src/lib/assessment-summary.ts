@@ -87,24 +87,19 @@ import { interviewNotesReadPermitted } from "./interview-notes-read";
 import { parsedSkillNames } from "./skill-match";
 
 /** Roles that see the whole summary on role alone. */
-export const ASSESSMENT_FULL_ROLES: Set<string> = new Set([
-  "admin",
-  "recruiter",
-  "hr_ops",
-  "hr_head",
-]);
+export const ASSESSMENT_FULL_ROLES = new Set<string>(["admin", "recruiter", "hr_ops", "hr_head"]);
 
 /** Roles that may record a selection decision on role alone (HM: own req only). */
-export const SELECTION_DECISION_ROLES: Set<string> = new Set(["admin", "recruiter"]);
+export const SELECTION_DECISION_ROLES = new Set<string>(["admin", "recruiter"]);
 
 /** The coarse persona gate in front of recordSelectionDecision (HM re-checked per req). */
-export const SELECTION_DECISION_GATE_ROLES: Set<string> = new Set([
+export const SELECTION_DECISION_GATE_ROLES = new Set<string>([
   ...SELECTION_DECISION_ROLES,
   "hiring_manager",
 ]);
 
 /** The coarse persona gate in front of the summary read. */
-export const ASSESSMENT_SUMMARY_ROLES: Set<string> = new Set([
+export const ASSESSMENT_SUMMARY_ROLES = new Set<string>([
   ...ASSESSMENT_FULL_ROLES,
   "hiring_manager",
   "panel_member",
