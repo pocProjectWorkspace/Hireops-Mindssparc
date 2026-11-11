@@ -4,7 +4,10 @@ import { useState } from "react";
 import { Badge } from "@/components/ui";
 import type { BadgeTone } from "@/components/ui";
 import { InterviewNotesView } from "@/components/interviews/InterviewNotesView";
-import { applicationStageLabel } from "@/lib/labels";
+import {
+  useApplicationStageLabel,
+  useRecommendationLabel,
+} from "@/components/TenantLabelsProvider";
 import type {
   AssessmentFeedbackEntry,
   AssessmentRound,
@@ -19,12 +22,6 @@ import type {
  * notetaker notes (opened through getInterviewNotes, which re-checks access).
  */
 
-export const REC_LABEL: Record<InterviewRecommendation, string> = {
-  strong_yes: "Strong yes",
-  yes: "Yes",
-  hold: "Hold",
-  no: "No",
-};
 export const REC_TONE: Record<InterviewRecommendation, BadgeTone> = {
   strong_yes: "success",
   yes: "success",
@@ -45,12 +42,15 @@ function fmtDate(iso: string | null): string {
   return d.toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" });
 }
 
-function outcomeBadge(round: AssessmentRound): { label: string; tone: BadgeTone } {
+function outcomeBadge(
+  round: AssessmentRound,
+  stageLabel: (stage: string | null | undefined) => string,
+): { label: string; tone: BadgeTone } {
   const o = round.outcome;
   switch (o.kind) {
     case "advanced":
       return {
-        label: `Advanced to ${applicationStageLabel(o.advancedToStage)}`,
+        label: `Advanced to ${stageLabel(o.advancedToStage)}`,
         tone: "success",
       };
     case "completed":
@@ -67,6 +67,8 @@ function outcomeBadge(round: AssessmentRound): { label: string; tone: BadgeTone 
 }
 
 function FeedbackEntry({ f }: { f: AssessmentFeedbackEntry }) {
+  // CFG-LITE — tenant recommendation wording.
+  const recLabel = useRecommendationLabel();
   const who = `${f.name ?? "Panellist"}${f.isMe ? " (you)" : ""}`;
   return (
     <li className="rounded-md border border-neutral-100 bg-white p-3">
@@ -82,7 +84,7 @@ function FeedbackEntry({ f }: { f: AssessmentFeedbackEntry }) {
               : "Not submitted"}
           </span>
         ) : f.recommendation ? (
-          <Badge tone={REC_TONE[f.recommendation]}>{REC_LABEL[f.recommendation]}</Badge>
+          <Badge tone={REC_TONE[f.recommendation]}>{recLabel(f.recommendation)}</Badge>
         ) : (
           <span className="text-xs text-neutral-400">
             {f.feedbackState === "draft" ? "Draft" : "Not submitted"}
@@ -175,7 +177,10 @@ function AiEvidence({ round }: { round: AssessmentRound }) {
 
 export function AssessmentRoundCard({ round }: { round: AssessmentRound }) {
   const [showNotes, setShowNotes] = useState(false);
-  const badge = outcomeBadge(round);
+  // CFG-LITE — tenant stage + recommendation wording.
+  const stageLabel = useApplicationStageLabel();
+  const recLabel = useRecommendationLabel();
+  const badge = outcomeBadge(round, stageLabel);
   const { rollup } = round;
   const nt = round.notetaker;
   return (
@@ -197,16 +202,15 @@ export function AssessmentRoundCard({ round }: { round: AssessmentRound }) {
             {rollup.positiveCount != null ? (
               <>
                 <span className="font-semibold text-neutral-800">
-                  {rollup.positiveCount} of {rollup.panelistCount} panellists: Yes or Strong yes
+                  {rollup.positiveCount} of {rollup.panelistCount} panellists: {recLabel("yes")} or{" "}
+                  {recLabel("strong_yes")}
                 </span>
                 {" · "}
                 {rollup.submittedCount} submitted
                 {rollup.counts && rollup.counts.hold + rollup.counts.no > 0
-                  ? ` · ${rollup.counts.hold} hold · ${rollup.counts.no} no`
+                  ? ` · ${rollup.counts.hold} ${recLabel("hold").toLowerCase()} · ${rollup.counts.no} ${recLabel("no").toLowerCase()}`
                   : ""}
-                {rollup.leadRecommendation
-                  ? ` · lead: ${REC_LABEL[rollup.leadRecommendation]}`
-                  : ""}
+                {rollup.leadRecommendation ? ` · lead: ${recLabel(rollup.leadRecommendation)}` : ""}
               </>
             ) : (
               <>

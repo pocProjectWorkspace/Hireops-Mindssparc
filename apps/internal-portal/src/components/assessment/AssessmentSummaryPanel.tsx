@@ -6,6 +6,7 @@ import { trpc } from "@/lib/trpc-client";
 import type { GetCandidateAssessmentSummaryOutput } from "@hireops/api-types";
 import { AssessmentRoundCard } from "./AssessmentRoundCard";
 import { SelectionDecisionControls } from "./SelectionDecisionControls";
+import { useRecommendationLabel } from "@/components/TenantLabelsProvider";
 
 /**
  * PC-11 — the consolidated Assessment summary for one application: every round
@@ -58,6 +59,8 @@ function Screening({ s }: { s: NonNullable<GetCandidateAssessmentSummaryOutput["
 
 function SummaryBody({ applicationId }: { applicationId: string }) {
   const q = trpc.getCandidateAssessmentSummary.useQuery({ applicationId }, { retry: false });
+  // CFG-LITE — tenant recommendation wording.
+  const recLabel = useRecommendationLabel();
   if (q.isLoading) return <p className="text-xs text-neutral-500">Loading assessment…</p>;
   if (q.error) {
     return q.error.data?.code === "FORBIDDEN" ? (
@@ -81,7 +84,8 @@ function SummaryBody({ applicationId }: { applicationId: string }) {
         </span>
         {o.submittedScorecards > 0 ? (
           <span className="font-semibold text-neutral-800">
-            {o.positiveScorecards} of {o.submittedScorecards} scorecards: Yes or Strong yes
+            {o.positiveScorecards} of {o.submittedScorecards} scorecards: {recLabel("yes")} or{" "}
+            {recLabel("strong_yes")}
           </span>
         ) : (
           <span>No scorecards submitted yet</span>

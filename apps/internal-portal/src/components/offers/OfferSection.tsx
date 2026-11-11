@@ -6,8 +6,8 @@ import { Badge, Button } from "@/components/ui";
 import type { BadgeTone } from "@/components/ui";
 import { trpc } from "@/lib/trpc-client";
 import { DiverseSlateWarning } from "@/components/diversity/DiverseSlateBadge";
-import { applicationStageLabel } from "@/lib/labels";
 import { WorkdayHandoffPanel } from "./WorkdayHandoffPanel";
+import { useApplicationStageLabel } from "@/components/TenantLabelsProvider";
 
 /**
  * Offer drafting section inside the CandidateDetailDrawer. Three modes:
@@ -39,6 +39,7 @@ interface OfferSectionProps {
 const DRAFTABLE_STAGES = new Set<string>(["hr_round", "offer_drafted"]);
 
 export function OfferSection({ applicationId }: OfferSectionProps) {
+  const applicationStageLabel = useApplicationStageLabel();
   const queryClient = useQueryClient();
   const offers = trpc.listOffersByApplication.useQuery(
     { applicationId },

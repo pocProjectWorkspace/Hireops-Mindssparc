@@ -4,7 +4,7 @@ import { useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { Button } from "@/components/ui";
 import { trpc } from "@/lib/trpc-client";
-import { applicationStageLabel } from "@/lib/labels";
+import { useApplicationStageLabel } from "@/components/TenantLabelsProvider";
 import {
   SELECTION_DECISION_LABELS,
   SELECTION_DECISION_OPEN_STAGES,
@@ -49,6 +49,8 @@ export function SelectionDecisionControls({
   reasons: SelectionDecisionReason[];
 }) {
   const queryClient = useQueryClient();
+  // CFG-LITE — tenant stage wording.
+  const applicationStageLabel = useApplicationStageLabel();
   const [pending, setPending] = useState<SelectionDecision | null>(null);
   const [reasonKey, setReasonKey] = useState("");
   const [notes, setNotes] = useState("");

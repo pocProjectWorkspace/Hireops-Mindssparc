@@ -16,7 +16,8 @@ import {
 } from "@/components/ui";
 import { PageContainer } from "@/components/nav/PageContainer";
 import { trpc } from "@/lib/trpc-client";
-import { applicationStageLabel, humanizeSentence } from "@/lib/labels";
+import { humanizeSentence } from "@/lib/labels";
+import { useApplicationStageLabel } from "@/components/TenantLabelsProvider";
 
 /**
  * The admin recruitment report — totals tiles, the pipeline funnel as
@@ -41,6 +42,7 @@ import { applicationStageLabel, humanizeSentence } from "@/lib/labels";
  * TableShell. Null medians render as a calm em dash.
  */
 export function ReportsClient({ initial }: { initial: GetRecruitmentReportOutput }) {
+  const applicationStageLabel = useApplicationStageLabel();
   const [from, setFrom] = useState("");
   const [to, setTo] = useState("");
   const isAllTime = from === "" && to === "";

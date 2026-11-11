@@ -9,7 +9,7 @@ import {
 } from "@hireops/api-types";
 import { trpc } from "@/lib/trpc-client";
 import { Button } from "@/components/ui";
-import { stageLabel } from "./recruiter-chips";
+import { useApplicationStageLabel } from "@/components/TenantLabelsProvider";
 
 /**
  * PC-5 — the checkbox bulk-action bar on the candidates-by-role list. Shown
@@ -51,6 +51,8 @@ export function BulkActionsBar({
   onClear: () => void;
 }) {
   const utils = trpc.useUtils();
+  // CFG-LITE — tenant stage wording in the move-to-stage picker.
+  const stageLabel = useApplicationStageLabel();
   const [moveTarget, setMoveTarget] = useState<ApplicationStage>("shortlisted");
   const [rejectOpen, setRejectOpen] = useState(false);
 

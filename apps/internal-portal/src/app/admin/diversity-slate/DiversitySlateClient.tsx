@@ -19,7 +19,7 @@ import { Card } from "@/components/ui";
 import { PageHeader } from "@/components/patterns";
 import { PageContainer } from "@/components/nav/PageContainer";
 import { trpc, handleTRPCError } from "@/lib/trpc-client";
-import { applicationStageLabel } from "@/lib/labels";
+import { useApplicationStageLabel } from "@/components/TenantLabelsProvider";
 
 /**
  * PC-26 admin editor for the tenant `diversitySlate` block.
@@ -50,6 +50,8 @@ function slugify(label: string): string {
 
 export function DiversitySlateClient({ initial }: { initial: DiversitySlateSettings }) {
   const utils = trpc.useUtils();
+  // CFG-LITE — tenant stage wording.
+  const applicationStageLabel = useApplicationStageLabel();
   const [draft, setDraft] = useState<DiversitySlateSettings>(initial);
   const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);

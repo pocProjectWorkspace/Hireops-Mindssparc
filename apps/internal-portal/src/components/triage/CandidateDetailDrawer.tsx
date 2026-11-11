@@ -19,7 +19,7 @@ import { ScreeningChips } from "./ScreeningChips";
 import { ScreeningAnswersSection } from "./ScreeningAnswersSection";
 import { useScreeningScoreVisible } from "@/components/ScreeningScoreProvider";
 import { ScreeningEvidenceSection } from "@/components/screening/ScreeningEvidence";
-import { applicationStageLabel } from "@/lib/labels";
+import { useApplicationStageLabel } from "@/components/TenantLabelsProvider";
 import { timeAgo } from "@/lib/approval-format";
 import { TERMINAL_NEGATIVE } from "@/components/candidate/candidate-format";
 
@@ -79,6 +79,7 @@ function SectionHeading({ children }: { children: ReactNode }) {
 }
 
 export function CandidateDetailDrawer() {
+  const applicationStageLabel = useApplicationStageLabel();
   const { candidateId, applicationId, close } = useDrawerRouting();
   const scoreVisible = useScreeningScoreVisible();
   const queryClient = useQueryClient();

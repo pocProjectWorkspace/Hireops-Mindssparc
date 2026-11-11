@@ -19,7 +19,8 @@
  */
 
 import type { ApplicationStage } from "@hireops/db";
-import type { MissingInfoRequiredness } from "@hireops/api-types";
+import type { MissingInfoRequiredness, TenantLabels } from "@hireops/api-types";
+import { tenantStageLabelOverride } from "@hireops/api-types";
 
 /** The canonical field keys the tracker understands. */
 export const MISSING_INFO_FIELD_KEYS = [
@@ -121,15 +122,23 @@ const STAGE_LABEL: Partial<Record<ApplicationStage, string>> = {
   offer_accepted: "Offer accepted",
 };
 
-export function stageLabel(stage: ApplicationStage): string {
+/** CFG-LITE: a tenant's staff stage label (settings.labels) wins; with no
+ * override the historic gate wording here is kept verbatim. */
+export function stageLabel(stage: ApplicationStage, labels?: TenantLabels | null): string {
+  const override = tenantStageLabelOverride(labels, stage, "staff");
+  if (override) return override;
   return STAGE_LABEL[stage] ?? stage.replace(/_/g, " ");
 }
 
 /** A def's deterministic "Blocks advance to <stage>" label, or null. Works off a
- * field DEF (not the constant), so it honours an effective/tenant-overridden gate. */
-export function blocksAdvanceLabelForDef(def: MissingInfoFieldDef): string | null {
+ * field DEF (not the constant), so it honours an effective/tenant-overridden gate.
+ * `labels` = the tenant's display labels (CFG-LITE); omitted → historic wording. */
+export function blocksAdvanceLabelForDef(
+  def: MissingInfoFieldDef,
+  labels?: TenantLabels | null,
+): string | null {
   if (def.blocksAdvanceStage === null) return null;
-  return `Blocks advance to ${stageLabel(def.blocksAdvanceStage)}`;
+  return `Blocks advance to ${stageLabel(def.blocksAdvanceStage, labels)}`;
 }
 
 /** A field's deterministic "Blocks advance to <stage>" label, or null. Reads the

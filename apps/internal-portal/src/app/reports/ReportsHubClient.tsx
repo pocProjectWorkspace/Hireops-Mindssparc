@@ -32,7 +32,8 @@ import {
 } from "@/components/ui";
 import { PageContainer } from "@/components/nav/PageContainer";
 import { trpc } from "@/lib/trpc-client";
-import { applicationStageLabel, humanizeSentence } from "@/lib/labels";
+import { humanizeSentence } from "@/lib/labels";
+import { useApplicationStageLabel } from "@/components/TenantLabelsProvider";
 import { formatCostMicros } from "@/lib/approval-format";
 import { formatFeeMinor } from "@/lib/money";
 import { buildCsv, downloadCsv } from "@/lib/csv";
@@ -184,6 +185,7 @@ export function ReportsHubClient({
   /** Viewer passes listCandidates' read gate, which /triage needs to render. */
   canOpenTriage: boolean;
 }) {
+  const applicationStageLabel = useApplicationStageLabel();
   const [from, setFrom] = useState("");
   const [to, setTo] = useState("");
   const [businessUnitId, setBusinessUnitId] = useState("");

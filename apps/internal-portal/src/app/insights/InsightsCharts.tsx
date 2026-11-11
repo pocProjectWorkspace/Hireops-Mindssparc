@@ -14,7 +14,7 @@ import {
 } from "recharts";
 import type { GetRequisitionInsightsOutput } from "@hireops/api-types";
 import { Card, EmptyState } from "@/components/ui";
-import { applicationStageLabel } from "@/lib/labels";
+import { useApplicationStageLabel } from "@/components/TenantLabelsProvider";
 
 /**
  * RO-03 — the /insights chart grid (client-only, code-split from
@@ -113,6 +113,7 @@ function ChartTooltip({
 // ─────────────── 1. hiring funnel ───────────────
 
 function HiringFunnel({ funnel }: { funnel: GetRequisitionInsightsOutput["funnel"] }) {
+  const applicationStageLabel = useApplicationStageLabel();
   const rows = funnel.map((f) => ({
     label: applicationStageLabel(f.stage),
     value: f.count,
@@ -390,6 +391,7 @@ function SlaTiles({
   slaTiles: GetRequisitionInsightsOutput["slaTiles"];
   bottleneckNote: string | null;
 }) {
+  const applicationStageLabel = useApplicationStageLabel();
   const active = slaTiles.filter((t) => t.count > 0);
   const empty = active.length === 0;
   return (

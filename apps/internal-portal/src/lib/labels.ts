@@ -10,6 +10,11 @@
  */
 
 import { STAGE_LABELS } from "@/components/candidate/candidate-format";
+import {
+  resolveRecommendationLabel,
+  tenantStageLabelOverride,
+  type TenantLabels,
+} from "@hireops/api-types";
 
 /**
  * Words that render in fixed casing rather than Title Case. Keyed by the
@@ -84,10 +89,34 @@ export function humanizeSentence(value: string | null | undefined): string {
  * unknown keys. The single source of stage wording for every internal-portal
  * surface (e.g. `tech_interview` → "Panel interview"), so a relabel in
  * STAGE_LABELS reaches badges, filters, charts and reports alike.
+ *
+ * CFG-LITE: `labels` is the tenant's display-label block
+ * (tenants.settings.labels, loaded by lib/tenant-ui-settings.ts and carried by
+ * TenantLabelsProvider). A tenant staff-wording override wins; with none the
+ * platform wording below is unchanged. Components get a bound version from
+ * `useApplicationStageLabel()`.
  */
-export function applicationStageLabel(stage: string | null | undefined): string {
+export function applicationStageLabel(
+  stage: string | null | undefined,
+  labels?: TenantLabels | null,
+): string {
   if (!stage) return "—";
+  const override = tenantStageLabelOverride(labels, stage, "staff");
+  if (override) return override;
   return STAFF_STAGE_OVERRIDES[stage] ?? STAGE_LABELS[stage] ?? humanize(stage);
+}
+
+/**
+ * Interview recommendation label (strong_yes / yes / hold / no). Tenant
+ * override (settings.labels.recommendations) → platform default ("Strong yes",
+ * "Yes", "Hold", "No"). The stored value is never changed — wording only.
+ */
+export function recommendationLabel(
+  rec: string | null | undefined,
+  labels?: TenantLabels | null,
+): string {
+  if (!rec) return "—";
+  return resolveRecommendationLabel(labels, rec);
 }
 
 /**

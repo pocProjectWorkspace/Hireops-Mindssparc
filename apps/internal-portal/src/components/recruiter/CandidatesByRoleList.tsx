@@ -15,6 +15,7 @@ import {
   type KnockoutFilter,
   type LatestSelectionDecision,
 } from "@hireops/api-types";
+import { screeningScoreTier } from "@hireops/api-types";
 import { trpc } from "@/lib/trpc-client";
 import { AiAssistedPill, useProvenanceMap } from "@/components/iris/AiAssistedPill";
 import {
@@ -40,7 +41,10 @@ import {
 } from "@/components/ui";
 import { ChevronRightIcon } from "@/components/patterns/icons";
 import { PageContainer } from "@/components/nav/PageContainer";
-import { useScreeningScoreVisible } from "@/components/ScreeningScoreProvider";
+import {
+  useScreeningScoreBands,
+  useScreeningScoreVisible,
+} from "@/components/ScreeningScoreProvider";
 import { BulkActionsBar, skipReasonLabel, type BulkSelection } from "./BulkActionsBar";
 import { ListPager } from "./ListPager";
 import {
@@ -49,6 +53,7 @@ import {
   ScreeningQueueBadge,
   useExpandedSet,
 } from "@/components/screening/ScreeningEvidence";
+import { useApplicationStageLabel } from "@/components/TenantLabelsProvider";
 import {
   MatchTierChip,
   MissingInfoCell,
@@ -56,7 +61,6 @@ import {
   ScoreValue,
   StageBadge,
   sourceLabel,
-  stageLabel,
   isTerminalStage,
 } from "./recruiter-chips";
 
@@ -128,6 +132,7 @@ const SOURCE_OPTIONS: ApplicationSource[] = [
 ];
 
 function RowActions({ row, onOpen }: { row: Row; onOpen: () => void }) {
+  const stageLabel = useApplicationStageLabel();
   const utils = trpc.useUtils();
   const { show } = useUndoToast();
 
@@ -228,6 +233,7 @@ function GroupAccordion({
   decisionByApplicationId: Map<string, LatestSelectionDecision>;
 }) {
   const scoreVisible = useScreeningScoreVisible();
+  const scoreBands = useScreeningScoreBands();
   const [expanded, toggleExpanded] = useExpandedSet();
   // Select · Candidate · Stage · Screening · [AI Score] · Source · Missing Info · Actions
   const columnCount = scoreVisible ? 8 : 7;
@@ -350,14 +356,9 @@ function GroupAccordion({
                           <ScoreValue score={score} />
                           {score != null
                             ? (() => {
-                                const tier =
-                                  score >= 90
-                                    ? "excellent"
-                                    : score >= 75
-                                      ? "good"
-                                      : score >= 60
-                                        ? "partial"
-                                        : "below";
+                                // CFG-LITE / BUG-11 — the tenant's score cut-offs.
+                                const t = screeningScoreTier(score, scoreBands);
+                                const tier = t === "strong" ? "excellent" : t;
                                 return tier !== "below" ? <MatchTierChip tier={tier} /> : null;
                               })()
                             : null}
@@ -429,6 +430,7 @@ export function CandidatesByRoleList({
   sourceLabels?: Record<string, string>;
   enabledSources?: string[];
 }) {
+  const stageLabel = useApplicationStageLabel();
   const [search, setSearch] = useState("");
   const [stage, setStage] = useState<ApplicationStage | "">("");
   const [source, setSource] = useState<ApplicationSource | "">("");

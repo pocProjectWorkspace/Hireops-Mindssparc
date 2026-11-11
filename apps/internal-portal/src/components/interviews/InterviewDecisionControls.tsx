@@ -8,6 +8,7 @@ import type { BadgeTone } from "@/components/ui";
 import { trpc } from "@/lib/trpc-client";
 import type { InterviewRow, InterviewRecommendation } from "@hireops/api-types";
 import { DiverseSlateWarning } from "@/components/diversity/DiverseSlateBadge";
+import { useRecommendationLabel } from "@/components/TenantLabelsProvider";
 
 /**
  * INT-04 — recruiter completion + advance controls for a single interview row,
@@ -18,12 +19,6 @@ import { DiverseSlateWarning } from "@/components/diversity/DiverseSlateBadge";
  * decision summary (full scores, recommendations, lead highlighted).
  */
 
-const REC_LABEL: Record<InterviewRecommendation, string> = {
-  strong_yes: "Strong yes",
-  yes: "Yes",
-  hold: "Hold",
-  no: "No",
-};
 const REC_TONE: Record<InterviewRecommendation, BadgeTone> = {
   strong_yes: "success",
   yes: "success",
@@ -239,6 +234,8 @@ function DecisionSummary({
    * completion is a server-side CONFLICT (it would corrupt the decision). */
   canReopen: boolean;
 }) {
+  // CFG-LITE — tenant recommendation wording (settings.labels); default "Strong yes / Yes / Hold / No".
+  const recLabel = useRecommendationLabel();
   const { rollup } = summary;
   const queryClient = useQueryClient();
   const reopen = trpc.reopenInterviewFeedback.useMutation({
@@ -253,7 +250,7 @@ function DecisionSummary({
         <span className="font-semibold text-neutral-700">Decision summary</span>
         {rollup.leadRecommendation ? (
           <Badge tone={REC_TONE[rollup.leadRecommendation]}>
-            Lead: {REC_LABEL[rollup.leadRecommendation]}
+            Lead: {recLabel(rollup.leadRecommendation)}
           </Badge>
         ) : (
           <span className="text-neutral-400">Lead recommendation pending</span>
@@ -280,7 +277,7 @@ function DecisionSummary({
               </span>
               <div className="flex items-center gap-2">
                 {p.recommendation ? (
-                  <Badge tone={REC_TONE[p.recommendation]}>{REC_LABEL[p.recommendation]}</Badge>
+                  <Badge tone={REC_TONE[p.recommendation]}>{recLabel(p.recommendation)}</Badge>
                 ) : (
                   <span className="text-neutral-400">No recommendation</span>
                 )}
