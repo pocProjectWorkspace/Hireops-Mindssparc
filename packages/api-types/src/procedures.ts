@@ -766,6 +766,20 @@ export const createRequisitionDraftInputSchema = z.object({
   // PC-26 — diverse-slate requirement for this role. Min null = tenant default.
   diverseSlateRequired: z.boolean().optional(),
   diverseSlateMin: z.number().int().min(1).max(DIVERSE_SLATE_MIN_MAX).nullable().optional(),
+  /**
+   * C1-F3 — structured org + job architecture (all optional; each must be the
+   * tenant's and active). A job profile fills function / level when they are
+   * omitted (level = the profile range's lower bound) and a picked level must
+   * sit inside the profile's range. A location id also fills primaryLocation
+   * (the free-text display fallback) when that is omitted.
+   */
+  jobProfileId: z.string().uuid().optional(),
+  jobFunctionId: z.string().uuid().optional(),
+  jobLevelId: z.string().uuid().optional(),
+  locationId: z.string().uuid().optional(),
+  /** Tenant-lookup keys (employment_type / requisition_type); must resolve active. */
+  employmentTypeKey: z.string().max(40).optional(),
+  requisitionTypeKey: z.string().max(40).optional(),
 });
 export const createRequisitionDraftOutputSchema = z.object({
   requisitionId: z.string().uuid(),
@@ -929,6 +943,22 @@ export const getRequisitionDetailOutputSchema = z.object({
   /** PC-26 — the role's diverse-slate setting (the requirement, not any count). */
   diverseSlateRequired: z.boolean().optional(),
   diverseSlateMin: z.number().int().nullable().optional(),
+  /**
+   * C1-F3 — structured links (null when the draft predates them or none was
+   * picked) and their current labels. Optional for back-compat.
+   */
+  jobProfileId: z.string().uuid().nullable().optional(),
+  jobProfileTitle: z.string().nullable().optional(),
+  jobFunctionId: z.string().uuid().nullable().optional(),
+  jobFunctionLabel: z.string().nullable().optional(),
+  jobLevelId: z.string().uuid().nullable().optional(),
+  jobLevelLabel: z.string().nullable().optional(),
+  locationId: z.string().uuid().nullable().optional(),
+  locationName: z.string().nullable().optional(),
+  employmentTypeKey: z.string().nullable().optional(),
+  employmentTypeLabel: z.string().nullable().optional(),
+  requisitionTypeKey: z.string().nullable().optional(),
+  requisitionTypeLabel: z.string().nullable().optional(),
 });
 export type GetRequisitionDetailInput = z.infer<typeof getRequisitionDetailInputSchema>;
 export type GetRequisitionDetailOutput = z.infer<typeof getRequisitionDetailOutputSchema>;

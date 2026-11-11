@@ -26,6 +26,12 @@ export const compBandRowSchema = z.object({
   currency: z.string().length(3),
   minMajor: z.number(),
   maxMajor: z.number(),
+  /** C1-F3 — optional midpoint (compa-ratio later); null when unset. */
+  midpointMajor: z.number().nullable(),
+  /** C1-F3 — optional structured scope; null = applies to every value. */
+  jobLevelId: z.string().uuid().nullable(),
+  jobFunctionId: z.string().uuid().nullable(),
+  locationId: z.string().uuid().nullable(),
   isArchived: z.boolean(),
   createdAt: z.string(), // ISO
   updatedAt: z.string(), // ISO
@@ -39,6 +45,18 @@ export const listCompBandsInputSchema = z
     /** Include archived bands too (the admin surface shows them; the wizard
      * picker does not). Defaults to active-only. */
     includeArchived: z.boolean().optional(),
+    /**
+     * C1-F3 — only bands that apply to this (level, function, location)
+     * context, most specific first (compBandsForScope). Omitted = every band,
+     * ordered by name.
+     */
+    scope: z
+      .object({
+        jobLevelId: z.string().uuid().nullable().optional(),
+        jobFunctionId: z.string().uuid().nullable().optional(),
+        locationId: z.string().uuid().nullable().optional(),
+      })
+      .optional(),
   })
   .default({});
 export type ListCompBandsInput = z.infer<typeof listCompBandsInputSchema>;
@@ -58,11 +76,24 @@ export const createCompBandInputSchema = z
     currency: z.string().length(3).default("INR"),
     minMajor: z.number().min(0),
     maxMajor: z.number().min(0),
+    /** C1-F3 — optional midpoint + scope. Omitted on update = unchanged; null = clear. */
+    midpointMajor: z.number().min(0).nullable().optional(),
+    jobLevelId: z.string().uuid().nullable().optional(),
+    jobFunctionId: z.string().uuid().nullable().optional(),
+    locationId: z.string().uuid().nullable().optional(),
   })
   .refine((v) => v.minMajor <= v.maxMajor, {
     message: "minMajor must be less than or equal to maxMajor",
     path: ["minMajor"],
-  });
+  })
+  .refine(
+    (v) =>
+      v.midpointMajor == null || (v.minMajor <= v.midpointMajor && v.midpointMajor <= v.maxMajor),
+    {
+      message: "The midpoint must sit between the minimum and the maximum",
+      path: ["midpointMajor"],
+    },
+  );
 export type CreateCompBandInput = z.infer<typeof createCompBandInputSchema>;
 
 export const createCompBandOutputSchema = z.object({
@@ -80,11 +111,24 @@ export const updateCompBandInputSchema = z
     currency: z.string().length(3),
     minMajor: z.number().min(0),
     maxMajor: z.number().min(0),
+    /** C1-F3 — optional midpoint + scope. Omitted on update = unchanged; null = clear. */
+    midpointMajor: z.number().min(0).nullable().optional(),
+    jobLevelId: z.string().uuid().nullable().optional(),
+    jobFunctionId: z.string().uuid().nullable().optional(),
+    locationId: z.string().uuid().nullable().optional(),
   })
   .refine((v) => v.minMajor <= v.maxMajor, {
     message: "minMajor must be less than or equal to maxMajor",
     path: ["minMajor"],
-  });
+  })
+  .refine(
+    (v) =>
+      v.midpointMajor == null || (v.minMajor <= v.midpointMajor && v.midpointMajor <= v.maxMajor),
+    {
+      message: "The midpoint must sit between the minimum and the maximum",
+      path: ["midpointMajor"],
+    },
+  );
 export type UpdateCompBandInput = z.infer<typeof updateCompBandInputSchema>;
 
 export const updateCompBandOutputSchema = z.object({

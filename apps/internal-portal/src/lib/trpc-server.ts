@@ -60,6 +60,28 @@ export function createServerTRPCCaller(session: AuthSession): ServerTRPCCaller {
  * authenticated. Invoking a protectedProcedure through this caller
  * throws UNAUTHORIZED — that's the intended contract.
  */
+/**
+ * C1-F10 — caller for the platform console. A platform operator need not have
+ * a tenant membership (so no `tid`); platformProcedure resolves operator status
+ * from `sub` alone. Carries NO tenant claims on purpose: the operator reaches
+ * platform procedures only, never tenant procedures through this caller.
+ */
+export function createPlatformServerTRPCCaller(userId: string): ServerTRPCCaller {
+  const ctx: HonoTRPCContext = {
+    tenantId: null,
+    userId,
+    roles: [],
+    claims: { sub: userId } as JwtClaims,
+    db: undefined,
+    sql: poolSql,
+    log: serverLogger,
+    requestId: makeRequestId(),
+    userAgent: null,
+    ipAddress: null,
+  };
+  return appRouter.createCaller(ctx);
+}
+
 export function createPublicServerTRPCCaller(): ServerTRPCCaller {
   const ctx: HonoTRPCContext = {
     tenantId: null,

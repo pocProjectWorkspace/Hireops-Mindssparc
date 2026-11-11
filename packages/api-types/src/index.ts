@@ -66,3 +66,11 @@ export * from "./tenant-labels";
 export * from "./urgency-settings";
 export * from "./phone";
 export * from "./offer-expiry";
+export * from "./platform";
+// C1-F3 — organisation + job architecture + tenant lookups
+export * from "./tenant-lookups";
+export * from "./org-architecture";
+// C1-F11 — provisioning, starter packs, setup wizard, config export/import
+export * from "./tenant-config";
+export * from "./provisioning";
+export * from "./starter-packs";

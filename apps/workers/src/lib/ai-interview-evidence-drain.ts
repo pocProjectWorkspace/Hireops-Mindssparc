@@ -70,6 +70,7 @@ import {
   type AiInterviewEvidenceAiResponse,
 } from "./ai-interview-evidence-prompt";
 import { emptyQuestionEvidence, reconcileEvidence } from "./ai-interview-evidence-verify";
+import { tenantGateSql } from "./tenant-gate";
 
 /** Attempts before a row goes terminal — the ai_score / transcript default. */
 export const AI_INTERVIEW_EVIDENCE_ATTEMPT_CAP = 3;
@@ -152,9 +153,11 @@ export async function drainAiInterviewEvidenceOnce(
         updated_at = now()
     WHERE id IN (
       SELECT id FROM public.ai_interview_evidence
-      WHERE (status = 'pending' AND (lease_expires_at IS NULL OR lease_expires_at <= now()))
+      WHERE ((status = 'pending' AND (lease_expires_at IS NULL OR lease_expires_at <= now()))
          OR (status = 'processing' AND lease_expires_at < now()
-             AND attempt_count < ${AI_INTERVIEW_EVIDENCE_ATTEMPT_CAP})
+             AND attempt_count < ${AI_INTERVIEW_EVIDENCE_ATTEMPT_CAP}))
+      -- C1-F10: skip rows of non-active tenants (D3) + module off (D4).
+        ${tenantGateSql("ai_interview_evidence", "ai_interview")}
       ORDER BY created_at
       LIMIT ${batchSize}
       FOR UPDATE SKIP LOCKED

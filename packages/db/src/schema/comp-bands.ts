@@ -14,6 +14,9 @@ import {
   pgPolicy,
 } from "drizzle-orm/pg-core";
 import { tenants } from "./tenants";
+import { jobLevels } from "./job-levels";
+import { jobFunctions } from "./job-functions";
+import { locations } from "./locations";
 
 /**
  * Comp-band LIBRARY (T3.2 / G15, Phase 3 org structure). A tenant's editable set
@@ -49,6 +52,15 @@ export const compBands = pgTable(
     currency: char("currency", { length: 3 }).notNull(),
     minMajor: numeric("min_major", { precision: 12, scale: 2 }).notNull(),
     maxMajor: numeric("max_major", { precision: 12, scale: 2 }).notNull(),
+    // C1-F3 (0133) — optional midpoint (MAJOR units) for compa-ratio later.
+    // CHECK: min <= midpoint <= max when set.
+    midpointMajor: numeric("midpoint_major", { precision: 12, scale: 2 }),
+
+    // C1-F3 (0133) — optional structured scope. NULL = the band applies to
+    // every value of that dimension. The free-text `level` stays as a label.
+    jobLevelId: uuid("job_level_id"),
+    jobFunctionId: uuid("job_function_id"),
+    locationId: uuid("location_id"),
 
     // Archived bands are retired from the requisition-creation picker but stay
     // valid for positions already attached to them.
@@ -64,6 +76,31 @@ export const compBands = pgTable(
     unique("uniq_comp_bands_tenant_id_id").on(table.tenantId, table.id),
     index("idx_comp_bands_tenant").on(table.tenantId),
     check("comp_bands_range_check", sql`(${table.minMajor} <= ${table.maxMajor})`),
+    check(
+      "comp_bands_midpoint_check",
+      sql`${table.midpointMajor} IS NULL OR (${table.minMajor} <= ${table.midpointMajor} AND ${table.midpointMajor} <= ${table.maxMajor})`,
+    ),
+    index("idx_comp_bands_scope").on(
+      table.tenantId,
+      table.jobLevelId,
+      table.jobFunctionId,
+      table.locationId,
+    ),
+    foreignKey({
+      columns: [table.tenantId, table.jobLevelId],
+      foreignColumns: [jobLevels.tenantId, jobLevels.id],
+      name: "fk_comp_bands_job_level",
+    }).onDelete("restrict"),
+    foreignKey({
+      columns: [table.tenantId, table.jobFunctionId],
+      foreignColumns: [jobFunctions.tenantId, jobFunctions.id],
+      name: "fk_comp_bands_job_function",
+    }).onDelete("restrict"),
+    foreignKey({
+      columns: [table.tenantId, table.locationId],
+      foreignColumns: [locations.tenantId, locations.id],
+      name: "fk_comp_bands_location",
+    }).onDelete("restrict"),
     foreignKey({
       columns: [table.tenantId],
       foreignColumns: [tenants.id],

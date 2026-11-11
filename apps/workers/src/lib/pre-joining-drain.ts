@@ -60,6 +60,7 @@ import {
   startPreJoiningJourney,
   stopPreJoiningJourney,
 } from "@hireops/api/pre-joining";
+import { tenantGateSql } from "./tenant-gate";
 
 export const PRE_JOINING_ATTEMPT_CAP = 5;
 export const PRE_JOINING_LEASE_MS = 5 * 60_000;
@@ -134,9 +135,11 @@ export async function drainPreJoiningTouchpointsOnce(
         updated_at = now()
     WHERE id IN (
       SELECT id FROM public.pre_joining_touchpoints
-      WHERE (status = 'scheduled' AND scheduled_for <= ${nowIso}::timestamptz)
+      WHERE ((status = 'scheduled' AND scheduled_for <= ${nowIso}::timestamptz)
          OR (status = 'processing' AND lease_expires_at < ${nowIso}::timestamptz
-             AND attempt_count < ${PRE_JOINING_ATTEMPT_CAP})
+             AND attempt_count < ${PRE_JOINING_ATTEMPT_CAP}))
+      -- C1-F10: skip rows of non-active tenants (D3) + module off (D4).
+        ${tenantGateSql("pre_joining_touchpoints", "pre_joining_engagement")}
       ORDER BY scheduled_for
       LIMIT ${batchSize}
       FOR UPDATE SKIP LOCKED
@@ -418,6 +421,13 @@ export async function preJoiningJourneyScan(log: Logger): Promise<void> {
   const tenants = await poolSql<{ id: string; settings: Record<string, unknown> | null }[]>`
     SELECT id, settings FROM public.tenants
     WHERE COALESCE((settings->'preJoiningEngagement'->>'enabled')::boolean, false) = true
+      -- C1-F10: active tenants (D3) with the module entitled (D4) only.
+      AND status = 'active'
+      AND NOT EXISTS (
+        SELECT 1 FROM public.tenant_modules m
+         WHERE m.tenant_id = tenants.id AND m.module_key = 'pre_joining_engagement'
+           AND m.enabled = false
+      )
   `;
   let started = 0;
   for (const t of tenants) {

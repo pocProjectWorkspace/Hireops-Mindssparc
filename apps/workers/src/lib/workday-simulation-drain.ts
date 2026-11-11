@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { sql as poolSql } from "@hireops/db";
 import type { Logger } from "@hireops/observability";
+import { tenantGateSql } from "./tenant-gate";
 
 /**
  * Drains pending workday_sync_outbox rows. Wave 1 ALL simulations
@@ -68,6 +69,8 @@ export async function drainWorkdayOutboxOnce(opts: SimulationDrainOpts): Promise
     WHERE id IN (
       SELECT id FROM public.workday_sync_outbox
       WHERE status = 'pending'
+      -- C1-F10: skip rows of non-active tenants (D3) + module off (D4).
+        ${tenantGateSql("workday_sync_outbox", "workday_handoff")}
       ORDER BY created_at
       LIMIT ${batchSize}
       FOR UPDATE SKIP LOCKED

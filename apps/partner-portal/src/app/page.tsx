@@ -1,4 +1,5 @@
 import { TRPCError } from "@trpc/server";
+import { TENANT_SUSPENDED_ERROR } from "@hireops/api-types";
 import { requireAuth } from "@/lib/auth";
 import { createPartnerServerTRPCCaller } from "@/lib/trpc-server";
 import { PartnerShell } from "@/components/PartnerShell";
@@ -29,7 +30,10 @@ export default async function DashboardPage() {
     me = await caller.partnerGetMe();
   } catch (err) {
     if (err instanceof TRPCError && err.code === "FORBIDDEN") {
-      return <NotAPartner email={session.email} />;
+      // C1-F10: a real partner whose hiring organisation is suspended.
+      return (
+        <NotAPartner email={session.email} suspended={err.message === TENANT_SUSPENDED_ERROR} />
+      );
     }
     throw err;
   }

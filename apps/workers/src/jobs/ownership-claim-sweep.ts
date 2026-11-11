@@ -57,6 +57,12 @@ export async function sweepExpiredOwnershipClaims(sql: SqlHandle): Promise<numbe
        SET status = 'expired'
      WHERE status = 'active'
        AND expires_at <= now()
+       -- C1-F10 (D3): a suspended tenant's claims are left as they are until
+       -- reactivation (the next sweep then expires them).
+       AND EXISTS (
+         SELECT 1 FROM public.tenants t
+          WHERE t.id = candidate_ownership_claims.tenant_id AND t.status = 'active'
+       )
     RETURNING id
   `;
   return rows.length;
@@ -179,6 +185,13 @@ export async function warnExpiringOwnershipClaims(sql: SqlHandle): Promise<numbe
        AND p.tenant_id = c.tenant_id
       JOIN public.tenants t
         ON t.id = c.tenant_id
+       -- C1-F10 (D3) + (D4): no partner email for a suspended tenant or one
+       -- without the partner portal.
+       AND t.status = 'active'
+       AND NOT EXISTS (
+         SELECT 1 FROM public.tenant_modules m
+          WHERE m.tenant_id = t.id AND m.module_key = 'partner_portal' AND m.enabled = false
+       )
      WHERE c.status = 'active'
        AND c.expires_at > now()
        AND c.expires_at <= now() + make_interval(days => ${CLAIM_EXPIRY_WARNING_DAYS_MAX})

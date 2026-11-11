@@ -24,6 +24,13 @@ export const tenants = pgTable(
   },
   (table) => [
     index("idx_tenants_status").on(table.status),
+    // C1-F10 (0134): lifecycle vocabulary. Added NOT VALID in SQL — enforced
+    // for new writes without failing on legacy rows. Only `active` may sign in,
+    // call tenant procedures or be worked by workers.
+    check(
+      "tenants_status_check",
+      sql`${table.status} IN ('provisioning', 'active', 'suspended', 'churned', 'deleting')`,
+    ),
     check(
       "tenants_slug_format_check",
       sql`${table.slug} ~ '^[a-z0-9-]+$' AND char_length(${table.slug}) BETWEEN 3 AND 40`,

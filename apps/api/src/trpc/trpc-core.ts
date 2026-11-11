@@ -28,6 +28,14 @@ import { initTRPC, TRPCError } from "@trpc/server";
 import { ZodError } from "zod";
 import { withTenantContext, sql as poolSql, type JwtClaims, type TenantBoundDb } from "@hireops/db";
 import type { Logger } from "@hireops/observability";
+import {
+  MODULE_DISABLED_ERROR_PREFIX,
+  NOT_PLATFORM_OPERATOR_ERROR,
+  PLATFORM_WRITE_ROLES,
+  TENANT_SUSPENDED_ERROR,
+  type PlatformOperatorRole,
+} from "@hireops/api-types";
+import { assertTenantActive, isModuleEnabled } from "../lib/platform/tenant-access";
 
 export interface HonoTRPCContext {
   tenantId: string | null;
@@ -76,6 +84,9 @@ export const protectedProcedure = t.procedure.use(async ({ ctx, next }) => {
   if (!ctx.tenantId || !ctx.userId || !ctx.claims) {
     throw new TRPCError({ code: "UNAUTHORIZED" });
   }
+  // C1-F10 (D3): lifecycle is enforced on EVERY call, not only at sign-in — a
+  // token issued before the tenant was suspended is refused here. Cached ≤30 s.
+  await assertTenantActive(ctx.sql, ctx.tenantId);
   const result = await withTenantContext(
     ctx.claims,
     async ({ db }) => {
@@ -157,20 +168,35 @@ export const partnerProcedure = t.procedure.use(async ({ ctx, next }) => {
       email: string;
       org_name: string;
       tenant_display_name: string;
+      tenant_status: string;
     }[]
   >`
     SELECT pu.id AS partner_user_id, pu.partner_org_id, pu.tenant_id,
            t.slug AS tenant_slug, pu.role::text AS role, pu.full_name, pu.email,
-           po.name AS org_name, t.display_name AS tenant_display_name
+           po.name AS org_name, t.display_name AS tenant_display_name,
+           t.status AS tenant_status
     FROM public.partner_users pu
     JOIN public.tenants t ON t.id = pu.tenant_id
     JOIN public.partner_orgs po ON po.id = pu.partner_org_id AND po.tenant_id = pu.tenant_id
-    WHERE pu.user_id = ${ctx.userId} AND pu.active = true AND t.status = 'active'
+    WHERE pu.user_id = ${ctx.userId} AND pu.active = true
+    ORDER BY (t.status = 'active') DESC
     LIMIT 1
   `;
   const p = rows[0];
   if (!p) {
     throw new TRPCError({ code: "FORBIDDEN", message: "not_a_partner_account" });
+  }
+  // C1-F10 (D3): the partner exists but their hiring organisation is not
+  // active — refuse with the lifecycle reason rather than "not a partner".
+  if (p.tenant_status !== "active") {
+    throw new TRPCError({ code: "FORBIDDEN", message: TENANT_SUSPENDED_ERROR });
+  }
+  // C1-F10 (D4): the whole partner API is the `partner_portal` module.
+  if (!(await isModuleEnabled(ctx.sql, p.tenant_id, "partner_portal"))) {
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: `${MODULE_DISABLED_ERROR_PREFIX}partner_portal`,
+    });
   }
 
   const partnerClaims: JwtClaims = {
@@ -267,20 +293,26 @@ export const candidateProcedure = t.procedure.use(async ({ ctx, next }) => {
       tenant_display_name: string;
       full_name: string | null;
       email: string | null;
+      tenant_status: string;
     }[]
   >`
     SELECT ca.id AS candidate_account_id, ca.person_id, ca.tenant_id,
            t.slug AS tenant_slug, t.display_name AS tenant_display_name,
-           p.full_name, p.email_primary AS email
+           p.full_name, p.email_primary AS email, t.status AS tenant_status
     FROM public.candidate_accounts ca
     JOIN public.tenants t ON t.id = ca.tenant_id
     JOIN public.persons p ON p.id = ca.person_id AND p.tenant_id = ca.tenant_id
-    WHERE ca.user_id = ${ctx.userId} AND ca.status = 'active' AND t.status = 'active'
+    WHERE ca.user_id = ${ctx.userId} AND ca.status = 'active'
+    ORDER BY (t.status = 'active') DESC
     LIMIT 1
   `;
   const cand = rows[0];
   if (!cand) {
     throw new TRPCError({ code: "FORBIDDEN", message: "not_a_candidate_account" });
+  }
+  // C1-F10 (D3): same lifecycle refusal as partnerProcedure.
+  if (cand.tenant_status !== "active") {
+    throw new TRPCError({ code: "FORBIDDEN", message: TENANT_SUSPENDED_ERROR });
   }
 
   const candidateClaims: JwtClaims = {
@@ -314,4 +346,62 @@ export const candidateProcedure = t.procedure.use(async ({ ctx, next }) => {
       source: "app",
     },
   );
+});
+
+/**
+ * Resolved platform-operator context, attached to ctx by platformProcedure.
+ */
+export interface PlatformOperatorContext {
+  operatorId: string;
+  email: string;
+  role: PlatformOperatorRole;
+  canWrite: boolean;
+}
+
+/**
+ * platformProcedure — the platform-operator tier (C1-F10, Plan A §14 / F10).
+ *
+ * Platform operators are NOT a tenant role. Operator status is resolved HERE,
+ * server-side, from the verified auth user id (`sub`) against
+ * platform_operators via the service-role pool — never from a JWT claim, so a
+ * client cannot carry it. A tenant admin is refused like anyone else.
+ *
+ * No tenant transaction is opened and ctx.db stays undefined: platform
+ * procedures read tenant METADATA (registry, counts, queue health) through
+ * ctx.sql and never tenant content. Because the operator's token carries no
+ * operator-specific tenant claims, the same identity calling a tenant
+ * procedure gets exactly what its own tenant membership (if any) allows.
+ *
+ * Rejections:
+ *   - no JWT (ctx.userId null)                 → UNAUTHORIZED
+ *   - no ACTIVE platform_operators row         → FORBIDDEN 'not_a_platform_operator'
+ */
+export const platformProcedure = t.procedure.use(async ({ ctx, next }) => {
+  if (!ctx.userId) {
+    throw new TRPCError({ code: "UNAUTHORIZED" });
+  }
+  const rows = await ctx.sql<{ id: string; email: string; role: PlatformOperatorRole }[]>`
+    SELECT id, email, role FROM public.platform_operators
+    WHERE user_id = ${ctx.userId} AND active = true
+    LIMIT 1
+  `;
+  const op = rows[0];
+  if (!op) {
+    throw new TRPCError({ code: "FORBIDDEN", message: NOT_PLATFORM_OPERATOR_ERROR });
+  }
+  const platformOperator: PlatformOperatorContext = {
+    operatorId: op.id,
+    email: op.email,
+    role: op.role,
+    canWrite: PLATFORM_WRITE_ROLES.includes(op.role),
+  };
+  return next({ ctx: { ...ctx, platformOperator } });
+});
+
+/** platformProcedure + a write role (owner | operator). `support` is read-only. */
+export const platformWriteProcedure = platformProcedure.use(async ({ ctx, next }) => {
+  if (!ctx.platformOperator.canWrite) {
+    throw new TRPCError({ code: "FORBIDDEN", message: "platform_role_read_only" });
+  }
+  return next();
 });

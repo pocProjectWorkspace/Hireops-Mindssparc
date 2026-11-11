@@ -43,6 +43,7 @@ export function CandidateLoginClient({ routeTenantSlug }: { routeTenantSlug?: st
   const [activationSent, setActivationSent] = useState(false);
 
   const requestActivation = trpc.requestCandidateActivation.useMutation();
+  const utils = trpc.useUtils();
 
   async function handleSignIn(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
@@ -54,6 +55,19 @@ export function CandidateLoginClient({ routeTenantSlug }: { routeTenantSlug?: st
       if (error) {
         setErrorMsg("That email and password didn't match. Try again, or activate your account.");
         return;
+      }
+      // C1-F10 (D3): the hiring organisation's access may be suspended — say so
+      // here and sign back out, rather than landing on a portal that refuses
+      // every read.
+      try {
+        const access = await utils.client.accountAccessStatus.query({ audience: "candidate" });
+        if (access.access === "tenant_inactive") {
+          await supabase.auth.signOut();
+          setErrorMsg(access.message);
+          return;
+        }
+      } catch {
+        // The portal itself still refuses a suspended tenant; carry on.
       }
       router.replace("/candidate");
       router.refresh();

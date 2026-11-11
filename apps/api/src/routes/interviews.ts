@@ -2,6 +2,7 @@ import { Hono, type Context } from "hono";
 import { sql as poolSql } from "@hireops/db";
 import { verifyLink } from "@hireops/notifications";
 import { baseLog } from "../lib/observability";
+import { isModuleEnabled, tenantIsActive } from "../lib/platform/tenant-access";
 import {
   CONSENT_VIA_CANDIDATE_LINK,
   RECORDING_CONSENT_DISCLOSURE,
@@ -447,6 +448,19 @@ async function resolveAiSession(
   if (!found) {
     return { ok: false, response: c.json({ ok: false, reason: "interview_not_found" }, 404) };
   }
+  // C1-F10 — every /ai/:token route is the `ai_interview` module's candidate
+  // entry point: refuse it when the tenant is not active (D3) or has the
+  // module switched off (D4). Checked before lazy expiry so a refused link
+  // writes nothing.
+  if (!(await tenantIsActive(poolSql, found.tenant_id))) {
+    return { ok: false, response: c.json({ ok: false, reason: "tenant_suspended" }, 403) };
+  }
+  if (!(await isModuleEnabled(poolSql, found.tenant_id, "ai_interview"))) {
+    return {
+      ok: false,
+      response: c.json({ ok: false, reason: "module_disabled:ai_interview" }, 403),
+    };
+  }
   // Lazy expiry, stamped on access — see the lib header for why there is no
   // sweep. Runs before every read AND every write.
   const row = await expireIfLapsed(poolSql, found);
@@ -740,6 +754,19 @@ const PICK_REFUSAL_STATUS: Record<BookRefusal, 400 | 404 | 409> = {
   round_already_scheduled: 409,
 };
 
+/**
+ * C1-F10 — the pick link is the `scheduling` module's candidate entry point and
+ * belongs to one tenant: refuse it when that tenant is not active (D3) or has
+ * the module switched off (D4). Returns the refusal reason, or null to proceed.
+ */
+async function pickLinkRefusal(tenantId: string): Promise<string | null> {
+  if (!(await tenantIsActive(poolSql, tenantId))) return "tenant_suspended";
+  if (!(await isModuleEnabled(poolSql, tenantId, "scheduling"))) {
+    return "module_disabled:scheduling";
+  }
+  return null;
+}
+
 interviewsRoutes.get("/pick/:token", async (c) => {
   const verify = verifyLink(c.req.param("token"));
   if (!verify.ok) return c.json({ ok: false, reason: verify.reason }, 400);
@@ -748,6 +775,8 @@ interviewsRoutes.get("/pick/:token", async (c) => {
   }
   const offer = await loadOfferByTokenHash(poolSql, verify.payload.tokenHash);
   if (!offer) return c.json({ ok: false, reason: "offer_not_found" }, 404);
+  const refusal = await pickLinkRefusal(offer.tenant_id);
+  if (refusal) return c.json({ ok: false, reason: refusal }, 403);
   const view = await candidateOfferView(poolSql, offer);
   return c.json({ ok: true, ...view });
 });
@@ -769,6 +798,11 @@ interviewsRoutes.post("/pick/:token", async (c) => {
   }
 
   const tokenHash = verify.payload.tokenHash;
+  const gateOffer = await loadOfferByTokenHash(poolSql, tokenHash);
+  if (gateOffer) {
+    const refusal = await pickLinkRefusal(gateOffer.tenant_id);
+    if (refusal) return c.json({ ok: false, reason: refusal }, 403);
+  }
   const res = await bookOfferSlot(poolSql, {
     by: { tokenHash },
     slotStart,
