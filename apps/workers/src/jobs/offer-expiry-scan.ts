@@ -45,6 +45,13 @@ export async function expireOverdueOffers(
        SET status = 'expired', updated_at = now()
      WHERE status = 'extended'
        AND expiry_at <= now()
+       -- C1-F10 (D3): a suspended tenant's offers are left as they are until
+       -- reactivation (the next scan then expires them); readers already show
+       -- a past-expiry extended offer as expired (BUG-10).
+       AND EXISTS (
+         SELECT 1 FROM public.tenants t
+          WHERE t.id = offers.tenant_id AND t.status = 'active'
+       )
        ${tenantFilter}
     RETURNING id
   `;
