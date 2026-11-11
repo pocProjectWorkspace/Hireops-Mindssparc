@@ -53,6 +53,14 @@ export const candidateInboundMessages = pgTable(
     receivedAt: timestamp("received_at", { withTimezone: true }).notNull().defaultNow(),
     processedAt: timestamp("processed_at", { withTimezone: true }),
     agentRunId: uuid("agent_run_id"),
+    // PC-15 (0128) — pre-joining reply routing + classification state.
+    journeyId: uuid("journey_id"),
+    /** pending | done | failed | skipped (NULL for non-engagement messages). */
+    classificationStatus: text("classification_status"),
+    classificationError: text("classification_error"),
+    classifiedAt: timestamp("classified_at", { withTimezone: true }),
+    classifierModel: text("classifier_model"),
+    classifierPromptVersion: text("classifier_prompt_version"),
   },
   (table) => [
     unique("uniq_candidate_inbound_messages_tenant_id_id").on(table.tenantId, table.id),

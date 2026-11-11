@@ -72,6 +72,8 @@ export default async function PublicApplyPage({
           positionTitle={resolved.positionTitle}
           tenantSlug={params.tenantSlug}
           reqSlug={params.reqSlug}
+          screeningPolicy={resolved.screeningPolicy}
+          diversityCapture={resolved.diversityCapture}
         />
       </Card>
     </CandidateShell>

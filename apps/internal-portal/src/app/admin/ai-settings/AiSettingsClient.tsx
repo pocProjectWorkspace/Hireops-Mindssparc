@@ -8,6 +8,7 @@ import {
   AI_MODEL_ALLOWLIST,
   AI_MAX_TOKENS_MAX,
   AI_MAX_TOKENS_MIN,
+  SCREENING_SCORE_BANDS_DEFAULT,
   type AiFeatureKey,
   type AiSettings,
   type GetAiUsageSummaryOutput,
@@ -51,6 +52,19 @@ export function AiSettingsClient({
     () => JSON.stringify(settings) !== JSON.stringify(saved),
     [settings, saved],
   );
+
+  // CFG-LITE / BUG-11 — the one set of score cut-offs must stay ordered.
+  const bands = settings.screeningScoreBands;
+  const bandsInvalid = !(bands.partial <= bands.good && bands.good <= bands.strong);
+
+  function patchBand(key: keyof AiSettings["screeningScoreBands"], raw: string) {
+    const n = Number(raw);
+    if (Number.isNaN(n)) return;
+    setSettings((s) => ({
+      ...s,
+      screeningScoreBands: { ...s.screeningScoreBands, [key]: clamp(Math.round(n), 0, 100) },
+    }));
+  }
 
   const usageByFeature = useMemo(() => {
     const map = new Map<string, { calls: number; cost_micros: string }>();
@@ -199,10 +213,74 @@ export function AiSettingsClient({
             parsed CV, knock-out results and the AI&rsquo;s written explanation instead.
           </p>
         </Card>
+
+        <Card className="p-5">
+          <div className="mb-1 flex items-center justify-between gap-4">
+            <h2 className="text-sm font-semibold text-neutral-900">AI score cut-offs</h2>
+            <button
+              type="button"
+              className="text-xs text-brand-700 hover:underline"
+              onClick={() =>
+                setSettings((s) => ({
+                  ...s,
+                  screeningScoreBands: { ...SCREENING_SCORE_BANDS_DEFAULT },
+                }))
+              }
+            >
+              Reset to defaults
+            </button>
+          </div>
+          <p className="mb-4 text-xs text-neutral-600">
+            The score floors every match tier uses: candidate-list tier chips and score colours, the
+            recruiter dashboard&rsquo;s strong-candidate and skill-mismatch counts, the insights
+            score distribution and the HR metrics histogram. The shortlist uses them too unless a
+            shortlist-specific cut-off has been saved. The AI score itself is not changed.
+          </p>
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+            <Input
+              label="Strong match from"
+              type="number"
+              min={0}
+              max={100}
+              step={1}
+              value={String(bands.strong)}
+              onChange={(e) => patchBand("strong", e.target.value)}
+              hint={`Default: ${SCREENING_SCORE_BANDS_DEFAULT.strong}`}
+            />
+            <Input
+              label="Good match from"
+              type="number"
+              min={0}
+              max={100}
+              step={1}
+              value={String(bands.good)}
+              onChange={(e) => patchBand("good", e.target.value)}
+              hint={`Default: ${SCREENING_SCORE_BANDS_DEFAULT.good}`}
+            />
+            <Input
+              label="Partial match from"
+              type="number"
+              min={0}
+              max={100}
+              step={1}
+              value={String(bands.partial)}
+              onChange={(e) => patchBand("partial", e.target.value)}
+              hint={`Default: ${SCREENING_SCORE_BANDS_DEFAULT.partial}`}
+            />
+          </div>
+          {bandsInvalid ? (
+            <p className="mt-3 text-xs text-status-error-700">
+              Cut-offs must be ordered: partial &le; good &le; strong.
+            </p>
+          ) : null}
+        </Card>
       </div>
 
       <div className="mt-6 flex items-center gap-3">
-        <Button onClick={() => update.mutate(settings)} disabled={!dirty || update.isPending}>
+        <Button
+          onClick={() => update.mutate(settings)}
+          disabled={!dirty || update.isPending || bandsInvalid}
+        >
           {update.isPending ? "Saving…" : "Save settings"}
         </Button>
         {dirty ? (

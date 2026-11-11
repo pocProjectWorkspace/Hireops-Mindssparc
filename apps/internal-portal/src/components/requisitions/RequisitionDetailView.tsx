@@ -6,11 +6,13 @@ import { useRouter } from "next/navigation";
 import type { GetRequisitionDetailOutput } from "@hireops/api-types";
 import { trpc, handleTRPCError } from "@/lib/trpc-client";
 import { Badge, Button, Card } from "@/components/ui";
+import { DiverseSlateBadge } from "@/components/diversity/DiverseSlateBadge";
 import type { BadgeTone } from "@/components/ui";
 import { InterviewPlanSection } from "@/components/interviews/InterviewPlanSection";
 import { RevisionSuggestionsCard } from "@/components/requirements/RevisionSuggestionsCard";
 import { AiAssistedPill, useProvenanceMap } from "@/components/iris/AiAssistedPill";
 import { humanize } from "@/lib/labels";
+import { BulkCvUploadButton } from "./BulkCvUploadDrawer";
 
 /**
  * REQ-02 — requisition detail view. Renders the requisition summary, JD,
@@ -55,6 +57,8 @@ export function RequisitionDetailView({
   canDecide,
   canPost,
   canManageInterviews,
+  canViewDiverseSlate = false,
+  canUploadCvs = false,
 }: {
   requisitionId: string;
   initial: GetRequisitionDetailOutput;
@@ -62,6 +66,10 @@ export function RequisitionDetailView({
   canDecide: boolean;
   canPost: boolean;
   canManageInterviews: boolean;
+  /** PC-26 — admin / hr_head / recruiter see the slate COUNT badge. */
+  canViewDiverseSlate?: boolean;
+  /** PC-2: recruiter/admin may bulk-upload CVs once the req is open. */
+  canUploadCvs?: boolean;
 }) {
   const router = useRouter();
   const [error, setError] = useState<string | null>(null);
@@ -205,12 +213,24 @@ export function RequisitionDetailView({
               {r.workdayJobRequisitionId ? (
                 <Badge tone="info">Imported from Workday · {r.workdayJobRequisitionId}</Badge>
               ) : null}
+              {r.diverseSlateRequired ? (
+                canViewDiverseSlate && !r.isDraft ? (
+                  <DiverseSlateBadge requisitionId={requisitionId} />
+                ) : (
+                  <Badge tone="neutral" pill>
+                    Diverse slate required
+                  </Badge>
+                )
+              ) : null}
             </div>
             <p className="mt-1 text-sm text-neutral-600">
               {r.department ?? "—"} · {r.primaryLocation ?? "—"} ({r.locationType})
               {r.seniority ? ` · ${r.seniority}` : ""}
             </p>
           </div>
+          {canUploadCvs && (r.status === "approved" || r.status === "posted") ? (
+            <BulkCvUploadButton requisitionId={requisitionId} roleTitle={r.title} />
+          ) : null}
           {canWrite && r.isDraft ? (
             <div className="flex flex-wrap gap-2">
               <Button

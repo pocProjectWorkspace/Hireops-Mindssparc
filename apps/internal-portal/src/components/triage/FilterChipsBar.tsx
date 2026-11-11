@@ -3,7 +3,7 @@
 import { applicationSourceSchema, applicationStageSchema } from "@hireops/api-types";
 import type { ApplicationSource, ApplicationStage } from "@hireops/api-types";
 import { useFilterChips } from "@/lib/use-filter-chips";
-import { applicationStageLabel } from "@/lib/labels";
+import { useApplicationStageLabel } from "@/components/TenantLabelsProvider";
 
 /**
  * Sticky bar above the Hot Zone. Three native <select>s — Radix
@@ -26,6 +26,7 @@ export function FilterChipsBar({
    * Empty list shrinks the chip to a "no reqs available" disabled state. */
   requisitionOptions?: { id: string; label: string }[];
 }) {
+  const applicationStageLabel = useApplicationStageLabel();
   const { filters, set, clearAll, isAnyActive } = useFilterChips();
 
   return (

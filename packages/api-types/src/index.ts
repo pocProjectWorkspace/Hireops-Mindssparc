@@ -27,6 +27,9 @@ export * from "./admin-dashboard";
 export * from "./branding";
 export * from "./tenant-sources";
 export * from "./candidate-field-policy";
+export * from "./screening-answers";
+export * from "./candidate-list";
+export * from "./diversity-slate";
 export * from "./interview-templates";
 export * from "./admin-approval-routing";
 export * from "./email-template-overrides";
@@ -43,4 +46,21 @@ export * from "./ask-data";
 export * from "./interview-transcripts";
 export * from "./ai-interview";
 export * from "./ai-interview-answers";
+export * from "./assessment-summary";
 export * from "./workday-import";
+export * from "./bulk-cv-upload";
+export * from "./screening-evidence";
+export * from "./workday-handoff";
+export * from "./scheduling-slots";
+export * from "./scheduling";
+export * from "./pre-joining-engagement";
+// Both ./scheduling-slots (PC-8: (tz, epochMs) → weekday/minutes) and
+// ./pre-joining-engagement (PC-14: (Date, tz) → { date, hour }) export a
+// `localParts`. The barrel's `localParts` is the pre-joining one (its callers
+// import it from "@hireops/api-types"); the slot engine's is used only inside
+// ./scheduling-slots and its test, which import it by path.
+export { localParts } from "./pre-joining-engagement";
+export * from "./welcome-guide";
+export * from "./role-labels";
+export * from "./tenant-labels";
+export * from "./urgency-settings";

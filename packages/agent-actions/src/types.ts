@@ -51,6 +51,34 @@ export interface EnqueueEmailRequest {
 }
 
 /**
+ * PC-8 — the propose_calendar_slots port. The worker answers it from HireOps'
+ * own availability engine (panellist weekly windows − exceptions − existing
+ * interviews, inside the tenant's scheduling settings) — the same function the
+ * recruiter's "Find common slots" calls.
+ */
+export interface ProposeSlotsRequest {
+  applicationId: string;
+  /** Plan round to propose for; null → the first plan round not yet booked. */
+  roundNumber: number | null;
+  /**
+   * The agent config's `panel_id`: a panel-pool id (its members are the
+   * panel), or anything else → the plan round's default panel.
+   */
+  panelRef: string;
+  slotCount: number;
+  windowDays: number;
+  durationMinutes: number;
+}
+
+export interface ProposeSlotsResult {
+  roundNumber: number | null;
+  slots: { start: string; end: string }[];
+  timezone: string;
+  /** Why `slots` is empty (no panel, no availability, no common time). */
+  emptyReason: string | null;
+}
+
+/**
  * Ports the worker injects into executors.
  *
  * Why injection rather than importing `@hireops/db` / `@hireops/ai-client`
@@ -68,6 +96,7 @@ export interface ExecutorDeps {
   loadApplicationContext(tenantId: string, applicationId: string): Promise<ApplicationContext>;
   draftWithAI(tenantId: string, req: AIDraftRequest): Promise<AIDraftResult>;
   enqueueEmail(tenantId: string, req: EnqueueEmailRequest): Promise<{ outboxId: string }>;
+  proposeInterviewSlots(tenantId: string, req: ProposeSlotsRequest): Promise<ProposeSlotsResult>;
 }
 
 /**

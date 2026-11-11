@@ -9,7 +9,11 @@ import { Card, Badge, StatTile, EmptyState } from "@/components/ui";
 import { AttentionFeed } from "@/components/dashboard/AttentionFeed";
 import { AssignedReqCard } from "@/components/reqs/AssignedReqCard";
 import { fmtDate } from "@/components/reqs/req-format";
-import { stageLabel, stageTone } from "@/components/submissions/submission-format";
+import {
+  stageLabel,
+  stageTone,
+  type PartnerStageLabels,
+} from "@/components/submissions/submission-format";
 
 /**
  * PartnerDashboard — the built surface of the PARTNER-01 shell. Presentational
@@ -42,12 +46,15 @@ export function PartnerDashboard({
   submissions,
   stats,
   attention,
+  stageLabels,
 }: {
   me: PartnerGetMeOutput;
   reqs: PartnerAssignedRequisitionRow[];
   submissions: PartnerSubmissionRow[];
   stats: PartnerGetDashboardStatsOutput;
   attention: PartnerAttentionItem[];
+  /** CFG-LITE — the tenant's partner stage wording (partnerGetStageLabels). */
+  stageLabels?: PartnerStageLabels;
 }) {
   const today = new Date().toLocaleDateString("en-GB", {
     day: "numeric",
@@ -194,7 +201,7 @@ export function PartnerDashboard({
                     </div>
                     <div className="flex shrink-0 items-center gap-2">
                       {s.stage ? (
-                        <Badge tone={stageTone(s.stage)}>{stageLabel(s.stage)}</Badge>
+                        <Badge tone={stageTone(s.stage)}>{stageLabel(s.stage, stageLabels)}</Badge>
                       ) : null}
                       <Badge tone="neutral" className="capitalize">
                         {s.status.replace(/_/g, " ")}

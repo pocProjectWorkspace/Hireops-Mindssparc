@@ -7,8 +7,10 @@ import { Badge, EmptyState, Card } from "@/components/ui";
 import { cn } from "@/components/ui/cn";
 import { trpc } from "@/lib/trpc-client";
 import type { InterviewRow, InterviewRecommendation } from "@hireops/api-types";
+import { useRecommendationLabel } from "@/components/TenantLabelsProvider";
 import { PageContainer } from "@/components/nav/PageContainer";
 import { InterviewRecordingSection } from "./InterviewRecordingSection";
+import { AssessmentSummaryPanel } from "@/components/assessment/AssessmentSummaryPanel";
 import { AiInterviewRoundSection } from "./AiInterviewRoundSection";
 
 /**
@@ -33,12 +35,6 @@ const MODE_LABEL: Record<string, string> = {
 
 type TabKey = "scheduled" | "overdue" | "completed";
 
-const REC_LABEL: Record<InterviewRecommendation, string> = {
-  strong_yes: "Strong yes",
-  yes: "Yes",
-  hold: "Hold",
-  no: "No",
-};
 const REC_TONE: Record<InterviewRecommendation, "success" | "warning" | "error"> = {
   strong_yes: "success",
   yes: "success",
@@ -68,6 +64,8 @@ function fmtWhen(iso: string | null): string {
  * completing / reopening remains in the triage-drawer controls; this surfaces
  * the roll-up so the recruiter sees where the decision stands before acting. */
 function DecisionSummary({ interviewId }: { interviewId: string }) {
+  // CFG-LITE — tenant recommendation wording (settings.labels); default "Strong yes / Yes / Hold / No".
+  const recLabel = useRecommendationLabel();
   const summary = trpc.getInterviewDecisionSummary.useQuery({ interviewId });
   if (summary.isLoading) return <p className="mt-2 text-xs text-neutral-500">Loading decision…</p>;
   if (!summary.data) return null;
@@ -78,7 +76,7 @@ function DecisionSummary({ interviewId }: { interviewId: string }) {
         <span className="font-semibold text-neutral-700">Decision summary</span>
         {rollup.leadRecommendation ? (
           <Badge tone={REC_TONE[rollup.leadRecommendation]}>
-            Lead: {REC_LABEL[rollup.leadRecommendation]}
+            Lead: {recLabel(rollup.leadRecommendation)}
           </Badge>
         ) : (
           <span className="text-neutral-400">Lead recommendation pending</span>
@@ -96,7 +94,7 @@ function DecisionSummary({ interviewId }: { interviewId: string }) {
               {p.isLead ? <span className="ml-1 text-brand-700">· lead</span> : null}
             </span>
             {p.recommendation ? (
-              <Badge tone={REC_TONE[p.recommendation]}>{REC_LABEL[p.recommendation]}</Badge>
+              <Badge tone={REC_TONE[p.recommendation]}>{recLabel(p.recommendation)}</Badge>
             ) : (
               <span className="text-neutral-400">
                 {p.feedbackState === "submitted" ? "no rec" : "pending"}
@@ -129,6 +127,8 @@ function InterviewCardRow({
   // B1 — same collapsed-by-default posture for the AI round card; only
   // ai_async rounds offer it at all.
   const [showAiRound, setShowAiRound] = useState(false);
+  // PC-11 — the all-rounds assessment for this candidate (+ PC-12 decision).
+  const [showAssessment, setShowAssessment] = useState(false);
   const isAiRound = iv.mode === "ai_async";
   const confirmed = !!iv.candidateConfirmedAt;
   const allFeedbackIn =
@@ -194,6 +194,13 @@ function InterviewCardRow({
             ) : null}
             <button
               type="button"
+              onClick={() => setShowAssessment((v) => !v)}
+              className="text-xs font-medium text-brand-700 hover:underline"
+            >
+              {showAssessment ? "Hide assessment" : "Assessment"}
+            </button>
+            <button
+              type="button"
               onClick={() => setShowRecording((v) => !v)}
               className="text-xs font-medium text-brand-700 hover:underline"
             >
@@ -229,6 +236,11 @@ function InterviewCardRow({
       </div>
 
       {showDecision ? <DecisionSummary interviewId={iv.id} /> : null}
+      {showAssessment ? (
+        <div className="mt-3">
+          <AssessmentSummaryPanel applicationId={iv.applicationId} defaultOpen />
+        </div>
+      ) : null}
       {showAiRound && isAiRound ? <AiInterviewRoundSection interviewId={iv.id} /> : null}
       {showRecording ? <InterviewRecordingSection interviewId={iv.id} /> : null}
     </Card>

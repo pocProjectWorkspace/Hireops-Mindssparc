@@ -31,6 +31,8 @@
 import { sql as dsql, type SQL } from "drizzle-orm";
 import type { ReportFilters } from "@hireops/api-types";
 
+import { buSubtreePredicate } from "./bu-tree";
+
 /**
  * The standard report filter set: period · BU · requisition · recruiter ·
  * source · stage. The single definition is `reportFiltersSchema` in
@@ -86,8 +88,9 @@ const BU_JOIN = dsql`
  *     event being measured — so "hires in May" means "applications
  *     created in May that went on to be hired", which is what the
  *     original getRecruitmentReport measured.
- *   - businessUnitId: equality on `p.business_unit_id` via the requisition
- *     → position path (adds `join`).
+ *   - businessUnitId: the unit AND its descendants (PC-19 roll-up,
+ *     `bu-tree.ts`) on `p.business_unit_id` via the requisition → position
+ *     path (adds `join`).
  *   - requisitionId / recruiterMembershipId / source / stage: plain
  *     equality on the applications row.
  *
@@ -110,7 +113,7 @@ export function buildApplicationScope(tenantId: string, filters: ReportFilters):
   let join: SQL = dsql``;
   if (filters.businessUnitId) {
     join = BU_JOIN;
-    clauses.push(dsql`p.business_unit_id = ${filters.businessUnitId}::uuid`);
+    clauses.push(buSubtreePredicate(dsql`p.business_unit_id`, tenantId, filters.businessUnitId));
   }
 
   return { join, where: dsql.join(clauses, dsql` AND `) };
@@ -133,7 +136,7 @@ export function buildApplicationScope(tenantId: string, filters: ReportFilters):
  * reader:
  *   - period bounds `requisitions.created_at` ("requisitions raised in
  *     the window"), NOT applications.created_at.
- *   - businessUnitId: equality on `p.business_unit_id`.
+ *   - businessUnitId: the unit and its descendants (PC-19 roll-up).
  *   - recruiterMembershipId: `r.primary_recruiter_id` — the req's single
  *     owner, NOT the application's assigned recruiter.
  *   - requisitionId / source / stage: application-axis dimensions with no
@@ -152,7 +155,7 @@ export function buildRequisitionScope(tenantId: string, filters: ReportFilters):
   if (filters.from) clauses.push(dsql`r.created_at >= ${filters.from}::timestamptz`);
   if (filters.to) clauses.push(dsql`r.created_at <= ${filters.to}::timestamptz`);
   if (filters.businessUnitId) {
-    clauses.push(dsql`p.business_unit_id = ${filters.businessUnitId}::uuid`);
+    clauses.push(buSubtreePredicate(dsql`p.business_unit_id`, tenantId, filters.businessUnitId));
   }
   if (filters.recruiterMembershipId) {
     clauses.push(dsql`r.primary_recruiter_id = ${filters.recruiterMembershipId}::uuid`);

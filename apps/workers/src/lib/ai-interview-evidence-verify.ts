@@ -37,6 +37,7 @@
  *    report; that throws EvidenceIncompleteError and the drain retries.
  */
 
+import { cleanQuote, isVerbatimQuote, normaliseForQuoteMatch } from "@hireops/ai-scoring";
 import type {
   AiInterviewCoverage,
   AiInterviewKnockoutEvidence,
@@ -51,52 +52,11 @@ const QUOTES_PER_RUBRIC_MAX = 3;
 
 /* ─────────────────────────── quote verification ─────────────────────────── */
 
-/**
- * The comparison form of a string: lowercase, typographic punctuation folded
- * to ASCII, every whitespace run (incl. NBSP) collapsed to one space, trimmed.
- */
-export function normaliseForQuoteMatch(input: string): string {
-  return (
-    input
-      .normalize("NFC")
-      .toLowerCase()
-      // single quotes / apostrophes / primes
-      .replace(/[‘’‚‛′`´]/g, "'")
-      // double quotes / double primes / guillemets
-      .replace(/[“”„‟″«»]/g, '"')
-      // hyphens, dashes, minus
-      .replace(/[‐‑‒–—―−]/g, "-")
-      .replace(/…/g, "...")
-      .replace(/\s+/g, " ")
-      .trim()
-  );
-}
-
-const WRAPPING = /^[\s"'‘’“”«»]+|[\s"'‘’“”«»]+$/g;
-const EDGE_ELLIPSIS = /^(?:\.{3}|…)\s*|\s*(?:\.{3}|…)$/g;
-
-/**
- * The quote as it will be stored: wrapping quote marks and edge ellipses the
- * model added are removed (repeatedly, so `"…text…"` unwraps fully). The span
- * that remains is what gets verified. Returns "" when nothing remains.
- */
-export function cleanQuote(quote: string): string {
-  let prev: string;
-  let out = quote;
-  do {
-    prev = out;
-    out = out.replace(WRAPPING, "").replace(EDGE_ELLIPSIS, "");
-  } while (out !== prev);
-  return out.trim();
-}
-
-/** Is `quote` (after cleanQuote) a verbatim substring of `answerText`? */
-export function isVerbatimQuote(quote: string, answerText: string | null): boolean {
-  if (answerText === null) return false;
-  const q = normaliseForQuoteMatch(cleanQuote(quote));
-  if (q.length === 0) return false;
-  return normaliseForQuoteMatch(answerText).includes(q);
-}
+// PC-6: the three quote-verification functions moved VERBATIM to
+// @hireops/ai-scoring (quote-verify.ts) so the CV screening evidence engine
+// shares the exact same matcher. Re-exported here so every existing importer
+// (the evidence drain, ai-interview-04a-evidence-units.test.ts) is unchanged.
+export { cleanQuote, isVerbatimQuote, normaliseForQuoteMatch };
 
 /* ─────────────────────────────── reconciliation ─────────────────────────── */
 

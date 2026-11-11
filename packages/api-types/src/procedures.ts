@@ -10,12 +10,36 @@ import { jdBiasScanSchema, biasCategorySchema, biasSeveritySchema } from "./bias
 import { skillsMatchResultSchema } from "./panel-prep";
 import { candidateLearningItemSchema } from "./learning";
 import { reportFiltersSchema } from "./reports";
+import {
+  screeningEvidenceSchema,
+  screeningEvidenceSummarySchema,
+  screeningQueueSchema,
+} from "./screening-evidence";
 import { interviewNotesCardSchema, interviewTranscriptCardSchema } from "./interview-transcripts";
 import {
   AI_INTERVIEW_EVIDENCE_STATUSES,
   aiInterviewEvidenceSchema,
   aiInterviewSessionCardSchema,
 } from "./ai-interview";
+import {
+  applicationScreeningAnswersSchema,
+  applyScreeningPolicySchema,
+  knockoutSummarySchema,
+  screeningAnswersInputSchema,
+} from "./screening-answers";
+import {
+  applicationFactFiltersSchema,
+  candidateListFilterSchema,
+  candidateListPageInfoSchema,
+  candidateListPageSchema,
+  candidateListSortSchema,
+  CANDIDATE_LIST_PAGE_MAX,
+} from "./candidate-list";
+import {
+  DIVERSE_SLATE_MIN_MAX,
+  diversityCaptureConfigSchema,
+  diversitySelfIdSubmissionSchema,
+} from "./diversity-slate";
 
 /**
  * Input + output schemas for the initial six tRPC procedures (API-01).
@@ -51,6 +75,16 @@ export const submitApplicationInputSchema = z.object({
   // (out of scope for API-01) so they're not in this union.
   source: z.enum(["career_site", "referral", "job_board", "whatsapp"]),
   consentVersion: z.string().min(1).max(40),
+  // PC-7 — optional screening answers (notice / current + expected CTC /
+  // current location). Stored on the application with source 'candidate' and
+  // fed to the knockout evaluator. Whether a question is required is the
+  // tenant's candidate-field policy (resolvePublicRequisition.screeningPolicy).
+  screening: screeningAnswersInputSchema.optional(),
+  // PC-26 — OPTIONAL, voluntary diversity self-identification. Written to the
+  // separate candidate_diversity_self_id table only; redacted from the API
+  // audit log; never on the application row. Omitted / "prefer not to say"
+  // = nothing stored.
+  diversitySelfId: diversitySelfIdSubmissionSchema.optional(),
 });
 
 export const submitApplicationOutputSchema = z.object({
@@ -91,6 +125,11 @@ export const resolvePublicRequisitionOutputSchema = z.object({
   tenantDisplayName: z.string(),
   requisitionId: z.string().uuid(),
   positionTitle: z.string(),
+  // PC-7 — which screening questions the apply form must require.
+  screeningPolicy: applyScreeningPolicySchema,
+  // PC-26 — the optional diversity self-ID section (questions + versioned
+  // disclosure). enabled=false → the form renders no section.
+  diversityCapture: diversityCaptureConfigSchema.optional(),
 });
 
 export type ResolvePublicRequisitionInput = z.infer<typeof resolvePublicRequisitionInputSchema>;
@@ -142,10 +181,19 @@ export const candidateRowSchema = z.object({
  */
 export const candidateApplicationScoreSchema = z.object({
   id: z.string().uuid(),
-  aiScore: z.number().nullable(),
+  // PC-6 / NEW-16: OMITTED (not null — null means "unscored") when the tenant
+  // hides the screening score (aiSettings.screeningScoreVisible = false).
+  aiScore: z.number().nullable().optional(),
   aiScoreExplanation: z.unknown().nullable(),
   aiScoredAt: z.string().nullable(),
   partnerOrgName: z.string().nullable(),
+  // PC-7 — this application's screening answers (CTC null unless the caller's
+  // roles may see pay) and its knockout verdict.
+  screening: applicationScreeningAnswersSchema,
+  knockout: knockoutSummarySchema,
+  // PC-6 — per-criterion screening evidence (verdict + reason + verified CV
+  // quotes). Null when the application has not been screened yet.
+  screeningEvidence: screeningEvidenceSchema.nullable(),
 });
 
 /**
@@ -185,12 +233,21 @@ export const listCandidatesInputSchema = z.object({
       minAiScore: z.number().min(0).max(100).optional(),
       slaBreachOnly: z.boolean().optional(),
     })
+    // PC-5 — the same SQL fact filters as the candidates-by-role list.
+    .merge(applicationFactFiltersSchema)
     .optional(),
   pagination: z.object({
-    limit: z.number().int().min(1).max(100),
+    limit: z.number().int().min(1).max(CANDIDATE_LIST_PAGE_MAX),
     cursor: z.string().optional(),
+    /**
+     * PC-5 — offset paging. When set, `cursor` is ignored and the output
+     * carries `total` (every matching row) so triage can show "51–100 of 412".
+     */
+    offset: z.number().int().min(0).max(100_000).optional(),
   }),
-  sort: z.enum(["recent", "ai_score_desc", "sla_breach"]).default("recent"),
+  // PC-6: `evidence_desc` orders by screening evidence — must-haves met
+  // (partially met = ½) descending, then not met ascending; unscreened last.
+  sort: z.enum(["recent", "ai_score_desc", "sla_breach", "evidence_desc"]).default("recent"),
 });
 
 /**
@@ -212,14 +269,22 @@ export const candidateSummarySchema = z.object({
   source: applicationSourceSchema.nullable(),
   stage: applicationStageSchema,
   stageEnteredAt: z.string(),
-  aiScore: z.number().nullable(),
+  // PC-6 / NEW-16: omitted when the tenant hides the screening score.
+  aiScore: z.number().nullable().optional(),
   aiScoreExplanation: z.unknown().nullable(),
+  /** PC-6 — compact screening-evidence counts; null until screened. */
+  evidenceSummary: screeningEvidenceSummarySchema.nullable(),
   createdAt: z.string(),
+  // PC-7 — compact screening chips + knockout verdict for the triage row.
+  screening: applicationScreeningAnswersSchema,
+  knockout: knockoutSummarySchema,
 });
 
 export const listCandidatesOutputSchema = z.object({
   rows: z.array(candidateSummarySchema),
   nextCursor: z.string().nullable(),
+  /** PC-5 — total matching rows; set only in offset mode, else null. */
+  total: z.number().int().min(0).nullable().optional(),
 });
 
 export type ListCandidatesInput = z.infer<typeof listCandidatesInputSchema>;
@@ -232,10 +297,17 @@ export type ListCandidatesOutput = z.infer<typeof listCandidatesOutputSchema>;
  * requisition. Read-only over existing pipeline data (applications ×
  * candidates × persons × requisitions × jd_skills). No new tables.
  */
-export const listCandidatesByRequisitionInputSchema = z.object({
-  search: z.string().max(120).optional(),
-  stage: applicationStageSchema.optional(),
-  source: applicationSourceSchema.optional(),
+export const listCandidatesByRequisitionInputSchema = candidateListFilterSchema.extend({
+  /**
+   * PC-5 / PC-6 — row order. `ai_score` (score desc, newest), `evidence`
+   * (must-haves met desc, partially met = ½, then not met asc; unscreened
+   * last) or `newest`. Omitted → `evidence` when the tenant hides the
+   * screening score, else `ai_score`. `ai_score` is treated as `evidence`
+   * when the score is hidden.
+   */
+  sort: candidateListSortSchema.optional(),
+  /** PC-5 — offset paging; defaults to the first 50. */
+  page: candidateListPageSchema.optional(),
 });
 
 /** Coarse pipeline phase for a requisition, rolled up DETERMINISTICALLY from
@@ -278,25 +350,54 @@ export const candidateByRequisitionRowSchema = z.object({
   partnerOrgName: z.string().nullable(),
   stage: applicationStageSchema,
   stageEnteredAt: z.string(),
-  aiScore: z.number().nullable(),
+  // PC-6 / NEW-16: omitted when the tenant hides the screening score.
+  aiScore: z.number().nullable().optional(),
   aiScoreExplanation: z.unknown().nullable(),
   yearsOfExperience: z.number().nullable(),
   noticePeriodDays: z.number().nullable(),
   mustHavePct: z.number().nullable(),
   missingInfo: candidateMissingInfoSchema,
+  // PC-7 — screening answers + knockout verdict (noticePeriodDays above now
+  // prefers the application's answer, falling back to the parsed CV).
+  screening: applicationScreeningAnswersSchema,
+  knockout: knockoutSummarySchema,
+  /** PC-6 — compact screening-evidence counts; null until screened. */
+  evidenceSummary: screeningEvidenceSummarySchema.nullable(),
 });
 
 export const candidatesByRequisitionGroupSchema = z.object({
   requisitionId: z.string().uuid(),
   roleTitle: z.string(),
   phase: requisitionPhaseSchema,
+  /** PC-5 — every row of this requisition matching the filters (all pages). */
   candidateCount: z.number().int().min(0),
+  /** The rows of this requisition on the CURRENT page only. */
   rows: z.array(candidateByRequisitionRowSchema),
+  /** PC-4 — scoring queue depth for this requisition ("Screening 312 of 400…"). */
+  screeningQueue: screeningQueueSchema,
+});
+
+/** PC-5 — one requisition the filters match, for the role picker. */
+export const candidatesByRequisitionFacetSchema = z.object({
+  requisitionId: z.string().uuid(),
+  roleTitle: z.string(),
+  /** Matching rows under every filter EXCEPT requisitionId. */
+  count: z.number().int().min(0),
 });
 
 export const listCandidatesByRequisitionOutputSchema = z.object({
   groups: z.array(candidatesByRequisitionGroupSchema),
+  /** Every row matching the filters (all pages) — equals page.total. */
   totalCandidates: z.number().int().min(0),
+  /** PC-5 — paging echo + total. Rows of a requisition are contiguous across pages. */
+  page: candidateListPageInfoSchema,
+  /** PC-5 — requisitions matching the non-role filters, largest first. */
+  requisitionFacets: z.array(candidatesByRequisitionFacetSchema),
+  /**
+   * PC-5 — whether the expected-CTC filter is honoured for this caller (pay is
+   * visible to them). When false the filter is ignored and the UI hides it.
+   */
+  compFilterAvailable: z.boolean(),
 });
 
 export type ListCandidatesByRequisitionInput = z.infer<
@@ -320,6 +421,9 @@ export const listShortlistInputSchema = z.object({
    * the procedure falls back to the tenant's configured shortlist default
    * threshold (tenants.settings.shortlistDefaults) — T2.3 / G08. */
   threshold: z.number().min(0).max(100).optional(),
+  /** PC-6 — table order: `ai_score` (default, the legacy order) or `evidence`
+   * (must-haves met desc, partially met = ½, then not met asc). */
+  sort: z.enum(["ai_score", "evidence"]).optional(),
 });
 
 export const shortlistRowSchema = z.object({
@@ -332,6 +436,8 @@ export const shortlistRowSchema = z.object({
   aiScoreExplanation: z.unknown().nullable(),
   tier: matchTierSchema,
   mustHavePct: z.number().nullable(),
+  /** PC-6 — compact screening-evidence counts; null until screened. */
+  evidenceSummary: screeningEvidenceSummarySchema.nullable(),
   noticePeriodDays: z.number().nullable(),
   stage: applicationStageSchema,
   /** DETERMINISTIC urgency index (0–100) + rank. NOT a probability. */
@@ -657,6 +763,9 @@ export const createRequisitionDraftInputSchema = z.object({
   compBandMin: z.number().nonnegative().optional(),
   compBandMax: z.number().nonnegative().optional(),
   compCurrency: z.string().length(3).optional(),
+  // PC-26 — diverse-slate requirement for this role. Min null = tenant default.
+  diverseSlateRequired: z.boolean().optional(),
+  diverseSlateMin: z.number().int().min(1).max(DIVERSE_SLATE_MIN_MAX).nullable().optional(),
 });
 export const createRequisitionDraftOutputSchema = z.object({
   requisitionId: z.string().uuid(),
@@ -698,6 +807,9 @@ export const updateRequisitionDraftInputSchema = z.object({
   sections: jdSectionsSchema.optional(),
   skills: z.array(requisitionSkillInputSchema).max(50).optional(),
   knockouts: z.array(requisitionKnockoutInputSchema).max(30).optional(),
+  // PC-26 — diverse-slate requirement (omitted = untouched; min null = tenant default).
+  diverseSlateRequired: z.boolean().optional(),
+  diverseSlateMin: z.number().int().min(1).max(DIVERSE_SLATE_MIN_MAX).nullable().optional(),
 });
 export const updateRequisitionDraftOutputSchema = z.object({
   ok: z.literal(true),
@@ -814,6 +926,9 @@ export const getRequisitionDetailOutputSchema = z.object({
    * metadata), else null. Optional for back-compat.
    */
   workdayJobRequisitionId: z.string().nullable().optional(),
+  /** PC-26 — the role's diverse-slate setting (the requirement, not any count). */
+  diverseSlateRequired: z.boolean().optional(),
+  diverseSlateMin: z.number().int().nullable().optional(),
 });
 export type GetRequisitionDetailInput = z.infer<typeof getRequisitionDetailInputSchema>;
 export type GetRequisitionDetailOutput = z.infer<typeof getRequisitionDetailOutputSchema>;
@@ -1009,6 +1124,8 @@ export const offerStatusSchema = z.enum([
   "declined",
   "expired",
   "cancelled",
+  // PC-17 — an accepted offer the candidate later backed out of (offer_reneges).
+  "reneged",
 ]);
 export type OfferStatus = z.infer<typeof offerStatusSchema>;
 
@@ -3980,6 +4097,8 @@ export const partnerSubmitCandidateInputSchema = z.object({
   consentAttested: z.literal(true),
   ownershipAcknowledged: z.literal(true),
   consentVersion: z.string().min(1).max(40),
+  // PC-7 — optional screening answers the partner supplies (source 'partner').
+  screening: screeningAnswersInputSchema.optional(),
 });
 export type PartnerSubmitCandidateInput = z.infer<typeof partnerSubmitCandidateInputSchema>;
 

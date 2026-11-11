@@ -10,6 +10,8 @@ import {
   type JdBiasScan,
   type RequisitionLocationType,
   type RequisitionKnockoutInput,
+  KNOCKOUT_FIELD_CATALOGUE,
+  knockoutFieldDef,
 } from "@hireops/api-types";
 import { trpc, handleTRPCError } from "@/lib/trpc-client";
 import { Button, Card } from "@/components/ui";
@@ -68,15 +70,19 @@ const KNOCKOUT_TYPE_LABELS: Record<RequisitionKnockoutInput["type"], string> = {
   enum: "One of allowed values",
 };
 
-// Common parsed-CV fields a knockout can check, with human labels. HR picks a
-// field instead of typing a machine path; the stored value is the raw path the
-// evaluator resolves. "Other (advanced)" reveals a free-text input for the long
-// tail of parsed-CV paths (e.g. nested skills), preserving full flexibility.
-const KNOCKOUT_FIELD_OPTIONS: { value: string; label: string }[] = [
-  { value: "total_years_experience", label: "Total years of experience" },
-  { value: "personal.location_country", label: "Location (country)" },
-  { value: "skills.technical", label: "Technical skills" },
-];
+// The fields a knockout can check, with human labels — straight from the
+// platform default catalogue (@hireops/api-types KNOCKOUT_FIELD_CATALOGUE). HR
+// picks a field instead of typing a machine path; the stored value is the raw
+// path the evaluator resolves. PC-7 added the screening-answer fields (notice
+// period, expected CTC, current location) — those read the application's
+// answers, and a missing answer is "unknown", never a fail. "Other (advanced)"
+// reveals a free-text input for the long tail of parsed-CV paths.
+const KNOCKOUT_FIELD_OPTIONS: { value: string; label: string }[] = KNOCKOUT_FIELD_CATALOGUE.map(
+  (f) => ({
+    value: f.fieldPath,
+    label: f.source === "parsed_cv" ? f.label : `${f.label} (screening answer)`,
+  }),
+);
 const KNOCKOUT_FIELD_OTHER = "__other__";
 
 interface BasicsState {
@@ -174,6 +180,16 @@ export function RequisitionWizard({
   const [skills, setSkills] = useState<SkillWeightRow[]>([]);
   const [knockouts, setKnockouts] = useState<KnockoutRow[]>([]);
   const [generatingTarget, setGeneratingTarget] = useState<JdSectionKey | "all" | null>(null);
+  // PC-26 — diverse-slate requirement for this role. `min` "" = tenant default.
+  const [diverseSlate, setDiverseSlate] = useState<{ required: boolean; min: string }>({
+    required: false,
+    min: "",
+  });
+  const diverseDefaultsQuery = trpc.getDiverseSlateDefaults.useQuery(undefined, {
+    retry: false,
+    refetchOnWindowFocus: false,
+  });
+  const diverseDefaults = diverseDefaultsQuery.data;
 
   const createDraft = trpc.createRequisitionDraft.useMutation();
   const generateJd = trpc.generateJdDraft.useMutation();
@@ -265,6 +281,10 @@ export function RequisitionWizard({
       compBandId: "",
       compBandMin: d.compBandMin ?? "",
       compBandMax: d.compBandMax ?? "",
+    });
+    setDiverseSlate({
+      required: d.diverseSlateRequired ?? false,
+      min: d.diverseSlateMin != null ? String(d.diverseSlateMin) : "",
     });
     if (d.jdSections) {
       setSections({ ...EMPTY_SECTIONS, ...d.jdSections });
@@ -397,6 +417,7 @@ export function RequisitionWizard({
         compBandMin: basics.compBandMin ? Number(basics.compBandMin) : undefined,
         compBandMax: basics.compBandMax ? Number(basics.compBandMax) : undefined,
         compCurrency: basics.compBandMin || basics.compBandMax ? "INR" : undefined,
+        ...diverseSlateInput(),
       });
       setRid(res.requisitionId);
       setRidInUrl(res.requisitionId, 2);
@@ -443,10 +464,33 @@ export function RequisitionWizard({
     }
   }
 
+  /** PC-26 — the role's diverse-slate fields as the draft mutations take them. */
+  function diverseSlateInput(): { diverseSlateRequired: boolean; diverseSlateMin: number | null } {
+    const n = Math.trunc(Number(diverseSlate.min));
+    return {
+      diverseSlateRequired: diverseSlate.required,
+      diverseSlateMin:
+        diverseSlate.required && diverseSlate.min.trim() && n >= 1 && n <= 20 ? n : null,
+    };
+  }
+
+  async function onContinueFromBasics() {
+    if (!rid) return;
+    setError(null);
+    try {
+      await updateDraft.mutateAsync({ requisitionId: rid, ...diverseSlateInput() });
+      goToStep(2);
+    } catch (err) {
+      setError(errorMessage(err));
+      handleTRPCError(err, { onMessage: () => undefined });
+    }
+  }
+
   async function persistDraft() {
     if (!rid) return;
     await updateDraft.mutateAsync({
       requisitionId: rid,
+      ...diverseSlateInput(),
       sections,
       skills: skills
         .filter((s) => s.skillName.trim().length > 0)
@@ -732,9 +776,45 @@ export function RequisitionWizard({
               />
             </Field>
           </div>
+          {/* PC-26 — diverse-slate requirement. Shown only when the tenant has
+              the feature on (or this draft already carries the flag). Flags the
+              role when its slate is short; never blocks a move or an offer. */}
+          {diverseDefaults?.enabled || diverseSlate.required ? (
+            <div className="mt-5 rounded-lg border border-neutral-200 bg-neutral-50 p-4">
+              <label className="flex items-center gap-2 text-sm font-medium text-neutral-800">
+                <input
+                  type="checkbox"
+                  checked={diverseSlate.required}
+                  onChange={(e) => setDiverseSlate({ ...diverseSlate, required: e.target.checked })}
+                  className="h-4 w-4 rounded border-neutral-300 text-brand-600"
+                />
+                Diverse slate required
+              </label>
+              <p className="mt-1 text-xs text-neutral-500">
+                Flags this role when fewer candidates in its slate (shortlist through offer) have
+                self-identified as diverse than the minimum. A reminder only; it never blocks a move
+                or an offer.
+              </p>
+              {diverseSlate.required ? (
+                <div className="mt-3 max-w-xs">
+                  <Field label="Minimum diverse candidates in slate">
+                    <input
+                      type="number"
+                      min={1}
+                      max={20}
+                      className={inputCls}
+                      value={diverseSlate.min}
+                      onChange={(e) => setDiverseSlate({ ...diverseSlate, min: e.target.value })}
+                      placeholder={`${diverseDefaults?.defaultMin ?? 2} (organisation default)`}
+                    />
+                  </Field>
+                </div>
+              ) : null}
+            </div>
+          ) : null}
           <div className="mt-6 flex justify-end">
             {rid ? (
-              <Button onClick={() => goToStep(2)} disabled={busy}>
+              <Button onClick={() => void onContinueFromBasics()} disabled={busy}>
                 Continue
               </Button>
             ) : (
@@ -809,8 +889,9 @@ export function RequisitionWizard({
               </Button>
             </div>
             <p className="mb-3 text-xs text-neutral-500">
-              Hard gates evaluated deterministically against the parsed CV at apply time, a
-              candidate who fails is filtered out. No AI involved.
+              Hard gates evaluated deterministically at apply time against the parsed CV or the
+              candidate&rsquo;s screening answers. A candidate who fails is filtered out; a missing
+              answer shows as &ldquo;unknown&rdquo;, not a fail. No AI involved.
             </p>
             {knockouts.length === 0 ? (
               <p className="text-xs text-neutral-500">
@@ -853,7 +934,7 @@ export function RequisitionWizard({
                               )
                             }
                           >
-                            {KNOCKOUT_TYPES.map((t) => (
+                            {(knockoutFieldDef(k.fieldPath)?.types ?? KNOCKOUT_TYPES).map((t) => (
                               <option key={t} value={t}>
                                 {KNOCKOUT_TYPE_LABELS[t]}
                               </option>
@@ -869,13 +950,13 @@ export function RequisitionWizard({
                               setKnockouts(
                                 knockouts.map((x) =>
                                   x.key === k.key
-                                    ? {
-                                        ...x,
-                                        fieldPath:
-                                          e.target.value === KNOCKOUT_FIELD_OTHER
-                                            ? ""
-                                            : e.target.value,
-                                      }
+                                    ? withKnockoutField(
+                                        x,
+                                        e.target.value === KNOCKOUT_FIELD_OTHER
+                                          ? ""
+                                          : e.target.value,
+                                        basics.compBandMax,
+                                      )
                                     : x,
                                 ),
                               )
@@ -909,13 +990,19 @@ export function RequisitionWizard({
                         {k.type !== "boolean" ? (
                           <label className="col-span-2 flex flex-col gap-1 text-xs text-neutral-600">
                             {k.type === "enum" ? "Allowed values" : "Threshold"}
+                            {knockoutFieldDef(k.fieldPath)?.unitHint
+                              ? ` (${knockoutFieldDef(k.fieldPath)?.unitHint})`
+                              : ""}
                             <input
                               className={inputCls}
                               value={k.value}
+                              inputMode={k.type === "enum" ? undefined : "numeric"}
                               placeholder={
                                 k.type === "enum"
                                   ? "Allowed values, comma-separated"
-                                  : "Threshold number"
+                                  : knockoutFieldDef(k.fieldPath)?.valueKind === "money"
+                                    ? "Annual amount, e.g. 1800000"
+                                    : "Threshold number"
                               }
                               onChange={(e) =>
                                 setKnockouts(
@@ -1051,6 +1138,12 @@ export function RequisitionWizard({
               }
             />
             <Row label="Openings" value={String(basics.numberOfOpenings)} />
+            {diverseSlate.required ? (
+              <Row
+                label="Diverse slate"
+                value={`Required, minimum ${diverseSlateInput().diverseSlateMin ?? `${diverseDefaults?.defaultMin ?? 2} (organisation default)`}`}
+              />
+            ) : null}
             <Row label="JD sections" value={`${filledSectionCount(sections)} of 7 filled`} />
             <Row
               label="Skills"
@@ -1116,11 +1209,28 @@ function filledSectionCount(sections: JdSections): number {
   return n;
 }
 
+/**
+ * PC-7 — switch a knockout row to another field. A catalogue field snaps the
+ * rule to one it supports; picking expected CTC pre-fills the threshold with
+ * the requisition's comp-band max (the "vs a req value" default) when empty.
+ */
+function withKnockoutField(row: KnockoutRow, fieldPath: string, compBandMax: string): KnockoutRow {
+  const def = knockoutFieldDef(fieldPath);
+  const type = def && !def.types.includes(row.type) ? (def.types[0] ?? row.type) : row.type;
+  const value =
+    def?.valueKind === "money" && row.value.trim() === "" && compBandMax.trim() !== ""
+      ? compBandMax.trim()
+      : row.value;
+  return { ...row, fieldPath, type, value };
+}
+
 function toKnockoutInput(k: KnockoutRow): RequisitionKnockoutInput {
   const base = {
     questionText: k.questionText,
     type: k.type,
-    source: "parsed_cv" as const,
+    // PC-7 — catalogue fields carry their own source (screening fields are
+    // candidate_asserted); "Other (advanced)" paths stay parsed-CV.
+    source: knockoutFieldDef(k.fieldPath)?.source ?? ("parsed_cv" as const),
     fieldPath: k.fieldPath,
   };
   if (k.type === "numeric_min") return { ...base, min: Number(k.value) || 0 };

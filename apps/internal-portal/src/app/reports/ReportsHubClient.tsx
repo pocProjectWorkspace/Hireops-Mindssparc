@@ -15,6 +15,7 @@ import type {
   OnboardingReadinessRow,
   GetExecutiveSummaryReportOutput,
   ExecutiveSummaryAgencyCost,
+  ReportBuGroupBy,
 } from "@hireops/api-types";
 import {
   Badge,
@@ -31,10 +32,12 @@ import {
 } from "@/components/ui";
 import { PageContainer } from "@/components/nav/PageContainer";
 import { trpc } from "@/lib/trpc-client";
-import { applicationStageLabel, humanizeSentence } from "@/lib/labels";
+import { humanizeSentence } from "@/lib/labels";
+import { useApplicationStageLabel } from "@/components/TenantLabelsProvider";
 import { formatCostMicros } from "@/lib/approval-format";
 import { formatFeeMinor } from "@/lib/money";
 import { buildCsv, downloadCsv } from "@/lib/csv";
+import { ReportInsightsBox } from "./ReportInsightsBox";
 
 /**
  * The /reports catalog (R0.2, filled out in R0.3) — every report on ONE
@@ -182,10 +185,13 @@ export function ReportsHubClient({
   /** Viewer passes listCandidates' read gate, which /triage needs to render. */
   canOpenTriage: boolean;
 }) {
+  const applicationStageLabel = useApplicationStageLabel();
   const [from, setFrom] = useState("");
   const [to, setTo] = useState("");
   const [businessUnitId, setBusinessUnitId] = useState("");
   const [recruiterMembershipId, setRecruiterMembershipId] = useState("");
+  // PC-19 — optional BU-level breakdown (aging + headcount only).
+  const [buGroupBy, setBuGroupBy] = useState<ReportBuGroupBy | "">("");
 
   const isUnfiltered = !from && !to && !businessUnitId && !recruiterMembershipId;
 
@@ -198,15 +204,21 @@ export function ReportsHubClient({
     }),
     [from, to, businessUnitId, recruiterMembershipId],
   );
+  // The two reports that break down by BU take the grouping too; the rest
+  // keep the plain input so their cache keys don't churn on it.
+  const groupedInput = useMemo(
+    () => ({ ...input, ...(buGroupBy ? { buGroupBy } : {}) }),
+    [input, buGroupBy],
+  );
 
   const execSummaryQuery = trpc.getExecutiveSummaryReport.useQuery(input, {
     initialData: isUnfiltered ? initialExecSummary : undefined,
     refetchOnWindowFocus: false,
     staleTime: 5_000,
   });
-  const agingQuery = trpc.getRequisitionAgingReport.useQuery(input, {
+  const agingQuery = trpc.getRequisitionAgingReport.useQuery(groupedInput, {
     // Seed only the unfiltered key — a filtered view must actually fetch.
-    initialData: isUnfiltered ? initialAging : undefined,
+    initialData: isUnfiltered && !buGroupBy ? initialAging : undefined,
     refetchOnWindowFocus: false,
     staleTime: 5_000,
   });
@@ -220,8 +232,8 @@ export function ReportsHubClient({
     refetchOnWindowFocus: false,
     staleTime: 5_000,
   });
-  const headcountQuery = trpc.getHeadcountVsPlanReport.useQuery(input, {
-    initialData: isUnfiltered ? initialHeadcount : undefined,
+  const headcountQuery = trpc.getHeadcountVsPlanReport.useQuery(groupedInput, {
+    initialData: isUnfiltered && !buGroupBy ? initialHeadcount : undefined,
     refetchOnWindowFocus: false,
     staleTime: 5_000,
   });
@@ -278,15 +290,32 @@ export function ReportsHubClient({
     interviewHealthQuery.isFetching ||
     onboardingQuery.isFetching;
 
-  // Options come from the unfiltered prefetch and never change — see the
-  // file header for why they aren't a separate list procedure.
+  // PC-19 — the BU picker shows the tenant's hierarchy (indented, parents
+  // first) from listReportBusinessUnits, which hr_head / hr_ops can call.
+  // Picking a parent rolls up every unit under it. Until the tree lands (or
+  // if it fails) the flat list derived from the unfiltered prefetch stands in.
+  const buTreeQuery = trpc.listReportBusinessUnits.useQuery(
+    {},
+    { refetchOnWindowFocus: false, staleTime: 5 * 60 * 1000 },
+  );
   const businessUnitOptions = useMemo(() => {
+    const tree = buTreeQuery.data?.items;
+    if (tree && tree.length > 0) {
+      return tree.map((n) => ({
+        id: n.id,
+        name: n.name,
+        depth: n.depth,
+        label: `${"\u00A0\u00A0\u00A0".repeat(n.depth)}${n.depth > 0 ? "└ " : ""}${n.name}${
+          n.isArchived ? " (archived)" : ""
+        }`,
+      }));
+    }
     const byId = new Map<string, string>();
     for (const r of initialAging.rows) byId.set(r.businessUnitId, r.businessUnitName);
     return [...byId.entries()]
-      .map(([id, name]) => ({ id, name }))
+      .map(([id, name]) => ({ id, name, depth: 0, label: name }))
       .sort((a, b) => a.name.localeCompare(b.name));
-  }, [initialAging]);
+  }, [buTreeQuery.data, initialAging]);
 
   const recruiterOptions = useMemo(() => {
     const byId = new Map<string, string>();
@@ -355,9 +384,22 @@ export function ReportsHubClient({
           <option value="">All business units</option>
           {businessUnitOptions.map((bu) => (
             <option key={bu.id} value={bu.id}>
-              {bu.name}
+              {bu.label}
             </option>
           ))}
+        </select>
+        <select
+          value={buGroupBy}
+          onChange={(e) => setBuGroupBy(e.target.value as ReportBuGroupBy | "")}
+          aria-label="Business unit breakdown"
+          title="Break requisition aging and headcount down by business-unit level"
+          className={controlCls}
+        >
+          <option value="">No BU breakdown</option>
+          <option value="top_level">By top-level unit</option>
+          <option value="sub_unit">
+            {businessUnitId ? "By sub-unit of selected" : "By sub-unit"}
+          </option>
         </select>
         <select
           value={recruiterMembershipId}
@@ -380,6 +422,7 @@ export function ReportsHubClient({
               setTo("");
               setBusinessUnitId("");
               setRecruiterMembershipId("");
+              setBuGroupBy("");
             }}
             className="h-8 rounded-full border border-neutral-300 bg-white px-3 text-xs font-medium text-neutral-700 hover:bg-neutral-50 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500"
           >
@@ -391,6 +434,7 @@ export function ReportsHubClient({
 
       <ReportSection
         title="Executive summary"
+        insights={<ReportInsightsBox reportKey="executive_summary" filters={input} />}
         printRegion
         blurb={
           <>
@@ -627,6 +671,7 @@ export function ReportsHubClient({
 
       <ReportSection
         title="Requisition status & aging"
+        insights={<ReportInsightsBox reportKey="requisition_aging" filters={groupedInput} />}
         printHidden
         blurb={
           <>
@@ -684,6 +729,22 @@ export function ReportsHubClient({
                 </span>
               ))}
             </div>
+
+            {aging.byBusinessUnit && aging.byBusinessUnit.length > 0 ? (
+              <BuBreakdownTable
+                caption="Requisitions by business unit (whole scope, not just the rows below)"
+                columns={["Requisitions", "Still open", "Avg days open"]}
+                rows={aging.byBusinessUnit.map((g) => ({
+                  id: g.businessUnitId,
+                  name: g.businessUnitName,
+                  values: [
+                    g.requisitions.toLocaleString(),
+                    g.open.toLocaleString(),
+                    formatDays(g.avgDaysOpen),
+                  ],
+                }))}
+              />
+            ) : null}
 
             <TableShell>
               <Thead>
@@ -750,6 +811,7 @@ export function ReportsHubClient({
 
       <ReportSection
         title="Recruiter productivity"
+        insights={<ReportInsightsBox reportKey="recruiter_productivity" filters={input} />}
         printHidden
         blurb={
           <>
@@ -818,6 +880,7 @@ export function ReportsHubClient({
 
       <ReportSection
         title="Pipeline & speed"
+        insights={<ReportInsightsBox reportKey="pipeline" filters={input} />}
         printHidden
         blurb={
           <>
@@ -994,6 +1057,7 @@ export function ReportsHubClient({
 
       <ReportSection
         title="Headcount vs plan"
+        insights={<ReportInsightsBox reportKey="headcount_vs_plan" filters={groupedInput} />}
         printHidden
         blurb={
           <>
@@ -1042,6 +1106,23 @@ export function ReportsHubClient({
                 value={headcount.unplanned.reqsRaised.toLocaleString()}
               />
             </div>
+
+            {headcount.byBusinessUnit && headcount.byBusinessUnit.length > 0 ? (
+              <BuBreakdownTable
+                caption="Headcount plans by business unit"
+                columns={["Planned", "Openings requested", "Hires", "Utilisation"]}
+                rows={headcount.byBusinessUnit.map((g) => ({
+                  id: g.businessUnitId,
+                  name: g.businessUnitName,
+                  values: [
+                    g.plannedHeadcount.toLocaleString(),
+                    g.openingsRequested.toLocaleString(),
+                    g.hires.toLocaleString(),
+                    formatPct(g.utilisationPct),
+                  ],
+                }))}
+              />
+            ) : null}
 
             <TableShell>
               <Thead>
@@ -1110,6 +1191,7 @@ export function ReportsHubClient({
 
       <ReportSection
         title="Approval cycle"
+        insights={<ReportInsightsBox reportKey="approval_analytics" filters={input} />}
         printHidden
         blurb={
           <>
@@ -1246,6 +1328,7 @@ export function ReportsHubClient({
 
       <ReportSection
         title="Partner scorecard"
+        insights={<ReportInsightsBox reportKey="partner_scorecard" filters={input} />}
         printHidden
         blurb={
           <>
@@ -1360,6 +1443,7 @@ export function ReportsHubClient({
 
       <ReportSection
         title="Interview & scorecard health"
+        insights={<ReportInsightsBox reportKey="interview_health" filters={input} />}
         printHidden
         blurb={
           <>
@@ -1534,6 +1618,7 @@ export function ReportsHubClient({
 
       <ReportSection
         title="Onboarding readiness"
+        insights={<ReportInsightsBox reportKey="onboarding_readiness" filters={input} />}
         printHidden
         blurb={
           <>
@@ -1785,10 +1870,13 @@ function ReportSection({
   actions,
   printHidden = false,
   printRegion = false,
+  insights,
   children,
 }: {
   title: string;
   blurb: ReactNode;
+  /** PC-20 — the AI "Insights" box, rendered above the section body. */
+  insights?: ReactNode;
   /** Right-aligned header slot — the section's Download CSV button. */
   actions?: ReactNode;
   /** Off the printed page: everything except the board pack (R1.4). */
@@ -1812,8 +1900,51 @@ function ReportSection({
         {actions ? <div className="flex shrink-0 gap-2 print:hidden">{actions}</div> : null}
       </div>
       <p className="mb-3 mt-1 max-w-3xl text-xs text-neutral-500">{blurb}</p>
+      {insights}
       {children}
     </section>
+  );
+}
+
+/**
+ * PC-19 — the "group by BU level" breakdown: one row per business-unit group
+ * (top-level unit, or sub-unit of the focus), every descendant rolled in.
+ */
+function BuBreakdownTable({
+  caption,
+  columns,
+  rows,
+}: {
+  caption: string;
+  columns: string[];
+  rows: { id: string; name: string; values: string[] }[];
+}) {
+  return (
+    <div className="mb-4">
+      <p className="mb-1.5 text-xs font-medium text-neutral-600">{caption}</p>
+      <TableShell>
+        <Thead>
+          <Th>Business unit</Th>
+          {columns.map((c) => (
+            <Th key={c} numeric>
+              {c}
+            </Th>
+          ))}
+        </Thead>
+        <Tbody>
+          {rows.map((r) => (
+            <Tr key={r.id}>
+              <Td label="Business unit">{r.name}</Td>
+              {r.values.map((v, i) => (
+                <Td key={columns[i]} label={columns[i]} numeric>
+                  {v}
+                </Td>
+              ))}
+            </Tr>
+          ))}
+        </Tbody>
+      </TableShell>
+    </div>
   );
 }
 

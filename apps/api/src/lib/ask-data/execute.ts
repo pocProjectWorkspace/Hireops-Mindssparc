@@ -25,9 +25,12 @@ import type {
   AskDataIntentId,
   AskDataResult,
   ReportFilters,
+  TenantLabels,
 } from "@hireops/api-types";
+import { PLATFORM_STAGE_LABELS, resolveStageLabel } from "@hireops/api-types";
 
 import * as measures from "../reports/measures";
+import { buSubtreePredicate } from "../reports/bu-tree";
 import { getRequisitionAgingReport } from "../reports/requisition-aging";
 import { getRecruiterProductivityReport } from "../reports/recruiter-productivity";
 import { getApprovalAnalyticsReport } from "../reports/approval-analytics";
@@ -46,6 +49,9 @@ export interface AskDataExecDeps {
   /** Set ⇒ the caller is hiring-manager scoped to these (own) requisitions. */
   hmMembershipId: string | null;
   hmRequisitionIds: ReadonlySet<string> | null;
+  /** CFG-LITE — the tenant's display labels (staff stage wording). Omitted →
+   * platform default wording. */
+  stageLabels?: TenantLabels | null;
 }
 
 /** postgres-js returns `{rows: …}`; fall back to the array form (matches measures.ts). */
@@ -99,20 +105,17 @@ export async function loadAskDataLookups(
 
 // ─────────────────────────────── formatting helpers ───────────────────────────────
 
-/** Staff stage wording — mirrors the portal's applicationStageLabel. */
-const STAGE_LABELS: Record<string, string> = {
-  application_received: "Applied",
-  ai_screening: "AI screening",
-  recruiter_review: "Recruiter review",
-  shortlisted: "Shortlisted",
-  tech_interview: "Panel interview",
-  hr_round: "HR round",
-  offer_drafted: "Offer drafted",
-  offer_accepted: "Offer accepted",
-  offer_declined: "Offer declined",
-  withdrawn: "Withdrawn",
-  recruiter_rejected: "Rejected",
-};
+/** Staff stage wording — the same resolver the portal's applicationStageLabel
+ * uses (CFG-LITE): tenant override → platform staff default. An unknown key is
+ * humanized as before. */
+function stageName(deps: AskDataExecDeps, stage: string): string {
+  return resolveStageLabel(
+    deps.stageLabels,
+    stage,
+    "staff",
+    stage in PLATFORM_STAGE_LABELS ? undefined : humanize(stage),
+  );
+}
 const TERMINAL_STAGES = new Set([
   "offer_accepted",
   "offer_declined",
@@ -129,6 +132,7 @@ const SOURCE_LABELS: Record<string, string> = {
   agency_search: "Agency search",
   talent_pool: "Talent pool",
   whatsapp: "WhatsApp",
+  bulk_upload: "Bulk upload",
 };
 
 /** snake_case → "Sentence case". */
@@ -383,7 +387,7 @@ const timeToFillTrend: Executor = async (deps, f) => {
 const pipelineFunnel: Executor = async (deps, f) => {
   const funnel = await measures.funnelByStage(deps.db, deps.tenantId, reportFilters(f));
   const rows = funnel.map((b) => ({
-    stage: STAGE_LABELS[b.stage] ?? humanize(b.stage),
+    stage: stageName(deps, b.stage),
     candidates: b.count,
   }));
   const total = funnel.reduce((s, b) => s + b.count, 0);
@@ -396,7 +400,7 @@ const pipelineFunnel: Executor = async (deps, f) => {
       ? `No candidates${scopePhrase(f)} in this period.`
       : `${plural(total, "candidate")}${scopePhrase(f)}: ${activeTotal.toLocaleString("en-US")} still in the pipeline` +
         (busiest && busiest.count > 0
-          ? `, the largest group at ${STAGE_LABELS[busiest.stage] ?? busiest.stage} (${busiest.count})`
+          ? `, the largest group at ${stageName(deps, busiest.stage)} (${busiest.count})`
           : "") +
         `, and ${plural(hired, "hire")}.`;
   return {
@@ -418,12 +422,12 @@ const stageBottlenecks: Executor = async (deps, f) => {
     s.days === null ? [] : [{ stage: s.stage, days: s.days }],
   );
   const rows = withData.map((s) => ({
-    stage: STAGE_LABELS[s.stage] ?? humanize(s.stage),
+    stage: stageName(deps, s.stage),
     median_days: round1(s.days),
   }));
   const slowest = [...withData].sort((a, b) => b.days - a.days)[0];
   const summary = slowest
-    ? `Candidates wait longest at ${STAGE_LABELS[slowest.stage] ?? slowest.stage}${scopePhrase(f)}: a median of ${fmtDays(slowest.days)} before moving on.`
+    ? `Candidates wait longest at ${stageName(deps, slowest.stage)}${scopePhrase(f)}: a median of ${fmtDays(slowest.days)} before moving on.`
     : `No completed stage moves${scopePhrase(f)} in this period yet.`;
   return {
     title: "Where candidates get stuck",
@@ -548,14 +552,23 @@ interface DeclinedSqlRow {
 }
 
 const declinedOffers: Executor = async (deps, f) => {
-  const clauses: SQL[] = [dsql`o.tenant_id = ${deps.tenantId}::uuid`, dsql`o.status = 'declined'`];
+  // PC-17 — reneges (accepted, then backed out before joining) are listed with
+  // the declines: same question from the asker's side ("who said no, and
+  // why?"), told apart by the reason text. Date = when the renege was recorded.
+  const clauses: SQL[] = [
+    dsql`o.tenant_id = ${deps.tenantId}::uuid`,
+    dsql`o.status IN ('declined', 'reneged')`,
+  ];
+  const decidedOn = dsql`COALESCE(rn.recorded_at, o.declined_at, o.updated_at)`;
   if (f.window.from) {
-    clauses.push(dsql`COALESCE(o.declined_at, o.updated_at) >= ${f.window.from}::timestamptz`);
+    clauses.push(dsql`${decidedOn} >= ${f.window.from}::timestamptz`);
   }
   if (f.window.to) {
-    clauses.push(dsql`COALESCE(o.declined_at, o.updated_at) <= ${f.window.to}::timestamptz`);
+    clauses.push(dsql`${decidedOn} <= ${f.window.to}::timestamptz`);
   }
-  if (f.businessUnitId) clauses.push(dsql`p.business_unit_id = ${f.businessUnitId}::uuid`);
+  if (f.businessUnitId) {
+    clauses.push(buSubtreePredicate(dsql`p.business_unit_id`, deps.tenantId, f.businessUnitId));
+  }
   if (deps.hmMembershipId) clauses.push(dsql`r.hiring_manager_id = ${deps.hmMembershipId}::uuid`);
   // Candidate names are only joined at all for roles allowed to see them.
   const nameSelect = deps.canSeeCandidateNames ? dsql`pe.full_name` : dsql`NULL::text`;
@@ -568,17 +581,21 @@ const declinedOffers: Executor = async (deps, f) => {
     SELECT
       p.title AS role,
       b.name AS business_unit,
-      COALESCE(o.declined_at, o.updated_at) AS declined_on,
-      NULLIF(btrim(o.declined_reason), '') AS reason,
+      ${decidedOn} AS declined_on,
+      CASE WHEN o.status = 'reneged'
+        THEN 'Reneged after accepting: ' || COALESCE(rn.reason_label, 'reason not recorded')
+        ELSE NULLIF(btrim(o.declined_reason), '')
+      END AS reason,
       ${nameSelect} AS candidate
     FROM public.offers o
+    LEFT JOIN public.offer_reneges rn ON rn.tenant_id = o.tenant_id AND rn.offer_id = o.id
     JOIN public.applications a ON a.tenant_id = o.tenant_id AND a.id = o.application_id
     JOIN public.requisitions r ON r.tenant_id = a.tenant_id AND r.id = a.requisition_id
     JOIN public.positions p ON p.tenant_id = r.tenant_id AND p.id = r.position_id
     LEFT JOIN public.business_units b ON b.tenant_id = p.tenant_id AND b.id = p.business_unit_id
     ${nameJoin}
     WHERE ${dsql.join(clauses, dsql` AND `)}
-    ORDER BY COALESCE(o.declined_at, o.updated_at) DESC
+    ORDER BY ${decidedOn} DESC
     LIMIT 100
   `);
   const raw = asRows<DeclinedSqlRow>(res);
@@ -621,7 +638,7 @@ const declinedOffers: Executor = async (deps, f) => {
     rows,
     summary,
     footnote:
-      "Source: offers. Reason = the decline reason recorded on the offer. Period = when the offer was declined. No candidate contact details are shown" +
+      'Source: offers. Reason = the decline reason recorded on the offer; offers accepted and later reneged are included, marked "Reneged after accepting" with the reason the recruiter recorded. Period = when the offer was declined (or the renege recorded). No candidate contact details are shown' +
       (deps.canSeeCandidateNames
         ? "."
         : "; candidate names are visible to HR and admin roles only.") +

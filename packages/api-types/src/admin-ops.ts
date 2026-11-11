@@ -27,6 +27,7 @@
  */
 
 import { z } from "zod";
+import { SCREENING_SCORE_BANDS_DEFAULT, type ScreeningScoreBands } from "./ai-settings";
 import { auditEventRowSchema } from "./procedures";
 
 // ─────────────────────────── audit severity ───────────────────────────
@@ -458,9 +459,9 @@ export const SHORTLIST_DEFAULTS_VERSION = 1 as const;
  * Cross-field sanity: partial ≤ good ≤ excellent. */
 export const tierCutoffsSchema = z
   .object({
-    excellent: z.number().int().min(0).max(100).default(90),
-    good: z.number().int().min(0).max(100).default(75),
-    partial: z.number().int().min(0).max(100).default(60),
+    excellent: z.number().int().min(0).max(100).default(SCREENING_SCORE_BANDS_DEFAULT.strong),
+    good: z.number().int().min(0).max(100).default(SCREENING_SCORE_BANDS_DEFAULT.good),
+    partial: z.number().int().min(0).max(100).default(SCREENING_SCORE_BANDS_DEFAULT.partial),
   })
   .refine((c) => c.partial <= c.good && c.good <= c.excellent, {
     message: "Tier cutoffs must be ordered: partial ≤ good ≤ excellent.",
@@ -470,7 +471,7 @@ export type TierCutoffs = z.infer<typeof tierCutoffsSchema>;
 export const shortlistDefaultsSchema = z.object({
   version: z.literal(SHORTLIST_DEFAULTS_VERSION).default(SHORTLIST_DEFAULTS_VERSION),
   /** Default minimum real ai_score to include in the shortlist table (0–100). */
-  threshold: z.number().min(0).max(100).default(75),
+  threshold: z.number().min(0).max(100).default(SCREENING_SCORE_BANDS_DEFAULT.good),
   tierCutoffs: tierCutoffsSchema.default(() => tierCutoffsSchema.parse({})),
 });
 export type ShortlistDefaults = z.infer<typeof shortlistDefaultsSchema>;
@@ -488,6 +489,36 @@ export function defaultShortlistDefaults(): ShortlistDefaults {
 export function resolveShortlistDefaults(raw: unknown): ShortlistDefaults {
   const parsed = shortlistDefaultsSchema.safeParse(raw ?? {});
   return parsed.success ? parsed.data : defaultShortlistDefaults();
+}
+
+/**
+ * CFG-LITE / BUG-11 — the shortlist's EFFECTIVE defaults given the tenant's one
+ * score cut-off setting (`aiSettings.screeningScoreBands`). A shortlist block
+ * the tenant explicitly saved still wins field by field (threshold,
+ * tierCutoffs); anything it never set follows the shared bands — so a tenant
+ * that only edits the score cut-offs in AI settings moves the shortlist too.
+ * With no stored blocks at all this is byte-identical to the historic
+ * 75 / 90 / 75 / 60. Never throws.
+ */
+export function resolveEffectiveShortlistDefaults(
+  rawShortlist: unknown,
+  bands: ScreeningScoreBands,
+): ShortlistDefaults {
+  const resolved = resolveShortlistDefaults(rawShortlist);
+  const stored =
+    typeof rawShortlist === "object" && rawShortlist !== null && !Array.isArray(rawShortlist)
+      ? (rawShortlist as Record<string, unknown>)
+      : {};
+  // Only trust the stored fields when the stored block as a whole is valid.
+  const valid = shortlistDefaultsSchema.safeParse(rawShortlist ?? {}).success;
+  return {
+    ...resolved,
+    threshold: valid && stored.threshold !== undefined ? resolved.threshold : bands.good,
+    tierCutoffs:
+      valid && stored.tierCutoffs !== undefined
+        ? resolved.tierCutoffs
+        : { excellent: bands.strong, good: bands.good, partial: bands.partial },
+  };
 }
 
 export const getShortlistDefaultsInputSchema = z.object({});

@@ -29,6 +29,7 @@ export type CandidateNavKey =
   | "interviews"
   | "documents"
   | "learning"
+  | "welcome"
   | "notifications"
   | "settings";
 
@@ -138,6 +139,14 @@ export const CANDIDATE_NAV: CandidateNavItem[] = [
     label: "Learning",
     href: "/candidate/learning",
     icon: <IconBook />,
+  },
+  {
+    // PC-18: the published welcome guide for the hire's business unit —
+    // available between offer acceptance and joining.
+    key: "welcome",
+    label: "Welcome",
+    href: "/candidate/welcome",
+    icon: <IconUsers />,
   },
   {
     key: "notifications",

@@ -51,6 +51,11 @@ const SOURCE_ORDER: { value: ApplicationSource; defaultLabel: string; detailHint
   { value: "agency_search", defaultLabel: "Agency search", detailHint: "Agency / desk name" },
   { value: "talent_pool", defaultLabel: "Talent pool", detailHint: "Pool / segment name" },
   { value: "whatsapp", defaultLabel: "WhatsApp", detailHint: "WhatsApp business number" },
+  {
+    value: "bulk_upload",
+    defaultLabel: "Bulk upload",
+    detailHint: "Agency / RPO the files came from",
+  },
 ];
 
 const INGESTION_OPTIONS: { value: IngestionMode; label: string }[] = [

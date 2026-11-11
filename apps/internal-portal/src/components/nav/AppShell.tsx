@@ -23,6 +23,7 @@
  */
 import type { ReactNode } from "react";
 import { cn } from "@/components/ui/cn";
+import { RoleName } from "@/lib/role-labels";
 import {
   IconHome,
   IconTriage,
@@ -106,6 +107,10 @@ export type PortalNavKey =
   | "panel-board"
   | "panel-feedback"
   | "panel-history"
+  // PC-8 — a member's own interview availability (weekly windows + OOO)
+  | "availability"
+  // PC-8 — tenant scheduling settings (durations, working hours, buffers, …)
+  | "scheduling-settings"
   | "hr-documents"
   | "case-audit"
   | "hr-policies"
@@ -145,14 +150,24 @@ export type PortalNavKey =
   | "panel-pools"
   // T4.1 — tenant-configurable SLA thresholds
   | "sla-thresholds"
+  // CFG-LITE — tenant display labels (stage + interview-recommendation wording)
+  | "labels"
   // T4.2 — configurable governance/compliance policy
   | "governance-policy"
+  // PC-26 — diverse-slate requirement (tenant diversitySlate block)
+  | "diversity-slate"
   // T4.3 — document retention policy + overdue register
   | "retention-policy"
   // R1.5b — scheduled report-digest configuration (cadence, recipients, hour)
   | "report-digests"
   // LD-1B — the L&D catalogue + tracks pushed onto a hire's onboarding case
-  | "learning";
+  | "learning"
+  // PC-16 — accepted-not-joined watchlist (facts only) + engagement timeline
+  | "joining-watchlist"
+  // PC-14 — pre-joining engagement settings + company updates (admin)
+  | "pre-joining"
+  // PC-18 — per-business-unit welcome guide source + generated versions (admin)
+  | "welcome-content";
 
 // ONBOARD-1: NavItem is exported so the onboarding journey can render the
 // same nav items the sidebar shows (filtered by role via navItemsForRoles).
@@ -216,6 +231,17 @@ export const MAIN_NAV: NavItem[] = [
     href: "/onboarding",
     icon: <IconOnboarding />,
     roles: ["recruiter", "hr_ops", "people_ops", "admin"],
+  },
+  {
+    // PC-16 — accepted-not-joined candidates during their notice period: last
+    // contact, last check-in answer, open signals (each the candidate's own
+    // words). recruiter + hr_head (TA lead) + admin, matching the
+    // JOINING_WATCHLIST_ROLES API gate.
+    key: "joining-watchlist",
+    label: "Joining watchlist",
+    href: "/joining-watchlist",
+    icon: <IconOnboarding />,
+    roles: ["recruiter", "hr_head", "admin"],
   },
   {
     // OFFBOARD-03: departures are an HR operation — hr_ops + people_ops + admin
@@ -447,6 +473,16 @@ export const MAIN_NAV: NavItem[] = [
     roles: ["panel_member", "admin"],
   },
   {
+    // PC-8: the member's own weekly interview availability + out-of-office.
+    // Anyone who can sit on a panel; recruiters/HMs/admins can also look up
+    // other members there. Reuses IconInterviews (no calendar icon exists).
+    key: "availability",
+    label: "My availability",
+    href: "/availability",
+    icon: <IconInterviews />,
+    roles: ["panel_member", "hiring_manager", "recruiter", "admin"],
+  },
+  {
     // HROPS-02: the comp & offer desk — the hr_ops comp operator's surface.
     // hr_ops + admin, matching the listCompDesk API gate.
     key: "comp-offers",
@@ -593,6 +629,10 @@ export const ADMIN_NAV: NavItem[] = [
     href: "/admin/panel-pools",
     icon: <IconPanelPools />,
   },
+  // CFG-LITE — tenant display labels: stage wording per audience (staff /
+  // candidate / partner) + interview-recommendation wording. Wording only —
+  // canonical stage + recommendation keys never change. Reuses IconBranding.
+  { key: "labels", label: "Labels", href: "/admin/labels", icon: <IconBranding /> },
   // T4.1 — tenant-configurable SLA thresholds. The per-stage hours drive breach
   // detection, urgency, governance and the imminent-alert emails.
   {
@@ -601,12 +641,28 @@ export const ADMIN_NAV: NavItem[] = [
     href: "/admin/sla-thresholds",
     icon: <IconSlaThresholds />,
   },
+  // PC-8 — tenant interview-scheduling settings (duration presets, working
+  // hours, buffer, notice, horizon, slots offered, link lifetime, reschedules).
+  {
+    key: "scheduling-settings",
+    label: "Interview scheduling",
+    href: "/admin/scheduling",
+    icon: <IconInterviews />,
+  },
   // T4.2 — configurable governance/compliance policy. The compliance-score
   // weights + governance SLA knobs that drive the HR-head governance surface.
   {
     key: "governance-policy",
     label: "Governance policy",
     href: "/admin/governance-policy",
+    icon: <IconGovernancePolicy />,
+  },
+  // PC-26 — diverse-slate settings: whether voluntary self-ID is collected, the
+  // default minimum, the counted stages and which answers count.
+  {
+    key: "diversity-slate",
+    label: "Diverse slate",
+    href: "/admin/diversity-slate",
     icon: <IconGovernancePolicy />,
   },
   // T4.3 — document retention policy. The per-type retention years drive the
@@ -620,6 +676,22 @@ export const ADMIN_NAV: NavItem[] = [
   // LD-1B — the L&D catalogue (pointers at learning hosted elsewhere) + the
   // curated tracks a recruiter pushes onto one hire's onboarding case.
   { key: "learning", label: "Learning", href: "/admin/learning", icon: <IconLearning /> },
+  // PC-14 — pre-joining engagement: cadence, steps, quiet hours, signals,
+  // renege reasons, company updates. (hr_head reaches it from the watchlist.)
+  {
+    key: "pre-joining",
+    label: "Pre-joining engagement",
+    href: "/admin/pre-joining",
+    icon: <IconOnboarding />,
+  },
+  // PC-18 — welcome content per business unit: source material, AI draft
+  // grounded in it, human review + publish.
+  {
+    key: "welcome-content",
+    label: "Welcome content",
+    href: "/admin/welcome-content",
+    icon: <IconLearning />,
+  },
   // R1.5b — scheduled report digests (cadence, recipients, UTC send hour). The
   // saved block drives the report_digest_scan worker. Reuses IconReports (no
   // dedicated mail/schedule icon exists) — the digest IS the reports pack, on a
@@ -660,6 +732,7 @@ export const MAIN_NAV_SECTIONS: NavSection[] = [
       "approvals",
       "missing-info",
       "interviews",
+      "joining-watchlist",
       "partners",
     ],
   },
@@ -703,7 +776,7 @@ export const MAIN_NAV_SECTIONS: NavSection[] = [
   },
   {
     heading: "Interview panel",
-    keys: ["panel", "panel-board", "panel-feedback", "panel-history"],
+    keys: ["panel", "panel-board", "panel-feedback", "panel-history", "availability"],
   },
 ];
 
@@ -732,11 +805,16 @@ export const ADMIN_NAV_SECTIONS: NavSection[] = [
       "email-templates",
       "candidate-fields",
       "interview-templates",
+      "scheduling-settings",
+      "labels",
       "sla-thresholds",
       "governance-policy",
+      "diversity-slate",
       "retention-policy",
       "report-digests",
       "learning",
+      "pre-joining",
+      "welcome-content",
     ],
   },
   {
@@ -769,7 +847,10 @@ function buildSections(
 
 export interface AppShellUser {
   label: string;
+  /** Platform-default role label (server-rendered fallback). */
   role?: string;
+  /** PC-23 — the role KEY, so the chip can show the tenant's display label. */
+  roleKey?: string;
 }
 
 export interface AppShellProps {
@@ -875,7 +956,11 @@ function UserChip({ user, roles }: { user: AppShellUser; roles: string[] }) {
         </span>
         <div className="min-w-0">
           <p className="truncate text-sm font-medium text-sidebar-fg">{user.label}</p>
-          {user.role ? <p className="truncate text-xs text-sidebar-fg-muted">{user.role}</p> : null}
+          {user.role || user.roleKey ? (
+            <p className="truncate text-xs text-sidebar-fg-muted">
+              <RoleName role={user.roleKey} fallback={user.role} />
+            </p>
+          ) : null}
         </div>
       </div>
       <a

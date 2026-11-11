@@ -10,6 +10,7 @@ import { trpc, handleTRPCError } from "@/lib/trpc-client";
 import type { GetPanelInterviewBriefOutput, InterviewRecommendation } from "@hireops/api-types";
 import { BriefContent } from "./BriefContent";
 import { InterviewNotesView } from "@/components/interviews/InterviewNotesView";
+import { useRecommendationLabel } from "@/components/TenantLabelsProvider";
 
 /**
  * INT-03 / PANEL-02 — the candidate brief + the scorecard form for one
@@ -32,11 +33,13 @@ import { InterviewNotesView } from "@/components/interviews/InterviewNotesView";
  * and is what keeps AI notes from anchoring the recommendation.
  */
 
-const RECOMMENDATIONS: { value: InterviewRecommendation; label: string; tone: BadgeTone }[] = [
-  { value: "strong_yes", label: "Strong yes", tone: "success" },
-  { value: "yes", label: "Yes", tone: "success" },
-  { value: "hold", label: "Hold", tone: "warning" },
-  { value: "no", label: "No", tone: "error" },
+/** Canonical values + tone. The button WORDING is the tenant's (settings.labels,
+ * CFG-LITE) via useRecommendationLabel; platform default "Strong yes / Yes / Hold / No". */
+const RECOMMENDATIONS: { value: InterviewRecommendation; tone: BadgeTone }[] = [
+  { value: "strong_yes", tone: "success" },
+  { value: "yes", tone: "success" },
+  { value: "hold", tone: "warning" },
+  { value: "no", tone: "error" },
 ];
 
 const SCORES = [1, 2, 3, 4, 5] as const;
@@ -82,6 +85,7 @@ export function PanelInterviewBrief({
   initial: GetPanelInterviewBriefOutput;
 }) {
   const queryClient = useQueryClient();
+  const recLabel = useRecommendationLabel();
   const query = trpc.getPanelInterviewBrief.useQuery(
     { interviewId },
     { initialData: initial, refetchOnWindowFocus: true },
@@ -339,7 +343,7 @@ export function PanelInterviewBrief({
                   className={recommendationButtonClass(active, submitted)}
                   aria-pressed={active}
                 >
-                  {r.label}
+                  {recLabel(r.value)}
                 </button>
               );
             })}

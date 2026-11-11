@@ -5,6 +5,7 @@ import { RoleNotice } from "@/components/nav/RoleNotice";
 import { UndoToastProvider } from "@/components/triage/UndoToastProvider";
 import { CandidateDetailDrawer } from "@/components/triage/CandidateDetailDrawer";
 import { ShortlistView } from "@/components/recruiter/ShortlistView";
+import { DiverseSlateShortRoles } from "@/components/diversity/DiverseSlateShortRoles";
 
 export const dynamic = "force-dynamic"; // Auth-gated + reads live scored pipeline.
 
@@ -55,6 +56,8 @@ export default async function ShortlistPage() {
         active="shortlist"
         user={sessionUserChip(session)}
       >
+        {/* PC-26 — roles short of their diverse slate (counts only). */}
+        <DiverseSlateShortRoles variant="banner" />
         <ShortlistView initial={initial} canManageDefaults={isAdmin} />
         <CandidateDetailDrawer />
       </AppShell>

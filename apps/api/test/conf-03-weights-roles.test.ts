@@ -44,7 +44,12 @@ import { app } from "../src/index.js";
 import { sql as poolSql } from "@hireops/db";
 import { z } from "zod";
 import { hashStructuredOptions, type ParserOutput } from "@hireops/ai-client";
-import { aiScoringResponseSchema, buildAIScoringPrompt } from "@hireops/ai-scoring";
+// PC-6 (PP6): the drain sends the full JD via composeScreeningJd(jd_text, summary).
+import {
+  aiScoringResponseSchema,
+  buildAIScoringPrompt,
+  composeScreeningJd,
+} from "@hireops/ai-scoring";
 import {
   defaultScoringWeights,
   resolveScoringWeights,
@@ -382,7 +387,7 @@ describe("CONF-03 — scoring weights + users & roles + retention", () => {
   it("Test 2: prompt builder is pure — default omits emphasis, non-default renders it", () => {
     const base = buildAIScoringPrompt({
       positionTitle: "Conf3 Backend Engineer",
-      jdDescription: "Backend engineer, Go + Postgres.",
+      jdDescription: composeScreeningJd("# Conf3 JD body", "Backend engineer, Go + Postgres."),
       jdSkills: [],
       parsedCv: PARSED_CV,
     });
@@ -399,7 +404,7 @@ describe("CONF-03 — scoring weights + users & roles + retention", () => {
 
     const withWeights = buildAIScoringPrompt({
       positionTitle: "Conf3 Backend Engineer",
-      jdDescription: "Backend engineer, Go + Postgres.",
+      jdDescription: composeScreeningJd("# Conf3 JD body", "Backend engineer, Go + Postgres."),
       jdSkills: [],
       parsedCv: PARSED_CV,
       scoringWeights: emphasis,
@@ -436,7 +441,7 @@ describe("CONF-03 — scoring weights + users & roles + retention", () => {
     // so the drain uses the default model.
     const { system, user } = buildAIScoringPrompt({
       positionTitle: "Conf3 Backend Engineer",
-      jdDescription: "Backend engineer, Go + Postgres.",
+      jdDescription: composeScreeningJd("# Conf3 JD body", "Backend engineer, Go + Postgres."),
       jdSkills: [],
       parsedCv: PARSED_CV,
       scoringWeights: emphasis,
@@ -518,7 +523,7 @@ describe("CONF-03 — scoring weights + users & roles + retention", () => {
     await setSynthScoringWeights(null); // strip → resolves to defaults
     const defBuilt = buildAIScoringPrompt({
       positionTitle: "Conf3 Backend Engineer",
-      jdDescription: "Backend engineer, Go + Postgres.",
+      jdDescription: composeScreeningJd("# Conf3 JD body", "Backend engineer, Go + Postgres."),
       jdSkills: [],
       parsedCv: PARSED_CV,
     });

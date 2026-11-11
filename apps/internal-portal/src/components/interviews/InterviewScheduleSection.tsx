@@ -9,6 +9,9 @@ import type { InterviewMode } from "@hireops/api-types";
 import { trpc } from "@/lib/trpc-client";
 import { InterviewDecisionControls } from "./InterviewDecisionControls";
 import { AiInterviewRoundSection } from "./AiInterviewRoundSection";
+import { SlotFinder } from "@/components/scheduling/SlotFinder";
+import { CannotAttendControl } from "@/components/scheduling/CannotAttendControl";
+import { formatSlot } from "@/components/scheduling/slot-format";
 
 /**
  * Interview scheduling inside the CandidateDetailDrawer (INT-02). Mirrors
@@ -16,6 +19,12 @@ import { AiInterviewRoundSection } from "./AiInterviewRoundSection";
  * "Schedule interview" form that picks a plan round + date/time + panel and
  * calls scheduleInterview (which mints the candidate confirm link + invitation
  * email). Reschedule / cancel act on an existing round.
+ *
+ * PC-8 / PC-9 / PC-10: the form offers the tenant's duration presets and a
+ * "Find common slots" step (book one, or let the candidate choose from
+ * several); each round shows whether a panellist can no longer attend and
+ * whether new times are waiting on the candidate; "Can't attend" records it on
+ * a panellist's behalf and re-offers automatically.
  */
 
 interface Props {
@@ -54,10 +63,18 @@ export function InterviewScheduleSection({ applicationId }: Props) {
   const [showForm, setShowForm] = useState(false);
   const [rescheduleRound, setRescheduleRound] = useState<number | null>(null);
 
+  const offers = trpc.listSlotOffersByApplication.useQuery({ applicationId });
+
   const invalidate = () => {
     void queryClient.invalidateQueries({ queryKey: [["listInterviewsByApplication"]] });
     void queryClient.invalidateQueries({ queryKey: [["listUpcomingInterviews"]] });
+    void queryClient.invalidateQueries({ queryKey: [["listSlotOffersByApplication"]] });
   };
+  const cancelOffer = trpc.cancelSlotOffer.useMutation({ onSuccess: invalidate });
+  const openOffers = (offers.data?.items ?? []).filter((o) => o.status === "open");
+  const needsReschedule = new Map(
+    (offers.data?.needsReschedule ?? []).map((n) => [n.interviewId, n] as const),
+  );
 
   const cancel = trpc.cancelInterview.useMutation({ onSuccess: invalidate });
 
@@ -84,6 +101,38 @@ export function InterviewScheduleSection({ applicationId }: Props) {
         <p className="text-sm text-neutral-500">
           No interview plan on this requisition yet. Define rounds on the requisition first.
         </p>
+      ) : null}
+
+      {openOffers.length > 0 ? (
+        <ul className="mb-3 space-y-2">
+          {openOffers.map((o) => (
+            <li
+              key={o.id}
+              className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-brand-200 bg-brand-50/40 p-2 text-xs text-brand-800"
+            >
+              <span>
+                <span className="font-medium">
+                  Round {o.roundNumber} · {o.roundName}:
+                </span>{" "}
+                {o.reason === "panelist_unavailable"
+                  ? "rescheduling in progress, "
+                  : o.reason === "candidate_reschedule"
+                    ? "candidate asked to reschedule, "
+                    : ""}
+                waiting for the candidate to pick one of {o.slots.length} times (link expires{" "}
+                {formatSlot(o.expiresAt)}).
+              </span>
+              <Button
+                variant="tertiary"
+                size="sm"
+                disabled={cancelOffer.isPending}
+                onClick={() => cancelOffer.mutate({ offerId: o.id })}
+              >
+                Withdraw offer
+              </Button>
+            </li>
+          ))}
+        </ul>
       ) : null}
 
       {showForm ? (
@@ -133,6 +182,11 @@ export function InterviewScheduleSection({ applicationId }: Props) {
             <p className="mt-1 text-xs text-neutral-500">
               Panel: {iv.panel.map((p) => p.name ?? "member").join(", ") || "—"}
             </p>
+            {needsReschedule.has(iv.id) && iv.status === "scheduled" ? (
+              <p className="mt-1 text-xs text-status-warning-700">
+                Needs rescheduling: {needsReschedule.get(iv.id)?.reasons.join("; ")}
+              </p>
+            ) : null}
             <div className="mt-1">
               {iv.candidateConfirmedAt ? (
                 <Badge tone="success">Candidate confirmed</Badge>
@@ -171,6 +225,15 @@ export function InterviewScheduleSection({ applicationId }: Props) {
                 >
                   Cancel
                 </Button>
+              </div>
+            ) : null}
+            {iv.status === "scheduled" && iv.mode !== "ai_async" && iv.panel.length > 0 ? (
+              <div className="mt-2">
+                <CannotAttendControl
+                  interviewId={iv.id}
+                  panel={iv.panel.map((p) => ({ membershipId: p.membershipId, name: p.name }))}
+                  onChanged={invalidate}
+                />
               </div>
             ) : null}
             {iv.status === "scheduled" || iv.status === "completed" ? (
@@ -217,6 +280,7 @@ function ScheduleForm({
 }) {
   const schedule = trpc.scheduleInterview.useMutation({ onSuccess: onDone });
   const reschedule = trpc.rescheduleInterview.useMutation({ onSuccess: onDone });
+  const settings = trpc.getSchedulingSettings.useQuery({});
 
   const firstSelectable =
     forcedRound ??
@@ -232,6 +296,15 @@ function ScheduleForm({
   const [interviewMode, setInterviewMode] = useState<InterviewMode>(
     initialMode(selectedRound?.mode),
   );
+  // PC-8 — duration chips: the tenant's presets plus the plan round's own length.
+  const [durationMinutes, setDurationMinutes] = useState<number>(
+    selectedRound?.durationMinutes ?? 45,
+  );
+  const durationChips = useMemo(() => {
+    const set = new Set<number>(settings.data?.durationPresets ?? [30, 45, 60]);
+    set.add(durationMinutes);
+    return [...set].sort((a, b) => a - b);
+  }, [settings.data?.durationPresets, durationMinutes]);
 
   const memberLabel = useMemo(() => {
     const m = new Map<string, string>();
@@ -252,6 +325,7 @@ function ScheduleForm({
     const pr = planRounds.find((r) => r.roundNumber === n);
     setPanel(pr?.defaultPanelMembershipIds ?? []);
     setInterviewMode(initialMode(pr?.mode));
+    setDurationMinutes(pr?.durationMinutes ?? settings.data?.defaultDurationMinutes ?? 45);
   }
   function togglePanel(id: string) {
     setPanel((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
@@ -262,12 +336,14 @@ function ScheduleForm({
   const busy = schedule.isPending || reschedule.isPending;
   const err = schedule.error?.message ?? reschedule.error?.message ?? null;
 
-  function submit() {
-    if (!canSubmit) return;
+  function submit(startOverrideIso?: string) {
+    if (!startOverrideIso && !canSubmit) return;
+    if (panel.length === 0) return;
     const payload = {
       applicationId,
       roundNumber,
-      scheduledStart: new Date(start).toISOString(),
+      scheduledStart: startOverrideIso ?? new Date(start).toISOString(),
+      durationMinutes,
       mode: interviewMode,
       panelMembershipIds: panel,
       leadMembershipId: lead && panel.includes(lead) ? lead : undefined,
@@ -295,12 +371,34 @@ function ScheduleForm({
         disabled={forcedRound !== undefined}
         onValueChange={onRoundChange}
       />
+      {interviewMode !== "ai_async" ? (
+        <div>
+          <p className="mb-1 text-sm font-medium text-neutral-700">Duration</p>
+          <div className="flex flex-wrap gap-1.5">
+            {durationChips.map((m) => (
+              <button
+                key={m}
+                type="button"
+                aria-pressed={durationMinutes === m}
+                onClick={() => setDurationMinutes(m)}
+                className={
+                  durationMinutes === m
+                    ? "rounded-full border border-brand-600 bg-brand-600 px-3 py-1 text-xs font-medium text-white"
+                    : "rounded-full border border-neutral-300 bg-white px-3 py-1 text-xs font-medium text-neutral-700 hover:border-brand-400"
+                }
+              >
+                {m} min
+              </button>
+            ))}
+          </div>
+        </div>
+      ) : null}
       <Input
         type="datetime-local"
         label="Date & time"
         value={start}
         onChange={(e) => setStart(e.target.value)}
-        required
+        hint="Or use “Find common slots” below to pick from times the whole panel is free."
       />
       <Select
         label="Mode"
@@ -350,6 +448,20 @@ function ScheduleForm({
           options={panel.map((id) => ({ value: id, label: memberLabel.get(id) ?? id }))}
           value={lead}
           onValueChange={setLead}
+        />
+      ) : null}
+      {interviewMode !== "ai_async" ? (
+        <SlotFinder
+          applicationId={applicationId}
+          roundNumber={roundNumber}
+          durationMinutes={durationMinutes}
+          panelMembershipIds={panel}
+          leadMembershipId={lead || undefined}
+          mode={interviewMode}
+          meetingUrl={meetingUrl.trim() || undefined}
+          allowOffer={mode === "schedule"}
+          onBook={(iso) => submit(iso)}
+          onOffered={onDone}
         />
       ) : null}
       {err ? <p className="text-xs text-status-error-700">{err}</p> : null}

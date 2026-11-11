@@ -32,11 +32,15 @@ const PUBLIC_PREFIXES = [
   "/offer/",
   "/t/",
   "/interviews/confirm/",
+  // PC-9 — the candidate's pick-a-time link. The signed token is the credential.
+  "/interviews/pick/",
   // N4.3b — the AI first round. Same reasoning as the confirm link: the
   // signed token IS the credential, and a candidate taking a first-round
   // interview has no account to sign in with.
   "/interviews/ai/",
   "/candidate/activate/",
+  // PC-14 — the pre-joining check-in. The signed token is the credential.
+  "/pulse/",
 ];
 
 /**

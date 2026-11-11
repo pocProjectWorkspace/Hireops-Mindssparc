@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState, type FormEvent } from "react";
+import { useMemo, useRef, useState, type FormEvent } from "react";
 import dynamic from "next/dynamic";
 import {
   ASK_DATA_GROUPS,
@@ -17,6 +17,8 @@ import {
   type AskDataOutput,
   type AskDataParams,
   type AskDataPeriod,
+  type AskDataPopularItem,
+  type AskDataRecentItem,
   type AskDataResult,
 } from "@hireops/api-types";
 import { Select } from "@hireops/ui";
@@ -50,7 +52,11 @@ import { trpc } from "@/lib/trpc-client";
  *     editing a chip re-runs with `intent` + `params`, which never calls the AI;
  *   - unsupported / unavailable questions show the API's honest message and its
  *     suggested questions, never a guessed answer.
- * Session history is client state only (newest first); nothing is persisted.
+ * The in-page "Earlier in this session" list is client state. Answered
+ * questions are also logged server-side (PC-21) and come back as "Your recent"
+ * (your own) and "Popular in your team" (most-asked questions among people
+ * with your role, last 30 days — question types only, never anyone's wording)
+ * chips; both re-run by intent + params, so a click never calls the AI.
  */
 
 const AskDataChart = dynamic(() => import("./AskDataChart").then((m) => m.AskDataChart), {
@@ -72,11 +78,27 @@ interface Turn {
   error: string | null;
 }
 
-export function AskDataClient({ catalog }: { catalog: AskDataCatalogOutput }) {
+export function AskDataClient({
+  catalog,
+  isAdmin = false,
+}: {
+  catalog: AskDataCatalogOutput;
+  isAdmin?: boolean;
+}) {
   const [question, setQuestion] = useState("");
   const [turns, setTurns] = useState<Turn[]>([]);
   const nextId = useRef(1);
-  const askMutation = trpc.askData.useMutation();
+  const utils = trpc.useUtils();
+  const historyQuery = trpc.askDataHistory.useQuery(
+    {},
+    { refetchOnWindowFocus: false, staleTime: 60_000, retry: false },
+  );
+  const askMutation = trpc.askData.useMutation({
+    // A new answered question changes "Your recent" (and maybe "Popular").
+    onSuccess: (out) => {
+      if (out.status === "answered") void utils.askDataHistory.invalidate();
+    },
+  });
   const pending = askMutation.isPending;
 
   const questionFor = (intent: AskDataIntentId) =>
@@ -135,6 +157,13 @@ export function AskDataClient({ catalog }: { catalog: AskDataCatalogOutput }) {
           always work.
         </p>
       ) : null}
+
+      <QuestionHistoryChips
+        recent={historyQuery.data?.recent ?? []}
+        popular={historyQuery.data?.popular ?? []}
+        pending={pending}
+        onRun={(intent, params, label) => void ask({ intent, params }, label)}
+      />
 
       <div className="mt-6 space-y-3">
         {ASK_DATA_GROUPS.map((group) => {
@@ -200,7 +229,139 @@ export function AskDataClient({ catalog }: { catalog: AskDataCatalogOutput }) {
           </div>
         </div>
       ) : null}
+
+      {isAdmin ? <TopQuestionsPanel /> : null}
     </PageContainer>
+  );
+}
+
+// ─────────────────────────── frequent questions (PC-21) ───────────────────────────
+
+const historyChipCls =
+  "rounded-full border px-3 py-1.5 text-left text-sm shadow-1 transition-colors disabled:cursor-not-allowed disabled:opacity-50";
+
+function QuestionHistoryChips({
+  recent,
+  popular,
+  pending,
+  onRun,
+}: {
+  recent: AskDataRecentItem[];
+  popular: AskDataPopularItem[];
+  pending: boolean;
+  onRun: (intent: AskDataIntentId, params: AskDataParams, label: string) => void;
+}) {
+  if (recent.length === 0 && popular.length === 0) return null;
+  return (
+    <div className="mt-6 space-y-3">
+      {recent.length > 0 ? (
+        <div>
+          <p className="mb-1.5 text-[11px] font-semibold uppercase tracking-wider text-neutral-500">
+            Your recent
+          </p>
+          <div className="flex flex-wrap gap-2">
+            {recent.map((r) => (
+              <button
+                key={`${r.intent}-${r.askedAt}`}
+                type="button"
+                disabled={pending}
+                title={`Asked ${new Date(r.askedAt).toLocaleString()}`}
+                onClick={() => onRun(r.intent, r.params, r.label)}
+                className={`${historyChipCls} border-brand-200 bg-brand-50/60 text-brand-900 hover:border-brand-300 hover:bg-brand-100`}
+              >
+                {r.label}
+              </button>
+            ))}
+          </div>
+        </div>
+      ) : null}
+      {popular.length > 0 ? (
+        <div>
+          <p
+            className="mb-1.5 text-[11px] font-semibold uppercase tracking-wider text-neutral-500"
+            title="The questions most asked by people with your role in the last 30 days"
+          >
+            Popular in your team
+          </p>
+          <div className="flex flex-wrap gap-2">
+            {popular.map((p) => (
+              <button
+                key={p.intent}
+                type="button"
+                disabled={pending}
+                onClick={() => onRun(p.intent, {}, p.label)}
+                className={`${historyChipCls} border-neutral-200 bg-white text-neutral-700 hover:border-brand-300 hover:bg-brand-50 hover:text-brand-800`}
+              >
+                {p.label}
+                <span className="ml-1.5 text-xs tabular-nums text-neutral-400">×{p.count}</span>
+              </button>
+            ))}
+          </div>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+/** Admin only: what the organisation asks most (last 30 days). */
+function TopQuestionsPanel() {
+  const [open, setOpen] = useState(false);
+  const q = trpc.askDataTopQuestions.useQuery(
+    { days: 30 },
+    { enabled: open, refetchOnWindowFocus: false, retry: false },
+  );
+  return (
+    <div className="mt-10">
+      <button
+        type="button"
+        className="text-sm font-semibold text-neutral-900 hover:underline"
+        aria-expanded={open}
+        onClick={() => setOpen((v) => !v)}
+      >
+        {open ? "▾" : "▸"} Top questions in your organisation (admin)
+      </button>
+      {open ? (
+        <Card className="mt-3 p-4">
+          {q.isLoading ? (
+            <SkeletonRows count={4} />
+          ) : !q.data || (q.data.intents.length === 0 && q.data.questions.length === 0) ? (
+            <p className="text-sm text-neutral-500">No questions asked in the last 30 days.</p>
+          ) : (
+            <div className="grid grid-cols-1 gap-6 md:grid-cols-2">
+              <div>
+                <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-neutral-500">
+                  By question type
+                </p>
+                <ul className="space-y-1 text-sm">
+                  {q.data.intents.map((i) => (
+                    <li key={i.intent} className="flex justify-between gap-3">
+                      <span className="text-neutral-800">{i.label}</span>
+                      <span className="shrink-0 tabular-nums text-neutral-500">
+                        {i.count} · {i.askers} {i.askers === 1 ? "person" : "people"}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+              <div>
+                <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-neutral-500">
+                  Typed questions
+                </p>
+                <ul className="space-y-1 text-sm">
+                  {q.data.questions.map((t) => (
+                    <li key={`${t.intent}-${t.question}`} className="flex justify-between gap-3">
+                      <span className="text-neutral-800">{t.question}</span>
+                      <span className="shrink-0 tabular-nums text-neutral-500">{t.count}</span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+              <p className="text-xs text-neutral-500 md:col-span-2">{q.data.digestNote}</p>
+            </div>
+          )}
+        </Card>
+      ) : null}
+    </div>
   );
 }
 
@@ -326,6 +487,29 @@ function TurnCard({
 
 // ─────────────────────────────── "How I read your question" ───────────────────────────────
 
+/**
+ * PC-19 — the business-unit picker as an indented tree (parents first). The
+ * value stays the unit NAME (the params contract); picking a parent rolls up
+ * every unit under it server-side. Only units the interpreter can resolve
+ * (the catalog's active list) are offered; until the tree loads, the flat
+ * catalog list stands in.
+ */
+function useBusinessUnitOptions(names: readonly string[]): { value: string; label: string }[] {
+  const tree = trpc.listReportBusinessUnits.useQuery(
+    {},
+    { refetchOnWindowFocus: false, staleTime: 5 * 60 * 1000, retry: false },
+  );
+  return useMemo(() => {
+    const known = new Set(names);
+    const items = tree.data?.items.filter((n) => known.has(n.name)) ?? [];
+    if (items.length === 0) return names.map((b) => ({ value: b, label: b }));
+    return items.map((n) => ({
+      value: n.name,
+      label: `${"\u00A0\u00A0\u00A0".repeat(n.depth)}${n.depth > 0 ? "└ " : ""}${n.name}`,
+    }));
+  }, [tree.data, names]);
+}
+
 function Interpretation({
   interp,
   catalog,
@@ -340,6 +524,7 @@ function Interpretation({
   const entry = catalog.entries.find((e) => e.id === interp.intent);
   const honours = new Set(entry?.params ?? []);
   const params = interp.params;
+  const buOptions = useBusinessUnitOptions(catalog.businessUnits);
   const rerun = (patch: Partial<AskDataParams>, clear?: "businessUnit" | "requisition") => {
     const next: AskDataParams = { ...params, ...patch };
     if (clear === "businessUnit") delete next.businessUnit;
@@ -385,10 +570,7 @@ function Interpretation({
               label="Business unit"
               disabled={pending}
               value={params.businessUnit ?? ALL_BUS}
-              options={[
-                { value: ALL_BUS, label: "All business units" },
-                ...catalog.businessUnits.map((b) => ({ value: b, label: b })),
-              ]}
+              options={[{ value: ALL_BUS, label: "All business units" }, ...buOptions]}
               onValueChange={(v) =>
                 v === ALL_BUS ? rerun({}, "businessUnit") : rerun({ businessUnit: v })
               }

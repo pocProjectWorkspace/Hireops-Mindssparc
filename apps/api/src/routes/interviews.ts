@@ -24,6 +24,13 @@ import {
   type CandidateRefusal,
   type CandidateRefusalResult,
 } from "../lib/ai-interview-session";
+import {
+  PICK_SLOT_LINK_ACTION,
+  bookOfferSlot,
+  candidateOfferView,
+  loadOfferByTokenHash,
+  type BookRefusal,
+} from "../lib/interview-scheduling";
 
 /**
  * Public candidate interview-confirm endpoints (INT-02).
@@ -705,4 +712,85 @@ interviewsRoutes.post("/ai/:token/submit", async (c) => {
     recordingId: value.recordingId,
     enqueued: value.enqueued,
   });
+});
+
+/* ═══════════════════ PC-9 — the candidate's pick-a-slot link ═══════════════════
+ *
+ * Action `candidate.pick_interview_slot`, subject = the interview_slot_offers
+ * row. Same verify → action-check → resolve-tenant-FROM-the-token-hash shape
+ * as the confirm routes; every rule lives in ../lib/interview-scheduling.ts.
+ *
+ * GET does NOT consume the link (the page must stay reachable to show "you
+ * picked X" afterwards). POST books; its single `successful = true`
+ * signed_link_uses row is written INSIDE the booking transaction, so "the link
+ * was redeemed" and "the interview exists" can never disagree. Refusals are
+ * recorded as failure rows (they stack freely).
+ *
+ * Slots are returned as UTC instants; the page renders them in the
+ * candidate's own browser time zone.
+ */
+
+const PICK_REFUSAL_STATUS: Record<BookRefusal, 400 | 404 | 409> = {
+  offer_not_found: 404,
+  offer_closed: 409,
+  already_booked: 409,
+  offer_expired: 409,
+  slot_not_offered: 400,
+  slot_taken: 409,
+  round_already_scheduled: 409,
+};
+
+interviewsRoutes.get("/pick/:token", async (c) => {
+  const verify = verifyLink(c.req.param("token"));
+  if (!verify.ok) return c.json({ ok: false, reason: verify.reason }, 400);
+  if (verify.payload.action !== PICK_SLOT_LINK_ACTION) {
+    return c.json({ ok: false, reason: "wrong_action" }, 400);
+  }
+  const offer = await loadOfferByTokenHash(poolSql, verify.payload.tokenHash);
+  if (!offer) return c.json({ ok: false, reason: "offer_not_found" }, 404);
+  const view = await candidateOfferView(poolSql, offer);
+  return c.json({ ok: true, ...view });
+});
+
+interviewsRoutes.post("/pick/:token", async (c) => {
+  const ip = consentProvenance(c).ip;
+  const verify = verifyLink(c.req.param("token"));
+  if (!verify.ok) {
+    baseLog.warn({ reason: verify.reason, ip }, "interviews.pick.verify_rejected");
+    return c.json({ ok: false, reason: verify.reason }, 400);
+  }
+  if (verify.payload.action !== PICK_SLOT_LINK_ACTION) {
+    return c.json({ ok: false, reason: "wrong_action" }, 400);
+  }
+  const body = await readJsonBody(c);
+  const slotStart = typeof body.slotStart === "string" ? body.slotStart : "";
+  if (!slotStart || Number.isNaN(new Date(slotStart).getTime())) {
+    return c.json({ ok: false, reason: "invalid_request" }, 400);
+  }
+
+  const tokenHash = verify.payload.tokenHash;
+  const res = await bookOfferSlot(poolSql, {
+    by: { tokenHash },
+    slotStart,
+    via: "candidate_link",
+    ip,
+  });
+  if (!res.ok) {
+    if (res.tenantId && res.offerId) {
+      await recordLinkUse(
+        res.tenantId,
+        tokenHash,
+        PICK_SLOT_LINK_ACTION,
+        res.offerId,
+        ip,
+        false,
+        res.reason,
+      );
+    }
+    return c.json(
+      { ok: false, reason: res.reason, slots: res.slots ?? null },
+      PICK_REFUSAL_STATUS[res.reason],
+    );
+  }
+  return c.json({ ok: true, interviewId: res.interviewId, scheduledStart: res.scheduledStart });
 });

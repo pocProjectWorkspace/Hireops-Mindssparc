@@ -4,9 +4,11 @@ import { useEffect, useMemo, useState, type ChangeEvent, type FormEvent } from "
 import { z } from "zod";
 import { Button, Input } from "@hireops/ui";
 import { useSearchParams } from "next/navigation";
-import type {
-  PartnerAssignedRequisitionRow,
-  PartnerSubmitCandidateOutput,
+import {
+  NOTICE_PERIOD_MAX_DAYS,
+  type PartnerAssignedRequisitionRow,
+  type PartnerSubmitCandidateOutput,
+  type ScreeningAnswersInput,
 } from "@hireops/api-types";
 import { trpc, handleTRPCError } from "@/lib/trpc-client";
 import { Card, Badge } from "@/components/ui";
@@ -53,6 +55,23 @@ function fmtDate(iso: string): string {
   return d.toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" });
 }
 
+/** Optional whole-number text input (blank = not answered; commas allowed). */
+const optionalWholeNumber = (max: number, msg: string) =>
+  z
+    .string()
+    .trim()
+    .optional()
+    .refine(
+      (v) => !v || (/^\d+$/.test(v.replace(/,/g, "")) && Number(v.replace(/,/g, "")) <= max),
+      msg,
+    );
+
+function wholeNumberOrUndefined(v: string | undefined): number | undefined {
+  if (!v) return undefined;
+  const n = Number(v.replace(/,/g, ""));
+  return Number.isFinite(n) ? n : undefined;
+}
+
 const fieldSchema = z.object({
   requisitionId: z.string().uuid("Choose a requisition"),
   fullName: z.string().trim().min(1, "Required").max(200),
@@ -71,6 +90,12 @@ const fieldSchema = z.object({
   currentCompany: z.string().trim().max(200).optional(),
   currentTitle: z.string().trim().max(200).optional(),
   noteToRecruiter: z.string().trim().max(500).optional(),
+  // PC-7 — optional screening answers, stored on the application as
+  // partner-supplied and checked against the req's knockouts.
+  noticePeriodDays: optionalWholeNumber(NOTICE_PERIOD_MAX_DAYS, "Days, 0–365"),
+  currentCtc: optionalWholeNumber(1_000_000_000, "Whole rupees per year"),
+  expectedCtc: optionalWholeNumber(1_000_000_000, "Whole rupees per year"),
+  currentLocation: z.string().trim().max(200).optional(),
   resume: z
     .instanceof(File, { message: "Choose the candidate's CV" })
     .refine((f) => f.size <= MAX_RESUME_BYTES, "File must be ≤ 10 MB")
@@ -104,6 +129,10 @@ export function SubmitCandidateForm({
   const [currentCompany, setCurrentCompany] = useState("");
   const [currentTitle, setCurrentTitle] = useState("");
   const [noteToRecruiter, setNoteToRecruiter] = useState("");
+  const [noticePeriodDays, setNoticePeriodDays] = useState("");
+  const [currentCtc, setCurrentCtc] = useState("");
+  const [expectedCtc, setExpectedCtc] = useState("");
+  const [currentLocation, setCurrentLocation] = useState("");
   const [resume, setResume] = useState<File | null>(null);
   const [consentAttested, setConsentAttested] = useState(false);
   const [ownershipAcknowledged, setOwnershipAcknowledged] = useState(false);
@@ -137,6 +166,10 @@ export function SubmitCandidateForm({
     setCurrentCompany("");
     setCurrentTitle("");
     setNoteToRecruiter("");
+    setNoticePeriodDays("");
+    setCurrentCtc("");
+    setExpectedCtc("");
+    setCurrentLocation("");
     setResume(null);
     setConsentAttested(false);
     setOwnershipAcknowledged(false);
@@ -157,6 +190,10 @@ export function SubmitCandidateForm({
       currentCompany: currentCompany || undefined,
       currentTitle: currentTitle || undefined,
       noteToRecruiter: noteToRecruiter || undefined,
+      noticePeriodDays: noticePeriodDays || undefined,
+      currentCtc: currentCtc || undefined,
+      expectedCtc: expectedCtc || undefined,
+      currentLocation: currentLocation || undefined,
       resume,
       consentAttested,
       ownershipAcknowledged,
@@ -190,6 +227,16 @@ export function SubmitCandidateForm({
       return;
     }
 
+    const currentCtcRupees = wholeNumberOrUndefined(parsed.data.currentCtc);
+    const expectedCtcRupees = wholeNumberOrUndefined(parsed.data.expectedCtc);
+    const screening: ScreeningAnswersInput = {
+      noticePeriodDays: wholeNumberOrUndefined(parsed.data.noticePeriodDays),
+      // ₹ per year → INR paise (minor units), the platform money convention.
+      currentSalaryInrPaise: currentCtcRupees != null ? currentCtcRupees * 100 : undefined,
+      expectedSalaryInrPaise: expectedCtcRupees != null ? expectedCtcRupees * 100 : undefined,
+      currentLocation: parsed.data.currentLocation || undefined,
+    };
+
     setSubmitState({ kind: "submitting" });
     try {
       const out = await submitMutation.mutateAsync({
@@ -208,6 +255,7 @@ export function SubmitCandidateForm({
         consentAttested: true,
         ownershipAcknowledged: true,
         consentVersion: PARTNER_CONSENT_VERSION,
+        screening,
       });
       setResult(out);
       setSubmitState({ kind: "idle" });
@@ -331,6 +379,45 @@ export function SubmitCandidateForm({
             value={currentTitle}
             onChange={(e) => setCurrentTitle(e.target.value)}
             error={fieldErrors.currentTitle}
+          />
+        </div>
+        {/* PC-7 — screening answers (all optional). Checked against the req's
+            knockouts; a blank answer is "unknown" to the recruiter, not a fail. */}
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+          <Input
+            label="Notice period, days (optional)"
+            type="text"
+            inputMode="numeric"
+            placeholder="e.g. 60"
+            value={noticePeriodDays}
+            onChange={(e) => setNoticePeriodDays(e.target.value)}
+            error={fieldErrors.noticePeriodDays}
+          />
+          <Input
+            label="Current location (optional)"
+            type="text"
+            placeholder="City, e.g. Pune"
+            value={currentLocation}
+            onChange={(e) => setCurrentLocation(e.target.value)}
+            error={fieldErrors.currentLocation}
+          />
+          <Input
+            label="Current CTC, ₹ per year (optional)"
+            type="text"
+            inputMode="numeric"
+            placeholder="e.g. 1200000"
+            value={currentCtc}
+            onChange={(e) => setCurrentCtc(e.target.value)}
+            error={fieldErrors.currentCtc}
+          />
+          <Input
+            label="Expected CTC, ₹ per year (optional)"
+            type="text"
+            inputMode="numeric"
+            placeholder="e.g. 1500000"
+            value={expectedCtc}
+            onChange={(e) => setExpectedCtc(e.target.value)}
+            error={fieldErrors.expectedCtc}
           />
         </div>
         <div className="flex flex-col gap-1.5">

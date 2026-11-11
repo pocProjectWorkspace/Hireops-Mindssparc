@@ -46,6 +46,7 @@ import {
   AI_SCORING_PROMPT_VERSION,
   aiScoringResponseSchema,
   buildAIScoringPrompt,
+  composeScreeningJd,
 } from "@hireops/ai-scoring";
 import { drainAiScoreOutboxOnce } from "../../../apps/workers/src/lib/ai-score-drain.js";
 import { createLogger } from "@hireops/observability";
@@ -421,7 +422,10 @@ describe("AI-03 — knockout eval + scoring outbox + worker drain", () => {
     const parsedCv = appRow.parsed_skills as ParserOutput;
     const { system, user } = buildAIScoringPrompt({
       positionTitle: "Senior Backend Engineer",
-      jdDescription: "Senior engineer focused on JVM systems and event streaming.",
+      jdDescription: composeScreeningJd(
+        "# JD body",
+        "Senior engineer focused on JVM systems and event streaming.",
+      ),
       jdSkills: [
         { skillName: "Java", weight: 1, isRequired: true },
         { skillName: "Kafka", weight: 0.8, isRequired: true },

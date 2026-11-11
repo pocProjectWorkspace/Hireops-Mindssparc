@@ -7,6 +7,9 @@
  *     an optional field blocks nothing),
  *   - computeMissingInfo emits ONLY absent fields, in registry order,
  *   - the REFUSAL guarantee: the verdict shape carries NO score/cap field.
+ *   - PC-7b computeFieldPresence: the application's own screening answers
+ *     (notice_period_days, current_location, expected_salary_inr_paise) are
+ *     preferred, with the parsed CV / person record as the fallback.
  */
 
 import { describe, it } from "vitest";
@@ -15,6 +18,7 @@ import {
   MISSING_INFO_FIELDS,
   MISSING_INFO_FIELD_KEYS,
   computeMissingInfo,
+  computeFieldPresence,
   blocksAdvanceLabelFor,
   fieldDef,
   isMissingInfoFieldKey,
@@ -121,5 +125,93 @@ describe("RECR-03 missing-info rule engine (pure)", () => {
   it("isMissingInfoFieldKey guards the registry keys", () => {
     assert.equal(isMissingInfoFieldKey("expected_salary"), true);
     assert.equal(isMissingInfoFieldKey("nope"), false);
+  });
+});
+
+describe("PC-7b computeFieldPresence prefers the application's screening answers", () => {
+  const empty = {
+    expectedSalaryInrPaise: null,
+    parsed: {},
+    personLocationCountry: null,
+  };
+
+  it("nothing anywhere → notice, location and expected salary are all missing", () => {
+    const p = computeFieldPresence(empty);
+    assert.equal(p.notice_period, false);
+    assert.equal(p.current_location, false);
+    assert.equal(p.expected_salary, false);
+  });
+
+  it("applications.notice_period_days counts even when the CV has no notice", () => {
+    const p = computeFieldPresence({ ...empty, applicationNoticePeriodDays: 60 });
+    assert.equal(p.notice_period, true);
+  });
+
+  it("a stated notice of 0 days (immediate joiner) is present, not missing", () => {
+    const p = computeFieldPresence({ ...empty, applicationNoticePeriodDays: 0 });
+    assert.equal(p.notice_period, true);
+  });
+
+  it("falls back to the parsed CV notice (top-level or personal.*) when the column is null", () => {
+    assert.equal(
+      computeFieldPresence({ ...empty, parsed: { notice_period_days: 30 } }).notice_period,
+      true,
+    );
+    assert.equal(
+      computeFieldPresence({
+        ...empty,
+        applicationNoticePeriodDays: null,
+        parsed: { personal: { notice_period_days: 45 } },
+      }).notice_period,
+      true,
+    );
+  });
+
+  it("applications.current_location counts even with no person location", () => {
+    const p = computeFieldPresence({ ...empty, applicationCurrentLocation: "Pune, MH" });
+    assert.equal(p.current_location, true);
+  });
+
+  it("a blank application location falls back to persons / the CV", () => {
+    assert.equal(
+      computeFieldPresence({ ...empty, applicationCurrentLocation: "   " }).current_location,
+      false,
+    );
+    assert.equal(
+      computeFieldPresence({
+        ...empty,
+        applicationCurrentLocation: "  ",
+        personLocationCountry: "IN",
+      }).current_location,
+      true,
+    );
+    assert.equal(
+      computeFieldPresence({
+        ...empty,
+        parsed: { personal: { location_country: "IN" } },
+      }).current_location,
+      true,
+    );
+  });
+
+  it("expected salary reads applications.expected_salary_inr_paise (the expected-CTC column)", () => {
+    const p = computeFieldPresence({ ...empty, expectedSalaryInrPaise: 1_500_000n * 100n });
+    assert.equal(p.expected_salary, true);
+  });
+
+  it("feeds the stage gate: answers on the application clear the offer-desk + eligibility blocks", () => {
+    const presence = computeFieldPresence({
+      expectedSalaryInrPaise: 1_200_000n * 100n,
+      parsed: {
+        skills: ["Excel"],
+        availability_date: "2026-12-01",
+        work_authorization: "Indian citizen",
+      },
+      personLocationCountry: null,
+      applicationNoticePeriodDays: 30,
+      applicationCurrentLocation: "Hyderabad",
+    });
+    const blocking = computeMissingInfo(presence).filter((v) => v.blocksAdvanceStage !== null);
+    assert.deepEqual(blocking, []);
   });
 });

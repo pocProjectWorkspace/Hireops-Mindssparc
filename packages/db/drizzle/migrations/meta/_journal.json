@@ -799,6 +799,69 @@
       "when": 1787616000000,
       "tag": "0121_ai_interview_integrity_and_evidence",
       "breakpoints": true
+    },
+    {
+      "idx": 122,
+      "version": "7",
+      "when": 1787702400000,
+      "tag": "0122_application_screening_answers",
+      "breakpoints": true
+    },
+    {
+      "idx": 123,
+      "version": "7",
+      "when": 1787788800000,
+      "tag": "0123_bulk_cv_upload",
+      "breakpoints": true
+    },
+    {
+      "idx": 124,
+      "version": "7",
+      "when": 1787875200000,
+      "tag": "0124_application_screening_evidence",
+      "breakpoints": true
+    },
+    {
+      "idx": 126,
+      "version": "7",
+      "when": 1788048000000,
+      "tag": "0126_diversity_slate",
+      "breakpoints": true
+    },
+    {
+      "idx": 127,
+      "version": "7",
+      "when": 1788134400000,
+      "tag": "0127_interview_scheduling",
+      "breakpoints": true
+    },
+    {
+      "idx": 128,
+      "version": "7",
+      "when": 1789084800000,
+      "tag": "0128_pre_joining_engagement",
+      "breakpoints": true
+    },
+    {
+      "idx": 129,
+      "version": "7",
+      "when": 1789171200000,
+      "tag": "0129_application_selection_decisions",
+      "breakpoints": true
+    },
+    {
+      "idx": 130,
+      "version": "7",
+      "when": 1789257600000,
+      "tag": "0130_welcome_guides",
+      "breakpoints": true
+    },
+    {
+      "idx": 131,
+      "version": "7",
+      "when": 1789344000000,
+      "tag": "0131_ask_data_questions",
+      "breakpoints": true
     }
   ]
 }

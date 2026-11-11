@@ -6,6 +6,10 @@ import { cn } from "@/components/ui/cn";
 import type { ListMyRequisitionsV2Output, RequisitionSkillChip } from "@hireops/api-types";
 import { ReqStatusChip, DifficultyChip } from "./shared";
 import { AiAssistedPill, useProvenanceMap } from "@/components/iris/AiAssistedPill";
+import {
+  DiverseSlateStatusBadge,
+  useDiverseSlateMap,
+} from "@/components/diversity/DiverseSlateBadge";
 import { PageContainer } from "@/components/nav/PageContainer";
 
 /**
@@ -107,7 +111,14 @@ function RupeeIcon() {
   );
 }
 
-export function RequisitionsCardGrid({ initial }: { initial: ListMyRequisitionsV2Output }) {
+export function RequisitionsCardGrid({
+  initial,
+  showDiverseSlate = false,
+}: {
+  initial: ListMyRequisitionsV2Output;
+  /** PC-26 — admin / hr_head / recruiter see the slate COUNT badge per role. */
+  showDiverseSlate?: boolean;
+}) {
   const [search, setSearch] = useState("");
   const [status, setStatus] = useState("all");
 
@@ -115,6 +126,7 @@ export function RequisitionsCardGrid({ initial }: { initial: ListMyRequisitionsV
   // Iris-created req shows the AI-assisted pill (human-created ones don't).
   const reqIds = useMemo(() => initial.rows.map((r) => r.id), [initial.rows]);
   const provenance = useProvenanceMap("requisition", reqIds);
+  const diverseSlate = useDiverseSlateMap(showDiverseSlate);
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -187,6 +199,7 @@ export function RequisitionsCardGrid({ initial }: { initial: ListMyRequisitionsV
                 <div className="flex shrink-0 items-center gap-1.5">
                   <ReqStatusChip status={r.status} />
                   <DifficultyChip difficulty={r.difficulty} />
+                  <DiverseSlateStatusBadge status={diverseSlate.get(r.id)} />
                 </div>
               </div>
 

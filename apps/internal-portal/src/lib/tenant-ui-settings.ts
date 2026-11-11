@@ -1,6 +1,13 @@
 import { cache } from "react";
 import { sql as poolSql } from "@hireops/db";
-import { resolveAiSettings, resolveLandingHref, resolveSystemSetup } from "@hireops/api-types";
+import {
+  resolveAiSettings,
+  resolveLandingHref,
+  resolveSystemSetup,
+  resolveTenantLabels,
+  type ScreeningScoreBands,
+  type TenantLabels,
+} from "@hireops/api-types";
 import { getOptionalSession } from "./auth";
 
 /**
@@ -33,6 +40,31 @@ export const loadScreeningScoreVisible = cache(async (): Promise<boolean> => {
 });
 
 /**
+ * CFG-LITE / BUG-11 — the tenant's ONE set of AI screening-score cut-offs
+ * (`aiSettings.screeningScoreBands`: strong / good / partial floors) that
+ * every score-tier chip reads. Signed-out visitors and any failure resolve to
+ * the platform default (90 / 75 / 60).
+ */
+export const loadScreeningScoreBands = cache(async (): Promise<ScreeningScoreBands> => {
+  try {
+    const session = await getOptionalSession();
+    if (!session) return resolveAiSettings(undefined).screeningScoreBands;
+
+    const rows = await poolSql<{ settings: Record<string, unknown> | null }[]>`
+      SELECT settings
+      FROM public.tenants
+      WHERE id = ${session.tenantId}
+      LIMIT 1
+    `;
+    return resolveAiSettings((rows[0]?.settings ?? {})["aiSettings"]).screeningScoreBands;
+  } catch (err) {
+    if (typeof (err as { digest?: unknown } | null)?.digest === "string") throw err;
+    console.warn("[tenant-ui-settings] falling back to default score cut-offs", err);
+    return resolveAiSettings(undefined).screeningScoreBands;
+  }
+});
+
+/**
  * Where the signed-in user lands after sign-in: the tenant's per-role choice in
  * `tenants.settings.systemSetup.landingPages` (admin: System setup), else the
  * dashboard. Same read discipline as above; any failure lands on the dashboard.
@@ -56,3 +88,28 @@ export async function loadLandingHref(): Promise<string | null> {
     return "/dashboard";
   }
 }
+
+/**
+ * CFG-LITE — the tenant's display labels (`tenants.settings.labels`: stage
+ * wording per audience + interview recommendation wording), normalised by the
+ * shared resolver. Signed-out visitors and any failure resolve to null, which
+ * every label helper treats as "platform default wording".
+ */
+export const loadTenantLabels = cache(async (): Promise<TenantLabels | null> => {
+  try {
+    const session = await getOptionalSession();
+    if (!session) return null;
+
+    const rows = await poolSql<{ settings: Record<string, unknown> | null }[]>`
+      SELECT settings
+      FROM public.tenants
+      WHERE id = ${session.tenantId}
+      LIMIT 1
+    `;
+    return resolveTenantLabels((rows[0]?.settings ?? {})["labels"]);
+  } catch (err) {
+    if (typeof (err as { digest?: unknown } | null)?.digest === "string") throw err;
+    console.warn("[tenant-ui-settings] falling back to default display labels", err);
+    return null;
+  }
+});

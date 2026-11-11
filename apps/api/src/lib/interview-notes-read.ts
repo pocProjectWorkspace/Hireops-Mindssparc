@@ -121,6 +121,22 @@ function toStringArray(v: unknown): string[] {
 }
 
 /**
+ * THE notes read rule, as a pure predicate: the caller runs the hiring process
+ * (INTERVIEW_MANAGE_ROLES, admin included) OR sits on THIS interview's panel.
+ *
+ * Exported so a surface that only needs to know WHETHER to offer the notes
+ * (PC-11's assessment summary links to them) asks the same question
+ * getInterviewNotes enforces, rather than restating it. It never grants a read
+ * by itself — the notes still come through getInterviewNotes, which re-checks.
+ */
+export function interviewNotesReadPermitted(
+  hasManageRole: boolean,
+  isPanellistOnInterview: boolean,
+): boolean {
+  return hasManageRole || isPanellistOnInterview;
+}
+
+/**
  * Is this membership a panellist on this interview?
  *
  * Same semantics as the router's `findPanelistRow`, expressed against the
@@ -260,10 +276,10 @@ export async function getInterviewNotes(
   if (!interview) throw new TRPCError({ code: "NOT_FOUND", message: "Interview not found" });
 
   if (!access.hasManageRole) {
-    const permitted =
+    const onPanel =
       access.membershipId !== null &&
       (await isPanelistOnInterview(sql, tenantId, interviewId, access.membershipId));
-    if (!permitted) {
+    if (!interviewNotesReadPermitted(false, onPanel)) {
       throw new TRPCError({
         code: "FORBIDDEN",
         message: "You are not a panellist on this interview.",

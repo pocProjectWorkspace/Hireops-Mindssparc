@@ -3,6 +3,7 @@ import type { BadgeTone } from "@/components/ui";
 import { cn } from "@/components/ui/cn";
 import { humanizeSentence } from "@/lib/labels";
 import type { PanelInterviewRow, FeedbackState } from "@hireops/api-types";
+import { CannotAttendControl } from "@/components/scheduling/CannotAttendControl";
 
 /** Anchor styled as a house button (valid link markup — no button-in-anchor). */
 const LINK_BUTTON_BASE =
@@ -51,6 +52,8 @@ export interface InterviewCardProps {
   inWindowNow?: boolean;
   /** Hide the Scorecard CTA (e.g. a board that only briefs). Default false. */
   hideScorecard?: boolean;
+  /** PC-10 — hide the panellist's own "Can't attend" control. Default false. */
+  hideCannotAttend?: boolean;
   className?: string;
 }
 
@@ -98,9 +101,17 @@ export function InterviewCard({
   interview: iv,
   inWindowNow = false,
   hideScorecard = false,
+  hideCannotAttend = false,
   className,
 }: InterviewCardProps) {
   const fb = feedbackMeta(iv.myFeedbackState);
+  const startMs = iv.scheduledStart ? new Date(iv.scheduledStart).getTime() : NaN;
+  const canDecline =
+    !hideCannotAttend &&
+    iv.status === "scheduled" &&
+    iv.mode !== "ai_async" &&
+    Number.isFinite(startMs) &&
+    startMs > Date.now();
   const briefHref = `/panel/${iv.id}`;
   return (
     <Card className={cn("flex flex-col gap-3", inWindowNow && "ring-1 ring-brand-300", className)}>
@@ -169,6 +180,7 @@ export function InterviewCard({
           </a>
         ) : null}
       </div>
+      {canDecline ? <CannotAttendControl interviewId={iv.id} panel={[]} self /> : null}
     </Card>
   );
 }

@@ -8,7 +8,8 @@ import {
 } from "@hireops/api-types";
 import { Input, Button, Checkbox } from "@hireops/ui";
 import { Card, Badge, TableShell, Thead, Th, Tbody, Tr, Td } from "@/components/ui";
-import { humanize } from "@/lib/labels";
+import { useRoleLabel } from "@/lib/role-labels";
+import { RoleLabelsPanel } from "./RoleLabelsPanel";
 import { trpc } from "@/lib/trpc-client";
 
 /**
@@ -23,11 +24,8 @@ import { trpc } from "@/lib/trpc-client";
  * so the affordance never dead-ends in an error.
  */
 
-// Shared humanizer — fixes acronym casing (hr_ops → "HR Ops", it_admin →
-// "IT Admin") that the old naive title-case mangled ("Hr Ops", "It Admin").
-function roleLabel(role: string): string {
-  return humanize(role);
-}
+// PC-23 — role names come from the tenant's role display labels (platform
+// default "HR Ops", "IT Admin", …) via useRoleLabel; keys never change.
 
 /** ISO → "07 Jul 2026" — the honest "Joined" column (createdAt). We do NOT
  * fabricate a last-login value the membership row doesn't carry. */
@@ -42,6 +40,7 @@ const inputCls =
 
 export function UsersAdminClient({ initialUsers }: { initialUsers: TenantUserAdminRow[] }) {
   const utils = trpc.useUtils();
+  const roleLabel = useRoleLabel();
   const usersQuery = trpc.listTenantUsersAdmin.useQuery(
     {},
     { initialData: { items: initialUsers } },
@@ -97,6 +96,7 @@ export function UsersAdminClient({ initialUsers }: { initialUsers: TenantUserAdm
       ) : null}
 
       <InvitePanel onInvited={(msg) => setNotice(msg)} onChanged={refresh} />
+      <RoleLabelsPanel onSaved={(msg) => setNotice(msg)} />
 
       <div className="mt-6 flex flex-wrap items-center gap-2">
         <input
@@ -170,6 +170,7 @@ function InvitePanel({
   onInvited: (msg: string) => void;
   onChanged: () => void;
 }) {
+  const roleLabel = useRoleLabel();
   const [open, setOpen] = useState(false);
   const [email, setEmail] = useState("");
   const [displayName, setDisplayName] = useState("");
@@ -326,6 +327,7 @@ function InvitePanel({
 }
 
 function UserRow({ user, onChanged }: { user: TenantUserAdminRow; onChanged: () => void }) {
+  const roleLabel = useRoleLabel();
   const [editing, setEditing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const active = user.status === "active";
@@ -446,6 +448,7 @@ function RoleEditor({
   onSave: (roles: InternalTenantRole[]) => void;
   onCancel: () => void;
 }) {
+  const roleLabel = useRoleLabel();
   const initial = useMemo(
     () =>
       new Set(

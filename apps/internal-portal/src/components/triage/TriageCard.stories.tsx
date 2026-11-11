@@ -22,7 +22,33 @@ const baseRow = {
   aiScoreExplanation: {
     top_factors: [{ label: "Python" }, { label: "AWS" }, { label: "Lead experience" }],
   },
+  evidenceSummary: null,
   createdAt: new Date().toISOString(),
+  screening: {
+    noticePeriodDays: 60,
+    noticePeriodFrom: "application" as const,
+    currentSalaryInrPaise: 1_200_000_00,
+    expectedSalaryInrPaise: 1_500_000_00,
+    currentLocation: "Pune",
+    source: "candidate" as const,
+    updatedAt: new Date().toISOString(),
+    compVisible: true,
+  },
+  knockout: {
+    passed: null,
+    failCount: 0,
+    unknownCount: 1,
+    evaluatedAt: new Date().toISOString(),
+    items: [
+      {
+        knockoutId: "k1",
+        fieldPath: "expected_ctc",
+        label: "Expected CTC within band",
+        result: "unknown" as const,
+        reason: "field_missing",
+      },
+    ],
+  },
 };
 
 export const FeedVariant: Story = {

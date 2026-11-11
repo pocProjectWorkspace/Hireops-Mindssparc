@@ -9,12 +9,14 @@ import { tenantContext, type TenantContextVars } from "./middleware/tenant-conte
 import { optionalAuth, type OptionalAuthVars } from "./middleware/optional-auth";
 import { testRoutes } from "./routes/test";
 import { uploadRoutes } from "./routes/upload";
+import { bulkCvUploadRoutes } from "./routes/bulk-cv-upload";
 import { onboardingDocumentRoutes } from "./routes/onboarding-documents";
 import { candidateDocumentRoutes } from "./routes/candidate-documents";
 import { applicationDocumentRoutes } from "./routes/application-documents";
 import { linksRoutes } from "./routes/links";
 import { offersRoutes } from "./routes/offers";
 import { interviewsRoutes } from "./routes/interviews";
+import { preJoiningRoutes } from "./routes/pre-joining";
 import { appRouter } from "./trpc/router";
 import type { HonoTRPCContext } from "./trpc/trpc-core";
 import { baseLog, sentry } from "./lib/observability";
@@ -78,6 +80,9 @@ app.route("/test", testRoutes);
 // optionalAuth populates c.var.{log,requestId,tenantId,userId,claims}.
 app.use("/api/upload/*", optionalAuth);
 app.route("/api/upload", uploadRoutes);
+// PC-2 bulk CV upload — same optionalAuth mount; the handler enforces JWT +
+// role itself and opens its own short tenant-bound tx after the storage writes.
+app.route("/api/upload/bulk-cv", bulkCvUploadRoutes);
 
 // Onboarding document upload + download (ONBOARD-05). Behind the STRICT
 // tenant-context middleware — these carry heavy PII, so unlike the public
@@ -112,6 +117,11 @@ app.route("/api/offers", offersRoutes);
 // Public candidate interview-confirm (INT-02) — signed-link gated, same
 // reasoning as /api/offers. Handlers do their own signed_link_uses inserts.
 app.route("/api/interviews", interviewsRoutes);
+
+// PC-14/15 — public pre-joining endpoints: the candidate check-in (signed
+// link is the credential) and the Resend inbound-email webhook (Svix
+// signature is the credential; fails closed without a secret).
+app.route("/api/pre-joining", preJoiningRoutes);
 
 app.use("/trpc/*", optionalAuth);
 app.use(

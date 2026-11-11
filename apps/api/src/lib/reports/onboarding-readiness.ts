@@ -104,6 +104,8 @@ import type {
   ReportFilters,
 } from "@hireops/api-types";
 
+import { buSubtreePredicate } from "./bu-tree";
+
 /**
  * The five `onboarding_cases.status` values in the order the CHECK constraint
  * declares them (lifecycle order, terminals last). Text + CHECK, not a
@@ -198,7 +200,7 @@ function scopedCasesCte(tenantId: string, filters: ReportFilters): SQL {
       JOIN public.positions p
         ON p.tenant_id = r.tenant_id AND p.id = r.position_id
     `;
-    clauses.push(dsql`p.business_unit_id = ${filters.businessUnitId}::uuid`);
+    clauses.push(buSubtreePredicate(dsql`p.business_unit_id`, tenantId, filters.businessUnitId));
   }
 
   return dsql`

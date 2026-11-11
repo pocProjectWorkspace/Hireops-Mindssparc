@@ -7,6 +7,10 @@ import { Card, EmptyState, TableShell, Thead, Th, Tbody, Tr, Td } from "@/compon
 import type { ListMyRequisitionsV2Output } from "@hireops/api-types";
 import { HealthBar, DifficultyChip, ReqStatusChip, formatReqDate } from "./shared";
 import { AiAssistedPill, useProvenanceMap } from "@/components/iris/AiAssistedPill";
+import {
+  DiverseSlateStatusBadge,
+  useDiverseSlateMap,
+} from "@/components/diversity/DiverseSlateBadge";
 import { PageContainer } from "@/components/nav/PageContainer";
 
 /**
@@ -32,9 +36,12 @@ const STATUS_OPTIONS = [
 export function RequisitionsListV2({
   initial,
   initialStatus = "all",
+  showDiverseSlate = false,
 }: {
   initial: ListMyRequisitionsV2Output;
   initialStatus?: string;
+  /** PC-26 — admin / hr_head / recruiter see the slate COUNT badge per role. */
+  showDiverseSlate?: boolean;
 }) {
   const router = useRouter();
   const query = trpc.listMyRequisitionsV2.useQuery({ limit: 100 }, { initialData: initial });
@@ -50,6 +57,7 @@ export function RequisitionsListV2({
   // shows only on requisitions Iris created.
   const reqIds = useMemo(() => rows.map((r) => r.id), [rows]);
   const provenance = useProvenanceMap("requisition", reqIds);
+  const diverseSlate = useDiverseSlateMap(showDiverseSlate);
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -144,6 +152,7 @@ export function RequisitionsListV2({
                       {r.title ?? "Untitled role"}
                     </a>
                     <AiAssistedPill row={provenance.get(r.id)} />
+                    <DiverseSlateStatusBadge status={diverseSlate.get(r.id)} />
                   </span>
                 </Td>
                 <Td label="Dept">{r.department ?? "—"}</Td>

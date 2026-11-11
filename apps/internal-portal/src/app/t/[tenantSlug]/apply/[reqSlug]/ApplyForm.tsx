@@ -4,7 +4,20 @@ import { useEffect, useState, type ChangeEvent, type FormEvent } from "react";
 import { useRouter } from "next/navigation";
 import { z } from "zod";
 import { Button, Input } from "@hireops/ui";
+import {
+  DEFAULT_APPLY_SCREENING_POLICY,
+  NOTICE_PERIOD_MAX_DAYS,
+  type ApplyScreeningPolicy,
+  type DiversityCaptureConfig,
+  type ScreeningAnswersInput,
+} from "@hireops/api-types";
 import { trpc } from "@/lib/trpc-client";
+import {
+  DiversitySelfIdFields,
+  hasAnyAnswer,
+  selectionsToAnswers,
+  type DiversitySelections,
+} from "@/components/diversity/DiversitySelfIdFields";
 
 /**
  * Candidate apply form (CRS-01). Mobile-first single column. Uses
@@ -92,6 +105,24 @@ function normalisePhoneForSubmit(raw: string): string {
   return trimmed; // let server-side validation reject malformed input
 }
 
+/** Optional whole-number text input → number | undefined (blank = not answered). */
+const optionalWholeNumber = (max: number, msg: string) =>
+  z
+    .string()
+    .trim()
+    .optional()
+    .refine(
+      (v) => !v || (/^\d+$/.test(v.replace(/,/g, "")) && Number(v.replace(/,/g, "")) <= max),
+      msg,
+    );
+
+/** Annual CTC typed in rupees → INR paise (minor units), or undefined when blank. */
+function rupeesToPaise(v: string | undefined): number | undefined {
+  if (!v) return undefined;
+  const n = Number(v.replace(/,/g, ""));
+  return Number.isFinite(n) ? Math.round(n * 100) : undefined;
+}
+
 const fieldSchema = z.object({
   fullName: z.string().trim().min(1, "Required").max(200),
   email: z.string().trim().email("Enter a valid email"),
@@ -107,6 +138,12 @@ const fieldSchema = z.object({
     .optional()
     .refine((v) => !v || /^https?:\/\/.+/i.test(v), "Must start with http:// or https://"),
   sourceText: z.string().trim().max(200).optional(),
+  // PC-7 screening questions — optional unless the tenant's candidate-field
+  // policy requires them (checked after parse, see requiredScreeningErrors).
+  noticePeriodDays: optionalWholeNumber(NOTICE_PERIOD_MAX_DAYS, "Days, 0–365"),
+  currentCtc: optionalWholeNumber(1_000_000_000, "Whole rupees per year"),
+  expectedCtc: optionalWholeNumber(1_000_000_000, "Whole rupees per year"),
+  currentLocation: z.string().trim().max(200).optional(),
   resume: z
     .instanceof(File, { message: "Choose your CV" })
     .refine((f) => f.size <= MAX_RESUME_BYTES, "File must be ≤ 10 MB")
@@ -122,6 +159,10 @@ interface ApplyFormProps {
   positionTitle: string;
   tenantSlug: string;
   reqSlug: string;
+  /** PC-7 — which screening questions the tenant requires (default: none). */
+  screeningPolicy?: ApplyScreeningPolicy;
+  /** PC-26 — optional diversity self-ID section; absent / disabled = not shown. */
+  diversityCapture?: DiversityCaptureConfig;
 }
 
 const API_BASE =
@@ -135,6 +176,8 @@ export function ApplyForm({
   positionTitle,
   tenantSlug,
   reqSlug,
+  screeningPolicy = DEFAULT_APPLY_SCREENING_POLICY,
+  diversityCapture,
 }: ApplyFormProps) {
   void positionTitle;
   const router = useRouter();
@@ -143,8 +186,14 @@ export function ApplyForm({
   const [phone, setPhone] = useState("");
   const [linkedinUrl, setLinkedinUrl] = useState("");
   const [sourceText, setSourceText] = useState("");
+  const [noticePeriodDays, setNoticePeriodDays] = useState("");
+  const [currentCtc, setCurrentCtc] = useState("");
+  const [expectedCtc, setExpectedCtc] = useState("");
+  const [currentLocation, setCurrentLocation] = useState("");
   const [resume, setResume] = useState<File | null>(null);
   const [consentGiven, setConsentGiven] = useState(false);
+  // PC-26 — empty = "prefer not to say" for every category (the default).
+  const [diversity, setDiversity] = useState<DiversitySelections>({});
   const [fieldErrors, setFieldErrors] = useState<FieldErrors>({});
   const [submitState, setSubmitState] = useState<
     | { kind: "idle" }
@@ -179,18 +228,39 @@ export function ApplyForm({
       phone,
       linkedinUrl: linkedinUrl || undefined,
       sourceText: sourceText || undefined,
+      noticePeriodDays: noticePeriodDays || undefined,
+      currentCtc: currentCtc || undefined,
+      expectedCtc: expectedCtc || undefined,
+      currentLocation: currentLocation || undefined,
       resume,
       consentGiven,
     });
-    if (!parsed.success) {
-      const errs: FieldErrors = {};
-      for (const issue of parsed.error.issues) {
+    const requiredErrs: FieldErrors = {};
+    if (screeningPolicy.noticePeriodRequired && !noticePeriodDays.trim())
+      requiredErrs.noticePeriodDays = "Required";
+    if (screeningPolicy.expectedSalaryRequired && !expectedCtc.trim())
+      requiredErrs.expectedCtc = "Required";
+    if (screeningPolicy.currentLocationRequired && !currentLocation.trim())
+      requiredErrs.currentLocation = "Required";
+    if (!parsed.success || Object.keys(requiredErrs).length > 0) {
+      const errs: FieldErrors = { ...requiredErrs };
+      for (const issue of parsed.success ? [] : parsed.error.issues) {
         const key = issue.path[0] as keyof FieldErrors | undefined;
         if (key && !errs[key]) errs[key] = issue.message;
       }
       setFieldErrors(errs);
       return;
     }
+    if (!parsed.success) return;
+
+    const screening: ScreeningAnswersInput = {
+      noticePeriodDays: parsed.data.noticePeriodDays
+        ? Number(parsed.data.noticePeriodDays.replace(/,/g, ""))
+        : undefined,
+      currentSalaryInrPaise: rupeesToPaise(parsed.data.currentCtc),
+      expectedSalaryInrPaise: rupeesToPaise(parsed.data.expectedCtc),
+      currentLocation: parsed.data.currentLocation || undefined,
+    };
 
     setSubmitState({ kind: "uploading" });
     let storageKey: string;
@@ -225,6 +295,15 @@ export function ApplyForm({
         },
         source: mapSourceText(parsed.data.sourceText ?? ""),
         consentVersion: APPLY_FORM_CONSENT_VERSION,
+        screening,
+        // PC-26 — sent only when the candidate actively chose an answer.
+        diversitySelfId:
+          diversityCapture?.enabled && hasAnyAnswer(diversity)
+            ? {
+                disclosureVersion: diversityCapture.disclosureVersion,
+                answers: selectionsToAnswers(diversityCapture, diversity),
+              }
+            : undefined,
       });
       const ref = result.applicationId.slice(0, 8);
       router.push(`/t/${tenantSlug}/apply/${reqSlug}/submitted?ref=${ref}`);
@@ -285,6 +364,66 @@ export function ApplyForm({
         onChange={(e) => setSourceText(e.target.value)}
         error={fieldErrors.sourceText}
       />
+
+      {/* PC-7 — screening questions. Optional by default; a tenant can make
+          notice period / expected CTC / current location required through its
+          candidate-field policy. */}
+      <fieldset className="flex flex-col gap-5">
+        <legend className="mb-1 text-sm font-semibold text-neutral-800">
+          A few quick questions
+        </legend>
+        <Input
+          label={`Notice period, in days${screeningPolicy.noticePeriodRequired ? "" : " (optional)"}`}
+          type="text"
+          inputMode="numeric"
+          required={screeningPolicy.noticePeriodRequired}
+          placeholder="e.g. 60"
+          value={noticePeriodDays}
+          onChange={(e) => setNoticePeriodDays(e.target.value)}
+          error={fieldErrors.noticePeriodDays}
+        />
+        <Input
+          label={`Current location${screeningPolicy.currentLocationRequired ? "" : " (optional)"}`}
+          type="text"
+          autoComplete="address-level2"
+          required={screeningPolicy.currentLocationRequired}
+          placeholder="City, e.g. Pune"
+          value={currentLocation}
+          onChange={(e) => setCurrentLocation(e.target.value)}
+          error={fieldErrors.currentLocation}
+        />
+        <div className="grid grid-cols-1 gap-5 sm:grid-cols-2">
+          <Input
+            label="Current CTC, ₹ per year (optional)"
+            type="text"
+            inputMode="numeric"
+            placeholder="e.g. 1200000"
+            value={currentCtc}
+            onChange={(e) => setCurrentCtc(e.target.value)}
+            error={fieldErrors.currentCtc}
+          />
+          <Input
+            label={`Expected CTC, ₹ per year${screeningPolicy.expectedSalaryRequired ? "" : " (optional)"}`}
+            type="text"
+            inputMode="numeric"
+            required={screeningPolicy.expectedSalaryRequired}
+            placeholder="e.g. 1500000"
+            value={expectedCtc}
+            onChange={(e) => setExpectedCtc(e.target.value)}
+            error={fieldErrors.expectedCtc}
+          />
+        </div>
+      </fieldset>
+
+      {/* PC-26 — optional, voluntary diversity self-identification. */}
+      {diversityCapture ? (
+        <DiversitySelfIdFields
+          config={diversityCapture}
+          selections={diversity}
+          onChange={setDiversity}
+          idPrefix="apply-diversity"
+        />
+      ) : null}
 
       <div className="flex flex-col gap-1.5">
         <label htmlFor="resume" className="text-sm font-medium text-neutral-700">

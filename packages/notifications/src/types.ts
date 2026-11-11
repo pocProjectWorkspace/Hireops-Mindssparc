@@ -21,7 +21,13 @@
  * one, so neither "candidate" nor "recruiter" would be honest. P0.4 reuses the
  * same value for the three emails addressed to an EXISTING partner user.
  */
-export type EmailRecipientType = "candidate" | "recruiter" | "hiring_manager" | "partner";
+export type EmailRecipientType =
+  | "candidate"
+  | "recruiter"
+  | "hiring_manager"
+  | "partner"
+  // PC-8 — an interview panellist (any internal member on a round's panel).
+  | "panelist";
 
 /**
  * Template keys Wave 1 ships. Adding a key requires:
@@ -54,7 +60,26 @@ export type TemplateKey =
   // date / candidate name only (requirements.md §6.3); nothing internal.
   | "partner.submission_received"
   | "partner.stage_changed"
-  | "partner.claim_expiry_warning";
+  | "partner.claim_expiry_warning"
+  // PC-8 / PC-9 / PC-10 — in-app interview scheduling. The candidate's
+  // pick-a-slot link, the panellist's calendar invite (with .ics), the
+  // "rescheduling in progress" notice, and the recruiter's action-needed alert
+  // when no common slot exists.
+  | "candidate.interview_slot_offer"
+  | "panelist.interview_scheduled"
+  | "panelist.interview_rescheduling"
+  | "recruiter.scheduling_alert"
+  // PC-14 — pre-joining engagement journey (candidate, between offer accept
+  // and joining). One key per step so each is separately overridable.
+  | "candidate.pre_joining_welcome"
+  // PC-18 — links to the published welcome guide in the candidate portal.
+  | "candidate.pre_joining_welcome_guide"
+  | "candidate.pre_joining_pulse"
+  | "candidate.pre_joining_company_update"
+  | "candidate.pre_joining_two_weeks"
+  | "candidate.pre_joining_one_week"
+  // PC-15 — a pre-joining risk signal (what the candidate said) → recruiter.
+  | "recruiter.joining_risk_signal";
 
 /**
  * A file attached to an outgoing email. Content is base64 (matches Resend's
@@ -83,6 +108,11 @@ export interface EmailMessage {
   /** Optional file attachments (e.g. the interview .ics). Providers that can't
    * carry attachments (LocalEmailProvider) note them but don't fail. */
   attachments?: EmailAttachment[];
+  /** PC-15 — optional Reply-To (pre-joining emails carry a routing token so a
+   * candidate's reply can be matched back to their journey). */
+  replyTo?: string;
+  /** PC-14 — optional From display name; the address stays EMAIL_FROM's. */
+  fromName?: string;
   /** Provenance for dev_email_outbox + structured logs. */
   templateKey: TemplateKey;
   /** Tenant for dev_email_outbox row scope. */

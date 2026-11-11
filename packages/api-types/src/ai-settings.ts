@@ -88,7 +88,7 @@ function featureDefault(): AiFeatureSettings {
  * RO-01, iris_assistant in IRIS — one key governs BOTH Iris AI calls
  * (iris_intent + iris_message_draft), interview_notes in the notetaker
  * phase (N1), ai_interview_questions in N4.2, ai_interview_evidence in N4.4 /
- * AI-INT-2, ask_data in ASK-DATA). */
+ * AI-INT-2, ask_data in ASK-DATA, report_insights in PC-20). */
 export const AI_FEATURE_KEYS = [
   "ai_scoring",
   "jd_generation",
@@ -105,6 +105,9 @@ export const AI_FEATURE_KEYS = [
   "ai_interview_questions",
   "ai_interview_evidence",
   "ask_data",
+  "engagement_reply_signals",
+  "welcome_guide",
+  "report_insights",
 ] as const;
 export type AiFeatureKey = (typeof AI_FEATURE_KEYS)[number];
 
@@ -203,7 +206,52 @@ export const AI_FEATURE_META: Record<
     description:
       "On the Ask your data page, maps a typed question to ONE question from a fixed catalog of supported analytics questions, plus its filters (period, business unit, requisition). The AI never writes a query and never produces a number — every figure is calculated by HireOps from your live data, and the interpretation is shown so it can be corrected. Exact matches to a suggested question, chip clicks and filter edits never call the model. Disabling makes typed questions point to the suggested questions instead; the suggested questions keep working.",
   },
+  engagement_reply_signals: {
+    label: "Pre-joining reply signals",
+    usageFeatures: ["engagement_reply_signals"],
+    description:
+      "When a candidate who has accepted an offer replies to a pre-joining engagement email, looks for a fixed list of things they may have SAID — another offer, a counter-offer, a joining-date change, doubt about joining, a notice-period problem, or that they are withdrawing — each backed by a verbatim quote from their reply (quotes not found word-for-word in the reply are dropped). It never produces a flight-risk score, probability or rating, and never infers anything about the person (personality, sentiment, tone or any demographic attribute). Each signal alerts the recruiter, who reads the reply and decides. Disabling stores replies without looking for signals; pulse answers still raise their own signals.",
+  },
+  welcome_guide: {
+    label: "Pre-joining welcome guide",
+    usageFeatures: ["welcome_guide"],
+    description:
+      "On Admin → Welcome content, turns the source material you write for a business unit (overview, leaders, culture, first week) into a warm, structured welcome guide for new hires. It may only use what you wrote: it is told not to invent names, facts or numbers, and anything it adds anyway — a person not in your leader list, a sentence naming something or giving a number that is not in your source — is removed before you see the draft (and listed so you can check). Nothing reaches a candidate until a person reviews, edits and publishes it. Disabling stops generation; already-published guides stay visible to candidates.",
+  },
+  report_insights: {
+    label: "Report insights (written summaries)",
+    usageFeatures: ["report_insights"],
+    description:
+      "Writes 2–4 short plain-English sentences at the top of each report section, explaining what the figures show. The AI sees ONLY the handful of figures the report already calculated (counts, medians, rates and their changes) — never individual records, candidates or people's names — and every number in a sentence is checked against those figures: a sentence carrying any number that is not one of them is dropped before it is shown. Results are cached for 15 minutes per report and filter set. Disabling hides the written insights; the reports and their numbers are unaffected.",
+  },
 };
+
+/** CFG-LITE / BUG-11 — platform default score cut-offs (inclusive floors). */
+export const SCREENING_SCORE_BANDS_DEFAULT = { strong: 90, good: 75, partial: 60 } as const;
+
+export const screeningScoreBandsSchema = z
+  .object({
+    strong: z.number().int().min(0).max(100).default(SCREENING_SCORE_BANDS_DEFAULT.strong),
+    good: z.number().int().min(0).max(100).default(SCREENING_SCORE_BANDS_DEFAULT.good),
+    partial: z.number().int().min(0).max(100).default(SCREENING_SCORE_BANDS_DEFAULT.partial),
+  })
+  .refine((b) => b.partial <= b.good && b.good <= b.strong, {
+    message: "Score cut-offs must be ordered: partial ≤ good ≤ strong.",
+  });
+export type ScreeningScoreBands = z.infer<typeof screeningScoreBandsSchema>;
+
+function defaultScreeningScoreBands(): ScreeningScoreBands {
+  return { ...SCREENING_SCORE_BANDS_DEFAULT };
+}
+
+/** The score-tier bucket for a real 0–100 score under the given bands. */
+export type ScreeningScoreTier = "strong" | "good" | "partial" | "below";
+export function screeningScoreTier(score: number, bands: ScreeningScoreBands): ScreeningScoreTier {
+  if (score >= bands.strong) return "strong";
+  if (score >= bands.good) return "good";
+  if (score >= bands.partial) return "partial";
+  return "below";
+}
 
 export const aiSettingsSchema = z.object({
   version: z.literal(AI_SETTINGS_VERSION).default(AI_SETTINGS_VERSION),
@@ -222,6 +270,9 @@ export const aiSettingsSchema = z.object({
   ai_interview_questions: aiFeatureSettingsSchema.default(featureDefault),
   ai_interview_evidence: aiFeatureSettingsSchema.default(featureDefault),
   ask_data: aiFeatureSettingsSchema.default(featureDefault),
+  engagement_reply_signals: aiFeatureSettingsSchema.default(featureDefault),
+  welcome_guide: aiFeatureSettingsSchema.default(featureDefault),
+  report_insights: aiFeatureSettingsSchema.default(featureDefault),
   /**
    * Global deterministic PII redaction. When on, candidate-derived prompt
    * text going into scoring + agent-draft calls has emails / phone numbers /
@@ -237,6 +288,19 @@ export const aiSettingsSchema = z.object({
    * itself is governed by `ai_scoring.enabled`; this only governs display.
    */
   screeningScoreVisible: z.boolean().default(true),
+  /**
+   * CFG-LITE / BUG-11 — the ONE set of AI screening-score cut-offs every
+   * score-tier display reads (recruiter dashboard strong/mismatch counts,
+   * insights score distribution, analytics histogram tiers, candidate-list
+   * tier chips). Inclusive floors; partial ≤ good ≤ strong. The platform
+   * default (90 / 75 / 60) is the historic shortlist tier floors. The
+   * shortlist's own `shortlistDefaults.tierCutoffs` stays the shortlist's
+   * explicit override (it predates this block); unset, it equals these.
+   * A cross-field-invalid stored block resolves to the defaults.
+   */
+  screeningScoreBands: screeningScoreBandsSchema
+    .default(defaultScreeningScoreBands)
+    .catch(defaultScreeningScoreBands),
 });
 export type AiSettings = z.infer<typeof aiSettingsSchema>;
 
@@ -265,8 +329,12 @@ export const getTenantAiSettingsInputSchema = z.object({});
 export const getTenantAiSettingsOutputSchema = aiSettingsSchema;
 export type GetTenantAiSettingsOutput = z.infer<typeof getTenantAiSettingsOutputSchema>;
 
-/** The full block the admin surface writes. Lenient (defaults fill gaps). */
-export const updateTenantAiSettingsInputSchema = aiSettingsSchema;
+/** The full block the admin surface writes. Lenient (defaults fill gaps), but
+ * an out-of-order score-band set is REJECTED on write (the read path's
+ * `.catch` only exists so a stale stored blob never breaks the other keys). */
+export const updateTenantAiSettingsInputSchema = aiSettingsSchema.extend({
+  screeningScoreBands: screeningScoreBandsSchema.default(defaultScreeningScoreBands),
+});
 export type UpdateTenantAiSettingsInput = z.infer<typeof updateTenantAiSettingsInputSchema>;
 export const updateTenantAiSettingsOutputSchema = z.object({
   ok: z.literal(true),

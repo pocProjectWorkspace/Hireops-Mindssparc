@@ -16,6 +16,8 @@ import { drainAiScoreOutboxOnce } from "./lib/ai-score-drain";
 import { drainAgentRunOutboxOnce } from "./lib/agent-run-drain";
 import { drainTranscriptOutboxOnce } from "./lib/transcript-drain";
 import { drainAiInterviewEvidenceOnce } from "./lib/ai-interview-evidence-drain";
+import { drainBulkCvOnce } from "./lib/bulk-cv-drain";
+import { drainPreJoiningTouchpointsOnce, preJoiningJourneyScan } from "./lib/pre-joining-drain";
 
 /**
  * Worker entrypoint — three concurrent loops:
@@ -62,6 +64,20 @@ const TRANSCRIPT_DRAIN_INTERVAL_MS = 60_000;
  * it lands — see AI_INTERVIEW_EVIDENCE_DEFER_MS), so 5s would buy nothing.
  */
 const AI_INTERVIEW_EVIDENCE_DRAIN_INTERVAL_MS = 30_000;
+/**
+ * PC-2 bulk-CV drain — 5s, like the other user-facing drains: a recruiter is
+ * watching the upload drawer's progress. A pass claims and parses up to
+ * BULK_CV_DRAIN_CONCURRENCY items in parallel (default 4); startLoop skips a
+ * tick while a pass is in flight, so the effective cadence is "back-to-back
+ * passes while there is work".
+ */
+const BULK_CV_DRAIN_INTERVAL_MS = 5_000;
+/**
+ * PC-14 pre-joining touchpoint drain — 60s. Touchpoints are scheduled to the
+ * hour (10:00 local), so a minute of latency is invisible; the drain only
+ * enqueues into notification_outbox, which the 5s dispatcher then delivers.
+ */
+const PRE_JOINING_DRAIN_INTERVAL_MS = 60_000;
 
 const log = createLogger({ base: { service: "workers" } });
 
@@ -133,6 +149,16 @@ const SCHEDULED_JOBS: ScheduledJob[] = [
     name: "interview_media_purge",
     intervalMs: 24 * 60 * 60_000,
     run: interviewMediaPurgeSweep,
+  },
+  {
+    // PC-14 — for tenants with pre-joining engagement ON: start journeys for
+    // accepted-not-joined candidates that have none (backfill when a tenant
+    // turns it on, and a safety net for an accept whose best-effort start
+    // failed), and complete journeys whose joining date has passed. Hourly:
+    // touchpoints are day-granular.
+    name: "pre_joining_journey_scan",
+    intervalMs: 60 * 60_000,
+    run: preJoiningJourneyScan,
   },
 ];
 
@@ -213,9 +239,11 @@ async function main() {
     }),
   );
 
-  // AI-03 fit-scoring drain. Same SKIP LOCKED + small batch pattern;
-  // each row costs a real Anthropic call so the default batch is
-  // smaller than the notification drain (5 vs 25).
+  // AI-03 fit-scoring drain (+ PC-6 screening evidence, same call). Same
+  // SKIP LOCKED pattern; PC-4: each pass claims and works rows N at a time
+  // (AI_SCORE_DRAIN_CONCURRENCY, default 8) — each row is a 15–30 s model
+  // call, so sequential processing capped throughput at a few hundred CVs/hr.
+  // The loop's in-flight guard still stops passes overlapping.
   loops.push(
     startLoop("ai-score-drain", AI_SCORE_DRAIN_INTERVAL_MS, async () => {
       const r = await drainAiScoreOutboxOnce({ log });
@@ -270,6 +298,28 @@ async function main() {
       const r = await drainAiInterviewEvidenceOnce({ log });
       if (r.claimed > 0 || r.retired > 0) {
         log.info(r, "worker.ai_interview_evidence_drain_pass");
+      }
+    }),
+  );
+
+  // PC-2 bulk-CV drain — stored CV → parsed → candidate + application. The
+  // 9th ad-hoc startLoop registration (worker-registry refactor still owed).
+  loops.push(
+    startLoop("bulk-cv-drain", BULK_CV_DRAIN_INTERVAL_MS, async () => {
+      const r = await drainBulkCvOnce({ log });
+      if (r.claimed > 0 || r.retired > 0) {
+        log.info(r, "worker.bulk_cv_drain_pass");
+      }
+    }),
+  );
+
+  // PC-14 pre-joining touchpoint drain — the 10th ad-hoc startLoop; the
+  // worker-registry refactor (open-question #26) is still owed.
+  loops.push(
+    startLoop("pre-joining-drain", PRE_JOINING_DRAIN_INTERVAL_MS, async () => {
+      const r = await drainPreJoiningTouchpointsOnce({ log });
+      if (r.claimed > 0) {
+        log.info(r, "worker.pre_joining_drain_pass");
       }
     }),
   );

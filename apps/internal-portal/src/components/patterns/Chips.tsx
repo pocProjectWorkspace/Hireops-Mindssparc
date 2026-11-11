@@ -1,4 +1,5 @@
 import { cn } from "@/components/ui/cn";
+import { RecommendationText } from "@/components/TenantLabelsProvider";
 import type {
   RequisitionApprovalPriority,
   RequisitionApprovalOutcome,
@@ -86,11 +87,13 @@ export function OutcomeChip({
  *     (proceed | hold | reject) — the deterministic gate signal.
  *   StageChip          — the HR-case stage (tech interview → accepted).
  */
-const REC_META: Record<InterviewRecommendation, { label: string; cls: string }> = {
-  strong_yes: { label: "Strong yes", cls: "bg-status-positive-50 text-status-positive-700" },
-  yes: { label: "Yes", cls: "bg-status-info-50 text-status-info-800" },
-  hold: { label: "Hold", cls: "bg-status-warning-50 text-status-warning-800" },
-  no: { label: "No", cls: "bg-status-error-50 text-status-error-700" },
+/** Tone per recommendation. The WORDING is the tenant's (settings.labels,
+ * CFG-LITE) via RecommendationText; platform default "Strong yes / Yes / Hold / No". */
+const REC_META: Record<InterviewRecommendation, { cls: string }> = {
+  strong_yes: { cls: "bg-status-positive-50 text-status-positive-700" },
+  yes: { cls: "bg-status-info-50 text-status-info-800" },
+  hold: { cls: "bg-status-warning-50 text-status-warning-800" },
+  no: { cls: "bg-status-error-50 text-status-error-700" },
 };
 
 export function RecommendationChip({
@@ -126,7 +129,7 @@ export function RecommendationChip({
       )}
     >
       {prefix}
-      {meta.label}
+      <RecommendationText rec={recommendation} />
     </span>
   );
 }

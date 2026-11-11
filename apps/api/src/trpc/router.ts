@@ -19,7 +19,7 @@
  * tRPC middleware in trpc-core.ts.
  */
 
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { z } from "zod";
 import { TRPCError } from "@trpc/server";
 import {
@@ -41,6 +41,7 @@ import {
 } from "drizzle-orm";
 import {
   db as poolDb,
+  apiAuditLogs,
   tenants,
   persons,
   candidates,
@@ -77,6 +78,7 @@ import {
   workdaySyncOutbox,
   notificationOutbox,
   aiScoreOutbox,
+  applicationScreeningEvidence,
   automationAgents,
   agentTriggers,
   agentActions,
@@ -117,11 +119,24 @@ import {
   missingInfoRequests,
   recruiterBrief,
   assistantActions,
+  bulkCvBatches,
+  applicationSelectionDecisions,
   type ApplicationStage,
   type TenantBoundDb,
 } from "@hireops/db";
 import { evaluateKnockouts, type KnockoutInput } from "@hireops/ai-scoring";
 import { SLA_THRESHOLDS_HOURS, resolveSlaThresholds } from "../lib/sla-thresholds";
+import {
+  evidenceOrderSql,
+  loadScreeningEvidence,
+  loadScreeningQueueByRequisition,
+  presentAiScore,
+  presentScoreExplanation,
+  screeningEvidenceJoin,
+  screeningSummaryColumns,
+  toScreeningSummary,
+} from "../lib/screening-evidence-read";
+import { resolveTenantLabelsDb } from "../lib/tenant-labels";
 import { computeGovernanceRiskFlags, computeExecutiveAudit } from "../lib/governance";
 // R0.1 reporting semantic layer — shared measure definitions. Namespaced
 // so `measures.funnelByStage(…)` reads as "the canonical funnel", and so
@@ -156,6 +171,23 @@ import {
 } from "../lib/ask-data/interpret";
 import { loadAskDataLookups } from "../lib/ask-data/execute";
 import { runAskData } from "../lib/ask-data/run";
+// PC-21 — the Ask-your-data question log ("Your recent" / "Popular in your team").
+import {
+  askerRolesFor,
+  loadPopularIntents,
+  loadRecentQuestions,
+  loadTopQuestions,
+  logAskDataQuestion,
+} from "../lib/ask-data/question-log";
+// PC-19 — BU hierarchy for report pickers; PC-20 — written report insights.
+import { loadBusinessUnitTree } from "../lib/reports/bu-tree";
+import {
+  REPORT_INSIGHTS_FEATURE,
+  REPORT_INSIGHTS_SCHEMA_NAME,
+  generateReportInsights,
+  loadReportFigures,
+  reportInsightsAiResponseJsonSchema,
+} from "../lib/reports/insights";
 import {
   getIrisAction,
   listIrisActions,
@@ -179,9 +211,20 @@ import {
   listCandidatesInputSchema,
   listCandidatesOutputSchema,
   listCandidatesByRequisitionInputSchema,
+  bulkMoveApplicationsInputSchema,
+  bulkMoveApplicationsOutputSchema,
+  previewApplicationClosedEmailInputSchema,
+  previewApplicationClosedEmailOutputSchema,
+  BULK_MOVE_MAX,
+  CANDIDATE_LIST_PAGE_DEFAULT,
+  type BulkMoveApplicationsOutput,
+  type BulkMoveRowResult,
+  type CandidateListSort,
   listCandidatesByRequisitionOutputSchema,
   listShortlistInputSchema,
   listShortlistOutputSchema,
+  getApplicationScreeningEvidenceInputSchema,
+  getApplicationScreeningEvidenceOutputSchema,
   getRequisitionByIdInputSchema,
   getRequisitionByIdOutputSchema,
   listRequisitionsInputSchema,
@@ -194,9 +237,14 @@ import {
   createRequisitionDraftOutputSchema,
   type CreateRequisitionDraftInput,
   previewWorkdayRequisitionImportOutputSchema,
+  previewWorkdayRequisitionUploadInputSchema,
   importWorkdayRequisitionsInputSchema,
   importWorkdayRequisitionsOutputSchema,
   type ImportWorkdayRequisitionsOutput,
+  type PreviewWorkdayRequisitionImportOutput,
+  type WorkdayRequisitionRow,
+  type WorkdayRowError,
+  type WorkdayUploadFile,
   WORKDAY_SAMPLE_REQUISITIONS,
   WORKDAY_PREVIEW_COLUMNS,
   WORKDAY_IMPORT_SOURCE,
@@ -234,6 +282,15 @@ import {
   listOffersByApplicationOutputSchema,
   listWorkdaySyncsInputSchema,
   listWorkdaySyncsOutputSchema,
+  getWorkdayHandoffInputSchema,
+  getWorkdayHandoffOutputSchema,
+  exportWorkdayHandoffsInputSchema,
+  exportWorkdayHandoffsOutputSchema,
+  WORKDAY_HANDOFF_DEFAULT_COLUMNS,
+  WORKDAY_HANDOFF_EXPORT_MAX_ROWS,
+  WORKDAY_HANDOFF_STATUS_LABELS,
+  type GetWorkdayHandoffOutput,
+  type ExportWorkdayHandoffsOutput,
   upsertInterviewPlanInputSchema,
   upsertInterviewPlanOutputSchema,
   getInterviewPlanInputSchema,
@@ -385,6 +442,24 @@ import {
   updateShortlistDefaultsInputSchema,
   updateShortlistDefaultsOutputSchema,
   resolveShortlistDefaults,
+  resolveEffectiveShortlistDefaults,
+  resolveStageLabel,
+  resolveStageLabelMap,
+  resolveTenantLabels,
+  getTenantLabelsInputSchema,
+  getTenantLabelsOutputSchema,
+  updateTenantLabelsInputSchema,
+  updateTenantLabelsOutputSchema,
+  getUrgencySettingsInputSchema,
+  getUrgencySettingsOutputSchema,
+  updateUrgencySettingsInputSchema,
+  updateUrgencySettingsOutputSchema,
+  partnerGetStageLabelsOutputSchema,
+  screeningScoreTier,
+  type ScreeningScoreBands,
+  resolveUrgencySettings,
+  defaultUrgencySettings,
+  type UrgencySettings,
   type ShortlistDefaults,
   getAiBudgetInputSchema,
   getAiBudgetOutputSchema,
@@ -402,6 +477,13 @@ import {
   updateReportDigestsInputSchema,
   updateReportDigestsOutputSchema,
   resolveReportDigests,
+  getRoleLabelsInputSchema,
+  getRoleLabelsOutputSchema,
+  updateRoleLabelsInputSchema,
+  updateRoleLabelsOutputSchema,
+  resolveRoleLabels,
+  roleLabelOverridesOf,
+  roleLabelsSchema,
   type ReportDigests,
   getSlaThresholdsInputSchema,
   getSlaThresholdsOutputSchema,
@@ -442,6 +524,14 @@ import {
   // ASK-DATA — "Ask your data" contracts (packages/api-types/src/ask-data.ts).
   ASK_DATA_CATALOG,
   askDataCatalogInputSchema,
+  askDataHistoryInputSchema,
+  askDataHistoryOutputSchema,
+  askDataTopQuestionsInputSchema,
+  askDataTopQuestionsOutputSchema,
+  getReportInsightsInputSchema,
+  getReportInsightsOutputSchema,
+  listReportBusinessUnitsInputSchema,
+  listReportBusinessUnitsOutputSchema,
   askDataCatalogOutputSchema,
   askDataInputSchema,
   askDataOutputSchema,
@@ -535,6 +625,24 @@ import {
   updateScoringWeightsInputSchema,
   updateScoringWeightsOutputSchema,
   resolveScoringWeights,
+  // PC-26 — diverse-slate requirement (counts only; raw self-ID never leaves lib/diversity-slate)
+  DIVERSE_SLATE_VIEW_ROLES,
+  DIVERSE_SLATE_ADMIN_ROLES,
+  DIVERSITY_SELF_ID_DISCLOSURE_VERSION,
+  getDiverseSlateStatusInputSchema,
+  getDiverseSlateStatusOutputSchema,
+  listDiverseSlateStatusesInputSchema,
+  listDiverseSlateStatusesOutputSchema,
+  getDiversitySlateSettingsOutputSchema,
+  updateDiversitySlateSettingsInputSchema,
+  updateDiversitySlateSettingsOutputSchema,
+  getDiverseSlateDefaultsOutputSchema,
+  candidateGetDiversitySelfIdOutputSchema,
+  candidateSetDiversitySelfIdInputSchema,
+  candidateSetDiversitySelfIdOutputSchema,
+  resolveDiversitySlateSettings,
+  toDiversityCaptureConfig,
+  type DiversitySlateSettings,
   getScreeningPrivacyInputSchema,
   getScreeningPrivacyOutputSchema,
   updateScreeningPrivacyInputSchema,
@@ -577,6 +685,31 @@ import {
   resolveRetentionPolicy,
   effectiveRetentionYears,
   type RetentionPolicy,
+  // PC-14..17 — pre-joining engagement
+  getPreJoiningSettingsOutputSchema,
+  updatePreJoiningSettingsInputSchema,
+  resolvePreJoiningEngagementSettings,
+  type PreJoiningEngagementSettings,
+  companyUpdateInputSchema,
+  companyUpdateRowSchema,
+  startPreJoiningJourneysOutputSchema,
+  listJoiningWatchlistInputSchema,
+  listJoiningWatchlistOutputSchema,
+  type ListJoiningWatchlistOutput,
+  getEngagementTimelineInputSchema,
+  getEngagementTimelineOutputSchema,
+  acknowledgeRiskSignalInputSchema,
+  recordRenegeInputSchema,
+  // PC-18 — welcome guide per business unit.
+  listWelcomeScopesOutputSchema,
+  welcomeScopeInputSchema,
+  getWelcomeContentOutputSchema,
+  upsertWelcomeSourceInputSchema,
+  welcomeGuideVersionSchema,
+  updateWelcomeGuideDraftInputSchema,
+  welcomeGuideIdInputSchema,
+  candidateGetMyWelcomeGuideOutputSchema,
+  candidateMarkWelcomeSectionViewedInputSchema,
   type OverdueDocumentRow,
   getPartnerDefaultsInputSchema,
   getPartnerDefaultsOutputSchema,
@@ -1002,14 +1135,50 @@ import {
   // constraints and the zod enum, which is exactly what happened when
   // 'ai_async' was added.
   type InterviewMode,
+  listBulkCvBatchesInputSchema,
+  listBulkCvBatchesOutputSchema,
+  getBulkCvBatchInputSchema,
+  getBulkCvBatchOutputSchema,
+  retryBulkCvItemsInputSchema,
+  retryBulkCvItemsOutputSchema,
+  type ListBulkCvBatchesOutput,
+  type GetBulkCvBatchOutput,
+  type RetryBulkCvItemsOutput,
+  // PC-11 / PC-12 — assessment summary + selection decision.
+  getCandidateAssessmentSummaryInputSchema,
+  getCandidateAssessmentSummaryOutputSchema,
+  recordSelectionDecisionInputSchema,
+  recordSelectionDecisionOutputSchema,
+  listSelectionDecisionsInputSchema,
+  listSelectionDecisionsOutputSchema,
+  listLatestSelectionDecisionsInputSchema,
+  listLatestSelectionDecisionsOutputSchema,
+  findSelectionDecisionReason,
+  planSelectionDecision,
+  type SelectionDecision,
+  type SelectionDecisionRow,
 } from "@hireops/api-types";
 import { createClient } from "@supabase/supabase-js";
 import {
   buildWorkdayPreviewRow,
   mapWorkdayRow,
+  parseWorkdayExportFile,
   workdayJdSections,
+  workdaySampleRows,
+  WorkdayImportFileError,
   type WorkdayTenantLookups,
 } from "../lib/workday-import";
+import {
+  buildWorkdayHandoffCsv,
+  buildWorkdayHandoffRecord,
+  dateRangeBounds,
+  deriveWorkdayHandoffStatus,
+  loadWorkdayHandoffSources,
+  workdayHandoffFilenameBase,
+  workdayHandoffJson,
+  workdayReferenceOf,
+  type WorkdayHandoffSource,
+} from "../lib/workday-handoff";
 import {
   parseResume,
   getAIClient,
@@ -1094,6 +1263,16 @@ import {
   regenerateEvidence as regenerateAiInterviewEvidenceLib,
 } from "../lib/ai-interview-evidence-read";
 import {
+  ASSESSMENT_FULL_ROLES,
+  ASSESSMENT_SUMMARY_ROLES,
+  SELECTION_DECISION_GATE_ROLES,
+  buildCandidateAssessmentSummary,
+  canRecordSelectionDecision,
+  isFullAssessmentViewer,
+  loadApplicationAccessFacts,
+  resolveTenantSelectionDecisionReasons,
+} from "../lib/assessment-summary";
+import {
   buildReqRevisionPrompt,
   reqRevisionJsonSchema,
   REQ_REVISION_PROMPT_VERSION,
@@ -1102,6 +1281,7 @@ import {
 } from "../lib/req-revision";
 import {
   computeMissingInfo,
+  computeFieldPresence,
   blocksAdvanceLabelForDef,
   fieldDef as missingInfoFieldDef,
   fieldDefFrom,
@@ -1128,6 +1308,62 @@ import {
 } from "../lib/req-health";
 import { displayForCandidateNotification } from "../lib/candidate-notifications";
 import {
+  SCREENING_ANSWERS_WRITE_ROLES,
+  canSeeScreeningComp,
+  presentScreeningAnswers,
+  resolveScreeningAnswersForInsert,
+  screeningAnswerColumns,
+  screeningKnockoutView,
+  setApplicationScreeningAnswers,
+  summariseKnockouts,
+} from "../lib/screening-answers";
+import {
+  CANDIDATE_LIST_SORT_ORDER,
+  candidateListConditions,
+  factFilterConditions,
+  resolveFactFilters,
+  whereAll,
+} from "../lib/candidate-list-filters";
+import {
+  bulkMoveAuditInput,
+  classifyBulkMoveError,
+  planBulkMove,
+  singleMoveAuditAction,
+} from "../lib/bulk-move";
+import {
+  applySelfIdSubmission,
+  computeDiverseSlateStatus1,
+  computeDiverseSlateStatuses,
+  readOwnSelfId,
+  resolveTenantDiversitySlateDb,
+} from "../lib/diversity-slate";
+import {
+  DEFAULT_APPLY_SCREENING_POLICY,
+  knockoutFieldDef,
+  updateApplicationScreeningAnswersInputSchema,
+  updateApplicationScreeningAnswersOutputSchema,
+  type ApplyScreeningPolicy,
+  type ScreeningAnswersInput,
+} from "@hireops/api-types";
+import {
+  BULK_CV_ACCEPTING_REQ_STATUSES,
+  BULK_CV_UPLOAD_ROLES,
+  resolveTenantBulkCvLimits,
+} from "../lib/bulk-cv/policy";
+import {
+  getBatchWithItems as getBulkCvBatchWithItems,
+  listBatchesForRequisition as listBulkCvBatchesForRequisition,
+  requeueFailedItems as requeueFailedBulkCvItems,
+} from "../lib/bulk-cv/read";
+import {
+  computeInitialScoringState,
+  findPersonByContact,
+  ingestApplication,
+  normaliseEmail,
+  normalisePhone,
+  parseStoredResume,
+} from "../lib/application-ingest";
+import {
   computeRecruiterUrgency,
   computeMustHavePct,
   computeRiskFlags,
@@ -1153,6 +1389,8 @@ import {
   type HonoTRPCContext,
 } from "./trpc-core";
 import { withAudit } from "./with-audit";
+import { schedulingProcedures } from "./scheduling-procedures";
+import { loadSchedulingSettings, queuePanelistInvites } from "../lib/interview-scheduling";
 import {
   createOnboardingCaseForApplication as createOnboardingCase,
   ensureDocumentCollectionTasks,
@@ -1169,6 +1407,27 @@ import { getStorageClient } from "../lib/storage";
 import { attachDocumentToCase, matchDocumentCollectionTask } from "../lib/onboarding-document";
 import { attachApplicationDocumentBlob } from "../lib/application-document";
 import { acceptOfferAtomically, runOfferAcceptSideEffects } from "../lib/offer-accept";
+import {
+  acknowledgeRiskSignal as acknowledgeRiskSignalLib,
+  applicationInScope as preJoiningApplicationInScope,
+  getEngagementTimeline as getEngagementTimelineLib,
+  listCompanyUpdates as listPreJoiningCompanyUpdatesLib,
+  listJoiningWatchlist as listJoiningWatchlistLib,
+  recordRenege as recordRenegeLib,
+  startJourneysForAcceptedCandidates,
+  upsertCompanyUpdate as upsertPreJoiningCompanyUpdateLib,
+  createWelcomeDraftFromVersion as createWelcomeDraftFromVersionLib,
+  discardWelcomeGuideDraft as discardWelcomeGuideDraftLib,
+  generateWelcomeGuide as generateWelcomeGuideLib,
+  getCandidateWelcomeGuide as getCandidateWelcomeGuideLib,
+  getWelcomeContent as getWelcomeContentLib,
+  isWelcomeGenerationEnabled,
+  listWelcomeScopes as listWelcomeScopesLib,
+  markWelcomeSectionViewed as markWelcomeSectionViewedLib,
+  publishWelcomeGuide as publishWelcomeGuideLib,
+  updateWelcomeGuideDraft as updateWelcomeGuideDraftLib,
+  upsertWelcomeSource as upsertWelcomeSourceLib,
+} from "../lib/pre-joining";
 // P0.4/P0.5 — the partner-facing stage email. Extracted from this file so the
 // two raw-SQL offer paths (candidate accept / decline) fire the same enqueue
 // with the same allowlist, payload and dedup key.
@@ -1226,21 +1485,6 @@ import {
   tokensMatchNeedle,
   tokensCoverSkill,
 } from "../lib/skill-match";
-
-/**
- * Lowercase, drop +suffix in the local part. Gmail dot-stripping is
- * deferred — see persons.emailNormalised comment in @hireops/db.
- */
-function normaliseEmail(email: string): string {
-  const lowered = email.toLowerCase();
-  const atIndex = lowered.indexOf("@");
-  if (atIndex < 0) return lowered;
-  const local = lowered.slice(0, atIndex);
-  const domain = lowered.slice(atIndex + 1);
-  const plusIndex = local.indexOf("+");
-  const trimmedLocal = plusIndex < 0 ? local : local.slice(0, plusIndex);
-  return `${trimmedLocal}@${domain}`;
-}
 
 /**
  * Create (or resolve, if it already exists) a Supabase auth user via the
@@ -1416,10 +1660,6 @@ function partnerInvitationDeadState(
   return null;
 }
 
-function normalisePhone(phone: string): string {
-  return phone.replace(/[^0-9]/g, "");
-}
-
 /**
  * protectedProcedure guarantees ctx.db is set, but the HonoTRPCContext
  * type declares it as `TenantBoundDb | undefined`. requireDb narrows
@@ -1541,11 +1781,26 @@ const HR_METRICS_READ_ROLES = new Set(["admin", "hr_head"]);
 // re-homed catalog entries in a later ticket — until then a catalog
 // report is readable by all three or by none.
 const REPORTS_READ_ROLES = new Set(["admin", "hr_head", "hr_ops"]);
+// PC-19 — the BU-tree picker serves both /reports and /ask-data.
+const REPORT_BU_PICKER_ROLES = new Set([...REPORTS_READ_ROLES, ...ASK_DATA_ROLES]);
 // HRHEAD-03 — the Governance + Executive Audit surfaces (policy blocks, risk
 // flags, compliance score). hr_head (the governance owner) + admin. The
 // "changes require admin approval" copy on the settings blocks is COPY ONLY
 // for the POC — hr_head edits take effect immediately (flagged in the UI).
 const GOVERNANCE_READ_ROLES = new Set(["admin", "hr_head"]);
+// PC-26 — who may see diverse-slate COUNTS (never per-candidate values) and
+// who may edit the tenant diversitySlate block. Single source: api-types.
+const DIVERSE_SLATE_VIEW_ROLE_SET = new Set<string>(DIVERSE_SLATE_VIEW_ROLES);
+const DIVERSE_SLATE_ADMIN_ROLE_SET = new Set<string>(DIVERSE_SLATE_ADMIN_ROLES);
+// Requisition states whose slate is "live" for the dashboard / shortlist flag.
+const DIVERSE_SLATE_OPEN_REQ_STATUSES = ["approved", "posted", "on_hold"];
+/**
+ * PC-14..17 — pre-joining engagement. Settings + company updates: admin and
+ * the TA lead (hr_head). Watchlist / timeline / signals / renege: recruiter,
+ * hr_head, admin — a recruiter sees only the applications they own.
+ */
+const PRE_JOINING_ADMIN_ROLES = new Set(["admin", "hr_head"]);
+const JOINING_WATCHLIST_ROLES = new Set(["admin", "hr_head", "recruiter"]);
 // REQ-03 decision mutation. hr_head (the approver) + admin. recruiter /
 // hiring_manager get FORBIDDEN.
 const REQUISITION_APPROVAL_DECIDE_ROLES = new Set(["admin", "hr_head"]);
@@ -1627,6 +1882,13 @@ const AI_SETTINGS_ADMIN_ROLES = new Set(["admin"]);
 // (tenant_user_memberships has no authenticated write policy) are authorised
 // by this explicit gate + the ctx.tenantId predicate.
 const USERS_ADMIN_ROLES = new Set(["admin"]);
+
+// PC-13 — Workday handoff record (download + status chip). The roles that work
+// the offer: recruiter (owns the candidate + offer in the drawer), hr_ops (comp
+// desk / offer operations) and admin. hiring_manager / hr_head / panel_member
+// get FORBIDDEN — the record carries PII + base pay. RLS still tenant-scopes the
+// read underneath this gate.
+const WORKDAY_HANDOFF_ROLES = new Set(["admin", "recruiter", "hr_ops"]);
 
 // P0.1A — internal partner administration (create partner orgs, invite partner
 // users, open/close requisitions to a partner). hr_ops runs the vendor
@@ -2019,6 +2281,37 @@ async function loadCandidateFieldPolicyOverrides(
   return out;
 }
 
+/**
+ * PC-7 — which screening questions the PUBLIC apply form requires. A question is
+ * required only when the tenant SAVED a candidate_field_policy row marking its
+ * catalog key ('notice_period' | 'expected_salary' | 'current_location')
+ * required; the platform default is optional (the catalog's code-default
+ * requiredness is a tracker hint, not a gate — the same honesty rule T2.1
+ * applies to stage gates). Public path → read on the service pool, scoped by
+ * tenant_id. Never throws: a read failure degrades to all-optional.
+ */
+async function resolveApplyScreeningPolicy(tenantId: string): Promise<ApplyScreeningPolicy> {
+  try {
+    const rows = await poolDb
+      .select({
+        fieldKey: candidateFieldPolicy.fieldKey,
+        requiredness: candidateFieldPolicy.requiredness,
+      })
+      .from(candidateFieldPolicy)
+      .where(eq(candidateFieldPolicy.tenantId, tenantId));
+    const required = new Set(
+      rows.filter((r) => r.requiredness === "required").map((r) => r.fieldKey),
+    );
+    return {
+      noticePeriodRequired: required.has("notice_period"),
+      expectedSalaryRequired: required.has("expected_salary"),
+      currentLocationRequired: required.has("current_location"),
+    };
+  } catch {
+    return DEFAULT_APPLY_SCREENING_POLICY;
+  }
+}
+
 /** Build the seven catalog entries the admin editor renders — each field's code
  * default + this tenant's EFFECTIVE requiredness/gate + whether a saved policy
  * row drives (and ENFORCES) it (`isConfigured`). */
@@ -2053,6 +2346,9 @@ async function loadApplicationFieldPresence(
   const [row] = await db
     .select({
       expectedSalaryInrPaise: applications.expectedSalaryInrPaise,
+      // PC-7b — the application's own screening answers win over CV / person.
+      noticePeriodDays: applications.noticePeriodDays,
+      currentLocation: applications.currentLocation,
       parsedSkills: candidates.parsedSkills,
       personLocationCountry: persons.locationCountry,
     })
@@ -2066,6 +2362,8 @@ async function loadApplicationFieldPresence(
     expectedSalaryInrPaise: row.expectedSalaryInrPaise,
     parsed: narrowParsedResume(row.parsedSkills),
     personLocationCountry: row.personLocationCountry,
+    applicationNoticePeriodDays: row.noticePeriodDays,
+    applicationCurrentLocation: row.currentLocation,
   });
 }
 
@@ -2378,12 +2676,37 @@ async function resolveMembershipNames(
   return out;
 }
 
+/** Narrow ctx.tenantId for a protected procedure (always set there). */
+function requireTenantId(ctx: HonoTRPCContext): string {
+  if (!ctx.tenantId) {
+    throw new TRPCError({
+      code: "INTERNAL_SERVER_ERROR",
+      message: "protected procedure missing tenantId",
+    });
+  }
+  return ctx.tenantId;
+}
+
+/**
+ * PC-16 — the watchlist scope: admin / hr_head see the whole tenant (null);
+ * a recruiter (without either of those roles) sees only applications they
+ * own, keyed by their membership id. A recruiter with no membership row gets
+ * an impossible id, i.e. an empty scope, never the whole tenant.
+ */
+async function preJoiningRecruiterScope(
+  ctx: HonoTRPCContext,
+  tenantId: string,
+): Promise<string | null> {
+  if (ctx.roles.includes("admin") || ctx.roles.includes("hr_head")) return null;
+  return (await resolveCallerMembershipId(ctx, tenantId)) ?? "00000000-0000-0000-0000-000000000000";
+}
+
 /**
  * Throws FORBIDDEN unless the caller holds any role in `allowed`. Same
  * explicit-set idiom the approval-resolution gates use — kept a tiny local
  * helper rather than a framework so each call site reads plainly.
  */
-function requireAnyRole(ctx: HonoTRPCContext, allowed: Set<string>, message: string): void {
+function requireAnyRole(ctx: HonoTRPCContext, allowed: ReadonlySet<string>, message: string): void {
   if (!ctx.roles.some((r) => allowed.has(r))) {
     throw new TRPCError({ code: "FORBIDDEN", message });
   }
@@ -3279,65 +3602,19 @@ function decodeAuditCursor(cursor: string | undefined): { createdAt: Date; id: s
 const PUBLIC_APPLY_ACCEPTING_STATUSES = new Set<string>(["approved", "posted"]);
 
 /**
- * Parser confidence (`parse_metadata.confidence_score`) below this
- * floor skips AI scoring at submit time — the LLM input would be too
- * unreliable to score against. Logged on the application as
- * `ai_score_explanation = { scored_by: 'skipped', reason:
- * 'parser_confidence_below_threshold', confidence: <value> }`. 0.5 is
- * the AI-03 v1 threshold; tunable here, not per-tenant.
- */
-const PARSER_CONFIDENCE_SCORING_FLOOR = 0.5;
-
-/**
- * Decide the scoring fields an application row should carry at insert time,
- * shared by the public apply path (submitApplication) and the partner
- * submission path (partnerSubmitCandidate) so both get IDENTICAL downstream
- * treatment. Returns the synchronous ai_score_explanation for the skipped
- * cases (knockouts failed, parser confidence below floor) and whether an
- * ai_score_outbox row should be enqueued (only when eligible). Pure — no DB.
- */
-function computeInitialScoringState(
-  knockoutPassed: boolean | null,
-  parserConfidence: number | null,
-  evaluatedAt: Date,
-): { initialAiScoreExplanation: Record<string, unknown> | null; outboxEligible: boolean } {
-  if (knockoutPassed === false) {
-    return {
-      initialAiScoreExplanation: {
-        scored_by: "skipped",
-        reason: "knockouts_failed",
-        skipped_at: evaluatedAt.toISOString(),
-      },
-      outboxEligible: false,
-    };
-  }
-  if (parserConfidence !== null && parserConfidence < PARSER_CONFIDENCE_SCORING_FLOOR) {
-    return {
-      initialAiScoreExplanation: {
-        scored_by: "skipped",
-        reason: "parser_confidence_below_threshold",
-        confidence: parserConfidence,
-        skipped_at: evaluatedAt.toISOString(),
-      },
-      outboxEligible: false,
-    };
-  }
-  return { initialAiScoreExplanation: null, outboxEligible: true };
-}
-
-/**
  * Materialise a partner-sourced candidate into the recruitment pipeline:
- * parse the CV, evaluate knockouts, upsert the candidate (one per person per
- * tenant), upsert the application for this req, and enqueue AI scoring when
- * eligible — the same downstream steps submitApplication runs, so a
+ * parse the CV, then hand off to the shared ingest core
+ * (lib/application-ingest.ts — knockouts, candidate upsert, application
+ * upsert, scoring enqueue), the same core the PC-2 bulk-CV drain runs, so a
  * partner-sourced candidate is indistinguishable from a direct applicant to
- * the recruiter (triage, scoring, knockouts all apply). Runs on the partner
- * procedure's tenant-bound tx (ctx.db) so it commits/rolls back atomically
- * with the ownership-claim decision the caller wraps around it.
+ * the recruiter. Runs on the partner procedure's tenant-bound tx (ctx.db) so
+ * it commits/rolls back atomically with the ownership-claim decision the
+ * caller wraps around it.
  *
  * Attribution: application.source = 'partner_empanelled', plus the
  * source_partner_id / submitted_by_partner_user_id / partner_submission_metadata
- * columns the schema pre-wired for exactly this.
+ * columns the schema pre-wired for exactly this. The candidate row (when new)
+ * carries the partner's consent attestation.
  */
 async function ingestPartnerApplication(
   db: TenantBoundDb,
@@ -3350,6 +3627,8 @@ async function ingestPartnerApplication(
     partnerOrgId: string;
     partnerUserId: string;
     partnerSubmissionMetadata: Record<string, unknown>;
+    /** PC-7 — screening answers the partner supplied (stored with source 'partner'). */
+    screening?: ScreeningAnswersInput;
     log: HonoTRPCContext["log"];
     requestId: string;
   },
@@ -3359,129 +3638,36 @@ async function ingestPartnerApplication(
   wasNewApplication: boolean;
   parseStatus: "received" | "parse_failed";
 }> {
-  const { tenantId, requisitionId, personId } = args;
-
-  // Parse the CV (same parser the apply path uses).
-  const storage = getStorageClient();
-  let parseStatus: "received" | "parse_failed" = "received";
-  let parsedSkills: unknown = null;
-  let parserConfidence: number | null = null;
-  let yearsOfExperience: number | null = null;
-  try {
-    const obj = await storage.get(args.resumeUploadKey);
-    const parsed = await parseResume(obj.buffer, obj.contentType, { tenantId });
-    parsedSkills = parsed;
-    yearsOfExperience = parsed.total_years_experience;
-    parserConfidence = parsed.parse_metadata.confidence_score;
-    if (parsed.parse_metadata.confidence_score === 0) parseStatus = "parse_failed";
-  } catch (err) {
-    args.log.error({ err, request_id: args.requestId }, "partnerSubmit: parseResume threw");
-    parseStatus = "parse_failed";
-  }
-
-  // Knockout evaluation (deterministic, no AI call) — identical to apply.
-  const knockoutRows = await db
-    .select({
-      id: requisitionKnockouts.id,
-      type: requisitionKnockouts.type,
-      source: requisitionKnockouts.source,
-      questionText: requisitionKnockouts.questionText,
-      thresholdValue: requisitionKnockouts.thresholdValue,
-    })
-    .from(requisitionKnockouts)
-    .where(
-      and(
-        eq(requisitionKnockouts.tenantId, tenantId),
-        eq(requisitionKnockouts.requisitionId, requisitionId),
-      ),
-    )
-    .orderBy(requisitionKnockouts.orderIndex);
-  const knockoutInputs: KnockoutInput[] = knockoutRows.map((r) => ({
-    id: r.id,
-    type: r.type,
-    source: r.source,
-    questionText: r.questionText,
-    thresholdValue: r.thresholdValue,
-  }));
-  const knockoutEval = evaluateKnockouts(parsedSkills, knockoutInputs);
-  const knockoutEvaluatedAt = new Date();
-
-  // Upsert candidate by (tenant, person).
-  const [existingCandidate] = await db
-    .select({ id: candidates.id })
-    .from(candidates)
-    .where(and(eq(candidates.tenantId, tenantId), eq(candidates.personId, personId)))
-    .limit(1);
-  const candidateId = existingCandidate?.id
-    ? existingCandidate.id
-    : await db
-        .insert(candidates)
-        .values({
-          tenantId,
-          personId,
-          source: "partner_empanelled",
-          consentGrantedAt: new Date(),
-          consentVersion: args.consentVersion,
-          currentResumeUrl: args.resumeUploadKey,
-          parsedSkills,
-          yearsOfExperience: yearsOfExperience !== null ? yearsOfExperience.toFixed(1) : null,
-        })
-        .returning({ id: candidates.id })
-        .then((rows) => firstOrThrow(rows, "partner candidate insert").id);
-
-  // Upsert application by (tenant, candidate, req).
-  const [existingApp] = await db
-    .select({ id: applications.id })
-    .from(applications)
-    .where(
-      and(
-        eq(applications.tenantId, tenantId),
-        eq(applications.candidateId, candidateId),
-        eq(applications.requisitionId, requisitionId),
-      ),
-    )
-    .limit(1);
-
-  const { initialAiScoreExplanation, outboxEligible } = computeInitialScoringState(
-    knockoutEval.passed,
-    parserConfidence,
-    knockoutEvaluatedAt,
-  );
-
-  const wasNewApplication = !existingApp?.id;
-  const applicationId = existingApp?.id
-    ? existingApp.id
-    : await db
-        .insert(applications)
-        .values({
-          tenantId,
-          candidateId,
-          requisitionId,
-          source: "partner_empanelled",
-          knockoutPassed: knockoutEval.passed,
-          knockoutFailures: knockoutEval.failures.length > 0 ? knockoutEval.failures : null,
-          knockoutEvaluatedAt,
-          aiScoreExplanation: initialAiScoreExplanation,
-          sourcePartnerId: args.partnerOrgId,
-          submittedByPartnerUserId: args.partnerUserId,
-          partnerSubmissionMetadata: args.partnerSubmissionMetadata,
-        })
-        .returning({ id: applications.id })
-        .then((rows) => firstOrThrow(rows, "partner application insert").id);
-
-  // Enqueue AI scoring only on first apply + eligibility — same rule as apply.
-  if (wasNewApplication && outboxEligible) {
-    try {
-      await db.insert(aiScoreOutbox).values({ tenantId, applicationId });
-    } catch (err) {
-      args.log.warn(
-        { err, request_id: args.requestId, application_id: applicationId },
-        "partnerSubmit: ai_score_outbox enqueue failed",
-      );
-    }
-  }
-
-  return { candidateId, applicationId, wasNewApplication, parseStatus };
+  const parse = await parseStoredResume(args.resumeUploadKey, {
+    tenantId: args.tenantId,
+    log: args.log,
+    requestId: args.requestId,
+    logLabel: "partnerSubmit",
+  });
+  const ingest = await ingestApplication(db, {
+    tenantId: args.tenantId,
+    requisitionId: args.requisitionId,
+    personId: args.personId,
+    resumeUploadKey: args.resumeUploadKey,
+    source: "partner_empanelled",
+    parse,
+    candidateConsent: { grantedAt: new Date(), version: args.consentVersion },
+    screening: { supplied: args.screening, source: "partner" },
+    partner: {
+      partnerOrgId: args.partnerOrgId,
+      partnerUserId: args.partnerUserId,
+      submissionMetadata: args.partnerSubmissionMetadata,
+    },
+    log: args.log,
+    requestId: args.requestId,
+    logLabel: "partnerSubmit",
+  });
+  return {
+    candidateId: ingest.candidateId,
+    applicationId: ingest.applicationId,
+    wasNewApplication: ingest.wasNewApplication,
+    parseStatus: ingest.parseStatus,
+  };
 }
 
 // ─────────────── CAND-02 raw-SQL row shapes (ctx.db.execute reads) ───────────────
@@ -3919,50 +4105,8 @@ function narrowParsedResume(value: unknown): ParsedResumeView {
   if (!value || typeof value !== "object") return {};
   return value as ParsedResumeView;
 }
-function asString(v: unknown): string | null {
-  return typeof v === "string" && v.trim().length > 0 ? v.trim() : null;
-}
 function asStringArray(v: unknown): string[] {
   return Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : [];
-}
-
-/**
- * Deterministic field-presence for the Missing Info Tracker. `true` = the value
- * is on the application / parsed resume; `false` = genuinely missing (drives a
- * pending row). Reads only real fields — no inference.
- */
-function computeFieldPresence(args: {
-  expectedSalaryInrPaise: bigint | null;
-  parsed: ParsedResumeView;
-  personLocationCountry: string | null;
-}): FieldPresence {
-  const { parsed } = args;
-  const personal = parsed.personal ?? {};
-  const noticePresent =
-    typeof parsed.notice_period_days === "number" ||
-    typeof personal.notice_period_days === "number";
-  const availabilityPresent =
-    asString(parsed.availability_date) != null || asString(personal.availability_date) != null;
-  const workAuthPresent =
-    asString(parsed.work_authorization) != null || asString(personal.work_authorization) != null;
-  const locationPresent =
-    asString(args.personLocationCountry) != null || asString(personal.location_country) != null;
-  const skillsPresent = asStringArray(parsed.skills).length > 0;
-  const educationYearPresent =
-    Array.isArray(parsed.education) &&
-    parsed.education.some(
-      (e) => e && typeof e === "object" && (e as Record<string, unknown>).year != null,
-    );
-
-  return {
-    expected_salary: args.expectedSalaryInrPaise != null,
-    notice_period: noticePresent,
-    availability_date: availabilityPresent,
-    work_authorization: workAuthPresent,
-    current_location: locationPresent,
-    skills_confirmation: skillsPresent,
-    education_year: educationYearPresent,
-  };
 }
 
 /** Parsed resume highlights (deterministic — flattened from work_history +
@@ -3997,6 +4141,9 @@ interface RecruiterBriefContextRow {
   currentStage: ApplicationStage;
   aiScore: number | null;
   expectedSalaryInrPaise: bigint | null;
+  /** PC-7b — application screening answers (preferred by field presence). */
+  applicationNoticePeriodDays: number | null;
+  applicationCurrentLocation: string | null;
   personLocationCountry: string | null;
   parsedSkills: unknown;
   yearsOfExperience: number | null;
@@ -4026,6 +4173,8 @@ async function loadRecruiterBriefContext(
       currentStage: applications.currentStage,
       aiScore: applications.aiScore,
       expectedSalaryInrPaise: applications.expectedSalaryInrPaise,
+      applicationNoticePeriodDays: applications.noticePeriodDays,
+      applicationCurrentLocation: applications.currentLocation,
       personLocationCountry: persons.locationCountry,
       parsedSkills: candidates.parsedSkills,
       yearsOfExperience: candidates.yearsOfExperience,
@@ -4082,6 +4231,8 @@ async function loadRecruiterBriefContext(
       currentStage: row.currentStage as ApplicationStage,
       aiScore: row.aiScore != null ? Number(row.aiScore) : null,
       expectedSalaryInrPaise: row.expectedSalaryInrPaise,
+      applicationNoticePeriodDays: row.applicationNoticePeriodDays,
+      applicationCurrentLocation: row.applicationCurrentLocation,
       personLocationCountry: row.personLocationCountry,
       parsedSkills: row.parsedSkills,
       yearsOfExperience: row.yearsOfExperience != null ? Number(row.yearsOfExperience) : null,
@@ -4131,6 +4282,11 @@ function parseRecruiterBriefContent(
 }
 
 export const appRouter = router({
+  // PC-8 / PC-9 / PC-10 — in-app interview scheduling (availability, slot
+  // proposal, candidate self-pick / reschedule, panellist can't-attend). Flat
+  // names, defined in ./scheduling-procedures.ts to keep this file from growing.
+  ...schedulingProcedures,
+
   // ─────────── public: apply form ───────────
   submitApplication: publicProcedure
     .input(submitApplicationInputSchema)
@@ -4161,10 +4317,37 @@ export const appRouter = router({
         });
       }
 
+      // PC-7 — the tenant's candidate-field policy can make a screening
+      // question required on the apply form; enforce it here too so the rule
+      // holds for any client, not just the portal form.
+      {
+        const policy = await resolveApplyScreeningPolicy(req.tenantId);
+        const sa = input.screening ?? {};
+        const missing: string[] = [];
+        if (policy.noticePeriodRequired && sa.noticePeriodDays == null)
+          missing.push("notice period");
+        if (policy.expectedSalaryRequired && sa.expectedSalaryInrPaise == null)
+          missing.push("expected CTC");
+        if (policy.currentLocationRequired && !sa.currentLocation?.trim())
+          missing.push("current location");
+        if (missing.length > 0) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: `Please answer: ${missing.join(", ")}`,
+          });
+        }
+      }
+
+      // PC-26 — the API audit log records THAT a self-ID was given, never the
+      // answers (they live only in candidate_diversity_self_id).
+      const auditInput = {
+        ...input,
+        diversitySelfId: input.diversitySelfId ? "[redacted]" : undefined,
+      };
       return withAudit(
         "submit_application",
         ctx,
-        input,
+        auditInput,
         async () => {
           // 2. Fetch resume from storage, parse it.
           const storage = getStorageClient();
@@ -4215,7 +4398,19 @@ export const appRouter = router({
             questionText: r.questionText,
             thresholdValue: r.thresholdValue,
           }));
-          const knockoutEval = evaluateKnockouts(parsedSkills, knockoutInputs);
+          // PC-7 — the applicant's screening answers (notice pre-filled from
+          // the parsed CV when left blank) feed the candidate-asserted
+          // knockouts and land on the application row in step 5.
+          const screeningCols = resolveScreeningAnswersForInsert({
+            supplied: input.screening,
+            parsedCv: parsedSkills,
+            source: "candidate",
+          });
+          const knockoutEval = evaluateKnockouts(
+            parsedSkills,
+            knockoutInputs,
+            screeningKnockoutView(screeningCols),
+          );
           const knockoutEvaluatedAt = new Date();
 
           // 3. Dedup person by normalised email OR phone within tenant.
@@ -4396,9 +4591,33 @@ export const appRouter = router({
                   knockoutFailures: knockoutEval.failures.length > 0 ? knockoutEval.failures : null,
                   knockoutEvaluatedAt,
                   aiScoreExplanation: initialAiScoreExplanation,
+                  ...screeningCols,
                 })
                 .returning({ id: applications.id })
                 .then((rows) => firstOrThrow(rows, "applications insert").id);
+
+          // PC-26 — optional diversity self-ID. Stored ONLY in the separate
+          // candidate_diversity_self_id table (pool: the public form has no
+          // JWT; the person was resolved above). Best-effort: a failure here
+          // never fails the application, and nothing about it reaches the
+          // application row, scoring or any AI prompt.
+          if (input.diversitySelfId && input.diversitySelfId.answers.length > 0) {
+            try {
+              const dsSettings = await resolveTenantDiversitySlateDb(req.tenantId);
+              await applySelfIdSubmission(poolDb, {
+                tenantId: req.tenantId,
+                personId,
+                submission: input.diversitySelfId,
+                settings: dsSettings,
+                collectedVia: "apply_form",
+              });
+            } catch (err) {
+              ctx.log.warn(
+                { err, request_id: ctx.requestId, application_id: applicationId },
+                "submitApplication: diversity self-ID not stored",
+              );
+            }
+          }
 
           // Enqueue the AI scoring outbox row only on first apply +
           // eligibility (knockouts not failed, parser confidence above
@@ -4502,6 +4721,11 @@ export const appRouter = router({
         tenantDisplayName: row.tenantDisplayName,
         requisitionId: row.requisitionId,
         positionTitle: row.positionTitle,
+        screeningPolicy: await resolveApplyScreeningPolicy(row.tenantId),
+        diversityCapture: toDiversityCaptureConfig(
+          await resolveTenantDiversitySlateDb(row.tenantId),
+          row.tenantDisplayName,
+        ),
       };
     }),
 
@@ -4556,6 +4780,11 @@ export const appRouter = router({
             aiScoreExplanation: applications.aiScoreExplanation,
             aiScoredAt: applications.aiScoredAt,
             currentStage: applications.currentStage,
+            // PC-7 — screening answers + knockout verdict for the drawer chips.
+            ...screeningAnswerColumns,
+            knockoutPassed: applications.knockoutPassed,
+            knockoutFailures: applications.knockoutFailures,
+            knockoutEvaluatedAt: applications.knockoutEvaluatedAt,
             // P0.5 — the sourcing partner's name for the drawer's source chip,
             // same LEFT JOIN as listCandidatesByRequisition so the list and the
             // drawer can never name different agencies for the same row. Rides
@@ -4659,19 +4888,89 @@ export const appRouter = router({
             requestId: ctx.requestId,
           });
         }
+        // PC-6 — the per-criterion screening evidence (primary screening
+        // output), and NEW-16: the 0–100 score is omitted server-side when the
+        // tenant hides it.
+        const scoreVisible = ctx.tenantId
+          ? (await resolveTenantAiSettingsDb(ctx.tenantId)).screeningScoreVisible
+          : true;
+        const screeningEvidence = appRow ? await loadScreeningEvidence(db, appRow.id) : null;
         return {
           candidate: { ...row.candidate, createdAt: row.candidate.createdAt.toISOString() },
           person: presentedPerson,
           application: appRow
             ? {
                 id: appRow.id,
-                aiScore: appRow.aiScore === null ? null : Number(appRow.aiScore),
-                aiScoreExplanation: appRow.aiScoreExplanation ?? null,
+                ...presentAiScore(appRow.aiScore, scoreVisible),
+                aiScoreExplanation: presentScoreExplanation(
+                  appRow.aiScoreExplanation ?? null,
+                  scoreVisible,
+                ),
                 aiScoredAt: toIsoString(appRow.aiScoredAt),
                 partnerOrgName: appRow.partnerOrgName ?? null,
+                screening: presentScreeningAnswers(appRow, row.candidate.parsedSkills, ctx.roles),
+                knockout: summariseKnockouts(
+                  appRow.knockoutPassed,
+                  appRow.knockoutFailures,
+                  appRow.knockoutEvaluatedAt,
+                ),
+                screeningEvidence,
               }
             : null,
           latestTransition,
+        };
+      });
+    }),
+
+  /**
+   * PC-7 — recruiter edit of an application's screening answers (notice period,
+   * current / expected CTC, current location). Patch semantics (omitted = keep,
+   * null = clear). Writes through the shared setApplicationScreeningAnswers
+   * helper with source 'recruiter', which re-evaluates the requisition's
+   * knockouts against the new values. Pay fields are refused (FORBIDDEN) for a
+   * caller who cannot see pay, and masked on the echo the same way as reads.
+   */
+  updateApplicationScreeningAnswers: protectedProcedure
+    .input(updateApplicationScreeningAnswersInputSchema)
+    .output(updateApplicationScreeningAnswersOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      requireAnyRole(
+        ctx,
+        SCREENING_ANSWERS_WRITE_ROLES as Set<string>,
+        "Editing screening answers requires the recruiter, hr_ops or admin role",
+      );
+      const touchesPay =
+        input.answers.currentSalaryInrPaise !== undefined ||
+        input.answers.expectedSalaryInrPaise !== undefined;
+      if (touchesPay && !canSeeScreeningComp(ctx.roles)) {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: "Your role cannot view or edit candidate pay",
+        });
+      }
+      const db = requireDb(ctx);
+      const tenantId = ctx.tenantId;
+      if (!tenantId) {
+        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
+      }
+      return withAudit("update_application_screening_answers", ctx, input, async () => {
+        const res = await setApplicationScreeningAnswers(db, {
+          tenantId,
+          applicationId: input.applicationId,
+          answers: input.answers,
+          source: "recruiter",
+        });
+        if (!res) {
+          throw new TRPCError({ code: "NOT_FOUND", message: "Application not found" });
+        }
+        return {
+          applicationId: input.applicationId,
+          screening: presentScreeningAnswers(res.stored, res.parsedCv, ctx.roles),
+          knockout: summariseKnockouts(
+            res.knockout?.passed ?? null,
+            res.knockout?.failures ?? null,
+            res.knockoutEvaluatedAt,
+          ),
         };
       });
     }),
@@ -4712,15 +5011,28 @@ export const appRouter = router({
         );
       const slaBreachExpr = dsql`(CASE ${dsql.join(slaBreachClauses, dsql.raw(" "))} ELSE false END)`;
 
+      // NEW-16 / PC-6 — with the screening score hidden for this tenant, the
+      // score can neither be returned NOR leak through the order or a filter:
+      // ai_score_desc is served as evidence_desc and minAiScore is ignored.
+      const scoreVisible = ctx.tenantId
+        ? (await resolveTenantAiSettingsDb(ctx.tenantId)).screeningScoreVisible
+        : true;
+      const sort = !scoreVisible && input.sort === "ai_score_desc" ? "evidence_desc" : input.sort;
+
       const conds = [
         ...(filters.requisitionId ? [eq(applications.requisitionId, filters.requisitionId)] : []),
         ...(filters.stage ? [eq(applications.currentStage, filters.stage)] : []),
         ...(filters.source ? [eq(applications.source, filters.source)] : []),
-        ...(filters.minAiScore !== undefined
+        ...(filters.minAiScore !== undefined && scoreVisible
           ? [dsql`${applications.aiScore} >= ${filters.minAiScore}`]
           : []),
         ...(filters.slaBreachOnly ? [slaBreachExpr] : []),
+        // PC-5 — the same SQL fact filters as candidates-by-role (expected-CTC
+        // dropped silently for callers who cannot see pay).
+        ...factFilterConditions(resolveFactFilters(filters, ctx.roles).applied),
       ];
+      // PC-5 — offset mode: stable order + a total, cursor ignored.
+      const offsetMode = input.pagination.offset !== undefined;
 
       // Sort + cursor. For Wave 1 we keep the cursor field locked to the
       // primary sort field; cross-sort cursor reuse isn't perfect, but
@@ -4728,22 +5040,33 @@ export const appRouter = router({
       // 20, Momentum capped at 50). Document if pagination quirks
       // surface in practice.
       let orderClause;
-      if (input.sort === "ai_score_desc") {
+      if (sort === "ai_score_desc") {
         orderClause = dsql`${applications.aiScore} DESC NULLS LAST, ${applications.id} DESC`;
-        if (cursor) {
+        if (cursor && !offsetMode) {
           // Cursor encodes createdAt fallback; not strictly correct for
           // ai_score_desc but stable enough for Wave 1.
           conds.push(lt(applications.createdAt, cursor));
         }
-      } else if (input.sort === "sla_breach") {
+      } else if (sort === "evidence_desc") {
+        // PC-6 — must-haves met (partial = ½) desc, not met asc, unscreened
+        // last; newest first within a tie. Same createdAt-cursor caveat as
+        // ai_score_desc above (cursor ignored in PC-5 offset mode; the id
+        // tiebreak keeps offset paging stable).
+        orderClause = dsql`${evidenceOrderSql()}, ${applications.createdAt} DESC, ${applications.id} DESC`;
+        if (cursor && !offsetMode) conds.push(lt(applications.createdAt, cursor));
+      } else if (sort === "sla_breach") {
         // Oldest-in-stage first — recruiter sees most overdue at the top.
-        orderClause = dsql`${applications.stageEnteredAt} ASC`;
-        if (cursor) {
+        orderClause = offsetMode
+          ? dsql`${applications.stageEnteredAt} ASC, ${applications.id} ASC`
+          : dsql`${applications.stageEnteredAt} ASC`;
+        if (cursor && !offsetMode) {
           conds.push(dsql`${applications.stageEnteredAt} > ${cursor.toISOString()}`);
         }
       } else {
-        orderClause = desc(applications.createdAt);
-        if (cursor) conds.push(lt(applications.createdAt, cursor));
+        orderClause = offsetMode
+          ? dsql`${applications.createdAt} DESC, ${applications.id} DESC`
+          : desc(applications.createdAt);
+        if (cursor && !offsetMode) conds.push(lt(applications.createdAt, cursor));
       }
 
       const rows = await db
@@ -4758,6 +5081,15 @@ export const appRouter = router({
           aiScore: applications.aiScore,
           aiScoreExplanation: applications.aiScoreExplanation,
           createdAt: applications.createdAt,
+          // PC-7 — screening chips + knockout verdict on the triage row.
+          ...screeningAnswerColumns,
+          parsedSkills: candidates.parsedSkills,
+          knockoutPassed: applications.knockoutPassed,
+          knockoutFailures: applications.knockoutFailures,
+          knockoutEvaluatedAt: applications.knockoutEvaluatedAt,
+          total: dsql<number>`(count(*) OVER ())::int`,
+          // PC-6 — compact screening-evidence counts (+ the evidence sort key).
+          ...screeningSummaryColumns,
         })
         .from(applications)
         .innerJoin(
@@ -4771,12 +5103,43 @@ export const appRouter = router({
           persons,
           and(eq(candidates.personId, persons.id), eq(candidates.tenantId, persons.tenantId)),
         )
+        .leftJoin(applicationScreeningEvidence, screeningEvidenceJoin())
         .where(conds.length ? and(...conds) : undefined)
         .orderBy(orderClause)
-        .limit(limit + 1);
+        .limit(offsetMode ? limit : limit + 1)
+        .offset(offsetMode ? (input.pagination.offset ?? 0) : 0);
 
-      const hasMore = rows.length > limit;
-      const out = rows.slice(0, limit);
+      let total: number | null = null;
+      let hasMore: boolean;
+      let out: typeof rows;
+      if (offsetMode) {
+        out = rows;
+        if (rows[0]) {
+          total = rows[0].total;
+        } else {
+          // Past the end: count(*) OVER () had no row to ride on.
+          const [c] = await db
+            .select({ n: dsql<number>`count(*)::int` })
+            .from(applications)
+            .innerJoin(
+              candidates,
+              and(
+                eq(applications.candidateId, candidates.id),
+                eq(applications.tenantId, candidates.tenantId),
+              ),
+            )
+            .innerJoin(
+              persons,
+              and(eq(candidates.personId, persons.id), eq(candidates.tenantId, persons.tenantId)),
+            )
+            .where(conds.length ? and(...conds) : undefined);
+          total = c?.n ?? 0;
+        }
+        hasMore = false;
+      } else {
+        hasMore = rows.length > limit;
+        out = rows.slice(0, limit);
+      }
 
       // HRHEAD-03 screeningPrivacy — same presentation-level mask the drawer
       // applies, here per triage row. Resolve the policy once, then decide
@@ -4797,12 +5160,20 @@ export const appRouter = router({
             source: r.source,
             stage: r.stage,
             stageEnteredAt: r.stageEnteredAt.toISOString(),
-            aiScore: r.aiScore === null ? null : Number(r.aiScore),
-            aiScoreExplanation: r.aiScoreExplanation,
+            ...presentAiScore(r.aiScore, scoreVisible),
+            aiScoreExplanation: presentScoreExplanation(r.aiScoreExplanation, scoreVisible),
+            evidenceSummary: toScreeningSummary(r),
             createdAt: r.createdAt.toISOString(),
+            screening: presentScreeningAnswers(r, r.parsedSkills, ctx.roles),
+            knockout: summariseKnockouts(
+              r.knockoutPassed,
+              r.knockoutFailures,
+              r.knockoutEvaluatedAt,
+            ),
           };
         }),
         nextCursor: hasMore ? lastCursor(out) : null,
+        total,
       };
     }),
 
@@ -5061,90 +5432,120 @@ export const appRouter = router({
       });
     }),
 
-  // ═══════════ Workday import — PoC PREVIEW (no live Workday connection) ═══════════
+  // ═══════════ Workday import — export upload (no live Workday connection) ═══════════
 
   /**
-   * previewWorkdayRequisitionImport — the "Import from Workday" drawer's preview.
-   * Reads the BUILT-IN sample Workday requisition export (there is no live
-   * Workday connection) and validates every mapped field against the tenant's
-   * REAL data: active business units, active members (hiring manager by display
-   * name) and active comp bands (grade by level/name). Each row also carries
-   * whether it was already imported (provenance on the creating state
-   * transition). Same roles as createRequisitionDraft. Read-only.
+   * previewWorkdayRequisitionImport — the drawer's "Use sample data" preview
+   * (DEMO). Reads the BUILT-IN sample Workday requisition export and validates
+   * every mapped field against the tenant's REAL data: active business units,
+   * active members (hiring manager by display name) and active comp bands
+   * (grade by level/name). Each row also carries whether it was already
+   * imported (provenance on the creating state transition). Same roles as
+   * createRequisitionDraft. Read-only.
    */
   previewWorkdayRequisitionImport: protectedProcedure
     .output(previewWorkdayRequisitionImportOutputSchema)
     .query(async ({ ctx }) => {
-      requireAnyRole(
-        ctx,
-        REQUISITION_WRITE_ROLES,
-        "Importing requisitions requires the hiring_manager or admin role",
-      );
-      const db = requireDb(ctx);
-      if (!ctx.tenantId) {
-        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
-      }
-      const tenantId = ctx.tenantId;
-      const membershipId = await resolveActorMembership(db, ctx);
-      const lookups = await loadWorkdayTenantLookups(ctx, db, tenantId);
-      const callerName = membershipId
-        ? (lookups.members.find((m) => m.membershipId === membershipId)?.displayName ?? null)
-        : null;
-      const imported = await loadWorkdayImportedMap(db, tenantId);
-      return {
-        columns: [...WORKDAY_PREVIEW_COLUMNS],
-        rows: WORKDAY_SAMPLE_REQUISITIONS.map((r) =>
-          buildWorkdayPreviewRow(
-            r,
-            lookups,
-            callerName,
-            imported.get(r["Job Requisition ID"]) ?? null,
-          ),
-        ),
-      };
+      const { db, tenantId, membershipId } = await workdayImportGate(ctx);
+      return buildWorkdayImportPreview(ctx, db, tenantId, membershipId, {
+        source: "sample",
+        fileName: null,
+        rows: workdaySampleRows(WORKDAY_SAMPLE_REQUISITIONS),
+        unmappedColumns: [],
+        rowErrors: [],
+      });
     }),
 
   /**
-   * importWorkdayRequisitions — "Import as drafts". For each requested sample
-   * row not already imported, creates a DRAFT requisition through the SAME
-   * chain as createRequisitionDraft (insertRequisitionDraftChain), then seeds
-   * the draft JD (sections + jd_text) and jd_skills from the sample. Workday
-   * provenance + idempotency key = metadata on the creating state transition
-   * ({ source: "workday_import_preview", workdayJobRequisitionId }). Unknown
-   * hiring manager → the caller (flagged in the preview); no matching grade →
-   * no comp band (budget left blank). Same roles as createRequisitionDraft.
+   * previewWorkdayRequisitionUpload — "Upload Workday export". Parses the
+   * uploaded CSV/XLSX server-side (base64 in the body; ≤ 5 MB, ≤ 2,000 rows),
+   * maps headers through WORKDAY_COLUMN_ALIASES and runs the SAME preview
+   * mapping as the sample. A file problem (type, size, missing required
+   * column, …) is a BAD_REQUEST naming the problem; unknown columns and
+   * unimportable rows are returned for display. A mutation only because the
+   * file is too big for a GET query string — it writes nothing.
+   */
+  previewWorkdayRequisitionUpload: protectedProcedure
+    .input(previewWorkdayRequisitionUploadInputSchema)
+    .output(previewWorkdayRequisitionImportOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      const { db, tenantId, membershipId } = await workdayImportGate(ctx);
+      const parsed = parseWorkdayUploadOrThrow(input.file);
+      return buildWorkdayImportPreview(ctx, db, tenantId, membershipId, {
+        source: "upload",
+        fileName: input.file.fileName,
+        ...parsed,
+      });
+    }),
+
+  /**
+   * importWorkdayRequisitions — "Import as drafts". Rows come from the
+   * uploaded export (`file`, re-parsed server-side — client-mapped rows are
+   * never trusted) or, without a file, the built-in demo sample. For each
+   * requested row not already imported, creates a DRAFT requisition through
+   * the SAME chain as createRequisitionDraft (insertRequisitionDraftChain),
+   * then seeds the draft JD (sections + jd_text) and jd_skills from the row.
+   * Workday provenance + idempotency key = metadata on the creating state
+   * transition ({ source: "workday_import_preview", workdayJobRequisitionId }),
+   * so re-uploading the same file reports "already imported". Unknown hiring
+   * manager → the caller (flagged in the preview); no matching grade → no comp
+   * band (budget left blank). One call; rows are processed in batches (the
+   * active-title clash check is one query per batch) and every requested row
+   * gets an outcome. Same roles as createRequisitionDraft.
    */
   importWorkdayRequisitions: protectedProcedure
     .input(importWorkdayRequisitionsInputSchema)
     .output(importWorkdayRequisitionsOutputSchema)
     .mutation(async ({ ctx, input }) => {
-      return withAudit("import_workday_requisitions", ctx, input, async () => {
-        requireAnyRole(
-          ctx,
-          REQUISITION_WRITE_ROLES,
-          "Importing requisitions requires the hiring_manager or admin role",
-        );
-        const db = requireDb(ctx);
-        if (!ctx.tenantId) {
-          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
-        }
-        const tenantId = ctx.tenantId;
-        const membershipId = await resolveActorMembership(db, ctx);
+      // The audit row records WHICH file (name, size, sha256) — never its bytes.
+      const auditInput = {
+        jobRequisitionIds: input.jobRequisitionIds,
+        file: input.file
+          ? {
+              fileName: input.file.fileName,
+              sizeBytes: Math.floor((input.file.contentBase64.length * 3) / 4),
+              sha256: createHash("sha256").update(input.file.contentBase64).digest("hex"),
+            }
+          : null,
+      };
+      return withAudit("import_workday_requisitions", ctx, auditInput, async () => {
+        const { db, tenantId, membershipId } = await workdayImportGate(ctx);
         if (!membershipId) {
           throw new TRPCError({
             code: "FORBIDDEN",
             message: "Creating membership not found for this tenant",
           });
         }
+        const sourceRows = input.file
+          ? parseWorkdayUploadOrThrow(input.file).rows
+          : workdaySampleRows(WORKDAY_SAMPLE_REQUISITIONS);
+        const sourceLabel = input.file
+          ? `the Workday export "${input.file.fileName}"`
+          : "the sample Workday export";
+        const transitionSource = input.file
+          ? `Workday export upload "${input.file.fileName}"`
+          : "sample Workday export, demo";
+        const byId = new Map(sourceRows.map((r) => [r.jobRequisitionId, r]));
         const lookups = await loadWorkdayTenantLookups(ctx, db, tenantId);
         const imported = await loadWorkdayImportedMap(db, tenantId);
-        const wanted = new Set(input.jobRequisitionIds);
 
         const results: ImportWorkdayRequisitionsOutput["results"] = [];
-        for (const row of WORKDAY_SAMPLE_REQUISITIONS) {
-          const jrId = row["Job Requisition ID"];
-          if (!wanted.has(jrId)) continue;
-          const title = row["Job Posting Title"];
+        const toCreate: { row: WorkdayRequisitionRow; resolved: WorkdayResolvedImportRow }[] = [];
+        for (const jrId of [...new Set(input.jobRequisitionIds)]) {
+          const row = byId.get(jrId);
+          if (!row) {
+            results.push({
+              jobRequisitionId: jrId,
+              title: "",
+              outcome: "skipped",
+              requisitionId: null,
+              message: input.file
+                ? "Not an importable row in the uploaded file"
+                : "Not in the sample export",
+            });
+            continue;
+          }
+          const title = row.jobPostingTitle;
           const existing = imported.get(jrId);
           if (existing) {
             results.push({
@@ -5167,85 +5568,118 @@ export const appRouter = router({
             });
             continue;
           }
-          // Pre-check the active-title partial unique so a clash is a clean
-          // per-row skip rather than a 23505 that aborts the whole transaction.
-          const [clash] = await db
-            .select({ id: positions.id })
+          toCreate.push({
+            row,
+            resolved: { ...resolved, businessUnitId: resolved.businessUnitId },
+          });
+        }
+
+        // Batches: one active-title clash query per batch, then the per-row
+        // creation chain. A clash (incl. two rows of THIS file with the same
+        // title + unit) is a clean per-row skip rather than a 23505 that
+        // aborts the whole transaction.
+        const taken = new Set<string>();
+        const clashKey = (buId: string, title: string) => `${buId}\u0000${title}`;
+        for (let i = 0; i < toCreate.length; i += WORKDAY_IMPORT_BATCH_SIZE) {
+          const batch = toCreate.slice(i, i + WORKDAY_IMPORT_BATCH_SIZE);
+          const clashes = await db
+            .select({ businessUnitId: positions.businessUnitId, title: positions.title })
             .from(positions)
             .where(
               and(
                 eq(positions.tenantId, tenantId),
-                eq(positions.businessUnitId, resolved.businessUnitId),
-                eq(positions.title, title),
                 eq(positions.isActive, true),
+                inArray(positions.title, [...new Set(batch.map((b) => b.resolved.title))]),
               ),
-            )
-            .limit(1);
-          if (clash) {
+            );
+          for (const c of clashes) taken.add(clashKey(c.businessUnitId, c.title));
+
+          for (const { row, resolved } of batch) {
+            const jrId = row.jobRequisitionId;
+            const title = resolved.title;
+            const key = clashKey(resolved.businessUnitId, title);
+            if (taken.has(key)) {
+              results.push({
+                jobRequisitionId: jrId,
+                title,
+                outcome: "skipped",
+                requisitionId: null,
+                message: `An active position titled "${title}" already exists in that business unit`,
+              });
+              continue;
+            }
+            taken.add(key);
+
+            const created = await insertRequisitionDraftChain(db, {
+              tenantId,
+              membershipId,
+              input: {
+                title,
+                businessUnitId: resolved.businessUnitId,
+                locationType: "onsite",
+                primaryLocation: resolved.primaryLocation ?? undefined,
+                numberOfOpenings: resolved.numberOfOpenings,
+                targetStartDate: resolved.targetStartDate ?? undefined,
+                compBandId: resolved.compBandId ?? undefined,
+              },
+              hiringManagerId: resolved.hiringManagerMembershipId ?? membershipId,
+              transitionReason: `Imported from Workday ${jrId} (${transitionSource})`,
+              transitionMetadata: {
+                source: WORKDAY_IMPORT_SOURCE,
+                workdayJobRequisitionId: jrId,
+                ...(input.file ? { workdayExportFileName: input.file.fileName } : {}),
+              },
+            });
+            imported.set(jrId, created.requisitionId);
+
+            // Seed the draft JD from the row (same sections shape the
+            // wizard's JD editor writes) and its skills.
+            const sections = workdayJdSections(row, sourceLabel);
+            await db
+              .update(jdVersions)
+              .set({
+                jdText: composeJdText(sections, title),
+                summary: sections.summary,
+                aiMetadata: { sections, source: WORKDAY_IMPORT_SOURCE },
+                updatedAt: new Date(),
+              })
+              .where(
+                and(eq(jdVersions.tenantId, tenantId), eq(jdVersions.id, created.jdVersionId)),
+              );
+            if (row.skills.length > 0) {
+              await db.insert(jdSkills).values(
+                row.skills.map((skillName) => ({
+                  tenantId,
+                  jdVersionId: created.jdVersionId,
+                  skillName,
+                  weight: "1.00",
+                  isRequired: true,
+                })),
+              );
+            }
+
             results.push({
               jobRequisitionId: jrId,
               title,
-              outcome: "skipped",
-              requisitionId: null,
-              message: `An active position titled "${title}" already exists in that business unit`,
+              outcome: "created",
+              requisitionId: created.requisitionId,
+              message: null,
             });
-            continue;
           }
-
-          const created = await insertRequisitionDraftChain(db, {
-            tenantId,
-            membershipId,
-            input: {
-              title,
-              businessUnitId: resolved.businessUnitId,
-              locationType: "onsite",
-              primaryLocation: resolved.primaryLocation,
-              numberOfOpenings: row["Number of Openings"],
-              targetStartDate: resolved.targetStartDate,
-              compBandId: resolved.compBandId ?? undefined,
-            },
-            hiringManagerId: resolved.hiringManagerMembershipId ?? membershipId,
-            transitionReason: `Imported from Workday ${jrId} (sample Workday export, PoC preview)`,
-            transitionMetadata: {
-              source: WORKDAY_IMPORT_SOURCE,
-              workdayJobRequisitionId: jrId,
-            },
-          });
-
-          // Seed the draft JD from the sample (same sections shape the wizard's
-          // JD editor writes) and its skills.
-          const sections = workdayJdSections(row);
-          await db
-            .update(jdVersions)
-            .set({
-              jdText: composeJdText(sections, title),
-              summary: sections.summary,
-              aiMetadata: { sections, source: WORKDAY_IMPORT_SOURCE },
-              updatedAt: new Date(),
-            })
-            .where(and(eq(jdVersions.tenantId, tenantId), eq(jdVersions.id, created.jdVersionId)));
-          await db.insert(jdSkills).values(
-            row.skills.map((skillName) => ({
-              tenantId,
-              jdVersionId: created.jdVersionId,
-              skillName,
-              weight: "1.00",
-              isRequired: true,
-            })),
-          );
-
-          results.push({
-            jobRequisitionId: jrId,
-            title,
-            outcome: "created",
-            requisitionId: created.requisitionId,
-            message: null,
-          });
         }
 
+        // Report in the order the rows appear in the export.
+        const order = new Map(sourceRows.map((r, idx) => [r.jobRequisitionId, idx]));
+        results.sort(
+          (a, b) =>
+            (order.get(a.jobRequisitionId) ?? Number.MAX_SAFE_INTEGER) -
+            (order.get(b.jobRequisitionId) ?? Number.MAX_SAFE_INTEGER),
+        );
         return {
           results,
           createdCount: results.filter((r) => r.outcome === "created").length,
+          alreadyImportedCount: results.filter((r) => r.outcome === "already_imported").length,
+          skippedCount: results.filter((r) => r.outcome === "skipped").length,
         };
       });
     }),
@@ -5407,6 +5841,21 @@ export const appRouter = router({
           });
         }
 
+        // PC-26 — diverse-slate requirement (omitted fields untouched).
+        if (input.diverseSlateRequired !== undefined || input.diverseSlateMin !== undefined) {
+          const dsSet: Partial<typeof requisitions.$inferInsert> = { updatedAt: new Date() };
+          if (input.diverseSlateRequired !== undefined) {
+            dsSet.diverseSlateRequired = input.diverseSlateRequired;
+          }
+          if (input.diverseSlateMin !== undefined) dsSet.diverseSlateMin = input.diverseSlateMin;
+          await db
+            .update(requisitions)
+            .set(dsSet)
+            .where(
+              and(eq(requisitions.tenantId, tenantId), eq(requisitions.id, input.requisitionId)),
+            );
+        }
+
         // JD section edits → recompose jd_text, keep sections in ai_metadata.
         if (input.sections) {
           const jdText = composeJdText(input.sections, facet.title);
@@ -5471,7 +5920,9 @@ export const appRouter = router({
                 questionText: k.questionText.trim(),
                 type: k.type,
                 thresholdValue: buildKnockoutThreshold(k),
-                source: k.source,
+                // PC-7 — a catalogue field always gets its catalogue source
+                // (screening fields → candidate_asserted), whatever the client sent.
+                source: knockoutFieldDef(k.fieldPath)?.source ?? k.source,
                 orderIndex: i,
               })),
             );
@@ -5701,6 +6152,8 @@ export const appRouter = router({
           numberOfOpenings: requisitions.numberOfOpenings,
           targetStartDate: requisitions.targetStartDate,
           publicSlug: requisitions.publicSlug,
+          diverseSlateRequired: requisitions.diverseSlateRequired,
+          diverseSlateMin: requisitions.diverseSlateMin,
           tenantSlug: tenants.slug,
           createdAt: requisitions.createdAt,
           positionId: positions.id,
@@ -5891,6 +6344,8 @@ export const appRouter = router({
         latestDecision,
         isDraft: row.status === "draft",
         workdayJobRequisitionId,
+        diverseSlateRequired: row.diverseSlateRequired,
+        diverseSlateMin: row.diverseSlateMin,
       };
     }),
 
@@ -6478,6 +6933,280 @@ export const appRouter = router({
           input.reason ?? null,
         );
       });
+    }),
+
+  /**
+   * PC-5 — checkbox bulk stage move on the candidates-by-role list: advance to
+   * the next stage, reject, or move to a named stage. ONE mutation for up to
+   * BULK_MOVE_MAX (500) applications, chosen either by explicit ids ("select on
+   * this page") or by the list filter ("select all N matching" — re-resolved
+   * here with the same SQL the list uses, so the server moves exactly what the
+   * recruiter is looking at; more than the cap is refused, never truncated).
+   *
+   * HONESTY. Each row goes through the SAME transitionApplicationStage core as
+   * advanceApplication / rejectApplication: the HR-round and candidate-field
+   * stage gates refuse per row (reported as skipped, gate_blocked, with the
+   * gate's message), the candidate stage / closing email and the partner email
+   * enqueue per row, and each moved row gets its own api_audit_logs entry with
+   * the single-move action name (advance_application / reject_application,
+   * marked bulk) so reports count it exactly like a single move. Each row runs
+   * in its own savepoint so one failure never aborts the batch.
+   *
+   * Role gate: admin + recruiter (RECRUITER_SURFACE_ROLES) — the candidates
+   * surface's gate and the Iris bulk_advance / bulk_reject actions' roles.
+   */
+  bulkMoveApplications: protectedProcedure
+    .input(bulkMoveApplicationsInputSchema)
+    .output(bulkMoveApplicationsOutputSchema)
+    .mutation(async ({ ctx, input }): Promise<BulkMoveApplicationsOutput> => {
+      requireAnyRole(
+        ctx,
+        RECRUITER_SURFACE_ROLES,
+        "Bulk stage moves are available to recruiters and admins.",
+      );
+      const db = requireDb(ctx);
+      const tenantId = ctx.tenantId;
+      if (!tenantId) {
+        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
+      }
+
+      // 1. Resolve the selection to concrete application ids (RLS-scoped).
+      let ids: string[];
+      if (input.selection.mode === "ids") {
+        ids = [...new Set(input.selection.applicationIds)];
+      } else {
+        const { conditions } = candidateListConditions(input.selection.filter, ctx.roles);
+        const matched = await db
+          .select({ id: applications.id })
+          .from(applications)
+          .innerJoin(
+            candidates,
+            and(
+              eq(applications.candidateId, candidates.id),
+              eq(applications.tenantId, candidates.tenantId),
+            ),
+          )
+          .innerJoin(
+            persons,
+            and(eq(candidates.personId, persons.id), eq(candidates.tenantId, persons.tenantId)),
+          )
+          .where(whereAll(conditions))
+          .orderBy(desc(applications.createdAt), desc(applications.id))
+          .limit(BULK_MOVE_MAX + 1);
+        if (matched.length > BULK_MOVE_MAX) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: `More than ${BULK_MOVE_MAX} candidates match these filters. Narrow the filters and try again.`,
+          });
+        }
+        ids = matched.map((m) => m.id);
+      }
+
+      // 2. Current stages in one read; the plan is server-side only.
+      const stageRows = ids.length
+        ? await db
+            .select({ id: applications.id, stage: applications.currentStage })
+            .from(applications)
+            .where(inArray(applications.id, ids))
+        : [];
+      const stageById = new Map(stageRows.map((r) => [r.id, r.stage]));
+      const reason = input.reason?.trim() ? input.reason.trim() : null;
+      const bulkRequestId = ctx.requestId;
+
+      const results: BulkMoveRowResult[] = [];
+      for (const applicationId of ids) {
+        const currentStage = stageById.get(applicationId);
+        if (!currentStage) {
+          results.push({
+            applicationId,
+            status: "skipped",
+            fromStage: null,
+            toStage: null,
+            transitionId: null,
+            skipReason: "not_found",
+            message: "Application not found.",
+          });
+          continue;
+        }
+        const plan = planBulkMove(input.action, currentStage, input.targetStage);
+        if (plan.kind === "skip") {
+          results.push({
+            applicationId,
+            status: "skipped",
+            fromStage: currentStage,
+            toStage: null,
+            transitionId: null,
+            skipReason: plan.skipReason,
+            message: plan.message,
+          });
+          continue;
+        }
+        try {
+          // Savepoint per row: a gate refusal or a DB error rolls back only
+          // this row's writes, never the outer request transaction.
+          const moved = await db.transaction((tx) =>
+            transitionApplicationStage(tx, ctx, applicationId, plan.targetStage, reason, {
+              bulk: true,
+              bulkRequestId,
+            }),
+          );
+          results.push({
+            applicationId,
+            status: "moved",
+            fromStage: moved.fromStage,
+            toStage: moved.toStage,
+            transitionId: moved.transitionId,
+            skipReason: null,
+            message: null,
+          });
+        } catch (err) {
+          const c = classifyBulkMoveError(err);
+          if (c.skipReason === "error") {
+            ctx.log.warn(
+              { err, request_id: ctx.requestId, application_id: applicationId },
+              "bulkMoveApplications: row failed",
+            );
+          }
+          results.push({
+            applicationId,
+            status: "skipped",
+            fromStage: currentStage,
+            toStage: null,
+            transitionId: null,
+            skipReason: c.skipReason,
+            message: c.message,
+          });
+        }
+      }
+
+      const moved = results.filter((r) => r.status === "moved");
+      // Audit, mirroring withAudit (fire-and-forget, never fails the request):
+      // one row per moved application under the single-move action name, plus
+      // one summary row for the bulk intent itself.
+      const auditRows = [
+        ...moved.flatMap((r) =>
+          r.toStage
+            ? [
+                {
+                  tenantId,
+                  action: singleMoveAuditAction(r.toStage),
+                  actorUserId: ctx.userId,
+                  requestId: ctx.requestId,
+                  source: "app" as const,
+                  inputJson: bulkMoveAuditInput({
+                    applicationId: r.applicationId,
+                    targetStage: r.toStage,
+                    reason,
+                    bulkRequestId,
+                  }),
+                },
+              ]
+            : [],
+        ),
+        {
+          tenantId,
+          action: "bulk_move_applications",
+          actorUserId: ctx.userId,
+          requestId: ctx.requestId,
+          source: "app" as const,
+          inputJson: {
+            action: "bulk_move_applications",
+            input: {
+              action: input.action,
+              targetStage: input.targetStage ?? null,
+              selectionMode: input.selection.mode,
+              ...(input.selection.mode === "filter" ? { filter: input.selection.filter } : {}),
+              requested: ids.length,
+              moved: moved.length,
+            },
+          },
+        },
+      ];
+      void poolDb
+        .insert(apiAuditLogs)
+        .values(auditRows)
+        .then(() => undefined)
+        .catch((err: unknown) => {
+          ctx.log.error(
+            { err, action: "bulk_move_applications", request_id: ctx.requestId },
+            "api_audit_logs write failed",
+          );
+        });
+
+      return {
+        requested: ids.length,
+        moved: moved.length,
+        skipped: results.length - moved.length,
+        results,
+      };
+    }),
+
+  /**
+   * PC-5 — what a rejected candidate will receive: the
+   * candidate.application_closed email rendered through the REAL render path
+   * with the tenant's enabled copy override (the same one the dispatcher
+   * applies), the tenant name, and the role title when a requisition is given.
+   * The candidate's name is a placeholder — each email is personalised at send.
+   * The reject path has no suppression switch, so suppressionSupported is false
+   * and the bulk-reject dialog shows the preview only.
+   */
+  previewApplicationClosedEmail: protectedProcedure
+    .input(previewApplicationClosedEmailInputSchema)
+    .output(previewApplicationClosedEmailOutputSchema)
+    .query(async ({ ctx, input }) => {
+      requireAnyRole(ctx, RECRUITER_SURFACE_ROLES, "Candidates is a recruiter surface.");
+      const db = requireDb(ctx);
+      const tenantId = ctx.tenantId;
+      if (!tenantId) {
+        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
+      }
+      let positionTitle = "the role you applied for";
+      if (input.requisitionId) {
+        const [req] = await db
+          .select({ title: positions.title })
+          .from(requisitions)
+          .innerJoin(
+            positions,
+            and(
+              eq(positions.id, requisitions.positionId),
+              eq(positions.tenantId, requisitions.tenantId),
+            ),
+          )
+          .where(eq(requisitions.id, input.requisitionId))
+          .limit(1);
+        if (req?.title) positionTitle = req.title;
+      }
+      const [ov] = await db
+        .select({
+          subjectOverride: tenantEmailTemplateOverrides.subjectOverride,
+          slotOverrides: tenantEmailTemplateOverrides.slotOverrides,
+        })
+        .from(tenantEmailTemplateOverrides)
+        .where(
+          and(
+            eq(tenantEmailTemplateOverrides.tenantId, tenantId),
+            eq(tenantEmailTemplateOverrides.templateKey, "candidate.application_closed"),
+            eq(tenantEmailTemplateOverrides.enabled, true),
+          ),
+        )
+        .limit(1);
+      const overrides: EmailTemplateOverrides = {};
+      if (ov?.subjectOverride && ov.subjectOverride.trim().length > 0) {
+        overrides.subject = ov.subjectOverride;
+      }
+      const slots = ov ? narrowSlotOverrides(ov.slotOverrides) : {};
+      if (Object.keys(slots).length > 0) overrides.slots = slots;
+      const rendered = await renderTemplate(
+        "candidate.application_closed",
+        {
+          candidateName: "[Candidate name]",
+          positionTitle,
+          companyName: await resolveTenantDisplayName(tenantId),
+          outcome: "not_selected",
+        },
+        overrides.subject || overrides.slots ? overrides : undefined,
+      );
+      return { subject: rendered.subject, html: rendered.html, suppressionSupported: false };
     }),
 
   /**
@@ -8752,6 +9481,280 @@ export const appRouter = router({
       return summary;
     }),
 
+  // ─────────── PC-11 / PC-12: assessment summary + selection decision ───────────
+
+  /**
+   * PC-11 — every round of one application in order, with each panellist's
+   * recommendation / ratings / written feedback, the round outcome, the AI
+   * interview EVIDENCE digest (no score) and a notetaker pointer, plus a
+   * screening snapshot. Aggregates are counts + human-rating averages only.
+   *
+   * Access (lib/assessment-summary.ts): the requisition's hiring manager,
+   * recruiter, hr_ops, hr_head, admin see everything; a panellist sees only the
+   * rounds they sat on under the panel-independence disclosure rule; anyone else
+   * is FORBIDDEN. The AI digest and the notes pointer follow the EXISTING
+   * getAiInterviewEvidence / getInterviewNotes rules — never widened.
+   */
+  getCandidateAssessmentSummary: protectedProcedure
+    .input(getCandidateAssessmentSummaryInputSchema)
+    .output(getCandidateAssessmentSummaryOutputSchema)
+    .query(async ({ ctx, input }) => {
+      requireAnyRole(
+        ctx,
+        ASSESSMENT_SUMMARY_ROLES,
+        "You don't have access to candidate assessments.",
+      );
+      if (!ctx.tenantId) {
+        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
+      }
+      const tenantId = ctx.tenantId;
+      const db = requireDb(ctx);
+      const membershipId = await resolveActorMembership(db, ctx);
+      const result = await buildCandidateAssessmentSummary(
+        db,
+        { tenantId, roles: ctx.roles, membershipId },
+        input.applicationId,
+      );
+      // ADR-002 §7 — verbatim candidate words (AI evidence quotes) are the same
+      // PII getAiInterviewEvidence records; log only when they were returned.
+      if (result.quotesReturned) {
+        recordPiiAccess({
+          tenantId,
+          actorUserId: ctx.userId,
+          actorMembershipId: membershipId,
+          actorLabel: "user",
+          entityType: "candidate",
+          entityId: result.candidateId,
+          fieldsAccessed: ["ai_interview_evidence.evidence"],
+          reason: "get_candidate_assessment_summary",
+          requestId: ctx.requestId,
+        });
+      }
+      return result.output;
+    }),
+
+  /**
+   * PC-12 — record the explicit final selection decision. HM of THIS
+   * requisition, recruiter or admin. `selected` → offer_drafted (the offer-ready
+   * stage), `not_selected` → recruiter_rejected (the existing reject path,
+   * closing email unchanged), `on_hold` → recorded only. Stage moves go through
+   * transitionApplicationStage, so every existing gate applies. Append-only
+   * history (application_selection_decisions, migration 0129) + audit log.
+   */
+  recordSelectionDecision: protectedProcedure
+    .input(recordSelectionDecisionInputSchema)
+    .output(recordSelectionDecisionOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      requireAnyRole(
+        ctx,
+        SELECTION_DECISION_GATE_ROLES,
+        "Only the hiring manager, recruiters and admins can record a selection decision.",
+      );
+      if (!ctx.tenantId) {
+        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
+      }
+      const tenantId = ctx.tenantId;
+      return withAudit("record_selection_decision", ctx, input, async () => {
+        const db = requireDb(ctx);
+        const facts = await loadApplicationAccessFacts(db, tenantId, input.applicationId);
+        const membershipId = await resolveActorMembership(db, ctx);
+        if (!canRecordSelectionDecision({ tenantId, roles: ctx.roles, membershipId }, facts)) {
+          throw new TRPCError({
+            code: "FORBIDDEN",
+            message: "Only this requisition's hiring manager, a recruiter or an admin can decide.",
+          });
+        }
+
+        let reasonKey: string | null = null;
+        let reasonLabel: string | null = null;
+        if (input.reasonKey) {
+          const reasons = await resolveTenantSelectionDecisionReasons(db, tenantId);
+          const reason = findSelectionDecisionReason(reasons, input.decision, input.reasonKey);
+          if (!reason) {
+            throw new TRPCError({
+              code: "BAD_REQUEST",
+              message: `"${input.reasonKey}" is not a reason for this decision.`,
+            });
+          }
+          reasonKey = reason.key;
+          reasonLabel = reason.label;
+        }
+        const notes = input.notes && input.notes.length > 0 ? input.notes : null;
+
+        const plan = planSelectionDecision(input.decision, facts.currentStage);
+        if (!plan.ok) throw new TRPCError({ code: "PRECONDITION_FAILED", message: plan.message });
+
+        let transitionId: string | null = null;
+        if (plan.targetStage) {
+          const moved = await transitionApplicationStage(
+            db,
+            ctx,
+            input.applicationId,
+            plan.targetStage,
+            reasonLabel,
+            {
+              source: "record_selection_decision",
+              decision: input.decision,
+              reasonKey,
+            },
+          );
+          transitionId = moved.transitionId;
+        }
+
+        const [row] = await db
+          .insert(applicationSelectionDecisions)
+          .values({
+            tenantId,
+            applicationId: input.applicationId,
+            decision: input.decision,
+            reasonKey,
+            reasonLabel,
+            notes,
+            decidedByMembershipId: membershipId,
+            fromStage: facts.currentStage,
+            toStage: plan.targetStage,
+            transitionId,
+          })
+          .returning({
+            id: applicationSelectionDecisions.id,
+            decidedAt: applicationSelectionDecisions.decidedAt,
+          });
+        if (!row) {
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: "selection decision insert returned no row",
+          });
+        }
+        return {
+          decisionId: row.id,
+          applicationId: input.applicationId,
+          decision: input.decision as SelectionDecision,
+          fromStage: facts.currentStage,
+          toStage: plan.targetStage,
+          transitionId,
+          decidedAt: row.decidedAt.toISOString(),
+        };
+      });
+    }),
+
+  /** PC-12 — one application's decision history (newest first) + the latest. */
+  listSelectionDecisions: protectedProcedure
+    .input(listSelectionDecisionsInputSchema)
+    .output(listSelectionDecisionsOutputSchema)
+    .query(async ({ ctx, input }) => {
+      requireAnyRole(
+        ctx,
+        ASSESSMENT_SUMMARY_ROLES,
+        "You don't have access to candidate assessments.",
+      );
+      if (!ctx.tenantId) {
+        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
+      }
+      const tenantId = ctx.tenantId;
+      const db = requireDb(ctx);
+      const facts = await loadApplicationAccessFacts(db, tenantId, input.applicationId);
+      const membershipId = await resolveActorMembership(db, ctx);
+      if (!isFullAssessmentViewer({ tenantId, roles: ctx.roles, membershipId }, facts)) {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: "Only this requisition's hiring manager, recruiters and HR see decisions.",
+        });
+      }
+      const rows = await db
+        .select({
+          id: applicationSelectionDecisions.id,
+          applicationId: applicationSelectionDecisions.applicationId,
+          decision: applicationSelectionDecisions.decision,
+          reasonKey: applicationSelectionDecisions.reasonKey,
+          reasonLabel: applicationSelectionDecisions.reasonLabel,
+          notes: applicationSelectionDecisions.notes,
+          decidedByName: users.displayName,
+          fromStage: applicationSelectionDecisions.fromStage,
+          toStage: applicationSelectionDecisions.toStage,
+          decidedAt: applicationSelectionDecisions.decidedAt,
+        })
+        .from(applicationSelectionDecisions)
+        .leftJoin(
+          tenantUserMemberships,
+          eq(tenantUserMemberships.id, applicationSelectionDecisions.decidedByMembershipId),
+        )
+        .leftJoin(users, eq(users.id, tenantUserMemberships.userId))
+        .where(
+          and(
+            eq(applicationSelectionDecisions.tenantId, tenantId),
+            eq(applicationSelectionDecisions.applicationId, input.applicationId),
+          ),
+        )
+        .orderBy(
+          desc(applicationSelectionDecisions.decidedAt),
+          desc(applicationSelectionDecisions.id),
+        );
+      const history: SelectionDecisionRow[] = rows.map((r) => ({
+        id: r.id,
+        applicationId: r.applicationId,
+        decision: r.decision as SelectionDecision,
+        reasonKey: r.reasonKey,
+        reasonLabel: r.reasonLabel,
+        notes: r.notes,
+        decidedByName: r.decidedByName ?? null,
+        fromStage: r.fromStage,
+        toStage: r.toStage,
+        decidedAt: r.decidedAt.toISOString(),
+      }));
+      return { latest: history[0] ?? null, history };
+    }),
+
+  /**
+   * PC-12 — the latest decision per application, for the chip on the candidate
+   * lists. Additive read only. Full-role viewers see every requested row; a
+   * hiring manager sees rows only for requisitions they manage; others get none.
+   */
+  listLatestSelectionDecisions: protectedProcedure
+    .input(listLatestSelectionDecisionsInputSchema)
+    .output(listLatestSelectionDecisionsOutputSchema)
+    .query(async ({ ctx, input }) => {
+      if (!ctx.tenantId) {
+        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
+      }
+      const tenantId = ctx.tenantId;
+      const fullRole = ctx.roles.some((r) => ASSESSMENT_FULL_ROLES.has(r));
+      const isHm = ctx.roles.includes("hiring_manager");
+      if (!fullRole && !isHm) return { rows: [] };
+      const db = requireDb(ctx);
+      const hmMembershipId = fullRole ? null : await resolveActorMembership(db, ctx);
+      if (!fullRole && !hmMembershipId) return { rows: [] };
+      const rows = await db
+        .selectDistinctOn([applicationSelectionDecisions.applicationId], {
+          applicationId: applicationSelectionDecisions.applicationId,
+          decision: applicationSelectionDecisions.decision,
+          reasonLabel: applicationSelectionDecisions.reasonLabel,
+          decidedAt: applicationSelectionDecisions.decidedAt,
+        })
+        .from(applicationSelectionDecisions)
+        .innerJoin(applications, eq(applications.id, applicationSelectionDecisions.applicationId))
+        .innerJoin(requisitions, eq(requisitions.id, applications.requisitionId))
+        .where(
+          and(
+            eq(applicationSelectionDecisions.tenantId, tenantId),
+            inArray(applicationSelectionDecisions.applicationId, input.applicationIds),
+            ...(hmMembershipId ? [eq(requisitions.hiringManagerId, hmMembershipId)] : []),
+          ),
+        )
+        .orderBy(
+          applicationSelectionDecisions.applicationId,
+          desc(applicationSelectionDecisions.decidedAt),
+          desc(applicationSelectionDecisions.id),
+        );
+      return {
+        rows: rows.map((r) => ({
+          applicationId: r.applicationId,
+          decision: r.decision as SelectionDecision,
+          reasonLabel: r.reasonLabel,
+          decidedAt: r.decidedAt.toISOString(),
+        })),
+      };
+    }),
+
   // ─────────── protected: integration health (admin) ───────────
 
   listWorkdaySyncs: protectedProcedure
@@ -8792,6 +9795,126 @@ export const appRouter = router({
           simulatedResponse: r.simulatedResponse,
         })),
         nextCursor: hasMore ? lastCursor(out) : null,
+      };
+    }),
+
+  /**
+   * PC-13 — the Workday handoff record for one application: status chip data
+   * (ready / sent-simulated / offer-ready pre-approval) plus the record itself,
+   * pre-rendered as CSV + header-keyed JSON for download. Read-only.
+   */
+  getWorkdayHandoff: protectedProcedure
+    .input(getWorkdayHandoffInputSchema)
+    .output(getWorkdayHandoffOutputSchema)
+    .query(async ({ ctx, input }): Promise<GetWorkdayHandoffOutput> => {
+      requireAnyRole(
+        ctx,
+        WORKDAY_HANDOFF_ROLES,
+        "The Workday handoff record is available to recruiters, HR ops and admins.",
+      );
+      const db = requireDb(ctx);
+      if (!ctx.tenantId) {
+        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
+      }
+      const tenantId = ctx.tenantId;
+      const [src] = await loadWorkdayHandoffSources(db, tenantId, {
+        kind: "application",
+        applicationId: input.applicationId,
+      });
+      if (!src) throw new TRPCError({ code: "NOT_FOUND", message: "Application not found" });
+
+      const columns = WORKDAY_HANDOFF_DEFAULT_COLUMNS.map((c) => ({
+        key: c.key,
+        header: c.header,
+      }));
+      const status = deriveWorkdayHandoffStatus(src.outboxStatus, src.offerStatus);
+      const ref = workdayReferenceOf(src.outboxResponse);
+      const base = {
+        applicationId: src.applicationId,
+        status,
+        statusLabel: WORKDAY_HANDOFF_STATUS_LABELS[status],
+        outboxId: src.outboxId,
+        queuedAt: src.outboxCreatedAt,
+        sentAt: src.outboxSimulatedAt,
+        workdayReference: ref.wid,
+        workdayReferenceDescriptor: ref.descriptor,
+        processedBy: src.outboxClaimedBy,
+        columns,
+      };
+      if (status === "none") {
+        return {
+          ...base,
+          record: null,
+          csv: null,
+          json: null,
+          filenameBase: workdayHandoffFilenameBase(src.fullName, src.applicationId),
+        };
+      }
+      const names = await resolveMembershipNames(
+        ctx,
+        tenantId,
+        [src.hiringManagerMembershipId, src.recruiterMembershipId].filter(
+          (id): id is string => !!id,
+        ),
+      );
+      const record = buildWorkdayHandoffRecord(src, names, new Date());
+      return {
+        ...base,
+        record,
+        csv: buildWorkdayHandoffCsv([record]),
+        json: workdayHandoffJson(record),
+        filenameBase: workdayHandoffFilenameBase(record.legalName, src.applicationId),
+      };
+    }),
+
+  /**
+   * PC-13 — bulk Workday handoff CSV: every queued hire_employee record,
+   * optionally narrowed to a requisition, a status bucket and/or a queued-date
+   * range (inclusive, UTC). Capped at WORKDAY_HANDOFF_EXPORT_MAX_ROWS; the
+   * `truncated` flag tells the caller to narrow the range. Read-only.
+   */
+  exportWorkdayHandoffs: protectedProcedure
+    .input(exportWorkdayHandoffsInputSchema)
+    .output(exportWorkdayHandoffsOutputSchema)
+    .query(async ({ ctx, input }): Promise<ExportWorkdayHandoffsOutput> => {
+      requireAnyRole(
+        ctx,
+        WORKDAY_HANDOFF_ROLES,
+        "The Workday handoff export is available to recruiters, HR ops and admins.",
+      );
+      const db = requireDb(ctx);
+      if (!ctx.tenantId) {
+        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
+      }
+      const tenantId = ctx.tenantId;
+      const { fromTs, toTsExclusive } = dateRangeBounds(input.from, input.to);
+      if (fromTs && toTsExclusive && fromTs >= toTsExclusive) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "'from' must be on or before 'to'" });
+      }
+      const all: WorkdayHandoffSource[] = await loadWorkdayHandoffSources(db, tenantId, {
+        kind: "bulk",
+        requisitionId: input.requisitionId,
+        status: input.status,
+        fromTs,
+        toTsExclusive,
+        limit: WORKDAY_HANDOFF_EXPORT_MAX_ROWS,
+      });
+      const truncated = all.length > WORKDAY_HANDOFF_EXPORT_MAX_ROWS;
+      const sources = all.slice(0, WORKDAY_HANDOFF_EXPORT_MAX_ROWS);
+      const names = await resolveMembershipNames(
+        ctx,
+        tenantId,
+        sources.flatMap((s) =>
+          [s.hiringManagerMembershipId, s.recruiterMembershipId].filter((id): id is string => !!id),
+        ),
+      );
+      const generatedAt = new Date();
+      const records = sources.map((s) => buildWorkdayHandoffRecord(s, names, generatedAt));
+      return {
+        csv: buildWorkdayHandoffCsv(records),
+        rowCount: records.length,
+        truncated,
+        filename: `workday-handoff-${generatedAt.toISOString().slice(0, 10)}.csv`,
       };
     }),
 
@@ -9566,7 +10689,12 @@ export const appRouter = router({
         .where(eq(tenants.id, ctx.tenantId))
         .limit(1);
       const settings = (row?.settings ?? {}) as Record<string, unknown>;
-      return resolveShortlistDefaults(settings.shortlistDefaults);
+      // CFG-LITE / BUG-11 — unset fields follow the tenant's one score cut-off
+      // setting (aiSettings.screeningScoreBands).
+      return resolveEffectiveShortlistDefaults(
+        settings.shortlistDefaults,
+        resolveAiSettings(settings.aiSettings).screeningScoreBands,
+      );
     }),
 
   // ─────────────────────── updateShortlistDefaults (T2.3 / G08) ───────────────────────
@@ -9830,6 +10958,70 @@ export const appRouter = router({
       });
     }),
 
+  // ─────────────────────── getRoleLabels (PC-23) ───────────────────────
+  //
+  // Role DISPLAY labels — tenants.settings.roleLabels over the platform
+  // default. Presentation only: keys, JWT roles and permissions are
+  // untouched. Readable by every signed-in member (the sidebar user chip and
+  // role pickers need it); no tenant data beyond the label strings.
+  getRoleLabels: protectedProcedure
+    .input(getRoleLabelsInputSchema)
+    .output(getRoleLabelsOutputSchema)
+    .query(async ({ ctx }) => {
+      const db = requireDb(ctx);
+      if (!ctx.tenantId) {
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: "protected procedure missing tenantId",
+        });
+      }
+      const [row] = await db
+        .select({ settings: tenants.settings })
+        .from(tenants)
+        .where(eq(tenants.id, ctx.tenantId))
+        .limit(1);
+      const settings = (row?.settings ?? {}) as Record<string, unknown>;
+      const labels = resolveRoleLabels(settings.roleLabels);
+      return { labels, overrides: roleLabelOverridesOf(labels) };
+    }),
+
+  // ─────────────────────── updateRoleLabels (PC-23) ───────────────────────
+  //
+  // Admin write of the role-label overrides. Audited. Stores ONLY entries that
+  // differ from the platform default, under the sibling key `roleLabels` via
+  // the same atomic top-level jsonb `||` merge as updateReportDigests (never
+  // touches `labels`, the stage / recommendation label block).
+  updateRoleLabels: protectedProcedure
+    .input(updateRoleLabelsInputSchema)
+    .output(updateRoleLabelsOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      return withAudit("update_role_labels", ctx, input, async () => {
+        requireAnyRole(ctx, USERS_ADMIN_ROLES, "Role labels are admin-only");
+        if (!ctx.tenantId) {
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: "protected procedure missing tenantId",
+          });
+        }
+        const overrides = roleLabelsSchema.parse(roleLabelOverridesOf(input.overrides));
+        const res = await poolDb.execute(dsql`
+          UPDATE public.tenants
+          SET settings = COALESCE(settings, '{}'::jsonb)
+              || jsonb_build_object('roleLabels', ${JSON.stringify(overrides)}::jsonb)
+          WHERE id = ${ctx.tenantId}::uuid
+          RETURNING id
+        `);
+        const updated = (res as { rows?: unknown[] }).rows ?? (res as unknown[]);
+        if (updated.length !== 1) {
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: "tenant settings update affected an unexpected number of rows",
+          });
+        }
+        return { ok: true as const, overrides };
+      });
+    }),
+
   // ─────────────────────── getSlaThresholds (T4.1) ───────────────────────
   //
   // Read the per-tenant SLA-threshold map (settings.slaThresholds) resolved over
@@ -10065,6 +11257,341 @@ export const appRouter = router({
         }
 
         return { ok: true as const, retentionPolicy: resolveRetentionPolicy(input) };
+      });
+    }),
+
+  // ─────────────────────── PC-14..17 pre-joining engagement ───────────────────────
+  //
+  // Settings live in tenants.settings.preJoiningEngagement (platform default:
+  // disabled). Everything below is FACTS — no risk score exists anywhere.
+
+  getPreJoiningSettings: protectedProcedure
+    .input(z.object({}).default({}))
+    .output(getPreJoiningSettingsOutputSchema)
+    .query(async ({ ctx }): Promise<PreJoiningEngagementSettings> => {
+      requireAnyRole(ctx, PRE_JOINING_ADMIN_ROLES, "Pre-joining settings require hr_head or admin");
+      const tenantId = requireTenantId(ctx);
+      const [row] = await ctx.sql<{ settings: Record<string, unknown> | null }[]>`
+        SELECT settings FROM public.tenants WHERE id = ${tenantId} LIMIT 1
+      `;
+      return resolvePreJoiningEngagementSettings(row?.settings?.preJoiningEngagement);
+    }),
+
+  updatePreJoiningSettings: protectedProcedure
+    .input(updatePreJoiningSettingsInputSchema)
+    .output(z.object({ ok: z.literal(true), settings: getPreJoiningSettingsOutputSchema }))
+    .mutation(async ({ ctx, input }) => {
+      return withAudit("update_pre_joining_settings", ctx, input, async () => {
+        requireAnyRole(
+          ctx,
+          PRE_JOINING_ADMIN_ROLES,
+          "Pre-joining settings require hr_head or admin",
+        );
+        const tenantId = requireTenantId(ctx);
+        // Same atomic sibling-key jsonb merge as updateRetentionPolicy.
+        const updated = await ctx.sql<{ id: string }[]>`
+          UPDATE public.tenants
+          SET settings = COALESCE(settings, '{}'::jsonb)
+              || jsonb_build_object('preJoiningEngagement', ${JSON.stringify(input)}::jsonb)
+          WHERE id = ${tenantId}
+          RETURNING id
+        `;
+        if (updated.length !== 1) {
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: "tenant settings update failed",
+          });
+        }
+        return { ok: true as const, settings: resolvePreJoiningEngagementSettings(input) };
+      });
+    }),
+
+  listPreJoiningCompanyUpdates: protectedProcedure
+    .input(z.object({}).default({}))
+    .output(z.object({ items: z.array(companyUpdateRowSchema) }))
+    .query(async ({ ctx }) => {
+      requireAnyRole(ctx, PRE_JOINING_ADMIN_ROLES, "Company updates require hr_head or admin");
+      return { items: await listPreJoiningCompanyUpdatesLib(ctx.sql, requireTenantId(ctx)) };
+    }),
+
+  upsertPreJoiningCompanyUpdate: protectedProcedure
+    .input(companyUpdateInputSchema)
+    .output(z.object({ id: z.string() }))
+    .mutation(async ({ ctx, input }) => {
+      return withAudit("upsert_pre_joining_company_update", ctx, input, async () => {
+        requireAnyRole(ctx, PRE_JOINING_ADMIN_ROLES, "Company updates require hr_head or admin");
+        const tenantId = requireTenantId(ctx);
+        const membershipId = await resolveCallerMembershipId(ctx, tenantId);
+        const id = await upsertPreJoiningCompanyUpdateLib(ctx.sql, {
+          tenantId,
+          membershipId,
+          input,
+        });
+        if (!id) throw new TRPCError({ code: "NOT_FOUND", message: "Company update not found" });
+        return { id };
+      });
+    }),
+
+  startPreJoiningJourneys: protectedProcedure
+    .input(z.object({}).default({}))
+    .output(startPreJoiningJourneysOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      return withAudit("start_pre_joining_journeys", ctx, input, async () => {
+        requireAnyRole(ctx, PRE_JOINING_ADMIN_ROLES, "Starting journeys requires hr_head or admin");
+        return startJourneysForAcceptedCandidates(ctx.sql, {
+          tenantId: requireTenantId(ctx),
+          log: ctx.log,
+        });
+      });
+    }),
+
+  listJoiningWatchlist: protectedProcedure
+    .input(listJoiningWatchlistInputSchema)
+    .output(listJoiningWatchlistOutputSchema)
+    .query(async ({ ctx }): Promise<ListJoiningWatchlistOutput> => {
+      requireAnyRole(
+        ctx,
+        JOINING_WATCHLIST_ROLES,
+        "The joining watchlist requires recruiter, hr_head or admin",
+      );
+      const tenantId = requireTenantId(ctx);
+      const recruiterMembershipId = await preJoiningRecruiterScope(ctx, tenantId);
+      const [{ rows, reneged }, settingsRow] = await Promise.all([
+        listJoiningWatchlistLib(ctx.sql, { tenantId, recruiterMembershipId }),
+        ctx.sql<{ settings: Record<string, unknown> | null }[]>`
+          SELECT settings FROM public.tenants WHERE id = ${tenantId} LIMIT 1
+        `,
+      ]);
+      const settings = resolvePreJoiningEngagementSettings(
+        settingsRow[0]?.settings?.preJoiningEngagement,
+      );
+      return {
+        engagementEnabled: settings.enabled,
+        rows,
+        reneged,
+        renegeReasons: settings.renegeReasons,
+      };
+    }),
+
+  getEngagementTimeline: protectedProcedure
+    .input(getEngagementTimelineInputSchema)
+    .output(getEngagementTimelineOutputSchema)
+    .query(async ({ ctx, input }) => {
+      requireAnyRole(
+        ctx,
+        JOINING_WATCHLIST_ROLES,
+        "The engagement timeline requires recruiter, hr_head or admin",
+      );
+      const tenantId = requireTenantId(ctx);
+      const recruiterMembershipId = await preJoiningRecruiterScope(ctx, tenantId);
+      const inScope = await preJoiningApplicationInScope(ctx.sql, {
+        tenantId,
+        applicationId: input.applicationId,
+        recruiterMembershipId,
+      });
+      const out = inScope
+        ? await getEngagementTimelineLib(ctx.sql, { tenantId, applicationId: input.applicationId })
+        : null;
+      if (!out) throw new TRPCError({ code: "NOT_FOUND", message: "Application not found" });
+      return out;
+    }),
+
+  acknowledgeRiskSignal: protectedProcedure
+    .input(acknowledgeRiskSignalInputSchema)
+    .output(z.object({ ok: z.literal(true) }))
+    .mutation(async ({ ctx, input }) => {
+      return withAudit("acknowledge_risk_signal", ctx, input, async () => {
+        requireAnyRole(
+          ctx,
+          JOINING_WATCHLIST_ROLES,
+          "Acknowledging a signal requires recruiter, hr_head or admin",
+        );
+        const tenantId = requireTenantId(ctx);
+        const recruiterMembershipId = await preJoiningRecruiterScope(ctx, tenantId);
+        const [sig] = await ctx.sql<{ application_id: string }[]>`
+          SELECT application_id FROM public.candidate_risk_signals
+          WHERE tenant_id = ${tenantId} AND id = ${input.signalId} LIMIT 1
+        `;
+        const inScope =
+          !!sig &&
+          (await preJoiningApplicationInScope(ctx.sql, {
+            tenantId,
+            applicationId: sig.application_id,
+            recruiterMembershipId,
+          }));
+        if (!inScope) throw new TRPCError({ code: "NOT_FOUND", message: "Signal not found" });
+        const membershipId = await resolveCallerMembershipId(ctx, tenantId);
+        await acknowledgeRiskSignalLib(ctx.sql, {
+          tenantId,
+          signalId: input.signalId,
+          membershipId,
+        });
+        return { ok: true as const };
+      });
+    }),
+
+  recordRenege: protectedProcedure
+    .input(recordRenegeInputSchema)
+    .output(z.object({ ok: z.literal(true), renegeId: z.string(), offerId: z.string() }))
+    .mutation(async ({ ctx, input }) => {
+      return withAudit("record_renege", ctx, input, async () => {
+        requireAnyRole(
+          ctx,
+          JOINING_WATCHLIST_ROLES,
+          "Recording a renege requires recruiter, hr_head or admin",
+        );
+        const tenantId = requireTenantId(ctx);
+        const recruiterMembershipId = await preJoiningRecruiterScope(ctx, tenantId);
+        const inScope = await preJoiningApplicationInScope(ctx.sql, {
+          tenantId,
+          applicationId: input.applicationId,
+          recruiterMembershipId,
+        });
+        if (!inScope) throw new TRPCError({ code: "NOT_FOUND", message: "Application not found" });
+        const membershipId = await resolveCallerMembershipId(ctx, tenantId);
+        const r = await recordRenegeLib(ctx.sql, { tenantId, membershipId, input, log: ctx.log });
+        if (!r.ok) throw new TRPCError({ code: r.code, message: r.message });
+        return { ok: true as const, renegeId: r.renegeId, offerId: r.offerId };
+      });
+    }),
+
+  // ─────────────────────── PC-18 welcome guide (admin) ───────────────────────
+  //
+  // Tenant-authored source per business unit (businessUnitId null = the
+  // organisation default) → AI draft grounded in that source (behind the
+  // `welcome_guide` kill switch) → a person edits + publishes. admin + hr_head.
+
+  listWelcomeScopes: protectedProcedure
+    .input(z.object({}).default({}))
+    .output(listWelcomeScopesOutputSchema)
+    .query(async ({ ctx }) => {
+      requireAnyRole(ctx, PRE_JOINING_ADMIN_ROLES, "Welcome content requires hr_head or admin");
+      const tenantId = requireTenantId(ctx);
+      const [scopes, generationEnabled] = await Promise.all([
+        listWelcomeScopesLib(ctx.sql, tenantId),
+        isWelcomeGenerationEnabled(ctx.sql, tenantId),
+      ]);
+      return { scopes, generationEnabled };
+    }),
+
+  getWelcomeContent: protectedProcedure
+    .input(welcomeScopeInputSchema)
+    .output(getWelcomeContentOutputSchema)
+    .query(async ({ ctx, input }) => {
+      requireAnyRole(ctx, PRE_JOINING_ADMIN_ROLES, "Welcome content requires hr_head or admin");
+      const out = await getWelcomeContentLib(ctx.sql, {
+        tenantId: requireTenantId(ctx),
+        businessUnitId: input.businessUnitId,
+      });
+      if (!out) throw new TRPCError({ code: "NOT_FOUND", message: "Business unit not found" });
+      return out;
+    }),
+
+  upsertWelcomeSource: protectedProcedure
+    .input(upsertWelcomeSourceInputSchema)
+    .output(z.object({ id: z.string() }))
+    .mutation(async ({ ctx, input }) => {
+      return withAudit("upsert_welcome_source", ctx, input, async () => {
+        requireAnyRole(ctx, PRE_JOINING_ADMIN_ROLES, "Welcome content requires hr_head or admin");
+        const tenantId = requireTenantId(ctx);
+        const membershipId = await resolveCallerMembershipId(ctx, tenantId);
+        const r = await upsertWelcomeSourceLib(ctx.sql, {
+          tenantId,
+          membershipId,
+          businessUnitId: input.businessUnitId,
+          source: input.source,
+        });
+        if (!r.ok) throw new TRPCError({ code: r.code, message: r.message });
+        return { id: r.id };
+      });
+    }),
+
+  generateWelcomeGuide: protectedProcedure
+    .input(welcomeScopeInputSchema)
+    .output(welcomeGuideVersionSchema)
+    .mutation(async ({ ctx, input }) => {
+      return withAudit("generate_welcome_guide", ctx, input, async () => {
+        requireAnyRole(ctx, PRE_JOINING_ADMIN_ROLES, "Welcome content requires hr_head or admin");
+        const tenantId = requireTenantId(ctx);
+        const membershipId = await resolveCallerMembershipId(ctx, tenantId);
+        const r = await generateWelcomeGuideLib(ctx.sql, {
+          tenantId,
+          businessUnitId: input.businessUnitId,
+          membershipId,
+          requestId: ctx.requestId ?? null,
+        });
+        if (!r.ok) throw new TRPCError({ code: r.code, message: r.message });
+        return r.guide;
+      });
+    }),
+
+  updateWelcomeGuideDraft: protectedProcedure
+    .input(updateWelcomeGuideDraftInputSchema)
+    .output(welcomeGuideVersionSchema)
+    .mutation(async ({ ctx, input }) => {
+      return withAudit("update_welcome_guide_draft", ctx, input, async () => {
+        requireAnyRole(ctx, PRE_JOINING_ADMIN_ROLES, "Welcome content requires hr_head or admin");
+        const tenantId = requireTenantId(ctx);
+        const membershipId = await resolveCallerMembershipId(ctx, tenantId);
+        const r = await updateWelcomeGuideDraftLib(ctx.sql, {
+          tenantId,
+          guideId: input.guideId,
+          content: input.content,
+          membershipId,
+        });
+        if (!r.ok) throw new TRPCError({ code: r.code, message: r.message });
+        return r.guide;
+      });
+    }),
+
+  publishWelcomeGuide: protectedProcedure
+    .input(welcomeGuideIdInputSchema)
+    .output(z.object({ ok: z.literal(true), version: z.number().int() }))
+    .mutation(async ({ ctx, input }) => {
+      return withAudit("publish_welcome_guide", ctx, input, async () => {
+        requireAnyRole(ctx, PRE_JOINING_ADMIN_ROLES, "Welcome content requires hr_head or admin");
+        const tenantId = requireTenantId(ctx);
+        const membershipId = await resolveCallerMembershipId(ctx, tenantId);
+        const r = await publishWelcomeGuideLib(ctx.sql, {
+          tenantId,
+          guideId: input.guideId,
+          membershipId,
+        });
+        if (!r.ok) throw new TRPCError({ code: r.code, message: r.message });
+        return { ok: true as const, version: r.version };
+      });
+    }),
+
+  discardWelcomeGuideDraft: protectedProcedure
+    .input(welcomeGuideIdInputSchema)
+    .output(z.object({ ok: z.literal(true) }))
+    .mutation(async ({ ctx, input }) => {
+      return withAudit("discard_welcome_guide_draft", ctx, input, async () => {
+        requireAnyRole(ctx, PRE_JOINING_ADMIN_ROLES, "Welcome content requires hr_head or admin");
+        const r = await discardWelcomeGuideDraftLib(ctx.sql, {
+          tenantId: requireTenantId(ctx),
+          guideId: input.guideId,
+        });
+        if (!r.ok) throw new TRPCError({ code: r.code, message: r.message });
+        return { ok: true as const };
+      });
+    }),
+
+  createWelcomeDraftFromVersion: protectedProcedure
+    .input(welcomeGuideIdInputSchema)
+    .output(welcomeGuideVersionSchema)
+    .mutation(async ({ ctx, input }) => {
+      return withAudit("create_welcome_draft_from_version", ctx, input, async () => {
+        requireAnyRole(ctx, PRE_JOINING_ADMIN_ROLES, "Welcome content requires hr_head or admin");
+        const tenantId = requireTenantId(ctx);
+        const membershipId = await resolveCallerMembershipId(ctx, tenantId);
+        const r = await createWelcomeDraftFromVersionLib(ctx.sql, {
+          tenantId,
+          guideId: input.guideId,
+          membershipId,
+        });
+        if (!r.ok) throw new TRPCError({ code: r.code, message: r.message });
+        return r.guide;
       });
     }),
 
@@ -10421,6 +11948,121 @@ export const appRouter = router({
         }
 
         return { ok: true as const, settings: nextBlock };
+      });
+    }),
+
+  // ─────────────────────── getTenantLabels / updateTenantLabels (CFG-LITE) ───────────────────────
+  //
+  // Tenant display labels for pipeline stages (staff / candidate / partner
+  // wording) and interview recommendations, stored as OVERRIDES ONLY under
+  // tenants.settings.labels. Canonical keys never change — this is wording.
+  // Admin-only; the write is audited and uses the same atomic top-level jsonb
+  // `||` sibling-key merge as updateTenantAiSettings (FORCE RLS, SELECT-only
+  // policies → unscoped pool + explicit tenant predicate). Staff surfaces read
+  // the resolved labels through the portal's tenant-ui-settings loader and the
+  // partner portal through getPartnerStageLabels, not through this procedure.
+  getTenantLabels: protectedProcedure
+    .input(getTenantLabelsInputSchema)
+    .output(getTenantLabelsOutputSchema)
+    .query(async ({ ctx }) => {
+      requireAnyRole(ctx, AI_SETTINGS_ADMIN_ROLES, "Display labels are admin-only");
+      if (!ctx.tenantId) {
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: "protected procedure missing tenantId",
+        });
+      }
+      return { labels: await resolveTenantLabelsDb(ctx.tenantId) };
+    }),
+
+  updateTenantLabels: protectedProcedure
+    .input(updateTenantLabelsInputSchema)
+    .output(updateTenantLabelsOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      return withAudit("update_tenant_labels", ctx, input, async () => {
+        requireAnyRole(ctx, AI_SETTINGS_ADMIN_ROLES, "Display labels are admin-only");
+        if (!ctx.tenantId) {
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: "protected procedure missing tenantId",
+          });
+        }
+        const tenantId = ctx.tenantId;
+        // Normalise: blanks drop out, so "reset to default" = send it blank.
+        const nextBlock = resolveTenantLabels(input);
+        const res = await poolDb.execute(dsql`
+          UPDATE public.tenants
+          SET settings = COALESCE(settings, '{}'::jsonb)
+              || jsonb_build_object('labels', ${JSON.stringify(nextBlock)}::jsonb)
+          WHERE id = ${tenantId}::uuid
+          RETURNING id
+        `);
+        const updated = (res as { rows?: unknown[] }).rows ?? (res as unknown[]);
+        if (updated.length !== 1) {
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: "tenant settings update affected an unexpected number of rows",
+          });
+        }
+        return { ok: true as const, labels: nextBlock };
+      });
+    }),
+
+  // ─────────────────────── getUrgencySettings / updateUrgencySettings (CFG-LITE / PP1) ───────────────────────
+  //
+  // Recruiter-urgency policy (component weights + notice-period bands) under
+  // tenants.settings.urgency; unset → the platform default (40/35/25, notice
+  // 0/15/30/60/90 days). Admin-only; write audited; same sibling-key merge.
+  getUrgencySettings: protectedProcedure
+    .input(getUrgencySettingsInputSchema)
+    .output(getUrgencySettingsOutputSchema)
+    .query(async ({ ctx }) => {
+      requireAnyRole(ctx, AI_SETTINGS_ADMIN_ROLES, "Urgency settings are admin-only");
+      const db = requireDb(ctx);
+      if (!ctx.tenantId) {
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: "protected procedure missing tenantId",
+        });
+      }
+      const [row] = await db
+        .select({ settings: tenants.settings })
+        .from(tenants)
+        .where(eq(tenants.id, ctx.tenantId))
+        .limit(1);
+      const settings = (row?.settings ?? {}) as Record<string, unknown>;
+      return resolveUrgencySettings(settings.urgency);
+    }),
+
+  updateUrgencySettings: protectedProcedure
+    .input(updateUrgencySettingsInputSchema)
+    .output(updateUrgencySettingsOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      return withAudit("update_urgency_settings", ctx, input, async () => {
+        requireAnyRole(ctx, AI_SETTINGS_ADMIN_ROLES, "Urgency settings are admin-only");
+        if (!ctx.tenantId) {
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: "protected procedure missing tenantId",
+          });
+        }
+        const tenantId = ctx.tenantId;
+        const nextBlock = resolveUrgencySettings(input);
+        const res = await poolDb.execute(dsql`
+          UPDATE public.tenants
+          SET settings = COALESCE(settings, '{}'::jsonb)
+              || jsonb_build_object('urgency', ${JSON.stringify(nextBlock)}::jsonb)
+          WHERE id = ${tenantId}::uuid
+          RETURNING id
+        `);
+        const updated = (res as { rows?: unknown[] }).rows ?? (res as unknown[]);
+        if (updated.length !== 1) {
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: "tenant settings update affected an unexpected number of rows",
+          });
+        }
+        return { ok: true as const, urgency: nextBlock };
       });
     }),
 
@@ -10871,6 +12513,244 @@ export const appRouter = router({
       });
     }),
 
+  // ═════════════════════════ PC-26 — diverse-slate requirement ═════════════════════════
+  //
+  // Voluntary candidate self-ID lives in candidate_diversity_self_id (0126),
+  // whose RLS admits candidate JWTs only. Staff see COUNTS per requisition,
+  // computed in lib/diversity-slate on the pool with an explicit tenant
+  // predicate, and only after proving the requisition is visible through the
+  // caller's own RLS client. No procedure here returns a person id or a value
+  // to staff. Flags only — nothing blocks a stage move or an offer.
+
+  /** Slate status for one requisition (by id, or via one of its applications). */
+  getDiverseSlateStatus: protectedProcedure
+    .input(getDiverseSlateStatusInputSchema)
+    .output(getDiverseSlateStatusOutputSchema)
+    .query(async ({ ctx, input }) => {
+      requireAnyRole(
+        ctx,
+        DIVERSE_SLATE_VIEW_ROLE_SET,
+        "Diverse-slate status requires the admin, hr_head or recruiter role",
+      );
+      const db = requireDb(ctx);
+      if (!ctx.tenantId) {
+        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
+      }
+      // Visibility proof through the caller's RLS client.
+      let requisitionId: string | undefined;
+      if (input.requisitionId) {
+        const [r] = await db
+          .select({ id: requisitions.id })
+          .from(requisitions)
+          .where(
+            and(eq(requisitions.tenantId, ctx.tenantId), eq(requisitions.id, input.requisitionId)),
+          )
+          .limit(1);
+        requisitionId = r?.id;
+      } else if (input.applicationId) {
+        const [a] = await db
+          .select({ requisitionId: applications.requisitionId })
+          .from(applications)
+          .where(
+            and(eq(applications.tenantId, ctx.tenantId), eq(applications.id, input.applicationId)),
+          )
+          .limit(1);
+        requisitionId = a?.requisitionId;
+      }
+      if (!requisitionId) {
+        throw new TRPCError({ code: "NOT_FOUND", message: "Requisition not found" });
+      }
+      return computeDiverseSlateStatus1(ctx.tenantId, requisitionId);
+    }),
+
+  /**
+   * Open requisitions that require a diverse slate, with their counts. Feeds
+   * the dashboard tile (onlyShort), the shortlist banner and the list badges.
+   */
+  listDiverseSlateStatuses: protectedProcedure
+    .input(listDiverseSlateStatusesInputSchema)
+    .output(listDiverseSlateStatusesOutputSchema)
+    .query(async ({ ctx, input }) => {
+      requireAnyRole(
+        ctx,
+        DIVERSE_SLATE_VIEW_ROLE_SET,
+        "Diverse-slate status requires the admin, hr_head or recruiter role",
+      );
+      const db = requireDb(ctx);
+      if (!ctx.tenantId) {
+        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
+      }
+      const settings = await resolveTenantDiversitySlateDb(ctx.tenantId);
+      if (!settings.enabled) return { enabled: false, rows: [] };
+      const reqs = await db
+        .select({ id: requisitions.id, title: positions.title })
+        .from(requisitions)
+        .innerJoin(
+          positions,
+          and(
+            eq(positions.tenantId, requisitions.tenantId),
+            eq(positions.id, requisitions.positionId),
+          ),
+        )
+        .where(
+          and(
+            eq(requisitions.tenantId, ctx.tenantId),
+            eq(requisitions.diverseSlateRequired, true),
+            inArray(requisitions.status, DIVERSE_SLATE_OPEN_REQ_STATUSES),
+          ),
+        )
+        .limit(500);
+      const statuses = await computeDiverseSlateStatuses(
+        ctx.tenantId,
+        reqs.map((r) => r.id),
+        settings,
+      );
+      const rows = reqs
+        .map((r) => {
+          const st = statuses.get(r.id);
+          return st ? { ...st, title: r.title ?? null } : null;
+        })
+        .filter((r): r is NonNullable<typeof r> => r !== null)
+        .filter((r) => !input.onlyShort || r.status === "short")
+        .sort((a, b) => (a.title ?? "").localeCompare(b.title ?? ""));
+      return { enabled: true, rows };
+    }),
+
+  /** Wizard defaults: is the toggle offered, and the tenant default minimum. */
+  getDiverseSlateDefaults: protectedProcedure
+    .output(getDiverseSlateDefaultsOutputSchema)
+    .query(async ({ ctx }) => {
+      requireAnyRole(
+        ctx,
+        REQUISITION_READ_ROLES,
+        "Requisition settings require a requisition role",
+      );
+      if (!ctx.tenantId) {
+        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
+      }
+      const settings = await resolveTenantDiversitySlateDb(ctx.tenantId);
+      return { enabled: settings.enabled, defaultMin: settings.defaultMin };
+    }),
+
+  /** Admin: the tenant diversitySlate block (defaults merged). */
+  getDiversitySlateSettings: protectedProcedure
+    .output(getDiversitySlateSettingsOutputSchema)
+    .query(async ({ ctx }) => {
+      requireAnyRole(
+        ctx,
+        DIVERSE_SLATE_ADMIN_ROLE_SET,
+        "Diversity slate settings require the admin or hr_head role",
+      );
+      if (!ctx.tenantId) {
+        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
+      }
+      return resolveTenantDiversitySlateDb(ctx.tenantId);
+    }),
+
+  /**
+   * Admin: save the diversitySlate block — same atomic service-role jsonb `||`
+   * sibling merge as updateScreeningPrivacy (tenants is SELECT-only under RLS).
+   * Audited via api_audit_logs (the block holds config, not personal data).
+   */
+  updateDiversitySlateSettings: protectedProcedure
+    .input(updateDiversitySlateSettingsInputSchema)
+    .output(updateDiversitySlateSettingsOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      return withAudit("update_diversity_slate_settings", ctx, input, async () => {
+        requireAnyRole(
+          ctx,
+          DIVERSE_SLATE_ADMIN_ROLE_SET,
+          "Diversity slate settings require the admin or hr_head role",
+        );
+        if (!ctx.tenantId) {
+          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
+        }
+        const nextBlock: DiversitySlateSettings = resolveDiversitySlateSettings(input);
+        const res = await poolDb.execute(dsql`
+          UPDATE public.tenants
+          SET settings = COALESCE(settings, '{}'::jsonb)
+              || jsonb_build_object('diversitySlate', ${JSON.stringify(nextBlock)}::jsonb)
+          WHERE id = ${ctx.tenantId}::uuid
+          RETURNING id
+        `);
+        const updated = (res as { rows?: unknown[] }).rows ?? (res as unknown[]);
+        if (updated.length !== 1) {
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: "tenant settings update affected an unexpected number of rows",
+          });
+        }
+        return { ok: true as const, settings: nextBlock };
+      });
+    }),
+
+  /** Candidate portal: the capture config + the caller's OWN active answers. */
+  candidateGetDiversitySelfId: candidateProcedure
+    .output(candidateGetDiversitySelfIdOutputSchema)
+    .query(async ({ ctx }) => {
+      const db = ctx.db;
+      if (!db) {
+        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "candidate ctx.db missing" });
+      }
+      const settings = await resolveTenantDiversitySlateDb(ctx.candidate.tenantId);
+      const config = toDiversityCaptureConfig(settings, ctx.candidate.tenantDisplayName);
+      const answers = settings.enabled
+        ? await readOwnSelfId(db, ctx.candidate.tenantId, ctx.candidate.personId)
+        : [];
+      return { config, answers };
+    }),
+
+  /**
+   * Candidate portal: update or withdraw the caller's OWN answers ("prefer
+   * not to say" withdraws). Runs in the candidate's RLS transaction. The API
+   * audit row records which categories were touched, never the values.
+   */
+  candidateSetDiversitySelfId: candidateProcedure
+    .input(candidateSetDiversitySelfIdInputSchema)
+    .output(candidateSetDiversitySelfIdOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      return withAudit(
+        "candidate_set_diversity_self_id",
+        ctx,
+        { categories: input.answers.map((a) => a.categoryKey) },
+        async () => {
+          const db = ctx.db;
+          if (!db) {
+            throw new TRPCError({
+              code: "INTERNAL_SERVER_ERROR",
+              message: "candidate ctx.db missing",
+            });
+          }
+          const tenantId = ctx.candidate.tenantId;
+          const personId = ctx.candidate.personId;
+          const settings = await resolveTenantDiversitySlateDb(tenantId);
+          if (!settings.enabled) {
+            throw new TRPCError({
+              code: "BAD_REQUEST",
+              message: "Diversity self-identification is not collected by this organisation",
+            });
+          }
+          if (input.disclosureVersion !== DIVERSITY_SELF_ID_DISCLOSURE_VERSION) {
+            throw new TRPCError({
+              code: "BAD_REQUEST",
+              message: "The information notice has changed. Please reload the page.",
+            });
+          }
+          await applySelfIdSubmission(db, {
+            tenantId,
+            personId,
+            submission: input,
+            settings,
+            collectedVia: "candidate_portal",
+          });
+          return {
+            config: toDiversityCaptureConfig(settings, ctx.candidate.tenantDisplayName),
+            answers: await readOwnSelfId(db, tenantId, personId),
+          };
+        },
+      );
+    }),
+
   // ═════════════════════════ HRHEAD-03 — Governance & Executive Audit ═════════════════════════
   //
   // Two settings blocks (screeningPrivacy + feedbackSharing) on the CONF-01
@@ -11239,6 +13119,7 @@ export const appRouter = router({
         })),
         byStatus: report.byStatus,
         truncated: report.truncated,
+        ...(report.byBusinessUnit ? { byBusinessUnit: report.byBusinessUnit } : {}),
       };
     }),
 
@@ -11609,6 +13490,93 @@ export const appRouter = router({
       });
     }),
 
+  // ─────────── listReportBusinessUnits (PC-19 · BU roll-up) ───────────
+  //
+  // The tenant's BU hierarchy, flattened depth-first with depth + top-level
+  // ancestor, for the report and Ask-your-data BU pickers (indented tree).
+  // Separate from listBusinessUnits, which is gated to the requisition-wizard
+  // personas (admin / hiring_manager / recruiter) — hr_head / hr_ops read
+  // reports but cannot call it. Archived units are included (flagged): their
+  // positions still roll up under the parent.
+  listReportBusinessUnits: protectedProcedure
+    .input(listReportBusinessUnitsInputSchema)
+    .output(listReportBusinessUnitsOutputSchema)
+    .query(async ({ ctx }) => {
+      requireAnyRole(
+        ctx,
+        REPORT_BU_PICKER_ROLES,
+        "Business-unit pickers require a reports or Ask-your-data role",
+      );
+      const db = requireDb(ctx);
+      if (!ctx.tenantId) {
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: "protected procedure missing tenantId",
+        });
+      }
+      return { items: await loadBusinessUnitTree(db, ctx.tenantId) };
+    }),
+
+  // ─────────────── getReportInsights (PC-20 · written insights) ───────────────
+  //
+  // 2–4 plain-English sentences atop a report section. The report lib runs
+  // exactly as the section does, `loadReportFigures` reduces its output to a
+  // compact list of named figures (no rows, no people), and the model writes
+  // ONLY from those figures; `postCheckInsights` drops any sentence carrying
+  // a number that is not one of them. Feature `report_insights` (kill-switch
+  // + model in Admin → AI settings); cached 15 min per (tenant, report,
+  // filters, data hash). Disabled / failing AI → no insights, never an error.
+  // A query, not a mutation: the only write is the ai-client usage log.
+  getReportInsights: protectedProcedure
+    .input(getReportInsightsInputSchema)
+    .output(getReportInsightsOutputSchema)
+    .query(async ({ ctx, input }) => {
+      requireAnyRole(
+        ctx,
+        REPORTS_READ_ROLES,
+        "Reports access requires the admin, hr_head or hr_ops role",
+      );
+      const db = requireDb(ctx);
+      if (!ctx.tenantId) {
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: "protected procedure missing tenantId",
+        });
+      }
+      const tenantId = ctx.tenantId;
+      const filters: ReportFilters = input.filters;
+      const aiSettings = await resolveTenantAiSettingsDb(tenantId);
+      const feature = aiSettings.report_insights;
+      // Kill-switch first: a disabled feature does not even run the report.
+      const figures = feature.enabled
+        ? await loadReportFigures(db, tenantId, input.reportKey, filters)
+        : [];
+      const actorMembershipId = feature.enabled ? await resolveActorMembership(db, ctx) : null;
+      return generateReportInsights({
+        tenantId,
+        reportKey: input.reportKey,
+        filters,
+        figures,
+        aiEnabled: feature.enabled,
+        complete: async ({ system, user }) => {
+          const client = await getAIClient(tenantId);
+          return client.completeStructured<unknown>({
+            prompt: user,
+            system,
+            model: feature.model,
+            temperature: 0,
+            // Four short sentences + keys; the tenant ceiling still caps it.
+            maxTokens: Math.min(feature.maxTokens, 700),
+            schema: reportInsightsAiResponseJsonSchema,
+            schemaName: REPORT_INSIGHTS_SCHEMA_NAME,
+            feature: REPORT_INSIGHTS_FEATURE,
+            requestId: ctx.requestId,
+            actorMembershipId,
+          });
+        },
+      });
+    }),
+
   // ─────────────────────── askDataCatalog / askData (ASK-DATA) ───────────────────────
   //
   // "Ask your data" — natural-language analytics over the reporting catalog.
@@ -11703,7 +13671,7 @@ export const appRouter = router({
       const aiSettings = await resolveTenantAiSettingsDb(tenantId);
       const feature = aiSettings.ask_data;
 
-      return runAskData({
+      const answer = await runAskData({
         input,
         lookups,
         aiEnabled: feature.enabled,
@@ -11714,6 +13682,7 @@ export const appRouter = router({
           canSeeCandidateNames: ctx.roles.some((r) => ASK_DATA_CANDIDATE_NAME_ROLES.has(r)),
           hmMembershipId,
           hmRequisitionIds,
+          stageLabels: await resolveTenantLabelsDb(tenantId),
         },
         complete: async ({ system, user }) => {
           const client = await getAIClient(tenantId);
@@ -11732,6 +13701,81 @@ export const appRouter = router({
           });
         },
       });
+
+      // PC-21 — log answered questions for "Your recent" / "Popular in your
+      // team". Inside a SAVEPOINT and swallowed on failure: a log write must
+      // never cost the caller their answer (or abort the request tx).
+      if (answer.status === "answered" && answer.interpretation && actorMembershipId) {
+        const interpretation = answer.interpretation;
+        try {
+          await db.transaction(async (sp) => {
+            await logAskDataQuestion(sp, {
+              tenantId,
+              membershipId: actorMembershipId,
+              roles: askerRolesFor(ctx.roles, ASK_DATA_ROLES),
+              question: input.intent ? null : (input.question ?? null),
+              intent: interpretation.intent,
+              params: interpretation.params,
+              source: interpretation.source,
+            });
+          });
+        } catch (err) {
+          console.warn("[askData] question log write failed", err);
+        }
+      }
+      return answer;
+    }),
+
+  // ───────────── askDataHistory (PC-21 · frequent questions) ─────────────
+  //
+  // "Your recent" — the caller's own last questions (re-runnable chips, no
+  // AI); "Popular in your team" — most-asked intents in the last 30 days
+  // among askers sharing an Ask-your-data role with the caller, limited to
+  // intents the caller can run (a hiring manager never sees an intent that
+  // would answer "not available for your role"). Intents only: a peer's
+  // typed wording is never returned.
+  askDataHistory: protectedProcedure
+    .input(askDataHistoryInputSchema)
+    .output(askDataHistoryOutputSchema)
+    .query(async ({ ctx }) => {
+      requireAnyRole(ctx, ASK_DATA_ROLES, "Ask your data isn't available for your role");
+      const db = requireDb(ctx);
+      if (!ctx.tenantId) {
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: "protected procedure missing tenantId",
+        });
+      }
+      const tenantId = ctx.tenantId;
+      const membershipId = await resolveActorMembership(db, ctx);
+      if (!membershipId) return { recent: [], popular: [] };
+      const tenantWide = ctx.roles.some((r) => ASK_DATA_TENANT_WIDE_ROLES.has(r));
+      const recent = await loadRecentQuestions(db, tenantId, membershipId);
+      const popular = await loadPopularIntents(db, tenantId, {
+        callerRoles: askerRolesFor(ctx.roles, ASK_DATA_ROLES),
+        canRun: (intent) => tenantWide || HIRING_MANAGER_SCOPE[intent] !== "none",
+      });
+      return { recent, popular };
+    }),
+
+  // ─────────── askDataTopQuestions (PC-21 · admin view) ───────────
+  //
+  // Admin only: the tenant's top intents (with distinct askers) and top typed
+  // questions over the window, plus whether a question can become a weekly
+  // digest (no — the R1.5 digest renders only the executive pack).
+  askDataTopQuestions: protectedProcedure
+    .input(askDataTopQuestionsInputSchema)
+    .output(askDataTopQuestionsOutputSchema)
+    .query(async ({ ctx, input }) => {
+      requireAnyRole(ctx, USERS_ADMIN_ROLES, "Top questions are admin-only");
+      const db = requireDb(ctx);
+      if (!ctx.tenantId) {
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: "protected procedure missing tenantId",
+        });
+      }
+      return loadTopQuestions(db, ctx.tenantId, input.days);
     }),
 
   // ─────────────────────── getHrMetrics (METRICS-01) ───────────────────────
@@ -11910,12 +13954,18 @@ export const appRouter = router({
     };
     const offer = asRows<OfferRow>(offerRes)[0] ?? { extended: 0, accepted: 0, declined: 0 };
 
-    const scoreTier = (min: number): "platinum" | "gold" | "silver" | "neutral" => {
-      if (min >= 90) return "platinum";
-      if (min >= 70) return "gold";
-      if (min >= 50) return "silver";
-      return "neutral";
-    };
+    // CFG-LITE / BUG-11 — the histogram shading follows the tenant's one
+    // score cut-off setting (aiSettings.screeningScoreBands): a bucket takes
+    // the tier its lower bound falls in.
+    const scoreBands = (await resolveTenantAiSettingsDb(tenantId)).screeningScoreBands;
+    const SCORE_TIER_SHADE = {
+      strong: "platinum",
+      good: "gold",
+      partial: "silver",
+      below: "neutral",
+    } as const;
+    const scoreTier = (min: number): "platinum" | "gold" | "silver" | "neutral" =>
+      SCORE_TIER_SHADE[screeningScoreTier(min, scoreBands)];
 
     return {
       kpis: {
@@ -15846,6 +17896,18 @@ export const appRouter = router({
   }),
 
   /**
+   * partnerGetStageLabels (CFG-LITE) — the tenant's partner-facing stage
+   * wording (settings.labels, platform default per stage where unset). Pure
+   * display wording; never throws on a malformed settings block.
+   */
+  partnerGetStageLabels: partnerProcedure
+    .output(partnerGetStageLabelsOutputSchema)
+    .query(async ({ ctx }) => {
+      const labels = await resolveTenantLabelsDb(ctx.partner.tenantId);
+      return { labels: resolveStageLabelMap(labels, "partner") };
+    }),
+
+  /**
    * partnerListAssignedRequisitions — the reqs Kyndryl has opened to this
    * partner org (partner_assignments status='active'), joined to
    * requisitions + positions for the dashboard cards. Capped for POC scale.
@@ -16139,19 +18201,11 @@ export const appRouter = router({
           //    phone so we reuse a person a direct applicant already created.
           //    No fuzzy matching. Lookup only — creation is deferred to the
           //    "created" branch so a blocked submission creates nothing.
-          const [emailMatch] = await db
-            .select({ id: persons.id, linkedinUrl: persons.linkedinUrl })
-            .from(persons)
-            .where(and(eq(persons.tenantId, tenantId), eq(persons.emailNormalised, emailNorm)))
-            .limit(1);
-          const [phoneMatch] = emailMatch
-            ? [undefined]
-            : await db
-                .select({ id: persons.id, linkedinUrl: persons.linkedinUrl })
-                .from(persons)
-                .where(and(eq(persons.tenantId, tenantId), eq(persons.phoneNormalised, phoneNorm)))
-                .limit(1);
-          const existingPerson = emailMatch ?? phoneMatch ?? null;
+          //    Shared with the PC-2 bulk-CV drain (lib/application-ingest.ts).
+          const existingPerson = await findPersonByContact(db, tenantId, {
+            emailNormalised: emailNorm,
+            phoneNormalised: phoneNorm,
+          });
 
           // 3. If the person already exists, inspect their active claim.
           if (existingPerson) {
@@ -16205,6 +18259,7 @@ export const appRouter = router({
                 partnerOrgId,
                 partnerUserId,
                 partnerSubmissionMetadata: submissionMetadata,
+                screening: input.screening,
                 log: ctx.log,
                 requestId: ctx.requestId,
               });
@@ -16317,6 +18372,7 @@ export const appRouter = router({
             partnerOrgId,
             partnerUserId,
             partnerSubmissionMetadata: submissionMetadata,
+            screening: input.screening,
             log: ctx.log,
             requestId: ctx.requestId,
           });
@@ -17790,6 +19846,41 @@ export const appRouter = router({
       });
     }),
 
+  /**
+   * candidateGetMyWelcomeGuide (PC-18) — the published welcome guide for the
+   * caller's pre-joining application (accepted offer, not yet joined): their
+   * requisition's business unit, else the nearest ancestor with a published
+   * guide, else the organisation default. PERSON-SCOPED via
+   * candidates.person_id = ctx.candidate.personId inside the lib.
+   */
+  candidateGetMyWelcomeGuide: candidateProcedure
+    .output(candidateGetMyWelcomeGuideOutputSchema)
+    .query(async ({ ctx }) => {
+      return getCandidateWelcomeGuideLib(ctx.sql, {
+        tenantId: ctx.candidate.tenantId,
+        personId: ctx.candidate.personId,
+        companyName: ctx.candidate.tenantDisplayName,
+      });
+    }),
+
+  /**
+   * candidateMarkWelcomeSectionViewed (PC-18) — read receipt for one section.
+   * Only the guide the caller would be shown right now is accepted; idempotent.
+   */
+  candidateMarkWelcomeSectionViewed: candidateProcedure
+    .input(candidateMarkWelcomeSectionViewedInputSchema)
+    .output(z.object({ ok: z.literal(true) }))
+    .mutation(async ({ ctx, input }) => {
+      const r = await markWelcomeSectionViewedLib(ctx.sql, {
+        tenantId: ctx.candidate.tenantId,
+        personId: ctx.candidate.personId,
+        guideId: input.guideId,
+        section: input.section,
+      });
+      if (!r.ok) throw new TRPCError({ code: r.code, message: r.message });
+      return { ok: true as const };
+    }),
+
   // ═══════════ DASH-01 — persona landing dashboards ═══════════
   //
   // ONE aggregate read per persona. protectedProcedure guarantees ctx.db +
@@ -17943,12 +20034,19 @@ export const appRouter = router({
       let active = 0;
       let placed = 0;
       const byStage: PartnerStageCount[] = [];
+      // CFG-LITE — tenant partner-facing stage wording; with no override the
+      // historic Title-Case label is kept.
+      const stageLabels = await resolveTenantLabelsDb(ctx.partner.tenantId);
       for (const r of rows) {
         if (!r.stage) continue;
         total += r.n;
         if (r.stage === "offer_accepted") placed += r.n;
         else if (!TERMINAL.has(r.stage)) active += r.n;
-        byStage.push({ stage: r.stage, label: humanizeStage(r.stage), count: r.n });
+        byStage.push({
+          stage: r.stage,
+          label: resolveStageLabel(stageLabels, r.stage, "partner", humanizeStage(r.stage)),
+          count: r.n,
+        });
       }
       byStage.sort((a, b) => b.count - a.count);
       return { totalSubmissions: total, activeSubmissions: active, placed, byStage };
@@ -22112,13 +24210,73 @@ export const appRouter = router({
     .query(async ({ ctx, input }) => {
       requireAnyRole(ctx, RECRUITER_SURFACE_ROLES, "Candidates is a recruiter surface.");
       const db = requireDb(ctx);
-      const search = input.search?.trim().toLowerCase() ?? "";
 
-      const conds = [
-        ...(input.stage ? [eq(applications.currentStage, input.stage)] : []),
-        ...(input.source ? [eq(applications.source, input.source)] : []),
-      ];
+      // PC-5 — every filter is SQL (candidate-list-filters.ts) so paging and
+      // totals are honest at 400+ CVs per role. The expected-CTC filter is
+      // dropped silently for callers who cannot see pay.
+      const { sort: sortIn, page: pageIn, ...filter } = input;
+      const offset = pageIn?.offset ?? 0;
+      const limit = pageIn?.limit ?? CANDIDATE_LIST_PAGE_DEFAULT;
+      // PC-6 / NEW-16 — evidence order by default when the tenant hides the
+      // score, and the score order is never honoured while it is hidden
+      // (ai_score is served as evidence so the order can't leak the score).
+      const scoreVisible = ctx.tenantId
+        ? (await resolveTenantAiSettingsDb(ctx.tenantId)).screeningScoreVisible
+        : true;
+      const requestedSort: CandidateListSort = sortIn ?? (scoreVisible ? "ai_score" : "evidence");
+      const sort: CandidateListSort =
+        !scoreVisible && requestedSort === "ai_score" ? "evidence" : requestedSort;
+      const { conditions } = candidateListConditions(filter, ctx.roles);
+      const { conditions: facetConditions } = candidateListConditions(filter, ctx.roles, {
+        includeRequisition: false,
+      });
 
+      // Role picker facets: matching rows per requisition under every filter
+      // except the requisition one. Cheap GROUP BY over the tenant's
+      // applications (RLS-scoped); also feeds each group's phase rollup.
+      const facetRows = await db
+        .select({
+          requisitionId: applications.requisitionId,
+          roleTitle: positions.title,
+          count: dsql<number>`count(*)::int`,
+          stages: dsql<ApplicationStage[]>`array_agg(DISTINCT ${applications.currentStage})`,
+        })
+        .from(applications)
+        .innerJoin(
+          candidates,
+          and(
+            eq(applications.candidateId, candidates.id),
+            eq(applications.tenantId, candidates.tenantId),
+          ),
+        )
+        .innerJoin(
+          persons,
+          and(eq(candidates.personId, persons.id), eq(candidates.tenantId, persons.tenantId)),
+        )
+        .innerJoin(
+          requisitions,
+          and(
+            eq(applications.requisitionId, requisitions.id),
+            eq(applications.tenantId, requisitions.tenantId),
+          ),
+        )
+        .innerJoin(
+          positions,
+          and(
+            eq(requisitions.positionId, positions.id),
+            eq(requisitions.tenantId, positions.tenantId),
+          ),
+        )
+        .where(whereAll(facetConditions))
+        .groupBy(applications.requisitionId, positions.title)
+        .orderBy(dsql`count(*) DESC`, applications.requisitionId);
+      const facetByReq = new Map(facetRows.map((f) => [f.requisitionId, f]));
+
+      // Page of rows. Rows of one requisition are kept contiguous (groups
+      // ordered largest-first, as the accordion always was), then the sort key
+      // within the group; applications.id ends every order so offset paging
+      // is stable. count(*) OVER () is the total across all pages.
+      const groupSize = dsql`count(*) OVER (PARTITION BY ${applications.requisitionId})`;
       const rows = await db
         .select({
           candidateId: candidates.id,
@@ -22135,12 +24293,17 @@ export const appRouter = router({
           resumeUrl: candidates.currentResumeUrl,
           parsedSkills: candidates.parsedSkills,
           yearsOfExperience: candidates.yearsOfExperience,
-          expectedSalaryInrPaise: applications.expectedSalaryInrPaise,
           source: applications.source,
           stage: applications.currentStage,
           stageEnteredAt: applications.stageEnteredAt,
           aiScore: applications.aiScore,
           aiScoreExplanation: applications.aiScoreExplanation,
+          // PC-7 — screening answers (incl. expected_salary_inr_paise, which the
+          // missing-info count reads) + the knockout verdict.
+          ...screeningAnswerColumns,
+          knockoutPassed: applications.knockoutPassed,
+          knockoutFailures: applications.knockoutFailures,
+          knockoutEvaluatedAt: applications.knockoutEvaluatedAt,
           // P0.5 — WHICH partner, not just "a partner". The source enum only
           // says partner_empanelled / partner_adhoc, so a recruiter scanning a
           // list of partner-sourced candidates could not tell two agencies
@@ -22148,6 +24311,9 @@ export const appRouter = router({
           // real FK; null for every direct application, and the chip falls
           // back to the plain source label.
           partnerOrgName: partnerOrgs.name,
+          total: dsql<number>`(count(*) OVER ())::int`,
+          // PC-6 — compact screening-evidence counts (+ the evidence sort key).
+          ...screeningSummaryColumns,
         })
         .from(applications)
         .innerJoin(
@@ -22182,8 +24348,24 @@ export const appRouter = router({
             eq(partnerOrgs.id, applications.sourcePartnerId),
           ),
         )
-        .where(conds.length ? and(...conds) : undefined)
-        .orderBy(desc(applications.aiScore), desc(applications.createdAt));
+        // PC-6 — evidence counts per row; also what the `evidence` sort orders by.
+        .leftJoin(applicationScreeningEvidence, screeningEvidenceJoin())
+        .where(whereAll(conditions))
+        .orderBy(
+          dsql`${groupSize} DESC`,
+          applications.requisitionId,
+          ...CANDIDATE_LIST_SORT_ORDER[sort],
+        )
+        .limit(limit)
+        .offset(offset);
+
+      // count(*) OVER () rides on every row; an empty page past the end still
+      // needs the total, so fall back to the facet sum (same filters).
+      const total =
+        rows[0]?.total ??
+        (filter.requisitionId
+          ? (facetByReq.get(filter.requisitionId)?.count ?? 0)
+          : facetRows.reduce((sum, f) => sum + f.count, 0));
 
       // Must-have skills per jd_version (one query, then a lookup map).
       const mustHaveByJd = await loadMustHaveSkillsByJdVersion(
@@ -22201,20 +24383,19 @@ export const appRouter = router({
       >();
 
       for (const r of rows) {
-        if (search) {
-          const hay = `${r.fullName ?? ""} ${recruiterRefCode(r.candidateId)}`.toLowerCase();
-          if (!hay.includes(search)) continue;
-        }
         const parsed = narrowParsedSkills(r.parsedSkills);
         const mask = resolveCandidateMasking({ roles: ctx.roles, stage: r.stage, privacy });
-        const noticePeriodDays = parsed.notice_period_days ?? null;
+        // PC-7 — the application's stated notice wins; parsed CV is the fallback.
+        const screening = presentScreeningAnswers(r, r.parsedSkills, ctx.roles);
+        const noticePeriodDays = screening.noticePeriodDays ?? parsed.notice_period_days ?? null;
         const mustHavePct = computeMustHavePct(
           mustHaveByJd.get(r.jdVersionId) ?? [],
           parsed.skills,
         );
         const missingInfo = computeCandidateMissingInfo({
           phone: r.phone,
-          location: r.locationCountry ?? r.locationCity,
+          // PC-7b — the application's stated location wins over the person's.
+          location: r.currentLocation ?? r.locationCountry ?? r.locationCity,
           linkedinUrl: r.linkedinUrl,
           resumeUrl: r.resumeUrl,
           expectedSalaryInrPaise: r.expectedSalaryInrPaise,
@@ -22226,12 +24407,12 @@ export const appRouter = router({
           g = {
             requisitionId: r.requisitionId,
             roleTitle: r.roleTitle ?? "Untitled requisition",
-            stages: [],
+            stages: facetByReq.get(r.requisitionId)?.stages ?? [],
             rows: [],
           };
           groups.set(r.requisitionId, g);
         }
-        g.stages.push(r.stage);
+        if (!facetByReq.has(r.requisitionId)) g.stages.push(r.stage);
         g.rows.push({
           candidateId: r.candidateId,
           applicationId: r.applicationId,
@@ -22242,29 +24423,43 @@ export const appRouter = router({
           partnerOrgName: r.partnerOrgName ?? null,
           stage: r.stage,
           stageEnteredAt: r.stageEnteredAt.toISOString(),
-          aiScore: r.aiScore === null ? null : Number(r.aiScore),
-          aiScoreExplanation: r.aiScoreExplanation,
+          ...presentAiScore(r.aiScore, scoreVisible),
+          aiScoreExplanation: presentScoreExplanation(r.aiScoreExplanation, scoreVisible),
           yearsOfExperience: r.yearsOfExperience === null ? null : Number(r.yearsOfExperience),
           noticePeriodDays,
           mustHavePct,
           missingInfo,
+          screening,
+          knockout: summariseKnockouts(r.knockoutPassed, r.knockoutFailures, r.knockoutEvaluatedAt),
+          evidenceSummary: toScreeningSummary(r),
         });
       }
 
-      const shapedGroups = [...groups.values()]
-        .map((g) => ({
-          requisitionId: g.requisitionId,
-          roleTitle: g.roleTitle,
-          phase: rollupRequisitionPhase(g.stages),
-          candidateCount: g.rows.length,
-          rows: g.rows,
-        }))
-        .filter((g) => g.candidateCount > 0)
-        .sort((a, b) => b.candidateCount - a.candidateCount);
+      // PC-4 — "Screening 312 of 400…": scoring queue depth per requisition on
+      // this page.
+      const queueByReq = await loadScreeningQueueByRequisition(db, [...groups.keys()]);
+
+      // Groups keep page order (already largest-first from the ORDER BY);
+      // candidateCount is the requisition's FULL matching count, not the page's.
+      const shapedGroups = [...groups.values()].map((g) => ({
+        requisitionId: g.requisitionId,
+        roleTitle: g.roleTitle,
+        phase: rollupRequisitionPhase(g.stages),
+        candidateCount: facetByReq.get(g.requisitionId)?.count ?? g.rows.length,
+        rows: g.rows,
+        screeningQueue: queueByReq.get(g.requisitionId) ?? { pending: 0, total: 0 },
+      }));
 
       return {
         groups: shapedGroups as never,
-        totalCandidates: shapedGroups.reduce((sum, g) => sum + g.candidateCount, 0),
+        totalCandidates: total,
+        page: { offset, limit, total },
+        requisitionFacets: facetRows.map((f) => ({
+          requisitionId: f.requisitionId,
+          roleTitle: f.roleTitle ?? "Untitled requisition",
+          count: f.count,
+        })),
+        compFilterAvailable: canSeeScreeningComp(ctx.roles),
       };
     }),
 
@@ -22294,6 +24489,8 @@ export const appRouter = router({
       // composite (slaStateFor) below, so a tenant SLA override genuinely shifts
       // shortlist urgency. Read from the same settings row; default otherwise.
       let slaThresholds: Record<ApplicationStage, number | null> = SLA_THRESHOLDS_HOURS;
+      // CFG-LITE / PP1 — the tenant's urgency weights + notice bands.
+      let urgencySettings: UrgencySettings = defaultUrgencySettings();
       if (ctx.tenantId) {
         const [settingsRow] = await db
           .select({ settings: tenants.settings })
@@ -22301,8 +24498,12 @@ export const appRouter = router({
           .where(eq(tenants.id, ctx.tenantId))
           .limit(1);
         const settings = (settingsRow?.settings ?? {}) as Record<string, unknown>;
-        shortlistDefaults = resolveShortlistDefaults(settings.shortlistDefaults);
+        shortlistDefaults = resolveEffectiveShortlistDefaults(
+          settings.shortlistDefaults,
+          resolveAiSettings(settings.aiSettings).screeningScoreBands,
+        );
         slaThresholds = resolveSlaThresholds(settings.slaThresholds);
+        urgencySettings = resolveUrgencySettings(settings.urgency);
       }
       const effectiveThreshold = input.threshold ?? shortlistDefaults.threshold;
       const cutoffs = shortlistDefaults.tierCutoffs;
@@ -22323,6 +24524,7 @@ export const appRouter = router({
           stageEnteredAt: applications.stageEnteredAt,
           aiScore: applications.aiScore,
           aiScoreExplanation: applications.aiScoreExplanation,
+          ...screeningSummaryColumns,
         })
         .from(applications)
         .innerJoin(
@@ -22350,13 +24552,20 @@ export const appRouter = router({
             eq(requisitions.tenantId, positions.tenantId),
           ),
         )
+        .leftJoin(applicationScreeningEvidence, screeningEvidenceJoin())
         .where(
           and(
             dsql`${applications.aiScore} IS NOT NULL`,
             dsql`${applications.currentStage} NOT IN ('offer_declined', 'withdrawn', 'recruiter_rejected')`,
           ),
         )
-        .orderBy(desc(applications.aiScore));
+        // PC-6 — `evidence` orders by the deterministic evidence key; the
+        // score order stays the default.
+        .orderBy(
+          ...(input.sort === "evidence"
+            ? [evidenceOrderSql(), desc(applications.aiScore)]
+            : [desc(applications.aiScore)]),
+        );
 
       const mustHaveByJd = await loadMustHaveSkillsByJdVersion(
         db,
@@ -22387,11 +24596,14 @@ export const appRouter = router({
           parsed.skills,
         );
         const hoursInStage = (Date.now() - r.stageEnteredAt.getTime()) / (60 * 60 * 1000);
-        const urgency = computeRecruiterUrgency({
-          slaState: slaStateFor(r.stage, hoursInStage, slaThresholds),
-          daysInStage: Math.floor(hoursInStage / 24),
-          noticePeriodDays,
-        });
+        const urgency = computeRecruiterUrgency(
+          {
+            slaState: slaStateFor(r.stage, hoursInStage, slaThresholds),
+            daysInStage: Math.floor(hoursInStage / 24),
+            noticePeriodDays,
+          },
+          urgencySettings,
+        );
         const riskFlags = computeRiskFlags({
           mustHavePct,
           expectedSalaryInrPaise: r.expectedSalaryInrPaise,
@@ -22414,6 +24626,7 @@ export const appRouter = router({
           urgencyIndex: urgency.index,
           urgencyRank: urgency.rank,
           riskFlags,
+          evidenceSummary: toScreeningSummary(r),
         });
       }
 
@@ -22427,6 +24640,22 @@ export const appRouter = router({
         tierCounts,
         rows: shaped as never,
       };
+    }),
+
+  /**
+   * getApplicationScreeningEvidence (PC-6) — the full per-criterion screening
+   * evidence for ONE application: verdict, reason and verified verbatim CV
+   * quotes per criterion. Backs the expandable evidence list on the candidate
+   * list rows (list rows only carry the counts). Recruiter surface; RLS
+   * tenant-scopes the read. Null when the application has not been screened.
+   */
+  getApplicationScreeningEvidence: protectedProcedure
+    .input(getApplicationScreeningEvidenceInputSchema)
+    .output(getApplicationScreeningEvidenceOutputSchema)
+    .query(async ({ ctx, input }) => {
+      requireAnyRole(ctx, RECRUITER_SURFACE_ROLES, "Screening evidence is a recruiter surface.");
+      const db = requireDb(ctx);
+      return { evidence: await loadScreeningEvidence(db, input.applicationId) };
     }),
 
   // ═══════════ RECR-03 — recruiter AI brief drawer + Missing Info Tracker ═══════════
@@ -22476,6 +24705,8 @@ export const appRouter = router({
           expectedSalaryInrPaise: row.expectedSalaryInrPaise,
           parsed,
           personLocationCountry: row.personLocationCountry,
+          applicationNoticePeriodDays: row.applicationNoticePeriodDays,
+          applicationCurrentLocation: row.applicationCurrentLocation,
         });
         // T2.1 / G05 — display the tenant's EFFECTIVE required-field policy (the
         // override merged over the code catalog). No policy rows → the constant.
@@ -22684,6 +24915,8 @@ export const appRouter = router({
             candidateName: persons.fullName,
             currentStage: applications.currentStage,
             expectedSalaryInrPaise: applications.expectedSalaryInrPaise,
+            noticePeriodDays: applications.noticePeriodDays,
+            currentLocation: applications.currentLocation,
             personLocationCountry: persons.locationCountry,
             parsedSkills: candidates.parsedSkills,
             positionTitle: positions.title,
@@ -22715,6 +24948,8 @@ export const appRouter = router({
         // tracker renders byte-identically to today.
         const policyOverrides = await loadCandidateFieldPolicyOverrides(db, tenantId);
         const effectiveFields = effectiveMissingInfoFields(policyOverrides);
+        // CFG-LITE — the tenant's staff stage wording for "Blocks advance to …".
+        const stageLabels = await resolveTenantLabelsDb(tenantId);
 
         const rows: MissingInfoRow[] = [];
         for (const a of appRows) {
@@ -22724,6 +24959,8 @@ export const appRouter = router({
             expectedSalaryInrPaise: a.expectedSalaryInrPaise,
             parsed,
             personLocationCountry: a.personLocationCountry,
+            applicationNoticePeriodDays: a.noticePeriodDays,
+            applicationCurrentLocation: a.currentLocation,
           });
           const verdicts = computeMissingInfo(presence, effectiveFields);
           const candidateRef = `RC-${a.candidateId.slice(0, 6).toUpperCase()}`;
@@ -22750,7 +24987,7 @@ export const appRouter = router({
               status,
               lastContactAt: req?.lastContactAt ? toIsoString(req.lastContactAt) : null,
               blocksAdvanceStage: def.blocksAdvanceStage,
-              blocksAdvanceLabel: blocksAdvanceLabelForDef(def),
+              blocksAdvanceLabel: blocksAdvanceLabelForDef(def, stageLabels),
               requestId: req?.requestId ?? null,
             });
           };
@@ -22979,6 +25216,80 @@ export const appRouter = router({
         }
 
         return { requestId: saved.id, status: saved.status as MissingInfoStatus };
+      });
+    }),
+
+  // ═══════════ PC-2 — bulk CV upload per requisition ═══════════
+  //
+  // The multipart upload itself is REST (POST /api/upload/bulk-cv,
+  // routes/bulk-cv-upload.ts); these are the drawer's reads + the retry.
+  // Parsing + candidate creation run in the bulk-CV drain (apps/workers).
+  // Gate: BULK_CV_UPLOAD_ROLES (recruiter + admin — the Candidates surface).
+
+  /** listBulkCvBatches — the requisition's recent batches + the effective caps. */
+  listBulkCvBatches: protectedProcedure
+    .input(listBulkCvBatchesInputSchema)
+    .output(listBulkCvBatchesOutputSchema)
+    .query(async ({ ctx, input }): Promise<ListBulkCvBatchesOutput> => {
+      requireAnyRole(ctx, BULK_CV_UPLOAD_ROLES, "Bulk CV upload is a recruiter surface.");
+      const db = requireDb(ctx);
+      const tenantId = ctx.tenantId;
+      if (!tenantId) {
+        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
+      }
+      const [req] = await db
+        .select({ status: requisitions.status })
+        .from(requisitions)
+        .where(and(eq(requisitions.tenantId, tenantId), eq(requisitions.id, input.requisitionId)))
+        .limit(1);
+      if (!req) throw new TRPCError({ code: "NOT_FOUND", message: "Requisition not found" });
+      const [limits, batches] = await Promise.all([
+        resolveTenantBulkCvLimits(tenantId),
+        listBulkCvBatchesForRequisition(db, tenantId, input.requisitionId),
+      ]);
+      return {
+        limits,
+        acceptingUploads: BULK_CV_ACCEPTING_REQ_STATUSES.has(req.status),
+        batches,
+      };
+    }),
+
+  /** getBulkCvBatch — one batch + per-file status (the drawer polls this). */
+  getBulkCvBatch: protectedProcedure
+    .input(getBulkCvBatchInputSchema)
+    .output(getBulkCvBatchOutputSchema)
+    .query(async ({ ctx, input }): Promise<GetBulkCvBatchOutput> => {
+      requireAnyRole(ctx, BULK_CV_UPLOAD_ROLES, "Bulk CV upload is a recruiter surface.");
+      const db = requireDb(ctx);
+      const tenantId = ctx.tenantId;
+      if (!tenantId) {
+        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
+      }
+      const out = await getBulkCvBatchWithItems(db, tenantId, input.batchId);
+      if (!out) throw new TRPCError({ code: "NOT_FOUND", message: "Batch not found" });
+      return out;
+    }),
+
+  /** retryBulkCvItems — re-queue failed items (all retryable ones when itemIds is omitted). */
+  retryBulkCvItems: protectedProcedure
+    .input(retryBulkCvItemsInputSchema)
+    .output(retryBulkCvItemsOutputSchema)
+    .mutation(async ({ ctx, input }): Promise<RetryBulkCvItemsOutput> => {
+      requireAnyRole(ctx, BULK_CV_UPLOAD_ROLES, "Bulk CV upload is a recruiter surface.");
+      return withAudit("retry_bulk_cv_items", ctx, input, async () => {
+        const db = requireDb(ctx);
+        const tenantId = ctx.tenantId;
+        if (!tenantId) {
+          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
+        }
+        const [batch] = await db
+          .select({ id: bulkCvBatches.id })
+          .from(bulkCvBatches)
+          .where(and(eq(bulkCvBatches.tenantId, tenantId), eq(bulkCvBatches.id, input.batchId)))
+          .limit(1);
+        if (!batch) throw new TRPCError({ code: "NOT_FOUND", message: "Batch not found" });
+        const requeued = await requeueFailedBulkCvItems(db, tenantId, input.batchId, input.itemIds);
+        return { requeued };
       });
     }),
 
@@ -26687,15 +28998,20 @@ const RECRUITER_FUNNEL_BUCKETS: { key: string; label: string; stages: Applicatio
 ];
 
 const RECRUITER_TERMINAL_STAGES = "('offer_declined', 'withdrawn', 'recruiter_rejected')";
-/** Below this AI match score an in-flight candidate is flagged skill-mismatch. */
-const RECRUITER_MISMATCH_SCORE = 60;
-/** At/above this score a candidate counts as "strong" for the insights. */
-const RECRUITER_STRONG_SCORE = 80;
 
 async function buildRecruiterDashboardExtras(
   db: DashDb,
   tenantId: string,
 ): Promise<GetRecruiterDashboardExtrasOutput> {
+  // CFG-LITE / BUG-11 — the tenant's one score cut-off setting: below the
+  // `partial` floor an in-flight candidate is flagged skill-mismatch; at/above
+  // the `strong` floor it counts as "strong" for the insights.
+  const scoreBands: ScreeningScoreBands = (await resolveTenantAiSettingsDb(tenantId))
+    .screeningScoreBands;
+  const RECRUITER_MISMATCH_SCORE = scoreBands.partial;
+  const RECRUITER_STRONG_SCORE = scoreBands.strong;
+  // CFG-LITE — single-stage funnel buckets carry the tenant's staff wording.
+  const stageLabels = await resolveTenantLabelsDb(tenantId);
   const T = dsql`tenant_id = ${tenantId}::uuid`;
   const live = dsql`current_stage NOT IN ${dsql.raw(RECRUITER_TERMINAL_STAGES)}`;
   const breach = slaBreachSql(await resolveTenantSlaThresholdsDb(tenantId));
@@ -26817,6 +29133,10 @@ async function buildRecruiterDashboardExtras(
   for (const r of stageRows) countByStage.set(r.stage, Number(r.n) || 0);
   const bucketCounts = RECRUITER_FUNNEL_BUCKETS.map((b) => ({
     ...b,
+    label:
+      b.stages.length === 1 && b.stages[0]
+        ? resolveStageLabel(stageLabels, b.stages[0], "staff", b.label)
+        : b.label,
     count: b.stages.reduce((sum, s) => sum + (countByStage.get(s) ?? 0), 0),
   }));
   const headCount = bucketCounts[0]?.count ?? 0;
@@ -27615,9 +29935,11 @@ async function buildHrHeadDashboardExtras(
     reach[i] = running;
   }
   const topReach = Math.max(1, reach[0] ?? 0);
+  // CFG-LITE — tenant staff stage wording; no override keeps the historic label.
+  const stageLabels = await resolveTenantLabelsDb(tenantId);
   const funnelStages = HRHEAD_FUNNEL_STAGES.map((s, i) => ({
     stage: s,
-    label: humanizeStage(s),
+    label: resolveStageLabel(stageLabels, s, "staff", humanizeStage(s)),
     count: reach[i] ?? 0,
     pct: Math.round(((reach[i] ?? 0) / topReach) * 100),
   }));
@@ -28292,6 +30614,9 @@ async function transitionApplicationStage(
         // A rejected or withdrawn application gets the closing email, not the
         // "moved forward" one.
         const closed = targetStage === "recruiter_rejected" || targetStage === "withdrawn";
+        // CFG-LITE — the tenant's candidate-facing stage wording (platform
+        // default = the historic email wording). Never throws.
+        const tenantLabels = closed ? null : await resolveTenantLabelsDb(app.tenantId);
         await enqueueNotification(db, {
           tenantId: app.tenantId,
           recipientType: "candidate",
@@ -28314,7 +30639,7 @@ async function transitionApplicationStage(
                   candidateName: meta.candidateName,
                   positionTitle: meta.positionTitle,
                   companyName: meta.companyName,
-                  newStageLabel: STAGE_LABELS[targetStage] ?? targetStage,
+                  newStageLabel: resolveStageLabel(tenantLabels, targetStage, "candidate"),
                 },
                 dedupKey: `stage_advanced:${tx.id}`,
               }),
@@ -28761,6 +31086,9 @@ async function insertRequisitionDraftChain(
       targetStartDate: input.targetStartDate ?? null,
       isPublic: false,
       createdBy: membershipId,
+      // PC-26 — role-level diverse-slate requirement (min null = tenant default).
+      diverseSlateRequired: input.diverseSlateRequired ?? false,
+      diverseSlateMin: input.diverseSlateMin ?? null,
     })
     .returning({ id: requisitions.id });
   if (!req) {
@@ -28845,6 +31173,92 @@ async function loadWorkdayImportedMap(
     if (r.jrId && !out.has(r.jrId)) out.set(r.jrId, r.requisitionId);
   }
   return out;
+}
+
+/** Rows per batch in importWorkdayRequisitions (one clash query per batch). */
+const WORKDAY_IMPORT_BATCH_SIZE = 100;
+
+/** A mapped Workday row whose business unit resolved (importable). */
+type WorkdayResolvedImportRow = ReturnType<typeof mapWorkdayRow>["resolved"] & {
+  businessUnitId: string;
+};
+
+/**
+ * Shared gate for the Workday import procedures: hiring_manager / admin (same
+ * as createRequisitionDraft), a db handle and the tenant.
+ */
+async function workdayImportGate(ctx: HonoTRPCContext): Promise<{
+  db: NonNullable<HonoTRPCContext["db"]>;
+  tenantId: string;
+  membershipId: string | null;
+}> {
+  requireAnyRole(
+    ctx,
+    REQUISITION_WRITE_ROLES,
+    "Importing requisitions requires the hiring_manager or admin role",
+  );
+  const db = requireDb(ctx);
+  if (!ctx.tenantId) {
+    throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
+  }
+  const membershipId = await resolveActorMembership(db, ctx);
+  return { db, tenantId: ctx.tenantId, membershipId };
+}
+
+/** Parse an uploaded Workday export; a file problem becomes a clean BAD_REQUEST. */
+function parseWorkdayUploadOrThrow(file: WorkdayUploadFile) {
+  try {
+    return parseWorkdayExportFile(file);
+  } catch (err) {
+    if (err instanceof WorkdayImportFileError) {
+      throw new TRPCError({ code: "BAD_REQUEST", message: err.message });
+    }
+    throw err;
+  }
+}
+
+/**
+ * The preview payload for a set of normalised Workday rows (sample or upload):
+ * per-row mapping against the tenant's real lookups, the already-imported flag
+ * and the summary counts the drawer shows.
+ */
+async function buildWorkdayImportPreview(
+  ctx: HonoTRPCContext,
+  db: NonNullable<HonoTRPCContext["db"]>,
+  tenantId: string,
+  membershipId: string | null,
+  src: {
+    source: "sample" | "upload";
+    fileName: string | null;
+    rows: WorkdayRequisitionRow[];
+    unmappedColumns: string[];
+    rowErrors: WorkdayRowError[];
+  },
+): Promise<PreviewWorkdayRequisitionImportOutput> {
+  const lookups = await loadWorkdayTenantLookups(ctx, db, tenantId);
+  const callerName = membershipId
+    ? (lookups.members.find((m) => m.membershipId === membershipId)?.displayName ?? null)
+    : null;
+  const imported = await loadWorkdayImportedMap(db, tenantId);
+  const rows = src.rows.map((r) =>
+    buildWorkdayPreviewRow(r, lookups, callerName, imported.get(r.jobRequisitionId) ?? null),
+  );
+  const pending = rows.filter((r) => !r.alreadyImported);
+  return {
+    source: src.source,
+    fileName: src.fileName,
+    columns: [...WORKDAY_PREVIEW_COLUMNS],
+    rows,
+    unmappedColumns: src.unmappedColumns,
+    rowErrors: src.rowErrors,
+    counts: {
+      total: rows.length,
+      ready: pending.filter((r) => r.needsReviewCount === 0).length,
+      needsReview: pending.filter((r) => r.needsReviewCount > 0).length,
+      alreadyImported: rows.length - pending.length,
+      invalid: src.rowErrors.length,
+    },
+  };
 }
 
 /** The Workday JR id a requisition was imported from (preview provenance), else null. */
@@ -29040,6 +31454,12 @@ async function resolveTenantDisplayName(tenantId: string): Promise<string> {
  */
 function buildKnockoutThreshold(k: RequisitionKnockoutInput): Record<string, unknown> {
   const base: Record<string, unknown> = { field_path: k.fieldPath };
+  // PC-7 — catalogue fields read from the application's screening answers can
+  // fall back to the parsed CV (notice period) when the answer is missing.
+  const def = knockoutFieldDef(k.fieldPath);
+  if (def?.source === "candidate_asserted" && def.cvFallbackPath) {
+    base.fallback_field_path = def.cvFallbackPath;
+  }
   switch (k.type) {
     case "boolean":
       return { ...base, required: true };
@@ -30121,6 +32541,33 @@ async function doScheduleRound(
         "doScheduleRound: enqueueNotification failed",
       );
     }
+
+    // PC-9 — every panellist gets a calendar invite (.ics) too, not just the
+    // candidate. Best-effort like the invitation: it runs on the pool (the
+    // shared scheduling lib serves unauthenticated routes as well) and is the
+    // last write here, so a failure is logged, never fatal to the booking.
+    try {
+      const settings = await loadSchedulingSettings(ctx.sql, app.tenantId);
+      await queuePanelistInvites(ctx.sql, {
+        tenantId: app.tenantId,
+        interviewId,
+        membershipIds: panelIds,
+        candidateName: meta.candidateName,
+        companyName: meta.companyName,
+        positionTitle: meta.positionTitle,
+        roundName: plan.roundName,
+        startMs: scheduledStart.getTime(),
+        durationMinutes,
+        mode,
+        meetingUrl: input.meetingUrl ?? "",
+        timezone: settings.timezone,
+      });
+    } catch (err) {
+      ctx.log.warn(
+        { err, request_id: ctx.requestId, interview_id: interviewId },
+        "doScheduleRound: panelist invites failed",
+      );
+    }
   }
 
   return { interviewId, roundNumber: input.roundNumber, invitationSentTo };
@@ -30751,11 +33198,32 @@ async function buildRequisitionInsights(
   }
 
   const scopeLabel = single ? ("single" as const) : ("all" as const);
+  // CFG-LITE / BUG-11 — the empty distribution shows the same tenant ranges
+  // the populated one does (aiSettings.screeningScoreBands).
+  const emptyBands = ctx.tenantId
+    ? (await resolveTenantAiSettingsDb(ctx.tenantId)).screeningScoreBands
+    : resolveAiSettings(undefined).screeningScoreBands;
+  const emptyRange = (lo: number, hi: number): string => (hi < lo ? "—" : `${lo}–${hi}`);
   const emptyScoreDist = [
-    { key: "excellent" as const, label: "Excellent", range: "85–100", count: 0 },
-    { key: "good" as const, label: "Good", range: "70–84", count: 0 },
-    { key: "partial" as const, label: "Partial", range: "50–69", count: 0 },
-    { key: "low" as const, label: "Low", range: "0–49", count: 0 },
+    {
+      key: "excellent" as const,
+      label: "Excellent",
+      range: emptyRange(emptyBands.strong, 100),
+      count: 0,
+    },
+    {
+      key: "good" as const,
+      label: "Good",
+      range: emptyRange(emptyBands.good, emptyBands.strong - 1),
+      count: 0,
+    },
+    {
+      key: "partial" as const,
+      label: "Partial",
+      range: emptyRange(emptyBands.partial, emptyBands.good - 1),
+      count: 0,
+    },
+    { key: "low" as const, label: "Low", range: emptyRange(0, emptyBands.partial - 1), count: 0 },
   ];
   const emptySla = (Object.entries(slaThresholds) as [ApplicationStage, number | null][])
     .filter(([, h]) => h !== null)
@@ -30824,21 +33292,41 @@ async function buildRequisitionInsights(
     return { stage, count, dropOffPct };
   });
 
-  // Score distribution — real AI scores bucketed.
+  // Score distribution — real AI scores bucketed by the tenant's one score
+  // cut-off setting (CFG-LITE / BUG-11, aiSettings.screeningScoreBands).
+  const bands = ctx.tenantId
+    ? (await resolveTenantAiSettingsDb(ctx.tenantId)).screeningScoreBands
+    : resolveAiSettings(undefined).screeningScoreBands;
   const buckets = { excellent: 0, good: 0, partial: 0, low: 0 };
   for (const a of apps) {
     if (a.aiScore == null) continue;
-    const s = Number(a.aiScore);
-    if (s >= 85) buckets.excellent += 1;
-    else if (s >= 70) buckets.good += 1;
-    else if (s >= 50) buckets.partial += 1;
+    const tier = screeningScoreTier(Number(a.aiScore), bands);
+    if (tier === "strong") buckets.excellent += 1;
+    else if (tier === "good") buckets.good += 1;
+    else if (tier === "partial") buckets.partial += 1;
     else buckets.low += 1;
   }
+  const range = (lo: number, hi: number): string => (hi < lo ? "—" : `${lo}–${hi}`);
   const scoreDistribution = [
-    { key: "excellent" as const, label: "Excellent", range: "85–100", count: buckets.excellent },
-    { key: "good" as const, label: "Good", range: "70–84", count: buckets.good },
-    { key: "partial" as const, label: "Partial", range: "50–69", count: buckets.partial },
-    { key: "low" as const, label: "Low", range: "0–49", count: buckets.low },
+    {
+      key: "excellent" as const,
+      label: "Excellent",
+      range: range(bands.strong, 100),
+      count: buckets.excellent,
+    },
+    {
+      key: "good" as const,
+      label: "Good",
+      range: range(bands.good, bands.strong - 1),
+      count: buckets.good,
+    },
+    {
+      key: "partial" as const,
+      label: "Partial",
+      range: range(bands.partial, bands.good - 1),
+      count: buckets.partial,
+    },
+    { key: "low" as const, label: "Low", range: range(0, bands.partial - 1), count: buckets.low },
   ];
 
   // Active candidates (non-terminal stages).

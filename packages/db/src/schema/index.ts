@@ -22,6 +22,8 @@ export * from "./audit-logs";
 export * from "./application-source";
 export * from "./tenant-application-sources";
 export * from "./candidate-field-policy";
+// PC-26 voluntary diversity self-ID (aggregate slate counts only)
+export * from "./candidate-diversity-self-id";
 export * from "./application-stage";
 export * from "./persons";
 export * from "./candidates";
@@ -38,6 +40,7 @@ export * from "./ai-usage-logs";
 export * from "./api-audit-logs";
 export * from "./assistant-actions";
 export * from "./pii-access-log";
+export * from "./ask-data-questions";
 export * from "./partner-tier";
 export * from "./partner-user-role";
 export * from "./partner-assignment-status";
@@ -93,6 +96,10 @@ export * from "./transcript-outbox";
 // Asynchronous AI first-round interview — question plan, approval, turns (N4.1)
 export * from "./ai-interview-sessions";
 export * from "./ai-interview-evidence";
+// PC-6 — per-criterion CV screening evidence (migration 0124)
+export * from "./application-screening-evidence";
+// PC-12 explicit final selection decision (migration 0129)
+export * from "./application-selection-decisions";
 // Candidate accounts (Wave C, CAND-01)
 export * from "./candidate-accounts";
 // Offboarding pillar (OFFBOARD-01)
@@ -130,3 +137,11 @@ export * from "./learning-resources";
 export * from "./learning-tracks";
 // skill → resource map: the engine behind the per-hire upskilling layer (LD-2A)
 export * from "./learning-skill-map";
+// PC-2 bulk CV upload per requisition (batches + per-file work queue)
+export * from "./bulk-cv-upload";
+// In-app interview scheduling — panellist availability + candidate slot offers (PC-8/9/10, 0127)
+export * from "./interview-scheduling";
+// PC-14..17 pre-joining engagement: journeys, touchpoints, pulses, risk signals, reneges (0128)
+export * from "./pre-joining-engagement";
+// PC-18 welcome guide per business unit: sources, versioned guides, read receipts (0130)
+export * from "./welcome-guides";

@@ -44,6 +44,20 @@ export const emailTemplateKeySchema = z.enum([
   "partner.submission_received",
   "partner.stage_changed",
   "partner.claim_expiry_warning",
+  // PC-8 / PC-9 / PC-10 — in-app interview scheduling.
+  "candidate.interview_slot_offer",
+  "panelist.interview_scheduled",
+  "panelist.interview_rescheduling",
+  "recruiter.scheduling_alert",
+  // PC-14/15 — pre-joining engagement journey + the recruiter signal alert.
+  "candidate.pre_joining_welcome",
+  // PC-18 — the welcome-guide journey step.
+  "candidate.pre_joining_welcome_guide",
+  "candidate.pre_joining_pulse",
+  "candidate.pre_joining_company_update",
+  "candidate.pre_joining_two_weeks",
+  "candidate.pre_joining_one_week",
+  "recruiter.joining_risk_signal",
 ]);
 export type EmailTemplateKey = z.infer<typeof emailTemplateKeySchema>;
 

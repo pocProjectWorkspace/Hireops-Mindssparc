@@ -9,9 +9,17 @@ import { useDrawerRouting } from "@/lib/use-drawer-routing";
 import { useUndoToast } from "./UndoToastProvider";
 import { OfferSection } from "@/components/offers/OfferSection";
 import { InterviewScheduleSection } from "@/components/interviews/InterviewScheduleSection";
+import { AssessmentSummaryPanel } from "@/components/assessment/AssessmentSummaryPanel";
+import {
+  SelectionDecisionChip,
+  useLatestSelectionDecisions,
+} from "@/components/assessment/SelectionDecisionChip";
 import { AIScoreBadge } from "./AIScoreBadge";
+import { ScreeningChips } from "./ScreeningChips";
+import { ScreeningAnswersSection } from "./ScreeningAnswersSection";
 import { useScreeningScoreVisible } from "@/components/ScreeningScoreProvider";
-import { applicationStageLabel } from "@/lib/labels";
+import { ScreeningEvidenceSection } from "@/components/screening/ScreeningEvidence";
+import { useApplicationStageLabel } from "@/components/TenantLabelsProvider";
 import { timeAgo } from "@/lib/approval-format";
 import { TERMINAL_NEGATIVE } from "@/components/candidate/candidate-format";
 
@@ -71,6 +79,7 @@ function SectionHeading({ children }: { children: ReactNode }) {
 }
 
 export function CandidateDetailDrawer() {
+  const applicationStageLabel = useApplicationStageLabel();
   const { candidateId, applicationId, close } = useDrawerRouting();
   const scoreVisible = useScreeningScoreVisible();
   const queryClient = useQueryClient();
@@ -95,6 +104,8 @@ export function CandidateDetailDrawer() {
     { id: candidateId ?? "", applicationId: applicationId ?? undefined },
     { enabled: !!candidateId },
   );
+  // PC-12 — latest selection decision chip (additive; empty when none).
+  const latestDecisions = useLatestSelectionDecisions(applicationId ? [applicationId] : []);
 
   const revert = trpc.revertApplicationStage.useMutation({
     onSuccess: () => {
@@ -151,6 +162,7 @@ export function CandidateDetailDrawer() {
 
   if (!candidateId) return null;
 
+  const latestDecision = applicationId ? latestDecisions.get(applicationId) : undefined;
   const isPending = advance.isPending || reject.isPending;
   const person = detail.data?.person;
   const candidate = detail.data?.candidate;
@@ -209,7 +221,20 @@ export function CandidateDetailDrawer() {
                         : candidate.source.replace(/_/g, " ")}
                     </Badge>
                   ) : null}
-                  {typeof parsed.notice_period_days === "number" ? (
+                  {latestDecision ? (
+                    <SelectionDecisionChip
+                      decision={latestDecision.decision}
+                      reasonLabel={latestDecision.reasonLabel}
+                    />
+                  ) : null}
+                  {/* PC-7 — the application's screening answers (notice falls
+                      back to the parsed CV) + knockout verdict. */}
+                  {application ? (
+                    <ScreeningChips
+                      screening={application.screening}
+                      knockout={application.knockout}
+                    />
+                  ) : typeof parsed.notice_period_days === "number" ? (
                     <Badge tone="info">{parsed.notice_period_days}d notice</Badge>
                   ) : null}
                 </div>
@@ -234,14 +259,37 @@ export function CandidateDetailDrawer() {
         </header>
 
         <div className="flex-1 space-y-5 overflow-y-auto px-6 py-5">
+          {/* PC-6 — screening EVIDENCE first: per must-have verdict, reason and
+              verified verbatim CV quotes. This is the primary screening output. */}
+          {application ? (
+            <ScreeningEvidenceSection evidence={application.screeningEvidence} />
+          ) : null}
+
           {/* AI-score hero (POLISH-01) — ring + top factors, drawn from the
-              application's ai_score_explanation. Honest unscored/skipped states. */}
+              application's ai_score_explanation. Honest unscored/skipped states.
+              With the score hidden (NEW-16) the server omits aiScore and the
+              badge renders no number — only the written factor notes. */}
           {application ? (
             <AIScoreBadge
-              score={application.aiScore}
+              score={scoreVisible ? (application.aiScore ?? null) : null}
               explanation={application.aiScoreExplanation}
               variant="drawer"
               showScore={scoreVisible}
+            />
+          ) : null}
+
+          {/* PC-7 — screening answers (view + recruiter edit) and knockouts. */}
+          {application ? (
+            <ScreeningAnswersSection
+              key={application.id}
+              applicationId={application.id}
+              screening={application.screening}
+              knockout={application.knockout}
+              onSaved={() => {
+                void detail.refetch();
+                queryClient.invalidateQueries({ queryKey: [["listCandidates"]] });
+                queryClient.invalidateQueries({ queryKey: [["listCandidatesByRequisition"]] });
+              }}
             />
           ) : null}
 
@@ -330,6 +378,9 @@ export function CandidateDetailDrawer() {
           ) : null}
 
           {applicationId ? <InterviewScheduleSection applicationId={applicationId} /> : null}
+
+          {/* PC-11 / PC-12 — all-rounds assessment + the explicit selection decision. */}
+          {applicationId ? <AssessmentSummaryPanel applicationId={applicationId} /> : null}
 
           {applicationId ? <OfferSection applicationId={applicationId} /> : null}
 

@@ -35,6 +35,8 @@ export const applicationSourceSchema = z.enum([
   "agency_search",
   "talent_pool",
   "whatsapp",
+  // PC-2: recruiter bulk CV upload against a requisition (migration 0123).
+  "bulk_upload",
 ]);
 export type ApplicationSource = z.infer<typeof applicationSourceSchema>;
 

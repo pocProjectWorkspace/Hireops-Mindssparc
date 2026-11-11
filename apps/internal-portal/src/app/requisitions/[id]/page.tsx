@@ -5,6 +5,7 @@ import { createServerTRPCCaller } from "@/lib/trpc-server";
 import { AppShell } from "@/components/nav/AppShell";
 import { RoleNotice } from "@/components/nav/RoleNotice";
 import { RequisitionDetailView } from "@/components/requisitions/RequisitionDetailView";
+import { canViewDiverseSlate } from "@hireops/api-types";
 
 export const dynamic = "force-dynamic"; // Auth-gated + reads live requisition state.
 
@@ -27,6 +28,8 @@ const DECIDE_ROLES = ["hr_head", "admin"];
 const POST_ROLES = ["hiring_manager", "recruiter", "admin"];
 // INT-02: interview plan editing — hiring_manager / recruiter / admin.
 const INTERVIEW_MANAGE_ROLES = ["hiring_manager", "recruiter", "admin"];
+// PC-2: bulk CV upload — the Candidates-surface roles (the API enforces the same).
+const CV_UPLOAD_ROLES = ["recruiter", "admin"];
 
 export default async function RequisitionDetailPage({
   params,
@@ -41,6 +44,7 @@ export default async function RequisitionDetailPage({
   const canDecide = session.roles.some((r) => DECIDE_ROLES.includes(r));
   const canPost = session.roles.some((r) => POST_ROLES.includes(r));
   const canManageInterviews = session.roles.some((r) => INTERVIEW_MANAGE_ROLES.includes(r));
+  const canUploadCvs = session.roles.some((r) => CV_UPLOAD_ROLES.includes(r));
 
   if (!allowed) {
     return (
@@ -85,6 +89,8 @@ export default async function RequisitionDetailPage({
         canDecide={canDecide}
         canPost={canPost}
         canManageInterviews={canManageInterviews}
+        canViewDiverseSlate={canViewDiverseSlate(session.roles)}
+        canUploadCvs={canUploadCvs}
       />
     </AppShell>
   );

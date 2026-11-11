@@ -5,7 +5,9 @@ import { useQueryClient } from "@tanstack/react-query";
 import { Badge, Button } from "@/components/ui";
 import type { BadgeTone } from "@/components/ui";
 import { trpc } from "@/lib/trpc-client";
-import { applicationStageLabel } from "@/lib/labels";
+import { DiverseSlateWarning } from "@/components/diversity/DiverseSlateBadge";
+import { WorkdayHandoffPanel } from "./WorkdayHandoffPanel";
+import { useApplicationStageLabel } from "@/components/TenantLabelsProvider";
 
 /**
  * Offer drafting section inside the CandidateDetailDrawer. Three modes:
@@ -23,6 +25,9 @@ import { applicationStageLabel } from "@/lib/labels";
  *   - terminal offers (accepted / declined / cancelled / expired): show
  *     the offer card with the outcome badge; no actions.
  *
+ *   - PC-13: below the offers, the "Workday handoff" step (status chip +
+ *     CSV / JSON download) once there's a live or accepted offer.
+ *
  * Money lives as paise on the wire; this component is the conversion
  * boundary (paise → INR for display, INR → paise on submit).
  */
@@ -34,6 +39,7 @@ interface OfferSectionProps {
 const DRAFTABLE_STAGES = new Set<string>(["hr_round", "offer_drafted"]);
 
 export function OfferSection({ applicationId }: OfferSectionProps) {
+  const applicationStageLabel = useApplicationStageLabel();
   const queryClient = useQueryClient();
   const offers = trpc.listOffersByApplication.useQuery(
     { applicationId },
@@ -42,7 +48,10 @@ export function OfferSection({ applicationId }: OfferSectionProps) {
   const [showForm, setShowForm] = useState(false);
 
   const invalidate = () =>
-    queryClient.invalidateQueries({ queryKey: [["listOffersByApplication"]] });
+    Promise.all([
+      queryClient.invalidateQueries({ queryKey: [["listOffersByApplication"]] }),
+      queryClient.invalidateQueries({ queryKey: [["getWorkdayHandoff"]] }),
+    ]);
 
   const extend = trpc.extendOffer.useMutation({
     onSuccess: () => {
@@ -158,6 +167,8 @@ export function OfferSection({ applicationId }: OfferSectionProps) {
           </li>
         ))}
       </ul>
+
+      {rows.length > 0 ? <WorkdayHandoffPanel applicationId={applicationId} /> : null}
     </section>
   );
 }
@@ -181,6 +192,7 @@ function DraftOfferForm({ applicationId, onCreated, onCancel }: DraftFormProps) 
   const baseInrInt = parseInt(baseInr, 10);
   const canSubmit =
     Number.isFinite(baseInrInt) && baseInrInt > 0 && joiningDate.length > 0 && location.length > 0;
+  // PC-26 — the diverse-slate reminder below never feeds canSubmit: it does not block.
 
   return (
     <form
@@ -200,6 +212,7 @@ function DraftOfferForm({ applicationId, onCreated, onCancel }: DraftFormProps) 
         });
       }}
     >
+      <DiverseSlateWarning applicationId={applicationId} action="offer" />
       <NumField label="Base salary (INR per year)" value={baseInr} onChange={setBaseInr} required />
       <NumField
         label="Variable target (INR per year)"

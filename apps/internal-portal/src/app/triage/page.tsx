@@ -5,6 +5,7 @@ import { UndoToastProvider } from "@/components/triage/UndoToastProvider";
 import { FilterChipsBar } from "@/components/triage/FilterChipsBar";
 import { HotZone } from "@/components/triage/HotZone";
 import { MomentumFeed } from "@/components/triage/MomentumFeed";
+import { HOT_ZONE_PAGE, MOMENTUM_PAGE } from "@/lib/triage-paging";
 import { CandidateDetailDrawer } from "@/components/triage/CandidateDetailDrawer";
 import { loadScreeningScoreVisible } from "@/lib/tenant-ui-settings";
 
@@ -34,14 +35,15 @@ export default async function TriagePage() {
   const momentumSort = (await loadScreeningScoreVisible()) ? "ai_score_desc" : "recent";
 
   const [breaches, momentum] = await Promise.all([
+    // PC-5 — offset mode (first page + total); the lists page client-side.
     caller.listCandidates({
       filters: { slaBreachOnly: true },
-      pagination: { limit: 20 },
+      pagination: { limit: HOT_ZONE_PAGE, offset: 0 },
       sort: "sla_breach",
     }),
     caller.listCandidates({
       filters: { stage: "application_received" },
-      pagination: { limit: 50 },
+      pagination: { limit: MOMENTUM_PAGE, offset: 0 },
       sort: momentumSort,
     }),
   ]);

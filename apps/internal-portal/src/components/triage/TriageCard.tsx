@@ -4,8 +4,9 @@ import { useEffect, useRef } from "react";
 import type { ListCandidatesOutput } from "@hireops/api-types";
 import { Avatar, Badge, ScoreMeter, cn } from "@/components/ui";
 import type { BadgeTone } from "@/components/ui";
-import { applicationStageLabel } from "@/lib/labels";
+import { useApplicationStageLabel } from "@/components/TenantLabelsProvider";
 import { useScreeningScoreVisible } from "@/components/ScreeningScoreProvider";
+import { ScreeningChips } from "./ScreeningChips";
 
 // Zod's z.unknown() typing makes the property optional in the inferred
 // type, which the strict Row would otherwise reject. Loosen the prop
@@ -54,6 +55,7 @@ export function TriageCard({
   selected?: boolean;
   onOpen: (ids: { candidateId: string; applicationId: string }) => void;
 }) {
+  const applicationStageLabel = useApplicationStageLabel();
   const name = row.fullName ?? "(no name on file)";
   const scoreVisible = useScreeningScoreVisible();
   const { label: inStageLabel, tone: inStageTone } = timeInStage(row.stageEnteredAt, variant);
@@ -92,10 +94,15 @@ export function TriageCard({
             {applicationStageLabel(row.stage)}
           </Badge>
         </div>
+        {/* PC-7 — notice / location / CTC (pay only if the role may see it) +
+            knockout verdict (fail vs unknown). */}
+        <div className="mt-1">
+          <ScreeningChips screening={row.screening} knockout={row.knockout} />
+        </div>
       </div>
 
       <div className="flex shrink-0 items-center gap-2 sm:gap-4">
-        {scoreVisible ? <ScoreMeter score={row.aiScore} /> : null}
+        {scoreVisible ? <ScoreMeter score={row.aiScore ?? null} /> : null}
         <Badge tone={inStageTone} pill className="tabular-nums">
           {inStageLabel}
         </Badge>
