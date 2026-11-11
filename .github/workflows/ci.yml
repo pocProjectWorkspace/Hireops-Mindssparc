@@ -25,8 +25,11 @@ on:
   # staging reseed (it empties offers + 5 outbox tables) lands in the morning
   # rather than mid-demo. Weekdays only — a cron on an unchanged repo is the
   # same waste as the docs-only pushes this trigger change removes.
-  schedule:
-    - cron: "0 18 * * 1-5"
+  # PAUSED 11 Nov 2026 (user): no nightly full api:test during the Solenis PoC
+  # build — it burns runner time and wipes staging demo data. Re-enable by
+  # restoring:
+  #   schedule:
+  #     - cron: "0 18 * * 1-5"
   workflow_dispatch:
 
 # Reusable env block. The DB-touching jobs additionally pull secrets
@@ -123,7 +126,9 @@ jobs:
     # @hireops/agent-actions pure-function tests. ~11min total, reliable
     # under the DB_POOL_MAX=3 cap. Per TEST-INFRA-01, this is what
     # actually gates merge — the full suite runs nightly as test-full.
-    if: github.event_name == 'pull_request'
+    # PAUSED 11 Nov 2026 (user) during the Solenis PoC build: manual only.
+    # Re-enable on PRs by restoring: if: github.event_name == 'pull_request'
+    if: github.event_name == 'workflow_dispatch'
     concurrency:
       group: ci-db
       cancel-in-progress: false
