@@ -16,6 +16,7 @@
  */
 
 import { z } from "zod";
+import { COUNTRY_CALLING_CODES } from "./phone";
 import { resolvedLookupEntrySchema } from "./tenant-lookups";
 
 // ─────────────────────────── shared field rules ───────────────────────────
@@ -403,3 +404,33 @@ export function locationDisplay(
   parts.push(loc.countryCode);
   return parts.join(" · ");
 }
+
+// ─────────────────────────── default country ───────────────────────────
+
+/**
+ * `tenants.settings.defaultCountry` — the country a bare national phone
+ * number is placed in for person dedup (C1-BUGS BUG-5). There is no platform
+ * default: null leaves bare numbers in the legacy digits-only form. Only
+ * countries with a known calling code are accepted.
+ */
+export const tenantDefaultCountrySchema = z
+  .string()
+  .trim()
+  .toUpperCase()
+  .refine((c) => COUNTRY_CALLING_CODES[c] !== undefined, "Unknown or unsupported country code");
+
+export const getTenantDefaultCountryInputSchema = z.object({}).default({});
+export const getTenantDefaultCountryOutputSchema = z.object({
+  defaultCountry: z.string().nullable(),
+  /** ISO alpha-2 codes the platform can place a phone number in, sorted. */
+  supportedCountries: z.array(z.string()),
+});
+export type GetTenantDefaultCountryOutput = z.infer<typeof getTenantDefaultCountryOutputSchema>;
+
+export const setTenantDefaultCountryInputSchema = z.object({
+  defaultCountry: tenantDefaultCountrySchema.nullable(),
+});
+export type SetTenantDefaultCountryInput = z.infer<typeof setTenantDefaultCountryInputSchema>;
+export const setTenantDefaultCountryOutputSchema = z.object({
+  defaultCountry: z.string().nullable(),
+});

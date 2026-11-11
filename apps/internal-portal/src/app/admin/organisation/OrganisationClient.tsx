@@ -22,6 +22,8 @@ import { trpc, handleTRPCError } from "@/lib/trpc-client";
  *     location stays as the display fallback.
  *   - Business units ↔ entity: which entity each unit belongs to (units
  *     themselves are managed on the Business units page).
+ *   - Default country: `settings.defaultCountry`, the country a bare phone
+ *     number is placed in for person dedup (C1-BUGS BUG-5).
  *
  * hr_head sees the page read-only (canEdit false); the server enforces the
  * admin-only writes too.
@@ -163,7 +165,27 @@ export function OrganisationClient({
     onError,
   });
 
+  // ── default country (phone numbers) ──
+  const countryQuery = trpc.getTenantDefaultCountry.useQuery({});
+  const [countryDraft, setCountryDraft] = useState<string | null>(null);
+  const savedCountry = countryQuery.data?.defaultCountry ?? "";
+  const countryValue = countryDraft ?? savedCountry;
+  const setDefaultCountry = trpc.setTenantDefaultCountry.useMutation({
+    onSuccess: async (r) => {
+      setCountryDraft(null);
+      await utils.getTenantDefaultCountry.invalidate();
+      setNotice({
+        ok: true,
+        text: r.defaultCountry
+          ? `Default country set to ${r.defaultCountry}.`
+          : "Default country cleared.",
+      });
+    },
+    onError,
+  });
+
   const busy =
+    setDefaultCountry.isPending ||
     createEntity.isPending ||
     updateEntity.isPending ||
     createLocation.isPending ||
@@ -264,6 +286,41 @@ export function OrganisationClient({
           {notice.text}
         </div>
       ) : null}
+
+      {/* ── Default country ── */}
+      <Card className="mt-6 p-6">
+        <h2 className="text-sm font-semibold text-neutral-900">Default country</h2>
+        <p className="mt-1 text-sm text-neutral-500">
+          Phone numbers entered without a country code are read as numbers in this country, so the
+          same person added with and without the code is recognised as one person. With no default,
+          such numbers are matched as typed.
+        </p>
+        <div className="mt-4 grid grid-cols-1 items-end gap-3 sm:grid-cols-[12rem_auto]">
+          <Field label="Country (ISO)">
+            <select
+              className={inputCls}
+              value={countryValue}
+              disabled={!canEdit || countryQuery.isLoading}
+              onChange={(e) => setCountryDraft(e.target.value)}
+            >
+              <option value="">No default</option>
+              {(countryQuery.data?.supportedCountries ?? []).map((c) => (
+                <option key={c} value={c}>
+                  {c}
+                </option>
+              ))}
+            </select>
+          </Field>
+          {canEdit ? (
+            <Button
+              disabled={busy || countryDraft === null || countryDraft === savedCountry}
+              onClick={() => setDefaultCountry.mutate({ defaultCountry: countryValue || null })}
+            >
+              Save
+            </Button>
+          ) : null}
+        </div>
+      </Card>
 
       {/* ── Legal entities ── */}
       <Card className="mt-6 p-6">

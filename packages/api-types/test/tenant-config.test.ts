@@ -10,6 +10,7 @@ import {
   getStarterPack,
   isJsonSubset,
   parseTenantConfigDocument,
+  resolveTenantDefaultCountry,
   resolveTenantSetupState,
   settingsBlockDef,
   starterPackSourceFromExport,
@@ -64,6 +65,11 @@ describe("C1-F11 starter packs", () => {
     // Rounds only reference the pack's scorecard.
     for (const r of must(p.config.interviewRounds))
       expect(r.scorecardTemplateKey).toBe("gcc_competencies");
+    // Phone dedup country (C1-BUGS BUG-5 has no platform default) — a known code.
+    expect(p.config.locale?.defaultCountry).toBe("IN");
+    expect(resolveTenantDefaultCountry({ defaultCountry: p.config.locale?.defaultCountry })).toBe(
+      "IN",
+    );
     // Document types: only codes the platform catalogue lacks (a tenant row
     // with a platform code would replace that type for the tenant).
     expect(must(p.config.documentTypes).map((d) => d.code)).toEqual(["uan"]);

@@ -221,8 +221,25 @@ export const configLocaleSchema = z.object({
     .nullable(),
   timezone: shortText(64).nullable(),
   locale: shortText(20).nullable(),
+  /**
+   * `tenants.settings.defaultCountry` (ISO-3166 alpha-2) — the country a bare
+   * national phone number is placed in for person dedup (C1-BUGS BUG-5).
+   * Optional so documents exported before it existed still parse.
+   */
+  defaultCountry: iso2.nullable().optional(),
 });
 export type ConfigLocale = z.infer<typeof configLocaleSchema>;
+
+/**
+ * The locale section's fields — each a top-level `tenants.settings` scalar
+ * (not a settings block, so they travel here rather than in `settings`).
+ */
+export const TENANT_CONFIG_LOCALE_FIELDS = [
+  "currency",
+  "timezone",
+  "locale",
+  "defaultCountry",
+] as const;
 
 export const configLookupSchema = z.object({
   kind: lookupKind,
@@ -672,7 +689,7 @@ export function diffTenantConfig(
     } else if (section === "locale") {
       const cur = (current.locale ?? { currency: null, timezone: null, locale: null }) as Json;
       const nxt = inc as Json;
-      for (const f of ["currency", "timezone", "locale"]) {
+      for (const f of TENANT_CONFIG_LOCALE_FIELDS) {
         if (nxt[f] === null || nxt[f] === undefined) continue;
         if (cur[f] === null || cur[f] === undefined) d.adds.push(f);
         else if (mode === "replace" && cur[f] !== nxt[f]) d.changes.push(f);

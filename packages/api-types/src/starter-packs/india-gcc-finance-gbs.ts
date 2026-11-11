@@ -64,7 +64,14 @@ export const INDIA_GCC_FINANCE_GBS_STARTER_PACK: StarterPack = {
   },
   defaultRegion: "ap-south-1",
   config: {
-    locale: { currency: "INR", timezone: "Asia/Kolkata", locale: "en-IN" },
+    // defaultCountry places a bare 10-digit mobile number in India for person
+    // dedup (C1-BUGS BUG-5 — there is no platform default country).
+    locale: {
+      currency: "INR",
+      timezone: "Asia/Kolkata",
+      locale: "en-IN",
+      defaultCountry: "IN",
+    },
     settings: {
       labels: {
         version: TENANT_LABELS_VERSION,

@@ -451,6 +451,29 @@ describe.skipIf(!HAS_LOCAL_PG)(
       assert.ok(
         (await count("audit_logs", t, "entity_type = 'job_levels' AND source = 'system'")) >= 10,
       );
+      // Phone dedup places bare national numbers in India (C1-BUGS BUG-5);
+      // the Organisation page's default-country field reads + writes the key.
+      assert.equal(s.defaultCountry, "IN");
+      const indiaAdmin = caller(must(adminIds["f11-india"]), t, ["admin"]);
+      assert.equal((await indiaAdmin.getTenantDefaultCountry({})).defaultCountry, "IN");
+      await indiaAdmin.setTenantDefaultCountry({ defaultCountry: null });
+      const cleared = await sql<{ has: boolean }[]>`
+      SELECT settings ? 'defaultCountry' AS has FROM public.tenants WHERE id = ${t}
+    `;
+      assert.equal(cleared[0]?.has, false);
+      assert.equal(
+        (await indiaAdmin.setTenantDefaultCountry({ defaultCountry: "in" })).defaultCountry,
+        "IN",
+      );
+      await expectTrpc(indiaAdmin.setTenantDefaultCountry({ defaultCountry: "ZZ" }), "BAD_REQUEST");
+      await expectTrpc(
+        caller(must(adminIds["f11-india"]), t, ["hr_head"]).setTenantDefaultCountry({
+          defaultCountry: "IN",
+        }),
+        "FORBIDDEN",
+      );
+      assert.equal((await indiaAdmin.getTenantDefaultCountry({})).defaultCountry, "IN");
+
       // Document types are tenant-scoped (C1-BUGS BUG-4, 0132): the pack adds
       // only UAN; PAN / Aadhaar / PF / ESIC stay platform types, not copies.
       const pack = must(out.steps.find((x) => x.key === "starter_pack"));
@@ -462,7 +485,6 @@ describe.skipIf(!HAS_LOCAL_PG)(
       assert.deepEqual([...docTypes], [{ code: "uan", stage: "pre_boarding" }]);
       // The effective catalogue lists each code once; a tenant row with a
       // platform code replaces the platform row (BUG-4 override rule).
-      const indiaAdmin = caller(must(adminIds["f11-india"]), t, ["admin"]);
       const codesOf = async () =>
         (await indiaAdmin.listRequestableDocumentTypes()).items.map((i) => i.code);
       let codes = await codesOf();
@@ -668,6 +690,7 @@ describe.skipIf(!HAS_LOCAL_PG)(
         exported.document.sections.documentTypes?.map((d) => d.code),
         ["uan"],
       );
+      assert.equal(exported.document.sections.locale?.defaultCountry, "IN");
       assert.equal(exported.document.source?.starterPack?.key, "india-gcc-finance-gbs");
       assert.equal(exported.document.sections.panelPools?.[0]?.name, "R2R panel");
       assert.equal(exported.document.sections.settings?.communications?.senderName, "Talent Team");

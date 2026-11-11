@@ -33,6 +33,7 @@ import {
   tenantLookups,
 } from "@hireops/db";
 import {
+  COUNTRY_CALLING_CODES,
   PLATFORM_LOOKUP_DEFAULTS,
   TENANT_LOOKUP_KINDS,
   TENANT_LOOKUP_KIND_META,
@@ -43,6 +44,8 @@ import {
   createLocationInputSchema,
   getOrgAndJobArchitectureInputSchema,
   getOrgAndJobArchitectureOutputSchema,
+  getTenantDefaultCountryInputSchema,
+  getTenantDefaultCountryOutputSchema,
   jobFunctionMutationOutputSchema,
   jobLevelMutationOutputSchema,
   jobProfileCompetenciesSchema,
@@ -54,9 +57,12 @@ import {
   resetTenantLookupInputSchema,
   resetTenantLookupOutputSchema,
   resolvePreJoiningEngagementSettings,
+  resolveTenantDefaultCountry,
   resolveTenantLookup,
   setBusinessUnitLegalEntityInputSchema,
   setBusinessUnitLegalEntityOutputSchema,
+  setTenantDefaultCountryInputSchema,
+  setTenantDefaultCountryOutputSchema,
   updateJobFunctionInputSchema,
   updateJobLevelInputSchema,
   updateJobProfileInputSchema,
@@ -768,6 +774,60 @@ export const orgArchitectureProcedures = {
             ),
           );
         return { kind: await lookupKindView(ctx, db, tenantId, input.kind) };
+      }),
+    ),
+
+  // ── default country (C1-BUGS BUG-5 phone dedup) ──
+  /**
+   * getTenantDefaultCountry — `tenants.settings.defaultCountry` (resolved: an
+   * unknown stored code reads as null) plus the supported country list.
+   * admin + hr_head.
+   */
+  getTenantDefaultCountry: protectedProcedure
+    .input(getTenantDefaultCountryInputSchema)
+    .output(getTenantDefaultCountryOutputSchema)
+    .query(async ({ ctx }) => {
+      const { tenantId } = gate(
+        ctx,
+        ORG_ARCH_READ_ROLES,
+        "The organisation settings require the admin or hr_head role",
+      );
+      const [row] = await ctx.sql<{ settings: Record<string, unknown> | null }[]>`
+        SELECT settings FROM public.tenants WHERE id = ${tenantId} LIMIT 1
+      `;
+      return {
+        defaultCountry: resolveTenantDefaultCountry(row?.settings ?? {}),
+        supportedCountries: Object.keys(COUNTRY_CALLING_CODES).sort(),
+      };
+    }),
+
+  /**
+   * setTenantDefaultCountry — admin only, audited. tenants is SELECT-only
+   * under RLS, so the write is a service-role top-level jsonb merge (the
+   * updateSystemSetup precedent); null removes the key (no default country).
+   */
+  setTenantDefaultCountry: protectedProcedure
+    .input(setTenantDefaultCountryInputSchema)
+    .output(setTenantDefaultCountryOutputSchema)
+    .mutation(({ ctx, input }) =>
+      withAudit("set_tenant_default_country", ctx, input, async () => {
+        const { tenantId } = gate(ctx, ORG_ARCH_WRITE_ROLES, WRITE_MESSAGE);
+        const code = input.defaultCountry;
+        const updated =
+          code === null
+            ? await ctx.sql`
+                UPDATE public.tenants
+                   SET settings = COALESCE(settings, '{}'::jsonb) - 'defaultCountry'
+                 WHERE id = ${tenantId}
+                RETURNING id`
+            : await ctx.sql`
+                UPDATE public.tenants
+                   SET settings = COALESCE(settings, '{}'::jsonb)
+                                  || jsonb_build_object('defaultCountry', ${code}::text)
+                 WHERE id = ${tenantId}
+                RETURNING id`;
+        if (updated.length !== 1) throw notFound("Tenant");
+        return { defaultCountry: code };
       }),
     ),
 };

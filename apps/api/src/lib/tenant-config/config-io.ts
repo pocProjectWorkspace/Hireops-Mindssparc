@@ -34,6 +34,7 @@ import {
   TENANT_SETTINGS_BLOCKS,
   configRecordKey,
   diffTenantConfig,
+  resolveTenantDefaultCountry,
   settingsBlockDef,
   type ConfigSectionDiff,
   type TenantConfigDocument,
@@ -124,6 +125,9 @@ export async function readTenantConfig(
     currency: str(raw.currency),
     timezone: str(raw.timezone),
     locale: str(raw.locale),
+    // Normalised (upper-case, known calling code) so a hand-edited value can't
+    // produce a document that fails its own import validation.
+    defaultCountry: resolveTenantDefaultCountry(raw),
   };
   const sp = raw.starterPack;
   const starterPack =
