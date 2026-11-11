@@ -1707,6 +1707,21 @@ function documentTypeVisibleTo(tenantId: string) {
   return dsql`(${documentTypes.tenantId} IS NULL OR ${documentTypes.tenantId} = ${tenantId})`;
 }
 
+/**
+ * The tenant's EFFECTIVE document-type catalogue: visible rows, minus any
+ * platform row the tenant has replaced with its own row of the same code (the
+ * override rule `ensureDocumentCollectionTasks` applies). Catalogue reads use
+ * this so an overridden type is listed once — the tenant's version.
+ */
+function documentTypeEffectiveFor(tenantId: string) {
+  return dsql`(${documentTypeVisibleTo(tenantId)} AND NOT (
+    ${documentTypes.tenantId} IS NULL AND EXISTS (
+      SELECT 1 FROM public.document_types tdt
+       WHERE tdt.tenant_id = ${tenantId} AND tdt.code = ${documentTypes.code}
+    )
+  ))`;
+}
+
 // ─────────── CAND-02 — candidate self-service profile read ───────────
 
 interface CandidateProfileSqlRow {
@@ -11789,7 +11804,7 @@ export const appRouter = router({
       const typeRows = await db
         .select({ code: documentTypes.code, retentionYears: documentTypes.retentionYears })
         .from(documentTypes)
-        .where(documentTypeVisibleTo(tenantId));
+        .where(documentTypeEffectiveFor(tenantId));
       const effByCode = typeRows
         .map((t) => ({
           code: t.code,
@@ -16183,7 +16198,7 @@ export const appRouter = router({
           retentionYears: documentTypes.retentionYears,
         })
         .from(documentTypes)
-        .where(documentTypeVisibleTo(requireTenantId(ctx)))
+        .where(documentTypeEffectiveFor(requireTenantId(ctx)))
         .orderBy(
           dsql`${documentTypes.geographyCode} ASC NULLS FIRST`,
           documentTypes.retentionYears,
@@ -22737,7 +22752,7 @@ export const appRouter = router({
           geographyCode: documentTypes.geographyCode,
         })
         .from(documentTypes)
-        .where(documentTypeVisibleTo(requireTenantId(ctx)))
+        .where(documentTypeEffectiveFor(requireTenantId(ctx)))
         .orderBy(dsql`${documentTypes.geographyCode} ASC NULLS FIRST`, documentTypes.name);
       return {
         items: rows.map((r) => ({

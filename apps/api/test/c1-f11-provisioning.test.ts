@@ -451,9 +451,36 @@ describe.skipIf(!HAS_LOCAL_PG)(
       assert.ok(
         (await count("audit_logs", t, "entity_type = 'job_levels' AND source = 'system'")) >= 10,
       );
-      // Document types are platform-wide on this branch → skipped and reported.
+      // Document types are tenant-scoped (C1-BUGS BUG-4, 0132): the pack adds
+      // only UAN; PAN / Aadhaar / PF / ESIC stay platform types, not copies.
       const pack = must(out.steps.find((x) => x.key === "starter_pack"));
-      assert.ok(JSON.stringify(pack.detail).includes("documentTypes"), JSON.stringify(pack.detail));
+      assert.equal(pack.detail.skipped, undefined, JSON.stringify(pack.detail));
+      const docTypes = await sql<{ code: string; stage: string | null }[]>`
+      SELECT code, required_for_lifecycle_stage AS stage FROM public.document_types
+       WHERE tenant_id = ${t} ORDER BY code
+    `;
+      assert.deepEqual([...docTypes], [{ code: "uan", stage: "pre_boarding" }]);
+      // The effective catalogue lists each code once; a tenant row with a
+      // platform code replaces the platform row (BUG-4 override rule).
+      const indiaAdmin = caller(must(adminIds["f11-india"]), t, ["admin"]);
+      const codesOf = async () =>
+        (await indiaAdmin.listRequestableDocumentTypes()).items.map((i) => i.code);
+      let codes = await codesOf();
+      assert.ok(codes.includes("uan") && codes.includes("esic") && codes.includes("pan_card"));
+      assert.equal(new Set(codes).size, codes.length, `duplicate codes: ${codes.join(",")}`);
+      await sql`
+      INSERT INTO public.document_types (tenant_id, code, name, geography_code, retention_years)
+      VALUES (${t}, 'esic', 'ESIC (tenant)', 'IN', 8)
+    `;
+      codes = await codesOf();
+      assert.equal(codes.filter((c) => c === "esic").length, 1);
+      const retention = await indiaAdmin.getDocumentRetention({});
+      const esic = retention.items.filter((i) => i.code === "esic");
+      assert.deepEqual(
+        esic.map((i) => i.name),
+        ["ESIC (tenant)"],
+      );
+      await sql`DELETE FROM public.document_types WHERE tenant_id = ${t} AND code = 'esic'`;
     });
 
     it("re-running is idempotent: no duplicates, no second invite", async () => {
@@ -636,7 +663,11 @@ describe.skipIf(!HAS_LOCAL_PG)(
         exported.skipped.some((s) => s.includes("Named approver")),
         "person approver skipped",
       );
-      assert.ok(exported.skipped.some((s) => s.startsWith("documentTypes")));
+      assert.ok(!exported.skipped.some((s) => s.startsWith("documentTypes")));
+      assert.deepEqual(
+        exported.document.sections.documentTypes?.map((d) => d.code),
+        ["uan"],
+      );
       assert.equal(exported.document.source?.starterPack?.key, "india-gcc-finance-gbs");
       assert.equal(exported.document.sections.panelPools?.[0]?.name, "R2R panel");
       assert.equal(exported.document.sections.settings?.communications?.senderName, "Talent Team");

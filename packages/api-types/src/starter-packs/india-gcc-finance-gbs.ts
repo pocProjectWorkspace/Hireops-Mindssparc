@@ -17,7 +17,8 @@ import type { StarterPack } from "./types";
  *   - finance / process functions (P2P, O2C, R2R, SAP, …) and IN09–IN18 grades;
  *   - one competency scorecard (People, Performance, Results, Functional,
  *     Competencies) over a four-round loop;
- *   - India statutory onboarding documents (UAN, PF, ESIC, Aadhaar, PAN).
+ *   - India statutory onboarding documents: UAN as a tenant type on top of
+ *     the platform's PAN / Aadhaar / PF (auto-collected) and ESIC (requestable).
  */
 
 const IN_ENTITY = "India legal entity";
@@ -210,6 +211,13 @@ export const INDIA_GCC_FINANCE_GBS_STARTER_PACK: StarterPack = {
         competencyFocus: ["Competencies"],
       },
     ],
+    // India statutory documents. The platform catalogue (tenant_id NULL)
+    // already auto-collects PAN (`pan_card`), Aadhaar (`aadhaar`) and the PF
+    // declaration (`form_11_pf`) at pre-boarding for IN cases, and offers ESIC
+    // (`esic`) as requestable-only because it applies below the statutory wage
+    // ceiling. The pack therefore adds only what the platform lacks — a tenant
+    // row with a platform code would REPLACE that platform type for the tenant
+    // (C1-BUGS BUG-4), freezing it against later platform corrections.
     documentTypes: [
       {
         code: "uan",
@@ -217,34 +225,6 @@ export const INDIA_GCC_FINANCE_GBS_STARTER_PACK: StarterPack = {
         geographyCode: "IN",
         requiredForLifecycleStage: "pre_boarding",
         retentionYears: 8,
-      },
-      {
-        code: "pf_declaration",
-        name: "PF declaration (Form 11)",
-        geographyCode: "IN",
-        requiredForLifecycleStage: "pre_boarding",
-        retentionYears: 8,
-      },
-      {
-        code: "esic",
-        name: "ESIC registration",
-        geographyCode: "IN",
-        requiredForLifecycleStage: "pre_boarding",
-        retentionYears: 8,
-      },
-      {
-        code: "aadhaar",
-        name: "Aadhaar card",
-        geographyCode: "IN",
-        requiredForLifecycleStage: "pre_boarding",
-        retentionYears: 7,
-      },
-      {
-        code: "pan_card",
-        name: "PAN card",
-        geographyCode: "IN",
-        requiredForLifecycleStage: "pre_boarding",
-        retentionYears: 7,
       },
     ],
   },

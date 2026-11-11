@@ -64,6 +64,9 @@ describe("C1-F11 starter packs", () => {
     // Rounds only reference the pack's scorecard.
     for (const r of must(p.config.interviewRounds))
       expect(r.scorecardTemplateKey).toBe("gcc_competencies");
+    // Document types: only codes the platform catalogue lacks (a tenant row
+    // with a platform code would replace that type for the tenant).
+    expect(must(p.config.documentTypes).map((d) => d.code)).toEqual(["uan"]);
     // No client names in a platform pack.
     expect(JSON.stringify(p).toLowerCase()).not.toMatch(/solenis|kyndryl|novachem/);
   });
