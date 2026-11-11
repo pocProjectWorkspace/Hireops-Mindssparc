@@ -64,3 +64,6 @@ export * from "./welcome-guide";
 export * from "./role-labels";
 export * from "./tenant-labels";
 export * from "./urgency-settings";
+// C1-F3 — organisation + job architecture + tenant lookups
+export * from "./tenant-lookups";
+export * from "./org-architecture";

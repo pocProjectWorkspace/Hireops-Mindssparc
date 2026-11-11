@@ -19,6 +19,10 @@ import { positions } from "./positions";
 import { jdVersions } from "./jd-versions";
 import { headcountEnvelopes } from "./headcount-envelopes";
 import { tenantUserMemberships } from "./tenant-user-memberships";
+import { locations } from "./locations";
+import { jobProfiles } from "./job-profiles";
+import { jobFunctions } from "./job-functions";
+import { jobLevels } from "./job-levels";
 
 /**
  * Active hiring opening against a position. Per requirements.md §5.1 and
@@ -73,6 +77,15 @@ export const requisitions = pgTable(
     // tenant's diversitySlate.defaultMin. Flags only; never blocks.
     diverseSlateRequired: boolean("diverse_slate_required").notNull().default(false),
     diverseSlateMin: integer("diverse_slate_min"),
+    // C1-F3 (0133) — structured org + job architecture links (all nullable)
+    // and tenant-lookup keys (employment_type / requisition_type kinds; the
+    // key is the canonical value, the label is tenant config).
+    locationId: uuid("location_id"),
+    jobProfileId: uuid("job_profile_id"),
+    jobFunctionId: uuid("job_function_id"),
+    jobLevelId: uuid("job_level_id"),
+    employmentTypeKey: text("employment_type_key"),
+    requisitionTypeKey: text("requisition_type_key"),
     createdBy: uuid("created_by"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
@@ -98,6 +111,38 @@ export const requisitions = pgTable(
       sql`${table.status} IN ('draft', 'pending_approval', 'approved', 'on_hold', 'posted', 'filled', 'cancelled', 'closed')`,
     ),
     check("requisitions_openings_check", sql`${table.numberOfOpenings} >= 1`),
+    check(
+      "requisitions_employment_type_key_check",
+      sql`${table.employmentTypeKey} IS NULL OR ${table.employmentTypeKey} ~ '^[a-z0-9][a-z0-9_]{0,39}$'`,
+    ),
+    check(
+      "requisitions_requisition_type_key_check",
+      sql`${table.requisitionTypeKey} IS NULL OR ${table.requisitionTypeKey} ~ '^[a-z0-9][a-z0-9_]{0,39}$'`,
+    ),
+    index("idx_requisitions_location").on(table.tenantId, table.locationId),
+    index("idx_requisitions_job_profile").on(table.tenantId, table.jobProfileId),
+    index("idx_requisitions_job_function").on(table.tenantId, table.jobFunctionId),
+    index("idx_requisitions_job_level").on(table.tenantId, table.jobLevelId),
+    foreignKey({
+      columns: [table.tenantId, table.locationId],
+      foreignColumns: [locations.tenantId, locations.id],
+      name: "fk_requisitions_location",
+    }).onDelete("restrict"),
+    foreignKey({
+      columns: [table.tenantId, table.jobProfileId],
+      foreignColumns: [jobProfiles.tenantId, jobProfiles.id],
+      name: "fk_requisitions_job_profile",
+    }).onDelete("restrict"),
+    foreignKey({
+      columns: [table.tenantId, table.jobFunctionId],
+      foreignColumns: [jobFunctions.tenantId, jobFunctions.id],
+      name: "fk_requisitions_job_function",
+    }).onDelete("restrict"),
+    foreignKey({
+      columns: [table.tenantId, table.jobLevelId],
+      foreignColumns: [jobLevels.tenantId, jobLevels.id],
+      name: "fk_requisitions_job_level",
+    }).onDelete("restrict"),
     check(
       "requisitions_diverse_slate_min_check",
       sql`${table.diverseSlateMin} IS NULL OR (${table.diverseSlateMin} >= 1 AND ${table.diverseSlateMin} <= 20)`,

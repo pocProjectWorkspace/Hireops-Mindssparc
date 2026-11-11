@@ -30,6 +30,7 @@ import {
 } from "@hireops/api-types";
 import { loadPreJoiningSettings, stopPreJoiningJourney } from "./journey";
 import { listWelcomeGuideViews } from "./welcome-guide";
+import { loadRenegeReasons } from "../tenant-lookups";
 
 type PgSqlClient = typeof poolSql;
 
@@ -455,7 +456,10 @@ export async function recordRenege(
 ): Promise<RecordRenegeOutcome> {
   const { tenantId, input } = args;
   const settings = await loadPreJoiningSettings(sql, tenantId);
-  const reason = settings.renegeReasons.find((r) => r.code === input.reasonCode);
+  // C1-F3 — reasons resolve through the renege_reason lookup, with the
+  // pre-joining setting list as the fallback (unchanged when no lookup rows).
+  const reasons = await loadRenegeReasons(sql, tenantId, settings.renegeReasons);
+  const reason = reasons.find((r) => r.code === input.reasonCode);
   if (!reason) return { ok: false, code: "BAD_REQUEST", message: "Unknown renege reason" };
 
   const [app] = await sql<{ current_stage: string; offer_id: string | null }[]>`

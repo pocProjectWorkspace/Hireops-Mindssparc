@@ -12,6 +12,9 @@ import {
   type RequisitionKnockoutInput,
   KNOCKOUT_FIELD_CATALOGUE,
   knockoutFieldDef,
+  compBandsForScope,
+  jobProfilePrefill,
+  locationDisplay,
 } from "@hireops/api-types";
 import { trpc, handleTRPCError } from "@/lib/trpc-client";
 import { Button, Card } from "@/components/ui";
@@ -102,7 +105,19 @@ interface BasicsState {
   compBandId: string;
   compBandMin: string; // INR annual, as string for the input
   compBandMax: string;
+  /** C1-F3 — structured job architecture + organisation (empty = not picked). */
+  jobProfileId: string;
+  jobFunctionId: string;
+  jobLevelId: string;
+  /** A managed location id; empty = the free-text primaryLocation fallback. */
+  locationId: string;
+  /** Tenant-lookup keys (employment_type / requisition_type). */
+  employmentTypeKey: string;
+  requisitionTypeKey: string;
 }
+
+/** Location picker sentinel: "type a location instead". */
+const LOCATION_OTHER = "__other__";
 
 const EMPTY_BASICS: BasicsState = {
   title: "",
@@ -117,6 +132,12 @@ const EMPTY_BASICS: BasicsState = {
   compBandId: "",
   compBandMin: "",
   compBandMax: "",
+  jobProfileId: "",
+  jobFunctionId: "",
+  jobLevelId: "",
+  locationId: "",
+  employmentTypeKey: "",
+  requisitionTypeKey: "",
 };
 
 const EMPTY_SECTIONS: JdSections = {
@@ -209,8 +230,40 @@ export function RequisitionWizard({
   // the band id as provenance; the server copies the band's values onto the
   // position. Non-archived only. Optional: the manual-entry path stays.
   const compBandsQuery = trpc.listCompBands.useQuery({});
-  const compBands = useMemo(() => compBandsQuery.data?.rows ?? [], [compBandsQuery.data]);
-  const noCompBands = compBandsQuery.isSuccess && compBands.length === 0;
+  const allCompBands = useMemo(() => compBandsQuery.data?.rows ?? [], [compBandsQuery.data]);
+  const noCompBands = compBandsQuery.isSuccess && allCompBands.length === 0;
+
+  // C1-F3 — the organisation + job architecture pickers (active rows only):
+  // job profiles, functions, levels, locations and the employment / requisition
+  // type lists (platform default + tenant value). Each picker only shows when
+  // the tenant has defined values; otherwise the old free-text field stays.
+  const archQuery = trpc.getOrgAndJobArchitecture.useQuery(
+    {},
+    { staleTime: 60_000, refetchOnWindowFocus: false, retry: false },
+  );
+  const arch = archQuery.data;
+  const [locationOther, setLocationOther] = useState(false);
+  const pickedProfile = useMemo(
+    () => arch?.jobProfiles.find((p) => p.id === basics.jobProfileId) ?? null,
+    [arch, basics.jobProfileId],
+  );
+  const levelOptions = useMemo(() => {
+    if (!arch) return [];
+    if (!pickedProfile) return arch.jobLevels;
+    const allowed = new Set(jobProfilePrefill(pickedProfile, arch).allowedLevelIds);
+    return arch.jobLevels.filter((l) => allowed.has(l.id));
+  }, [arch, pickedProfile]);
+  // Bands that apply to the picked level / function / location, most specific
+  // first; with nothing picked, every band (the pre-C1-F3 list).
+  const compBands = useMemo(() => {
+    const scoped = basics.jobLevelId || basics.jobFunctionId || basics.locationId;
+    if (!scoped) return allCompBands;
+    return compBandsForScope(allCompBands, {
+      jobLevelId: basics.jobLevelId || null,
+      jobFunctionId: basics.jobFunctionId || null,
+      locationId: basics.locationId || null,
+    });
+  }, [allCompBands, basics.jobLevelId, basics.jobFunctionId, basics.locationId]);
   const pickedBand = useMemo(
     () => compBands.find((b) => b.id === basics.compBandId) ?? null,
     [compBands, basics.compBandId],
@@ -281,6 +334,12 @@ export function RequisitionWizard({
       compBandId: "",
       compBandMin: d.compBandMin ?? "",
       compBandMax: d.compBandMax ?? "",
+      jobProfileId: d.jobProfileId ?? "",
+      jobFunctionId: d.jobFunctionId ?? "",
+      jobLevelId: d.jobLevelId ?? "",
+      locationId: d.locationId ?? "",
+      employmentTypeKey: d.employmentTypeKey ?? "",
+      requisitionTypeKey: d.requisitionTypeKey ?? "",
     });
     setDiverseSlate({
       required: d.diverseSlateRequired ?? false,
@@ -398,6 +457,44 @@ export function RequisitionWizard({
     );
   }
 
+  /**
+   * C1-F3 — picking a job profile pre-fills title, function, level (the
+   * range's lower bound), the free-text seniority and, when the skill list is
+   * still empty, the profile's competencies as skills. Everything stays
+   * editable; the requisition keeps the profile as provenance.
+   */
+  function applyProfile(profileId: string) {
+    const profile = arch?.jobProfiles.find((p) => p.id === profileId);
+    if (!arch || !profile) {
+      setBasics((b) => ({ ...b, jobProfileId: "" }));
+      return;
+    }
+    const pre = jobProfilePrefill(profile, arch);
+    setBasics((b) => ({
+      ...b,
+      jobProfileId: pre.jobProfileId,
+      title: pre.title,
+      jobFunctionId: pre.jobFunctionId ?? "",
+      jobLevelId: pre.jobLevelId ?? "",
+      seniority: pre.seniorityLabel ?? b.seniority,
+    }));
+    if (pre.competencies.length > 0) {
+      setSkills((current) =>
+        current.some((s) => s.skillName.trim())
+          ? current
+          : pre.competencies.map((c) =>
+              newSkillRow({
+                skillName: c.label,
+                category: "Competencies",
+                weight: 1,
+                isRequired: false,
+                minYears: null,
+              }),
+            ),
+      );
+    }
+  }
+
   async function onCreateBasics() {
     setError(null);
     try {
@@ -408,6 +505,14 @@ export function RequisitionWizard({
         primaryLocation: basics.primaryLocation || undefined,
         seniority: basics.seniority || undefined,
         employmentType: basics.employmentType || undefined,
+        // C1-F3 — structured fields; the server validates each against the
+        // tenant's active rows and fills the free-text fallbacks.
+        jobProfileId: basics.jobProfileId || undefined,
+        jobFunctionId: basics.jobFunctionId || undefined,
+        jobLevelId: basics.jobLevelId || undefined,
+        locationId: basics.locationId || undefined,
+        employmentTypeKey: basics.employmentTypeKey || undefined,
+        requisitionTypeKey: basics.requisitionTypeKey || undefined,
         numberOfOpenings: basics.numberOfOpenings,
         targetStartDate: basics.targetStartDate || undefined,
         // T3.2 / G15 — send the picked band id as provenance. If the user left
@@ -599,6 +704,33 @@ export function RequisitionWizard({
           ) : null}
 
           <div className="grid grid-cols-2 gap-4">
+            {arch && arch.jobProfiles.length > 0 ? (
+              <div className="col-span-2">
+                <Field label="Job profile (optional)">
+                  <select
+                    className={inputCls}
+                    value={basics.jobProfileId}
+                    onChange={(e) => applyProfile(e.target.value)}
+                  >
+                    <option value="">— None (fill the fields directly) —</option>
+                    {arch.jobProfiles.map((p) => (
+                      <option key={p.id} value={p.id}>
+                        {p.title}
+                      </option>
+                    ))}
+                  </select>
+                </Field>
+                {pickedProfile ? (
+                  <p className="mt-1 text-xs text-neutral-500">
+                    Filled from the profile: title, function, level
+                    {pickedProfile.competencies.length > 0
+                      ? " and its competencies as skills (if none were set)"
+                      : ""}
+                    . Everything stays editable.
+                  </p>
+                ) : null}
+              </div>
+            ) : null}
             <div className="col-span-2">
               <Field label="Job title">
                 <input
@@ -646,14 +778,57 @@ export function RequisitionWizard({
                 </select>
               )}
             </Field>
-            <Field label="Seniority">
-              <input
-                className={inputCls}
-                value={basics.seniority}
-                onChange={(e) => setBasics({ ...basics, seniority: e.target.value })}
-                placeholder="Senior"
-              />
-            </Field>
+            {arch && arch.jobLevels.length > 0 ? (
+              <Field label="Level">
+                <select
+                  className={inputCls}
+                  value={basics.jobLevelId}
+                  onChange={(e) => {
+                    const level = arch.jobLevels.find((l) => l.id === e.target.value);
+                    setBasics({
+                      ...basics,
+                      jobLevelId: level?.id ?? "",
+                      seniority: level?.label ?? "",
+                      compBandId: "",
+                    });
+                  }}
+                >
+                  <option value="">— Select a level —</option>
+                  {levelOptions.map((l) => (
+                    <option key={l.id} value={l.id}>
+                      {l.label} ({l.key})
+                    </option>
+                  ))}
+                </select>
+              </Field>
+            ) : (
+              <Field label="Seniority">
+                <input
+                  className={inputCls}
+                  value={basics.seniority}
+                  onChange={(e) => setBasics({ ...basics, seniority: e.target.value })}
+                  placeholder="e.g. Senior"
+                />
+              </Field>
+            )}
+            {arch && arch.jobFunctions.length > 0 ? (
+              <Field label="Function">
+                <select
+                  className={inputCls}
+                  value={basics.jobFunctionId}
+                  onChange={(e) =>
+                    setBasics({ ...basics, jobFunctionId: e.target.value, compBandId: "" })
+                  }
+                >
+                  <option value="">— Select a function —</option>
+                  {arch.jobFunctions.map((f) => (
+                    <option key={f.id} value={f.id}>
+                      {f.label}
+                    </option>
+                  ))}
+                </select>
+              </Field>
+            ) : null}
             <Field label="Location type">
               <select
                 className={inputCls}
@@ -670,21 +845,106 @@ export function RequisitionWizard({
               </select>
             </Field>
             <Field label="Primary location">
-              <input
-                className={inputCls}
-                value={basics.primaryLocation}
-                onChange={(e) => setBasics({ ...basics, primaryLocation: e.target.value })}
-                placeholder="City"
-              />
+              {arch && arch.locations.length > 0 ? (
+                <>
+                  <select
+                    className={inputCls}
+                    value={
+                      basics.locationId ||
+                      (locationOther || (basics.primaryLocation && !basics.locationId)
+                        ? LOCATION_OTHER
+                        : "")
+                    }
+                    onChange={(e) => {
+                      const v = e.target.value;
+                      if (v === LOCATION_OTHER) {
+                        setLocationOther(true);
+                        setBasics({ ...basics, locationId: "", compBandId: "" });
+                        return;
+                      }
+                      setLocationOther(false);
+                      const loc = arch.locations.find((l) => l.id === v);
+                      setBasics({
+                        ...basics,
+                        locationId: loc?.id ?? "",
+                        primaryLocation: loc?.name ?? "",
+                        compBandId: "",
+                      });
+                    }}
+                  >
+                    <option value="">— Select a location —</option>
+                    {arch.locations.map((l) => (
+                      <option key={l.id} value={l.id}>
+                        {locationDisplay(l)}
+                      </option>
+                    ))}
+                    <option value={LOCATION_OTHER}>Other (type a location)</option>
+                  </select>
+                  {!basics.locationId && (locationOther || basics.primaryLocation) ? (
+                    <input
+                      className={`${inputCls} mt-2`}
+                      value={basics.primaryLocation}
+                      onChange={(e) => setBasics({ ...basics, primaryLocation: e.target.value })}
+                      placeholder="City"
+                      aria-label="Location (free text)"
+                    />
+                  ) : null}
+                </>
+              ) : (
+                <input
+                  className={inputCls}
+                  value={basics.primaryLocation}
+                  onChange={(e) => setBasics({ ...basics, primaryLocation: e.target.value })}
+                  placeholder="City"
+                />
+              )}
             </Field>
             <Field label="Employment type">
-              <input
-                className={inputCls}
-                value={basics.employmentType}
-                onChange={(e) => setBasics({ ...basics, employmentType: e.target.value })}
-                placeholder="Full-time"
-              />
+              {arch ? (
+                <select
+                  className={inputCls}
+                  value={basics.employmentTypeKey}
+                  onChange={(e) => {
+                    const entry = arch.lookups.employmentType.find((x) => x.key === e.target.value);
+                    setBasics({
+                      ...basics,
+                      employmentTypeKey: entry?.key ?? "",
+                      employmentType: entry?.label ?? "",
+                    });
+                  }}
+                >
+                  <option value="">— Select —</option>
+                  {arch.lookups.employmentType.map((x) => (
+                    <option key={x.key} value={x.key}>
+                      {x.label}
+                    </option>
+                  ))}
+                </select>
+              ) : (
+                <input
+                  className={inputCls}
+                  value={basics.employmentType}
+                  onChange={(e) => setBasics({ ...basics, employmentType: e.target.value })}
+                  placeholder="Full-time"
+                />
+              )}
             </Field>
+            {arch ? (
+              <Field label="Requisition type">
+                <select
+                  className={inputCls}
+                  value={basics.requisitionTypeKey}
+                  onChange={(e) => setBasics({ ...basics, requisitionTypeKey: e.target.value })}
+                >
+                  <option value="">— Select —</option>
+                  {arch.lookups.requisitionType.map((x) => (
+                    <option key={x.key} value={x.key}>
+                      {x.label}
+                    </option>
+                  ))}
+                </select>
+              </Field>
+            ) : null}
             <Field label="Openings">
               <input
                 type="number"
@@ -1123,7 +1383,40 @@ export function RequisitionWizard({
 
           <dl className="space-y-2 text-sm">
             <Row label="Title" value={basics.title || "—"} />
+            {pickedProfile ? <Row label="Job profile" value={pickedProfile.title} /> : null}
             <Row label="Department" value={basics.department || "—"} />
+            <Row
+              label="Level"
+              value={
+                arch?.jobLevels.find((l) => l.id === basics.jobLevelId)?.label ||
+                basics.seniority ||
+                "—"
+              }
+            />
+            {basics.jobFunctionId ? (
+              <Row
+                label="Function"
+                value={arch?.jobFunctions.find((f) => f.id === basics.jobFunctionId)?.label ?? "—"}
+              />
+            ) : null}
+            {basics.employmentTypeKey ? (
+              <Row
+                label="Employment type"
+                value={
+                  arch?.lookups.employmentType.find((x) => x.key === basics.employmentTypeKey)
+                    ?.label ?? basics.employmentTypeKey
+                }
+              />
+            ) : null}
+            {basics.requisitionTypeKey ? (
+              <Row
+                label="Requisition type"
+                value={
+                  arch?.lookups.requisitionType.find((x) => x.key === basics.requisitionTypeKey)
+                    ?.label ?? basics.requisitionTypeKey
+                }
+              />
+            ) : null}
             <Row
               label="Location"
               value={`${basics.primaryLocation || "—"} (${basics.locationType})`}

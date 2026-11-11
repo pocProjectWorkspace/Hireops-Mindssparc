@@ -54,6 +54,11 @@ import {
   positions,
   businessUnits,
   compBands,
+  jobLevels,
+  jobFunctions,
+  jobProfiles,
+  locations,
+  tenantLookups,
   panelPools,
   panelPoolMembers,
   learningResources,
@@ -689,6 +694,10 @@ import {
   getPreJoiningSettingsOutputSchema,
   updatePreJoiningSettingsInputSchema,
   resolvePreJoiningEngagementSettings,
+  resolveTenantLookup,
+  levelWithinProfileRange,
+  lookupLabel,
+  compBandsForScope,
   type PreJoiningEngagementSettings,
   companyUpdateInputSchema,
   companyUpdateRowSchema,
@@ -1168,6 +1177,7 @@ import {
   WorkdayImportFileError,
   type WorkdayTenantLookups,
 } from "../lib/workday-import";
+import { loadRenegeReasons } from "../lib/tenant-lookups";
 import {
   buildWorkdayHandoffCsv,
   buildWorkdayHandoffRecord,
@@ -1390,6 +1400,7 @@ import {
 } from "./trpc-core";
 import { withAudit } from "./with-audit";
 import { schedulingProcedures } from "./scheduling-procedures";
+import { orgArchitectureProcedures } from "./org-architecture-procedures";
 import { loadSchedulingSettings, queuePanelistInvites } from "../lib/interview-scheduling";
 import {
   createOnboardingCaseForApplication as createOnboardingCase,
@@ -1989,10 +2000,68 @@ function compBandRowToApi(row: typeof compBands.$inferSelect): CompBandRow {
     currency: row.currency,
     minMajor: Number(row.minMajor),
     maxMajor: Number(row.maxMajor),
+    midpointMajor: row.midpointMajor != null ? Number(row.midpointMajor) : null,
+    jobLevelId: row.jobLevelId ?? null,
+    jobFunctionId: row.jobFunctionId ?? null,
+    locationId: row.locationId ?? null,
     isArchived: row.isArchived,
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
   };
+}
+
+/**
+ * C1-F3 — comp-band midpoint + scope columns from a create/update input.
+ * `undefined` = leave unchanged (update) / unset (create); `null` = clear.
+ */
+function compBandScopeValues(input: {
+  midpointMajor?: number | null;
+  jobLevelId?: string | null;
+  jobFunctionId?: string | null;
+  locationId?: string | null;
+}): Partial<typeof compBands.$inferInsert> {
+  const out: Partial<typeof compBands.$inferInsert> = {};
+  if (input.midpointMajor !== undefined) {
+    out.midpointMajor = input.midpointMajor === null ? null : String(input.midpointMajor);
+  }
+  if (input.jobLevelId !== undefined) out.jobLevelId = input.jobLevelId;
+  if (input.jobFunctionId !== undefined) out.jobFunctionId = input.jobFunctionId;
+  if (input.locationId !== undefined) out.locationId = input.locationId;
+  return out;
+}
+
+/** C1-F3 — a band's scope ids must be the tenant's (clean 400, not a raw FK 23503). */
+async function assertCompBandScopeRefs(
+  db: NonNullable<HonoTRPCContext["db"]>,
+  tenantId: string,
+  input: { jobLevelId?: string | null; jobFunctionId?: string | null; locationId?: string | null },
+): Promise<void> {
+  const bad = (what: string) =>
+    new TRPCError({ code: "BAD_REQUEST", message: `${what} not found for this band's scope` });
+  if (input.jobLevelId) {
+    const [r] = await db
+      .select({ id: jobLevels.id })
+      .from(jobLevels)
+      .where(and(eq(jobLevels.tenantId, tenantId), eq(jobLevels.id, input.jobLevelId)))
+      .limit(1);
+    if (!r) throw bad("Job level");
+  }
+  if (input.jobFunctionId) {
+    const [r] = await db
+      .select({ id: jobFunctions.id })
+      .from(jobFunctions)
+      .where(and(eq(jobFunctions.tenantId, tenantId), eq(jobFunctions.id, input.jobFunctionId)))
+      .limit(1);
+    if (!r) throw bad("Job function");
+  }
+  if (input.locationId) {
+    const [r] = await db
+      .select({ id: locations.id })
+      .from(locations)
+      .where(and(eq(locations.tenantId, tenantId), eq(locations.id, input.locationId)))
+      .limit(1);
+    if (!r) throw bad("Location");
+  }
 }
 
 /** DB row (+ its folded member membership ids) → API row for a panel pool.
@@ -4286,6 +4355,8 @@ export const appRouter = router({
   // proposal, candidate self-pick / reschedule, panellist can't-attend). Flat
   // names, defined in ./scheduling-procedures.ts to keep this file from growing.
   ...schedulingProcedures,
+  // C1-F3 — organisation + job architecture + tenant lookups.
+  ...orgArchitectureProcedures,
 
   // ─────────── public: apply form ───────────
   submitApplication: publicProcedure
@@ -5621,6 +5692,7 @@ export const appRouter = router({
                 numberOfOpenings: resolved.numberOfOpenings,
                 targetStartDate: resolved.targetStartDate ?? undefined,
                 compBandId: resolved.compBandId ?? undefined,
+                jobLevelId: resolved.jobLevelId ?? undefined,
               },
               hiringManagerId: resolved.hiringManagerMembershipId ?? membershipId,
               transitionReason: `Imported from Workday ${jrId} (${transitionSource})`,
@@ -6154,6 +6226,12 @@ export const appRouter = router({
           publicSlug: requisitions.publicSlug,
           diverseSlateRequired: requisitions.diverseSlateRequired,
           diverseSlateMin: requisitions.diverseSlateMin,
+          jobProfileId: requisitions.jobProfileId,
+          jobFunctionId: requisitions.jobFunctionId,
+          jobLevelId: requisitions.jobLevelId,
+          locationId: requisitions.locationId,
+          employmentTypeKey: requisitions.employmentTypeKey,
+          requisitionTypeKey: requisitions.requisitionTypeKey,
           tenantSlug: tenants.slug,
           createdAt: requisitions.createdAt,
           positionId: positions.id,
@@ -6292,6 +6370,7 @@ export const appRouter = router({
       const parsedSections = jdSectionsSchema.safeParse(rawSections);
 
       const workdayJobRequisitionId = await findWorkdayImportProvenance(db, tenantId, row.id);
+      const archLabels = await loadRequisitionArchitectureLabels(db, tenantId, row);
 
       return {
         id: row.id,
@@ -6346,6 +6425,13 @@ export const appRouter = router({
         workdayJobRequisitionId,
         diverseSlateRequired: row.diverseSlateRequired,
         diverseSlateMin: row.diverseSlateMin,
+        jobProfileId: row.jobProfileId ?? null,
+        jobFunctionId: row.jobFunctionId ?? null,
+        jobLevelId: row.jobLevelId ?? null,
+        locationId: row.locationId ?? null,
+        employmentTypeKey: row.employmentTypeKey ?? null,
+        requisitionTypeKey: row.requisitionTypeKey ?? null,
+        ...archLabels,
       };
     }),
 
@@ -11369,7 +11455,8 @@ export const appRouter = router({
         engagementEnabled: settings.enabled,
         rows,
         reneged,
-        renegeReasons: settings.renegeReasons,
+        // C1-F3 — renege_reason lookup over the setting list (the fallback).
+        renegeReasons: await loadRenegeReasons(ctx.sql, tenantId, settings.renegeReasons),
       };
     }),
 
@@ -25668,7 +25755,10 @@ export const appRouter = router({
         ? eq(compBands.tenantId, ctx.tenantId)
         : and(eq(compBands.tenantId, ctx.tenantId), eq(compBands.isArchived, false));
       const rows = await db.select().from(compBands).where(where).orderBy(compBands.name);
-      return { rows: rows.map(compBandRowToApi) };
+      // C1-F3 — scoped read: only bands that apply to the (level, function,
+      // location) context, most specific first.
+      const ordered = input.scope ? compBandsForScope(rows, input.scope) : rows;
+      return { rows: ordered.map(compBandRowToApi) };
     }),
 
   /**
@@ -25698,6 +25788,7 @@ export const appRouter = router({
         }
         const tenantId = ctx.tenantId;
         const name = input.name.trim();
+        await assertCompBandScopeRefs(db, tenantId, input);
         let row: typeof compBands.$inferSelect | undefined;
         try {
           // Nested transaction (SAVEPOINT): a (tenant, name) unique violation
@@ -25716,6 +25807,7 @@ export const appRouter = router({
                 currency: input.currency,
                 minMajor: String(input.minMajor),
                 maxMajor: String(input.maxMajor),
+                ...compBandScopeValues(input),
               })
               .returning(),
           );
@@ -25765,6 +25857,7 @@ export const appRouter = router({
         }
         const tenantId = ctx.tenantId;
         const name = input.name.trim();
+        await assertCompBandScopeRefs(db, tenantId, input);
         let row: typeof compBands.$inferSelect | undefined;
         try {
           // Nested transaction (SAVEPOINT): a rename onto an existing (tenant,
@@ -25780,6 +25873,7 @@ export const appRouter = router({
                 currency: input.currency,
                 minMajor: String(input.minMajor),
                 maxMajor: String(input.maxMajor),
+                ...compBandScopeValues(input),
                 updatedAt: new Date(),
               })
               .where(and(eq(compBands.tenantId, tenantId), eq(compBands.id, input.id)))
@@ -25790,6 +25884,14 @@ export const appRouter = router({
             throw new TRPCError({
               code: "BAD_REQUEST",
               message: `A comp band named "${name}" already exists. Pick a distinct name.`,
+            });
+          }
+          // C1-F3 — new min/max that leave a stored midpoint outside the range.
+          const code = (err as { code?: string; cause?: { code?: string } } | null) ?? {};
+          if (code.code === "23514" || code.cause?.code === "23514") {
+            throw new TRPCError({
+              code: "BAD_REQUEST",
+              message: "The band's midpoint must sit between the minimum and the maximum",
             });
           }
           throw err;
@@ -31008,6 +31110,13 @@ async function insertRequisitionDraftChain(
     }
   }
 
+  // C1-F3 — structured org + job architecture (all optional). Resolved and
+  // validated against the tenant's ACTIVE rows; the free-text columns keep a
+  // display fallback (seniority ← level label, function ← function label,
+  // primary_location ← location name) so every existing reader still shows a
+  // value.
+  const arch = await resolveRequisitionArchitecture(db, tenantId, input);
+
   // Create the position. An active position can't share a title in
   // the same BU (partial unique) — surface a clean 400 rather than a
   // raw 23505 so the hiring manager can pick a more specific title.
@@ -31019,9 +31128,14 @@ async function insertRequisitionDraftChain(
         tenantId,
         businessUnitId,
         title: input.title.trim(),
-        level: input.seniority ?? null,
+        level: input.seniority ?? arch.jobLevelLabel ?? null,
+        jobFunction: arch.jobFunctionLabel,
         locationType: input.locationType,
-        primaryLocation: input.primaryLocation ?? null,
+        primaryLocation: input.primaryLocation ?? arch.locationName ?? null,
+        locationId: arch.locationId,
+        jobProfileId: arch.jobProfileId,
+        jobFunctionId: arch.jobFunctionId,
+        jobLevelId: arch.jobLevelId,
         compBandMin: compBandMin !== undefined ? String(compBandMin) : null,
         compBandMax: compBandMax !== undefined ? String(compBandMax) : null,
         compCurrency: compCurrency ?? null,
@@ -31089,6 +31203,13 @@ async function insertRequisitionDraftChain(
       // PC-26 — role-level diverse-slate requirement (min null = tenant default).
       diverseSlateRequired: input.diverseSlateRequired ?? false,
       diverseSlateMin: input.diverseSlateMin ?? null,
+      // C1-F3 — structured links + lookup keys (validated above).
+      locationId: arch.locationId,
+      jobProfileId: arch.jobProfileId,
+      jobFunctionId: arch.jobFunctionId,
+      jobLevelId: arch.jobLevelId,
+      employmentTypeKey: arch.employmentTypeKey,
+      requisitionTypeKey: arch.requisitionTypeKey,
     })
     .returning({ id: requisitions.id });
   if (!req) {
@@ -31111,6 +31232,208 @@ async function insertRequisitionDraftChain(
   return { requisitionId: req.id, positionId, jdVersionId: jd.id };
 }
 
+interface ResolvedRequisitionArchitecture {
+  jobProfileId: string | null;
+  jobFunctionId: string | null;
+  jobFunctionLabel: string | null;
+  jobLevelId: string | null;
+  jobLevelLabel: string | null;
+  locationId: string | null;
+  locationName: string | null;
+  employmentTypeKey: string | null;
+  requisitionTypeKey: string | null;
+}
+
+/**
+ * C1-F3 — current labels for a requisition's structured links (read side of
+ * getRequisitionDetail). A deactivated value still shows its label; a lookup
+ * key no longer in the list shows the raw key (lookupLabel).
+ */
+async function loadRequisitionArchitectureLabels(
+  db: NonNullable<HonoTRPCContext["db"]>,
+  tenantId: string,
+  row: {
+    jobProfileId: string | null;
+    jobFunctionId: string | null;
+    jobLevelId: string | null;
+    locationId: string | null;
+    employmentTypeKey: string | null;
+    requisitionTypeKey: string | null;
+  },
+): Promise<{
+  jobProfileTitle: string | null;
+  jobFunctionLabel: string | null;
+  jobLevelLabel: string | null;
+  locationName: string | null;
+  employmentTypeLabel: string | null;
+  requisitionTypeLabel: string | null;
+}> {
+  const one = async <T>(id: string | null, q: (id: string) => Promise<T[]>) =>
+    id ? ((await q(id))[0] ?? null) : null;
+  const profile = await one(row.jobProfileId, (id) =>
+    db
+      .select({ v: jobProfiles.title })
+      .from(jobProfiles)
+      .where(and(eq(jobProfiles.tenantId, tenantId), eq(jobProfiles.id, id))),
+  );
+  const fn = await one(row.jobFunctionId, (id) =>
+    db
+      .select({ v: jobFunctions.label })
+      .from(jobFunctions)
+      .where(and(eq(jobFunctions.tenantId, tenantId), eq(jobFunctions.id, id))),
+  );
+  const level = await one(row.jobLevelId, (id) =>
+    db
+      .select({ v: jobLevels.label })
+      .from(jobLevels)
+      .where(and(eq(jobLevels.tenantId, tenantId), eq(jobLevels.id, id))),
+  );
+  const loc = await one(row.locationId, (id) =>
+    db
+      .select({ v: locations.name })
+      .from(locations)
+      .where(and(eq(locations.tenantId, tenantId), eq(locations.id, id))),
+  );
+  let employmentTypeLabel: string | null = null;
+  let requisitionTypeLabel: string | null = null;
+  if (row.employmentTypeKey || row.requisitionTypeKey) {
+    const rows = await db
+      .select()
+      .from(tenantLookups)
+      .where(
+        and(
+          eq(tenantLookups.tenantId, tenantId),
+          inArray(tenantLookups.kind, ["employment_type", "requisition_type"]),
+        ),
+      );
+    employmentTypeLabel = lookupLabel(
+      resolveTenantLookup("employment_type", rows),
+      row.employmentTypeKey,
+    );
+    requisitionTypeLabel = lookupLabel(
+      resolveTenantLookup("requisition_type", rows),
+      row.requisitionTypeKey,
+    );
+  }
+  return {
+    jobProfileTitle: profile?.v ?? null,
+    jobFunctionLabel: fn?.v ?? null,
+    jobLevelLabel: level?.v ?? null,
+    locationName: loc?.v ?? null,
+    employmentTypeLabel,
+    requisitionTypeLabel,
+  };
+}
+
+/**
+ * C1-F3 — resolve + validate the structured fields of a requisition draft.
+ * Every id must be the tenant's and ACTIVE (BAD_REQUEST otherwise). A job
+ * profile fills function / level when omitted (level = the range's lower
+ * bound, else its upper bound) and a picked level must sit inside the
+ * profile's range. Lookup keys must resolve to an active value (platform
+ * default + tenant value). Nothing supplied → all null (pre-0133 behaviour).
+ */
+async function resolveRequisitionArchitecture(
+  db: NonNullable<HonoTRPCContext["db"]>,
+  tenantId: string,
+  input: CreateRequisitionDraftInput,
+): Promise<ResolvedRequisitionArchitecture> {
+  const bad = (message: string) => new TRPCError({ code: "BAD_REQUEST", message });
+  let jobFunctionId = input.jobFunctionId ?? null;
+  let jobLevelId = input.jobLevelId ?? null;
+  let profile: typeof jobProfiles.$inferSelect | undefined;
+
+  if (input.jobProfileId) {
+    [profile] = await db
+      .select()
+      .from(jobProfiles)
+      .where(and(eq(jobProfiles.tenantId, tenantId), eq(jobProfiles.id, input.jobProfileId)))
+      .limit(1);
+    if (!profile) throw bad("Job profile not found");
+    if (!profile.isActive) throw bad("That job profile is inactive — pick an active profile");
+    jobFunctionId ??= profile.jobFunctionId;
+    jobLevelId ??= profile.jobLevelMinId ?? profile.jobLevelMaxId;
+  }
+
+  let jobFunctionLabel: string | null = null;
+  if (jobFunctionId) {
+    const [fn] = await db
+      .select({ label: jobFunctions.label, isActive: jobFunctions.isActive })
+      .from(jobFunctions)
+      .where(and(eq(jobFunctions.tenantId, tenantId), eq(jobFunctions.id, jobFunctionId)))
+      .limit(1);
+    if (!fn) throw bad("Job function not found");
+    if (!fn.isActive) throw bad("That job function is inactive");
+    jobFunctionLabel = fn.label;
+  }
+
+  let jobLevelLabel: string | null = null;
+  if (jobLevelId) {
+    const levelRows = await db
+      .select({
+        id: jobLevels.id,
+        label: jobLevels.label,
+        rank: jobLevels.rank,
+        isActive: jobLevels.isActive,
+      })
+      .from(jobLevels)
+      .where(eq(jobLevels.tenantId, tenantId));
+    const level = levelRows.find((l) => l.id === jobLevelId);
+    if (!level) throw bad("Job level not found");
+    if (!level.isActive) throw bad("That job level is inactive");
+    if (profile && !levelWithinProfileRange(profile, level.id, levelRows)) {
+      throw bad("That level is outside the job profile's level range");
+    }
+    jobLevelLabel = level.label;
+  }
+
+  let locationId: string | null = null;
+  let locationName: string | null = null;
+  if (input.locationId) {
+    const [loc] = await db
+      .select({ id: locations.id, name: locations.name, isActive: locations.isActive })
+      .from(locations)
+      .where(and(eq(locations.tenantId, tenantId), eq(locations.id, input.locationId)))
+      .limit(1);
+    if (!loc) throw bad("Location not found");
+    if (!loc.isActive) throw bad("That location is inactive — pick an active location");
+    locationId = loc.id;
+    locationName = loc.name;
+  }
+
+  const keyFor = async (
+    kind: "employment_type" | "requisition_type",
+    key: string | undefined,
+    what: string,
+  ): Promise<string | null> => {
+    const k = key?.trim();
+    if (!k) return null;
+    const rows = await db
+      .select()
+      .from(tenantLookups)
+      .where(and(eq(tenantLookups.tenantId, tenantId), eq(tenantLookups.kind, kind)));
+    const entries = resolveTenantLookup(kind, rows, { activeOnly: true });
+    if (!entries.some((e) => e.key === k)) throw bad(`Unknown ${what} "${k}"`);
+    return k;
+  };
+
+  return {
+    jobProfileId: profile?.id ?? null,
+    jobFunctionId,
+    jobFunctionLabel,
+    jobLevelId,
+    jobLevelLabel,
+    locationId,
+    locationName,
+    employmentTypeKey: await keyFor("employment_type", input.employmentTypeKey, "employment type"),
+    requisitionTypeKey: await keyFor(
+      "requisition_type",
+      input.requisitionTypeKey,
+      "requisition type",
+    ),
+  };
+}
+
 /**
  * Workday-import PoC preview — the tenant lookups the pure mapper validates
  * against: active business units, active comp bands (tenant-bound RLS tx) and
@@ -31129,9 +31452,20 @@ async function loadWorkdayTenantLookups(
     .where(and(eq(businessUnits.tenantId, tenantId), eq(businessUnits.isArchived, false)))
     .orderBy(asc(businessUnits.createdAt));
   const bands = await db
-    .select({ id: compBands.id, name: compBands.name, level: compBands.level })
+    .select({
+      id: compBands.id,
+      name: compBands.name,
+      level: compBands.level,
+      jobLevelId: compBands.jobLevelId,
+    })
     .from(compBands)
     .where(and(eq(compBands.tenantId, tenantId), eq(compBands.isArchived, false)));
+  // C1-F3 — active job levels: the export's Compensation Grade maps onto a
+  // level by key (matchJobLevel).
+  const levels = await db
+    .select({ id: jobLevels.id, key: jobLevels.key, label: jobLevels.label })
+    .from(jobLevels)
+    .where(and(eq(jobLevels.tenantId, tenantId), eq(jobLevels.isActive, true)));
   const memberRows = await ctx.sql<{ id: string; display_name: string | null }[]>`
     SELECT tum.id::text AS id, u.display_name AS display_name
     FROM public.tenant_user_memberships tum
@@ -31141,6 +31475,7 @@ async function loadWorkdayTenantLookups(
   return {
     businessUnits: bus,
     compBands: bands,
+    jobLevels: levels,
     members: memberRows.map((m) => ({ membershipId: m.id, displayName: m.display_name })),
   };
 }
