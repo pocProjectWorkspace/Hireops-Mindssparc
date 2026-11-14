@@ -1924,7 +1924,7 @@ async function main(): Promise<void> {
         VALUES (${mkId(KIND.roundTemplate, r.roundNumber)}, ${tid}, ${r.roundNumber},
                 ${r.roundName}, ${r.durationMinutes}, ${r.mode}, ${r.scorecardKey},
                 ${JSON.stringify(r.competencyFocus)}::jsonb, now())
-        ON CONFLICT (tenant_id, round_number) DO UPDATE SET
+        ON CONFLICT (tenant_id, loop_key, round_number) DO UPDATE SET
           round_name = EXCLUDED.round_name, duration_minutes = EXCLUDED.duration_minutes,
           mode = EXCLUDED.mode, scorecard_template_key = EXCLUDED.scorecard_template_key,
           competency_focus = EXCLUDED.competency_focus, updated_at = now()

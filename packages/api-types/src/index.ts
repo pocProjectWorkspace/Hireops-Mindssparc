@@ -74,3 +74,5 @@ export * from "./org-architecture";
 export * from "./tenant-config";
 export * from "./provisioning";
 export * from "./starter-packs";
+// C2-F12 — applicability resolver (template assignments)
+export * from "./applicability";

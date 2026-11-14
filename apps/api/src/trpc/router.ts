@@ -108,6 +108,8 @@ import {
   tenantEmailTemplateOverrides,
   tenantInterviewRoundTemplate,
   tenantScorecardTemplate,
+  interviewLoops,
+  templateAssignments,
   requisitionFeasibility,
   hrRoundAssessments,
   compRecommendations,
@@ -358,6 +360,7 @@ import {
   deleteInterviewRoundTemplateInputSchema,
   deleteInterviewRoundTemplateOutputSchema,
   applyInterviewRoundTemplateInputSchema,
+  DEFAULT_INTERVIEW_LOOP_KEY,
   applyInterviewRoundTemplateOutputSchema,
   listScorecardTemplatesInputSchema,
   listScorecardTemplatesOutputSchema,
@@ -1411,6 +1414,13 @@ import { platformProcedures } from "./platform-procedures";
 import { provisioningProcedures } from "./provisioning-procedures";
 import { requireModule } from "../lib/platform/tenant-access";
 import { orgArchitectureProcedures } from "./org-architecture-procedures";
+import { applicabilityProcedures } from "./applicability-procedures";
+import {
+  chooseInterviewLoop,
+  ensureDefaultInterviewLoop,
+  loadRequisitionAttributes,
+  resolveScorecardKey,
+} from "../lib/applicability";
 import { loadSchedulingSettings, queuePanelistInvites } from "../lib/interview-scheduling";
 import {
   createOnboardingCaseForApplication as createOnboardingCase,
@@ -4400,6 +4410,9 @@ export const appRouter = router({
   ...platformProcedures,
   // C1-F11 — tenant provisioning, starter packs, setup wizard, config export/import.
   ...provisioningProcedures,
+  // C2-F12 — applicability (template assignments), resolved-config preview,
+  // named interview loops.
+  ...applicabilityProcedures,
 
   // ─────────── public: apply form ───────────
   submitApplication: publicProcedure
@@ -27621,16 +27634,22 @@ export const appRouter = router({
   listInterviewRoundTemplates: protectedProcedure
     .input(listInterviewRoundTemplatesInputSchema)
     .output(listInterviewRoundTemplatesOutputSchema)
-    .query(async ({ ctx }) => {
+    .query(async ({ ctx, input }) => {
       requireAnyRole(ctx, INTERVIEW_TEMPLATE_ADMIN_ROLES, "Interview templates are admin-only");
       const db = requireDb(ctx);
       if (!ctx.tenantId) {
         throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
       }
+      // C2-F12: rounds belong to a named loop; omitted = the 'default' loop.
       const rows = await db
         .select()
         .from(tenantInterviewRoundTemplate)
-        .where(eq(tenantInterviewRoundTemplate.tenantId, ctx.tenantId))
+        .where(
+          and(
+            eq(tenantInterviewRoundTemplate.tenantId, ctx.tenantId),
+            eq(tenantInterviewRoundTemplate.loopKey, input.loopKey ?? DEFAULT_INTERVIEW_LOOP_KEY),
+          ),
+        )
         .orderBy(tenantInterviewRoundTemplate.roundNumber);
       return {
         rounds: rows.map((r) => ({
@@ -27673,9 +27692,28 @@ export const appRouter = router({
           seen.add(r.roundNumber);
         }
 
-        // Membership guard: every round's scorecard must be a known key.
+        // C2-F12: the loop must exist (the 'default' loop is ensured on demand;
+        // a named loop is created first via createInterviewLoop).
+        const loopKey = input.loopKey ?? DEFAULT_INTERVIEW_LOOP_KEY;
+        await ensureDefaultInterviewLoop(db, tenantId);
+        const [loop] = await db
+          .select({ id: interviewLoops.id })
+          .from(interviewLoops)
+          .where(and(eq(interviewLoops.tenantId, tenantId), eq(interviewLoops.loopKey, loopKey)))
+          .limit(1);
+        if (!loop) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: `Interview loop '${loopKey}' does not exist. Create the loop first.`,
+          });
+        }
+
+        // Membership guard: every PINNED round scorecard must be a known key
+        // (null = resolved by applicability when the loop seeds a plan).
         const validScorecardKeys = await loadValidScorecardKeys(db, tenantId);
-        const unknown = input.rounds.find((r) => !validScorecardKeys.has(r.scorecardTemplateKey));
+        const unknown = input.rounds.find(
+          (r) => r.scorecardTemplateKey !== null && !validScorecardKeys.has(r.scorecardTemplateKey),
+        );
         if (unknown) {
           throw new TRPCError({
             code: "BAD_REQUEST",
@@ -27684,14 +27722,20 @@ export const appRouter = router({
         }
 
         const membershipId = await resolveActorMembership(db, ctx);
-        // Replace-set: drop the tenant's existing template rows, insert these.
+        // Replace-set: drop this loop's existing rows, insert these.
         await db
           .delete(tenantInterviewRoundTemplate)
-          .where(eq(tenantInterviewRoundTemplate.tenantId, tenantId));
+          .where(
+            and(
+              eq(tenantInterviewRoundTemplate.tenantId, tenantId),
+              eq(tenantInterviewRoundTemplate.loopKey, loopKey),
+            ),
+          );
         if (input.rounds.length > 0) {
           await db.insert(tenantInterviewRoundTemplate).values(
             input.rounds.map((r) => ({
               tenantId,
+              loopKey,
               roundNumber: r.roundNumber,
               roundName: r.roundName,
               durationMinutes: r.durationMinutes,
@@ -27731,7 +27775,12 @@ export const appRouter = router({
         }
         await db
           .delete(tenantInterviewRoundTemplate)
-          .where(eq(tenantInterviewRoundTemplate.tenantId, ctx.tenantId));
+          .where(
+            and(
+              eq(tenantInterviewRoundTemplate.tenantId, ctx.tenantId),
+              eq(tenantInterviewRoundTemplate.loopKey, input.loopKey ?? DEFAULT_INTERVIEW_LOOP_KEY),
+            ),
+          );
         return { cleared: true };
       });
     }),
@@ -27762,24 +27811,63 @@ export const appRouter = router({
           .limit(1);
         if (!req) throw new TRPCError({ code: "NOT_FOUND", message: "Requisition not found" });
 
+        // C2-F12: WHICH loop — an explicit loopKey, else the applicability
+        // winner for this requisition (kind 'interview_loop'), else the
+        // 'default' loop (today's single tenant loop — byte-identical for a
+        // tenant with no assignments).
+        const choice = input.loopKey
+          ? {
+              loopKey: input.loopKey,
+              assignmentId: null as string | null,
+              matchedPredicates: [] as string[],
+              subject: null,
+            }
+          : await chooseInterviewLoop(db, req.tenantId, input.requisitionId);
+
         const templateRounds = await db
           .select()
           .from(tenantInterviewRoundTemplate)
-          .where(eq(tenantInterviewRoundTemplate.tenantId, req.tenantId))
+          .where(
+            and(
+              eq(tenantInterviewRoundTemplate.tenantId, req.tenantId),
+              eq(tenantInterviewRoundTemplate.loopKey, choice.loopKey),
+            ),
+          )
           .orderBy(tenantInterviewRoundTemplate.roundNumber);
         if (templateRounds.length === 0) {
-          // Honest fallback — no default loop to seed from.
-          return { requisitionId: input.requisitionId, applied: false, roundCount: 0 };
+          // Honest fallback — no loop rounds to seed from.
+          return {
+            requisitionId: input.requisitionId,
+            applied: false,
+            roundCount: 0,
+            loopKey: choice.loopKey,
+            assignmentId: choice.assignmentId,
+            matchedPredicates: choice.matchedPredicates,
+          };
         }
+
+        // C2-F12: a round with NO pinned scorecard takes the applicability
+        // winner (kind 'scorecard'), else the built-in 'general'. A pinned
+        // scorecard always wins — applicability only fills the gap.
+        let gapScorecard: string | null = null;
+        if (templateRounds.some((r) => r.scorecardTemplateKey === null)) {
+          const subject =
+            choice.subject ??
+            (await loadRequisitionAttributes(db, req.tenantId, input.requisitionId));
+          gapScorecard =
+            (await resolveScorecardKey(db, req.tenantId, subject))?.scorecardKey ?? "general";
+        }
+        const effectiveScorecard = (r: (typeof templateRounds)[number]): string =>
+          r.scorecardTemplateKey ?? gapScorecard ?? "general";
 
         // Defensive membership guard (the keys were validated when authored, but a
         // custom scorecard could have been deleted since — reject a stale ref).
         const validScorecardKeys = await loadValidScorecardKeys(db, req.tenantId);
-        const stale = templateRounds.find((r) => !validScorecardKeys.has(r.scorecardTemplateKey));
+        const stale = templateRounds.find((r) => !validScorecardKeys.has(effectiveScorecard(r)));
         if (stale) {
           throw new TRPCError({
             code: "BAD_REQUEST",
-            message: `The default loop references a scorecard '${stale.scorecardTemplateKey}' that no longer exists. Fix the template first.`,
+            message: `The interview loop references a scorecard '${effectiveScorecard(stale)}' that no longer exists. Fix the template first.`,
           });
         }
 
@@ -27795,7 +27883,7 @@ export const appRouter = router({
             roundName: r.roundName,
             durationMinutes: r.durationMinutes,
             mode: r.mode,
-            scorecardTemplate: r.scorecardTemplateKey,
+            scorecardTemplate: effectiveScorecard(r),
             competencyFocus: Array.isArray(r.competencyFocus)
               ? (r.competencyFocus as string[])
               : [],
@@ -27806,6 +27894,9 @@ export const appRouter = router({
           requisitionId: input.requisitionId,
           applied: true,
           roundCount: templateRounds.length,
+          loopKey: choice.loopKey,
+          assignmentId: choice.assignmentId,
+          matchedPredicates: choice.matchedPredicates,
         };
       });
     }),
@@ -27929,7 +28020,10 @@ export const appRouter = router({
         }
         const tenantId = ctx.tenantId;
         const [referencing] = await db
-          .select({ roundNumber: tenantInterviewRoundTemplate.roundNumber })
+          .select({
+            roundNumber: tenantInterviewRoundTemplate.roundNumber,
+            loopKey: tenantInterviewRoundTemplate.loopKey,
+          })
           .from(tenantInterviewRoundTemplate)
           .where(
             and(
@@ -27941,7 +28035,32 @@ export const appRouter = router({
         if (referencing) {
           throw new TRPCError({
             code: "BAD_REQUEST",
-            message: `Round ${referencing.roundNumber} of the default loop uses '${input.scorecardKey}'. Update the round template before deleting this scorecard.`,
+            message: `Round ${referencing.roundNumber} of the '${referencing.loopKey}' interview loop uses '${input.scorecardKey}'. Update the round template before deleting this scorecard.`,
+          });
+        }
+        // C2-F12: an applicability rule pointing at the scorecard would dangle.
+        const [assigned] = await db
+          .select({ name: templateAssignments.name })
+          .from(templateAssignments)
+          .innerJoin(
+            tenantScorecardTemplate,
+            and(
+              eq(tenantScorecardTemplate.tenantId, templateAssignments.tenantId),
+              eq(tenantScorecardTemplate.id, templateAssignments.templateId),
+            ),
+          )
+          .where(
+            and(
+              eq(templateAssignments.tenantId, tenantId),
+              eq(templateAssignments.templateKind, "scorecard"),
+              eq(tenantScorecardTemplate.scorecardKey, input.scorecardKey),
+            ),
+          )
+          .limit(1);
+        if (assigned) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: `The template assignment "${assigned.name}" uses '${input.scorecardKey}'. Remove or repoint it on the Applicability page first.`,
           });
         }
         await db

@@ -4,7 +4,8 @@
  *
  * WHAT IS CONFIGURATION. The allowlisted `tenants.settings` blocks (people
  * data scrubbed — see TENANT_SETTINGS_BLOCKS), locale, tenant lists, org +
- * job architecture, comp bands, interview rounds + scorecards, email
+ * job architecture, comp bands, interview loops + rounds + scorecards,
+ * template assignments (applicability rules, by natural key — C2-F12), email
  * overrides, candidate field policy, sources, approval routing, panel-pool
  * STRUCTURE (never members), JD templates and — when the schema has them —
  * tenant document types. Never: people, memberships, candidates,
@@ -34,6 +35,11 @@ import {
   TENANT_SETTINGS_BLOCKS,
   configRecordKey,
   diffTenantConfig,
+  parseInterviewRoundRecordKey,
+  parseStoredConditions,
+  TEMPLATE_KIND_META,
+  type ConfigApplicabilityConditions,
+  type TemplateKind,
   resolveTenantDefaultCountry,
   settingsBlockDef,
   type ConfigSectionDiff,
@@ -262,19 +268,25 @@ export async function readTenantConfig(
     SELECT scorecard_key, label, criteria FROM public.tenant_scorecard_template
      WHERE tenant_id = ${tenantId} ORDER BY scorecard_key
   `;
+  const loops = await sql<{ id: string; loop_key: string; label: string; is_active: boolean }[]>`
+    SELECT id::text AS id, loop_key, label, is_active FROM public.interview_loops
+     WHERE tenant_id = ${tenantId} ORDER BY loop_key
+  `;
   const rounds = await sql<
     {
+      loop_key: string;
       round_number: number;
       round_name: string;
       duration_minutes: number;
       mode: string;
-      scorecard_template_key: string;
+      scorecard_template_key: string | null;
       competency_focus: unknown;
     }[]
   >`
-    SELECT round_number, round_name, duration_minutes, mode, scorecard_template_key, competency_focus
+    SELECT loop_key, round_number, round_name, duration_minutes, mode, scorecard_template_key,
+           competency_focus
       FROM public.tenant_interview_round_template
-     WHERE tenant_id = ${tenantId} ORDER BY round_number
+     WHERE tenant_id = ${tenantId} ORDER BY loop_key, round_number
   `;
   const emailOverrides = await sql<
     {
@@ -327,6 +339,7 @@ export async function readTenantConfig(
   `;
 
   const skipped: string[] = [];
+  const templateAssignments = await readTemplateAssignments(sql, tenantId, loops, skipped);
   let documentTypes: TenantConfigSections["documentTypes"];
   if (await documentTypesAreTenantScoped(sql)) {
     const rows = await sql.unsafe<
@@ -472,7 +485,15 @@ export async function readTenantConfig(
         label: r.label,
         criteria: Array.isArray(r.criteria) ? (r.criteria as { key: string; label: string }[]) : [],
       })),
+      interviewLoops: loops.map((r) => ({
+        loopKey: r.loop_key,
+        label: r.label,
+        isActive: r.is_active,
+      })),
       interviewRounds: rounds.map((r) => ({
+        // The 'default' loop travels without a loopKey (documents from before
+        // named loops are byte-identical).
+        ...(r.loop_key === "default" ? {} : { loopKey: r.loop_key }),
         roundNumber: r.round_number,
         roundName: r.round_name,
         durationMinutes: r.duration_minutes,
@@ -480,6 +501,7 @@ export async function readTenantConfig(
         scorecardTemplateKey: r.scorecard_template_key,
         competencyFocus: Array.isArray(r.competency_focus) ? (r.competency_focus as string[]) : [],
       })),
+      templateAssignments,
       emailTemplateOverrides: emailOverrides.map((r) => ({
         templateKey: r.template_key,
         subjectOverride: r.subject_override,
@@ -511,6 +533,118 @@ export async function readTenantConfig(
       ...(documentTypes ? { documentTypes } : {}),
     },
   };
+}
+
+// ─────────────────────────── C2-F12 template assignments ───────────────────────────
+
+/** id ↔ natural key per condition attribute that references a tenant row. */
+const CONDITION_REF_SQL: Record<string, string> = {
+  legal_entity_id:
+    "SELECT id::text AS id, name AS k FROM public.legal_entities WHERE tenant_id = $1",
+  business_unit_id:
+    "SELECT id::text AS id, slug AS k FROM public.business_units WHERE tenant_id = $1",
+  location_id: "SELECT id::text AS id, name AS k FROM public.locations WHERE tenant_id = $1",
+  job_function_id: "SELECT id::text AS id, key AS k FROM public.job_functions WHERE tenant_id = $1",
+  job_profile_id: "SELECT id::text AS id, title AS k FROM public.job_profiles WHERE tenant_id = $1",
+};
+
+async function conditionRefMaps(
+  sql: SqlHandle,
+  tenantId: string,
+): Promise<Record<string, { toKey: Map<string, string>; toId: Map<string, string> }>> {
+  const out: Record<string, { toKey: Map<string, string>; toId: Map<string, string> }> = {};
+  for (const [attr, q] of Object.entries(CONDITION_REF_SQL)) {
+    const rows = await sql.unsafe<{ id: string; k: string }[]>(q, [tenantId]);
+    out[attr] = {
+      toKey: new Map(rows.map((r) => [r.id, r.k] as const)),
+      toId: new Map(rows.map((r) => [r.k, r.id] as const)),
+    };
+  }
+  return out;
+}
+
+/**
+ * Translate a conditions object between ids and natural keys. Returns null
+ * (with the reason) when a referenced row can't be found on this side.
+ */
+function translateConditions(
+  conditions: Record<string, unknown>,
+  maps: Awaited<ReturnType<typeof conditionRefMaps>>,
+  dir: "toKey" | "toId",
+): { ok: true; value: Record<string, unknown> } | { ok: false; reason: string } {
+  const out: Record<string, unknown> = {};
+  for (const [attr, pred] of Object.entries(conditions)) {
+    const m = maps[attr];
+    if (!m || !isRecord(pred) || !Array.isArray(pred.in)) {
+      out[attr] = pred;
+      continue;
+    }
+    const vals: string[] = [];
+    for (const v of pred.in as string[]) {
+      const t = m[dir].get(v);
+      if (t === undefined) return { ok: false, reason: `${attr} "${v}" not found` };
+      vals.push(t);
+    }
+    out[attr] = { in: vals };
+  }
+  return { ok: true, value: out };
+}
+
+async function readTemplateAssignments(
+  sql: SqlHandle,
+  tenantId: string,
+  loops: { id: string; loop_key: string }[],
+  skipped: string[],
+): Promise<NonNullable<TenantConfigSections["templateAssignments"]>> {
+  const rows = await sql<
+    {
+      template_kind: string;
+      name: string;
+      template_id: string;
+      priority: number;
+      is_active: boolean;
+      conditions: unknown;
+    }[]
+  >`
+    SELECT template_kind, name, template_id::text AS template_id, priority, is_active, conditions
+      FROM public.template_assignments
+     WHERE tenant_id = ${tenantId} ORDER BY template_kind, name
+  `;
+  if (rows.length === 0) return [];
+  const scorecards = await sql<{ id: string; scorecard_key: string }[]>`
+    SELECT id::text AS id, scorecard_key FROM public.tenant_scorecard_template
+     WHERE tenant_id = ${tenantId}
+  `;
+  const targetKey: Record<string, Map<string, string>> = {
+    interview_loop: new Map(loops.map((l) => [l.id, l.loop_key] as const)),
+    scorecard: new Map(scorecards.map((c) => [c.id, c.scorecard_key] as const)),
+  };
+  const maps = await conditionRefMaps(sql, tenantId);
+  const out: NonNullable<TenantConfigSections["templateAssignments"]> = [];
+  for (const r of rows) {
+    const template = targetKey[r.template_kind]?.get(r.template_id);
+    const parsed = parseStoredConditions(r.conditions);
+    if (!template || !parsed) {
+      skipped.push(
+        `templateAssignments: "${r.name}" (${r.template_kind}) — ${!template ? "its template no longer exists" : "its conditions are malformed"}; not exported`,
+      );
+      continue;
+    }
+    const t = translateConditions(parsed as Record<string, unknown>, maps, "toKey");
+    if (!t.ok) {
+      skipped.push(`templateAssignments: "${r.name}" — ${t.reason}; not exported`);
+      continue;
+    }
+    out.push({
+      templateKind: r.template_kind,
+      name: r.name,
+      template,
+      priority: Number(r.priority),
+      isActive: r.is_active,
+      conditions: t.value as ConfigApplicabilityConditions,
+    });
+  }
+  return out;
 }
 
 /** The export document for a tenant. */
@@ -867,26 +1001,119 @@ export async function applyTenantConfig(
         }
         break;
       }
-      case "interviewRounds": {
-        const m = byKey(incoming.interviewRounds);
-        for (const k of d.removals) {
-          await tx`DELETE FROM public.tenant_interview_round_template
-                    WHERE tenant_id = ${tenantId} AND round_number = ${Number(k)}`;
-        }
+      case "interviewLoops": {
+        const m = byKey(incoming.interviewLoops);
         for (const k of want) {
           const r = m.get(k);
           if (!r) continue;
           await tx`
+            INSERT INTO public.interview_loops (tenant_id, loop_key, label, is_active)
+            VALUES (${tenantId}, ${r.loopKey}, ${r.label}, ${r.loopKey === "default" ? true : r.isActive})
+            ON CONFLICT (tenant_id, loop_key) DO UPDATE
+              SET label = EXCLUDED.label, is_active = EXCLUDED.is_active, updated_at = now()
+          `;
+        }
+        for (const k of d.removals) {
+          if (k === "default") continue; // the fallback loop is never deactivated
+          await tx`UPDATE public.interview_loops SET is_active = false, updated_at = now()
+                    WHERE tenant_id = ${tenantId} AND loop_key = ${k}`;
+        }
+        break;
+      }
+      case "interviewRounds": {
+        const m = byKey(incoming.interviewRounds);
+        for (const k of d.removals) {
+          const { loopKey, roundNumber } = parseInterviewRoundRecordKey(k);
+          await tx`DELETE FROM public.tenant_interview_round_template
+                    WHERE tenant_id = ${tenantId} AND loop_key = ${loopKey}
+                      AND round_number = ${roundNumber}`;
+        }
+        for (const k of want) {
+          const r = m.get(k);
+          if (!r) continue;
+          const loopKey = r.loopKey ?? "default";
+          // A round's loop always exists (a document may carry rounds without
+          // an interviewLoops section — e.g. one exported before C2-F12).
+          await tx`
+            INSERT INTO public.interview_loops (tenant_id, loop_key, label)
+            VALUES (${tenantId}, ${loopKey}, ${loopKey === "default" ? "Default loop" : loopKey})
+            ON CONFLICT (tenant_id, loop_key) DO NOTHING
+          `;
+          await tx`
             INSERT INTO public.tenant_interview_round_template
-              (tenant_id, round_number, round_name, duration_minutes, mode,
+              (tenant_id, loop_key, round_number, round_name, duration_minutes, mode,
                scorecard_template_key, competency_focus)
-            VALUES (${tenantId}, ${r.roundNumber}, ${r.roundName}, ${r.durationMinutes}, ${r.mode},
-                    ${r.scorecardTemplateKey}, ${JSON.stringify(r.competencyFocus)}::jsonb)
-            ON CONFLICT (tenant_id, round_number) DO UPDATE
+            VALUES (${tenantId}, ${loopKey}, ${r.roundNumber}, ${r.roundName}, ${r.durationMinutes},
+                    ${r.mode}, ${r.scorecardTemplateKey},
+                    ${JSON.stringify(r.competencyFocus)}::jsonb)
+            ON CONFLICT (tenant_id, loop_key, round_number) DO UPDATE
               SET round_name = EXCLUDED.round_name, duration_minutes = EXCLUDED.duration_minutes,
                   mode = EXCLUDED.mode, scorecard_template_key = EXCLUDED.scorecard_template_key,
                   competency_focus = EXCLUDED.competency_focus, updated_at = now()
           `;
+        }
+        break;
+      }
+      case "templateAssignments": {
+        const m = byKey(incoming.templateAssignments);
+        if (want.size > 0) {
+          await tx`
+            INSERT INTO public.interview_loops (tenant_id, loop_key, label)
+            VALUES (${tenantId}, 'default', 'Default loop')
+            ON CONFLICT (tenant_id, loop_key) DO NOTHING
+          `;
+        }
+        const targetIds: Record<string, IdMap> = {
+          interview_loop: new IdMap(
+            await tx<{ k: string; id: string }[]>`
+              SELECT loop_key AS k, id::text AS id FROM public.interview_loops
+               WHERE tenant_id = ${tenantId}`,
+          ),
+          scorecard: new IdMap(
+            await tx<{ k: string; id: string }[]>`
+              SELECT scorecard_key AS k, id::text AS id FROM public.tenant_scorecard_template
+               WHERE tenant_id = ${tenantId}`,
+          ),
+        };
+        const maps = await conditionRefMaps(tx, tenantId);
+        for (const k of want) {
+          const r = m.get(k);
+          if (!r) continue;
+          const kindMeta = TEMPLATE_KIND_META[r.templateKind as TemplateKind];
+          if (!kindMeta?.consumed) {
+            skipped.push(
+              `templateAssignments: "${r.name}" — kind ${r.templateKind} is not assignable`,
+            );
+            continue;
+          }
+          const templateId = targetIds[r.templateKind]?.get(r.template) ?? null;
+          if (!templateId) {
+            skipped.push(`templateAssignments: "${r.name}" — template "${r.template}" not found`);
+            continue;
+          }
+          const t = translateConditions(r.conditions as Record<string, unknown>, maps, "toId");
+          if (!t.ok || !parseStoredConditions(t.ok ? t.value : null)) {
+            skipped.push(
+              `templateAssignments: "${r.name}" — ${t.ok ? "conditions are invalid" : t.reason}`,
+            );
+            continue;
+          }
+          await tx`
+            INSERT INTO public.template_assignments
+              (tenant_id, template_kind, name, template_id, priority, is_active, conditions)
+            VALUES (${tenantId}, ${r.templateKind}, ${r.name}, ${templateId}, ${r.priority},
+                    ${r.isActive}, ${JSON.stringify(t.value)}::jsonb)
+            ON CONFLICT (tenant_id, template_kind, name) DO UPDATE
+              SET template_id = EXCLUDED.template_id, priority = EXCLUDED.priority,
+                  is_active = EXCLUDED.is_active, conditions = EXCLUDED.conditions,
+                  updated_at = now()
+          `;
+        }
+        for (const k of d.removals) {
+          const i = k.indexOf(":");
+          await tx`DELETE FROM public.template_assignments
+                    WHERE tenant_id = ${tenantId} AND template_kind = ${k.slice(0, i)}
+                      AND name = ${k.slice(i + 1)}`;
         }
         break;
       }

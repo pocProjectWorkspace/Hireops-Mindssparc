@@ -49,12 +49,22 @@ export const interviewRoundTemplateRowSchema = z.object({
   roundName: z.string().min(1).max(120),
   durationMinutes: z.number().int().min(15).max(480),
   mode: interviewModeSchema,
-  scorecardTemplateKey: scorecardTemplateKeySchema,
+  /** C2-F12: null = no pinned scorecard — resolved by applicability (kind
+   * 'scorecard') when the loop seeds a plan, else the built-in 'general'. */
+  scorecardTemplateKey: scorecardTemplateKeySchema.nullable(),
   competencyFocus: z.array(z.string().min(1).max(80)).max(20).default([]),
 });
 export type InterviewRoundTemplateRow = z.infer<typeof interviewRoundTemplateRowSchema>;
 
-export const listInterviewRoundTemplatesInputSchema = z.object({}).default({});
+/** C2-F12: rounds belong to a named loop; omitted = the 'default' loop. */
+const loopKeyInput = z
+  .string()
+  .regex(/^[a-z0-9_]{1,64}$/, "loop key must be lowercase snake_case (max 64)")
+  .optional();
+
+export const listInterviewRoundTemplatesInputSchema = z
+  .object({ loopKey: loopKeyInput })
+  .default({});
 export const listInterviewRoundTemplatesOutputSchema = z.object({
   rounds: z.array(interviewRoundTemplateRowSchema),
 });
@@ -67,6 +77,7 @@ export type ListInterviewRoundTemplatesOutput = z.infer<
  * clears the loop. Each round's scorecardTemplateKey is validated server-side
  * against {4 code defaults} ∪ {the tenant's saved scorecard keys}. */
 export const upsertInterviewRoundTemplateInputSchema = z.object({
+  loopKey: loopKeyInput,
   rounds: z.array(interviewRoundTemplateRowSchema).max(20),
 });
 export type UpsertInterviewRoundTemplateInput = z.infer<
@@ -81,7 +92,9 @@ export type UpsertInterviewRoundTemplateOutput = z.infer<
 >;
 
 /** Clear the tenant's whole default loop. Idempotent. */
-export const deleteInterviewRoundTemplateInputSchema = z.object({}).default({});
+export const deleteInterviewRoundTemplateInputSchema = z
+  .object({ loopKey: loopKeyInput })
+  .default({});
 export const deleteInterviewRoundTemplateOutputSchema = z.object({
   cleared: z.boolean(),
 });
@@ -94,6 +107,9 @@ export type DeleteInterviewRoundTemplateOutput = z.infer<
  * template rows: the honest fallback, the caller builds the plan from scratch. */
 export const applyInterviewRoundTemplateInputSchema = z.object({
   requisitionId: z.string().uuid(),
+  /** C2-F12: seed from this loop explicitly; omitted = resolve by applicability
+   * (kind 'interview_loop'), falling back to the 'default' loop. */
+  loopKey: loopKeyInput,
 });
 export type ApplyInterviewRoundTemplateInput = z.infer<
   typeof applyInterviewRoundTemplateInputSchema
@@ -102,6 +118,11 @@ export const applyInterviewRoundTemplateOutputSchema = z.object({
   requisitionId: z.string().uuid(),
   applied: z.boolean(),
   roundCount: z.number().int().nonnegative(),
+  /** C2-F12 provenance: which loop seeded the plan and why. */
+  loopKey: z.string().nullable().optional(),
+  /** The applicability rule that chose the loop (null = explicit or fallback). */
+  assignmentId: z.string().uuid().nullable().optional(),
+  matchedPredicates: z.array(z.string()).optional(),
 });
 export type ApplyInterviewRoundTemplateOutput = z.infer<
   typeof applyInterviewRoundTemplateOutputSchema
