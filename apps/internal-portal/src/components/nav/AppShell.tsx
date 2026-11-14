@@ -799,6 +799,7 @@ export const ADMIN_NAV: NavItem[] = [
     key: "policy-parameters",
     label: "Policy parameters",
     href: "/admin/policy-parameters",
+    caps: ["settings.system"],
     icon: <IconSlaThresholds />,
   },
   // PC-8 — tenant interview-scheduling settings (duration presets, working

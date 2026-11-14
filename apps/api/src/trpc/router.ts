@@ -12516,13 +12516,22 @@ export const appRouter = router({
 
   /**
    * PP13 — the offer form defaults (expiry days, probation months, decision
-   * SLA). Any signed-in staff member: the values are tenant policy, not data,
-   * and both offer forms pre-fill from them.
+   * SLA). Gated on `dashboard.view` (C2-F1) — every internal staff role by
+   * default, i.e. exactly the pre-F1 "any signed-in staff member". Deliberately
+   * NOT narrowed to candidates.triage / offers.comp_desk: the values are tenant
+   * policy numbers, not candidate data; draftOffer / listOffersByApplication
+   * carry no capability gate of their own (RLS + stage checks), and the offer
+   * form is rendered from the candidate drawer, HR case detail and the comp
+   * desk to roles outside those two capabilities — a narrower gate would 403
+   * the pre-fill there. Partners / candidates (no dashboard.view) are refused.
    */
   getOfferPolicyDefaults: protectedProcedure
     .input(getOfferPolicyDefaultsInputSchema)
     .output(getOfferPolicyDefaultsOutputSchema)
-    .query(async ({ ctx }) => loadOfferPolicy(ctx.tenantId)),
+    .query(async ({ ctx }) => {
+      requireCapability(ctx, "dashboard.view", "Offer defaults are for staff members only");
+      return loadOfferPolicy(ctx.tenantId);
+    }),
 
   /**
    * PP20 — CVs held past the tenant's talent-pool retention (register only —
