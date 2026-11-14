@@ -353,14 +353,69 @@ export const configCompBandSchema = z.object({
 export type ConfigCompBand = z.infer<typeof configCompBandSchema>;
 
 export const configInterviewRoundSchema = z.object({
+  /**
+   * C2-F12: the named loop the round belongs to. Omitted = the 'default' loop
+   * (every document exported before named loops existed), so old files parse
+   * and diff exactly as before.
+   */
+  loopKey: snake.optional(),
   roundNumber: z.number().int().min(1).max(20),
   roundName: z.string().min(1).max(120),
   durationMinutes: z.number().int().min(15).max(480),
   mode: z.enum(["video", "onsite", "phone"]),
-  scorecardTemplateKey: snake,
+  /** C2-F12: null = no pinned scorecard (resolved by applicability). */
+  scorecardTemplateKey: snake.nullable(),
   competencyFocus: z.array(z.string().min(1).max(80)).max(20),
 });
 export type ConfigInterviewRound = z.infer<typeof configInterviewRoundSchema>;
+
+/** C2-F12 — a named interview loop (the 'default' loop always exists). */
+export const configInterviewLoopSchema = z.object({
+  loopKey: snake,
+  label: z.string().min(1).max(120),
+  isActive: z.boolean(),
+});
+export type ConfigInterviewLoop = z.infer<typeof configInterviewLoopSchema>;
+
+/**
+ * C2-F12 — an applicability rule. The target template and every condition
+ * value travel by NATURAL key so the rule moves between tenants: the target
+ * is a loop key (interview_loop) or a scorecard key (scorecard); conditions
+ * name legal entities / locations by name, business units by slug, functions
+ * and levels by key, job profiles by title. Level ranks, countries and lookup
+ * keys are already portable.
+ */
+const configConditionIn = z.object({ in: z.array(z.string().min(1).max(200)).min(1).max(50) });
+export const configApplicabilityConditionsSchema = z
+  .object({
+    legal_entity_id: configConditionIn.optional(),
+    country_code: configConditionIn.optional(),
+    business_unit_id: configConditionIn.optional(),
+    location_id: configConditionIn.optional(),
+    job_function_id: configConditionIn.optional(),
+    job_level_rank: z
+      .object({
+        min: z.number().int().nullable().optional(),
+        max: z.number().int().nullable().optional(),
+      })
+      .optional(),
+    job_profile_id: configConditionIn.optional(),
+    employment_type_key: configConditionIn.optional(),
+    requisition_type_key: configConditionIn.optional(),
+  })
+  .strict();
+export type ConfigApplicabilityConditions = z.infer<typeof configApplicabilityConditionsSchema>;
+
+export const configTemplateAssignmentSchema = z.object({
+  templateKind: z.string().regex(/^[a-z][a-z0-9_]{1,39}$/),
+  name: z.string().min(1).max(120),
+  /** The target template's natural key (loop key / scorecard key). */
+  template: z.string().min(1).max(200),
+  priority: z.number().int().min(-1000).max(1000),
+  isActive: z.boolean(),
+  conditions: configApplicabilityConditionsSchema,
+});
+export type ConfigTemplateAssignment = z.infer<typeof configTemplateAssignmentSchema>;
 
 export const configScorecardTemplateSchema = z.object({
   scorecardKey: snake,
@@ -474,7 +529,9 @@ export const tenantConfigSectionsSchema = z.object({
   jobProfiles: z.array(configJobProfileSchema).optional(),
   compBands: z.array(configCompBandSchema).optional(),
   scorecardTemplates: z.array(configScorecardTemplateSchema).optional(),
+  interviewLoops: z.array(configInterviewLoopSchema).optional(),
   interviewRounds: z.array(configInterviewRoundSchema).optional(),
+  templateAssignments: z.array(configTemplateAssignmentSchema).optional(),
   emailTemplateOverrides: z.array(configEmailTemplateOverrideSchema).optional(),
   candidateFieldPolicy: z.array(configCandidateFieldPolicySchema).optional(),
   sources: z.array(configSourceSchema).optional(),
@@ -489,7 +546,8 @@ export type TenantConfigSectionKey = keyof TenantConfigSections;
 /**
  * Apply order: referenced sections before the sections that reference them
  * (entities → locations → business units; functions/levels/JD templates →
- * profiles → comp bands; scorecards → rounds).
+ * profiles → comp bands; scorecards → loops → rounds; everything → template
+ * assignments, whose targets and conditions reference all of the above).
  */
 export const TENANT_CONFIG_SECTION_ORDER: readonly TenantConfigSectionKey[] = [
   "locale",
@@ -504,7 +562,9 @@ export const TENANT_CONFIG_SECTION_ORDER: readonly TenantConfigSectionKey[] = [
   "jobProfiles",
   "compBands",
   "scorecardTemplates",
+  "interviewLoops",
   "interviewRounds",
+  "templateAssignments",
   "emailTemplateOverrides",
   "candidateFieldPolicy",
   "sources",
@@ -527,7 +587,9 @@ export const TENANT_CONFIG_SECTION_LABELS: Record<TenantConfigSectionKey, string
   jobProfiles: "Job profiles",
   compBands: "Comp bands",
   scorecardTemplates: "Scorecard templates",
+  interviewLoops: "Interview loops",
   interviewRounds: "Interview rounds",
+  templateAssignments: "Template assignments (applicability)",
   emailTemplateOverrides: "Email template overrides",
   candidateFieldPolicy: "Candidate field policy",
   sources: "Sources",
@@ -557,7 +619,9 @@ export const TENANT_CONFIG_REMOVAL_MODE: Record<
   jobProfiles: "deactivate",
   compBands: "archive",
   scorecardTemplates: "reset",
+  interviewLoops: "deactivate",
   interviewRounds: "reset",
+  templateAssignments: "reset",
   emailTemplateOverrides: "reset",
   candidateFieldPolicy: "reset",
   sources: "reset",
@@ -613,6 +677,26 @@ export function parseTenantConfigDocument(raw: unknown): ParseConfigDocumentResu
 
 // ─────────────────────────── diff ───────────────────────────
 
+/**
+ * Natural key of an interview round: the bare round number for the 'default'
+ * loop (byte-identical to documents from before named loops), else
+ * `<loopKey>:<roundNumber>`.
+ */
+export function interviewRoundRecordKey(loopKey: unknown, roundNumber: unknown): string {
+  const k = typeof loopKey === "string" && loopKey !== "" ? loopKey : "default";
+  return k === "default" ? String(roundNumber) : `${k}:${String(roundNumber)}`;
+}
+
+/** Inverse of interviewRoundRecordKey. */
+export function parseInterviewRoundRecordKey(key: string): {
+  loopKey: string;
+  roundNumber: number;
+} {
+  const i = key.lastIndexOf(":");
+  if (i < 0) return { loopKey: "default", roundNumber: Number(key) };
+  return { loopKey: key.slice(0, i), roundNumber: Number(key.slice(i + 1)) };
+}
+
 /** Natural key per record, per section. */
 export function configRecordKey(section: TenantConfigSectionKey, rec: unknown): string {
   const r = rec as Json;
@@ -634,8 +718,12 @@ export function configRecordKey(section: TenantConfigSectionKey, rec: unknown): 
       return String(r.title);
     case "scorecardTemplates":
       return String(r.scorecardKey);
+    case "interviewLoops":
+      return String(r.loopKey);
     case "interviewRounds":
-      return String(r.roundNumber);
+      return interviewRoundRecordKey(r.loopKey, r.roundNumber);
+    case "templateAssignments":
+      return `${String(r.templateKind)}:${String(r.name)}`;
     case "emailTemplateOverrides":
       return String(r.templateKey);
     case "candidateFieldPolicy":

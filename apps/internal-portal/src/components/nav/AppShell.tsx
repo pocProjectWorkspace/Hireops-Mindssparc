@@ -145,6 +145,8 @@ export type PortalNavKey =
   // T2.1 — required-candidate-field policy (G05)
   | "candidate-fields"
   | "interview-templates"
+  // C2-F12 — applicability: which template applies to which requisition
+  | "applicability"
   // T3.1 — business-unit management (G14)
   | "business-units"
   // T3.2 — comp-band library (G15)
@@ -709,6 +711,14 @@ export const ADMIN_NAV: NavItem[] = [
     caps: ["settings.interview_templates"],
     icon: <IconInterviews />,
   },
+  // C2-F12 — applicability rules (which loop / scorecard applies to which
+  // requisition) + the resolved-configuration preview. Reuses IconSources.
+  {
+    key: "applicability",
+    label: "Applicability",
+    href: "/admin/applicability",
+    icon: <IconSources />,
+  },
   // T3.1 / G14 — business-unit management (org structure). The managed list
   // drives the requisition wizard's business-unit picker.
   {
@@ -975,6 +985,7 @@ export const ADMIN_NAV_SECTIONS: NavSection[] = [
       "email-templates",
       "candidate-fields",
       "interview-templates",
+      "applicability",
       "scheduling-settings",
       "labels",
       "sla-thresholds",

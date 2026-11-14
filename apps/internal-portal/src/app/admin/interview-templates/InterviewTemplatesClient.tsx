@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type {
   InterviewMode,
   InterviewRoundTemplateRow,
@@ -27,7 +27,15 @@ import { trpc, handleTRPCError } from "@/lib/trpc-client";
  *
  * HONESTY — a round's scorecard must be a built-in OR a saved custom key (the
  * server rejects unknowns); a custom key can't redefine a built-in.
+ *
+ * C2-F12 — a tenant can keep several NAMED loops (e.g. a senior loop beside
+ * the default); /admin/applicability decides which loop a requisition gets.
+ * A round may leave its scorecard to applicability ("Resolved by
+ * applicability" = null), which fills only unpinned rounds.
  */
+
+/** Select sentinel for "no pinned scorecard" (null on the wire). */
+const AUTO_SCORECARD = "__applicability__";
 
 const MODE_OPTIONS: { value: InterviewMode; label: string }[] = [
   { value: "video", label: "Video" },
@@ -60,9 +68,13 @@ export function InterviewTemplatesClient({
   initialRounds: ListInterviewRoundTemplatesOutput;
   initialScorecards: ListScorecardTemplatesOutput;
 }) {
-  const roundsQuery = trpc.listInterviewRoundTemplates.useQuery(undefined, {
-    initialData: initialRounds,
-  });
+  const [loopKey, setLoopKey] = useState("default");
+  const loopsQuery = trpc.listInterviewLoops.useQuery({});
+  const loops = loopsQuery.data?.loops ?? [];
+  const roundsQuery = trpc.listInterviewRoundTemplates.useQuery(
+    { loopKey },
+    { initialData: loopKey === "default" ? initialRounds : undefined },
+  );
   const scorecardsQuery = trpc.listScorecardTemplates.useQuery(undefined, {
     initialData: initialScorecards,
   });
@@ -70,7 +82,10 @@ export function InterviewTemplatesClient({
   const options = scorecardsQuery.data?.options ?? [];
   const custom = scorecardsQuery.data?.custom ?? [];
   const scorecardOptions = useMemo(
-    () => options.map((o) => ({ value: o.scorecardKey, label: o.label })),
+    () => [
+      { value: AUTO_SCORECARD, label: "Resolved by applicability" },
+      ...options.map((o) => ({ value: o.scorecardKey, label: o.label })),
+    ],
     [options],
   );
   const fallbackScorecardKey = options[0]?.scorecardKey ?? "general";
@@ -79,14 +94,41 @@ export function InterviewTemplatesClient({
     (initialRounds.rounds ?? []).map(toDraftRound),
   );
   const [notice, setNotice] = useState<string | null>(null);
+  const [newLoopKey, setNewLoopKey] = useState("");
+  const [newLoopLabel, setNewLoopLabel] = useState("");
+  const loopLabel = loops.find((l) => l.loopKey === loopKey)?.label ?? loopKey;
+
+  // Switching loop loads that loop's rounds into the editor (once per switch,
+  // so a background refetch never wipes unsaved edits).
+  const [loadedLoop, setLoadedLoop] = useState("default");
+  useEffect(() => {
+    if (loadedLoop === loopKey || !roundsQuery.data) return;
+    setRounds(roundsQuery.data.rounds.map(toDraftRound));
+    setLoadedLoop(loopKey);
+  }, [loopKey, loadedLoop, roundsQuery.data]);
+
+  const createLoop = trpc.createInterviewLoop.useMutation({
+    onSuccess: async (res) => {
+      await loopsQuery.refetch();
+      setNewLoopKey("");
+      setNewLoopLabel("");
+      setLoopKey(res.row.loopKey);
+      setNotice(`Created the "${res.row.label}" loop. Add its rounds and save.`);
+    },
+    onError: (err) => {
+      setNotice(`Create failed: ${err.message}`);
+      handleTRPCError(err);
+    },
+  });
 
   // ── Round-loop mutations ──
   const upsertRounds = trpc.upsertInterviewRoundTemplate.useMutation({
     onSuccess: async (res) => {
       await roundsQuery.refetch();
+      await loopsQuery.refetch();
       setRounds(res.rounds.map(toDraftRound));
       setNotice(
-        `Saved the default loop (${res.roundCount} round${res.roundCount === 1 ? "" : "s"}).`,
+        `Saved the "${loopLabel}" loop (${res.roundCount} round${res.roundCount === 1 ? "" : "s"}).`,
       );
     },
     onError: (err) => {
@@ -97,8 +139,9 @@ export function InterviewTemplatesClient({
   const clearRounds = trpc.deleteInterviewRoundTemplate.useMutation({
     onSuccess: async () => {
       await roundsQuery.refetch();
+      await loopsQuery.refetch();
       setRounds([]);
-      setNotice("Default loop cleared.");
+      setNotice(`The "${loopLabel}" loop was cleared.`);
     },
     onError: (err) => {
       setNotice(`Clear failed: ${err.message}`);
@@ -118,6 +161,7 @@ export function InterviewTemplatesClient({
   function saveRounds() {
     setNotice(null);
     upsertRounds.mutate({
+      loopKey,
       rounds: rounds.map((r) => ({
         roundNumber: r.roundNumber,
         roundName: r.roundName,
@@ -164,7 +208,23 @@ export function InterviewTemplatesClient({
       {/* ─────────── (A) Round loop ─────────── */}
       <Card className="mt-6 p-5">
         <div className="flex items-center justify-between">
-          <h2 className="text-sm font-semibold text-neutral-900">Default interview loop</h2>
+          <div className="flex items-center gap-3">
+            <h2 className="text-sm font-semibold text-neutral-900">Interview loop</h2>
+            <div className="w-56">
+              <Select
+                options={loops.map((l) => ({
+                  value: l.loopKey,
+                  label: `${l.label}${l.isDefault ? " (default)" : ""}${l.isActive ? "" : " — inactive"} · ${l.roundCount}`,
+                }))}
+                value={loopKey}
+                onValueChange={(v) => {
+                  setNotice(null);
+                  setLoopKey(v);
+                }}
+                size="sm"
+              />
+            </div>
+          </div>
           <div className="flex items-center gap-2">
             <Button size="sm" variant="secondary" onClick={addRound} disabled={roundsBusy}>
               Add round
@@ -177,7 +237,7 @@ export function InterviewTemplatesClient({
               variant="tertiary"
               onClick={() => {
                 setNotice(null);
-                clearRounds.mutate({});
+                clearRounds.mutate({ loopKey });
               }}
               disabled={roundsBusy || rounds.length === 0}
             >
@@ -186,10 +246,47 @@ export function InterviewTemplatesClient({
           </div>
         </div>
 
+        <div className="mt-3 flex flex-wrap items-end gap-2 border-t border-neutral-100 pt-3">
+          <div className="w-44">
+            <span className="mb-1 block text-[11px] font-medium text-neutral-500">
+              New loop key
+            </span>
+            <Input
+              value={newLoopKey}
+              onChange={(e) => setNewLoopKey(e.target.value.toLowerCase())}
+              placeholder="e.g. senior"
+              size="sm"
+            />
+          </div>
+          <div className="w-56">
+            <span className="mb-1 block text-[11px] font-medium text-neutral-500">Label</span>
+            <Input
+              value={newLoopLabel}
+              onChange={(e) => setNewLoopLabel(e.target.value)}
+              placeholder="e.g. Senior leadership loop"
+              size="sm"
+            />
+          </div>
+          <Button
+            size="sm"
+            variant="secondary"
+            disabled={!newLoopKey.trim() || !newLoopLabel.trim() || createLoop.isPending}
+            onClick={() => {
+              setNotice(null);
+              createLoop.mutate({ loopKey: newLoopKey.trim(), label: newLoopLabel.trim() });
+            }}
+          >
+            Add loop
+          </Button>
+          <span className="text-xs text-neutral-500">
+            Which loop a requisition gets is set on the Applicability page.
+          </span>
+        </div>
+
         {rounds.length === 0 ? (
           <p className="mt-4 text-sm text-neutral-500">
-            No default loop. Add rounds and save, or leave empty, new requisitions build their plan
-            from scratch.
+            No rounds in this loop. Add rounds and save, or leave the default loop empty, new
+            requisitions then build their plan from scratch.
           </p>
         ) : (
           <div className="mt-4 space-y-3">
@@ -241,8 +338,10 @@ export function InterviewTemplatesClient({
                   </span>
                   <Select
                     options={scorecardOptions}
-                    value={r.scorecardTemplateKey}
-                    onValueChange={(v) => updateRound(idx, { scorecardTemplateKey: v })}
+                    value={r.scorecardTemplateKey ?? AUTO_SCORECARD}
+                    onValueChange={(v) =>
+                      updateRound(idx, { scorecardTemplateKey: v === AUTO_SCORECARD ? null : v })
+                    }
                     size="sm"
                   />
                 </div>

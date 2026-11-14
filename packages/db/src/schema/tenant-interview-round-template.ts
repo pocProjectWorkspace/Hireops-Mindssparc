@@ -48,13 +48,19 @@ export const tenantInterviewRoundTemplate = pgTable(
       .notNull()
       .references(() => tenants.id, { onDelete: "cascade" }),
 
+    // C2-F12 (0136): the named loop this round belongs to (interview_loops.loop_key).
+    // Every pre-0136 row is in loop 'default'.
+    loopKey: text("loop_key").notNull().default("default"),
     roundNumber: integer("round_number").notNull(),
     roundName: text("round_name").notNull(),
     durationMinutes: integer("duration_minutes").notNull().default(60),
     mode: text("mode").notNull().default("video"),
     // A scorecard key — one of the 4 code defaults OR a tenant custom key. Lax
     // shape check here; membership is enforced in the procedure at write.
-    scorecardTemplateKey: text("scorecard_template_key").notNull(),
+    // C2-F12 (0136): NULLABLE — NULL = no pinned scorecard; the scorecard is
+    // resolved by applicability (template_assignments kind 'scorecard') when the
+    // loop seeds a plan. A pinned key always wins.
+    scorecardTemplateKey: text("scorecard_template_key"),
 
     // Competencies this round probes, e.g. ["system_design", "ownership"].
     competencyFocus: jsonb("competency_focus").notNull().default([]),
@@ -68,10 +74,16 @@ export const tenantInterviewRoundTemplate = pgTable(
   },
   (table) => [
     unique("uniq_tenant_interview_round_template_tenant_id_id").on(table.tenantId, table.id),
-    // One template row per round per tenant — the seed / replace-set conflict target.
-    unique("uniq_tenant_interview_round_template_tenant_round").on(
+    // One template row per round per loop per tenant (C2-F12 / 0136; was
+    // (tenant, round_number) when a tenant had one loop).
+    unique("uniq_tenant_interview_round_template_tenant_loop_round").on(
       table.tenantId,
+      table.loopKey,
       table.roundNumber,
+    ),
+    check(
+      "tenant_interview_round_template_loop_key_check",
+      sql`${table.loopKey} ~ '^[a-z0-9_]{1,64}$'`,
     ),
 
     index("idx_tenant_interview_round_template_tenant").on(table.tenantId),

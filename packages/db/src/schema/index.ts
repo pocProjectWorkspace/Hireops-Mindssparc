@@ -157,3 +157,6 @@ export * from "./welcome-guides";
 export * from "./platform";
 // C1-F11 provisioning jobs (0135)
 export * from "./tenant-provisioning-jobs";
+// C2-F12 applicability: template assignments + named interview loops (0136)
+export * from "./template-assignments";
+export * from "./interview-loops";

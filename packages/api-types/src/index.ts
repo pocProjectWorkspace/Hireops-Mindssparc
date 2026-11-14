@@ -77,3 +77,5 @@ export * from "./starter-packs";
 export * from "./capabilities";
 // C2-F7 — policy parameters (screening, upload, offer, AI interview, notetaker, reports, market intel)
 export * from "./policy-parameters";
+// C2-F12 — applicability resolver (template assignments)
+export * from "./applicability";

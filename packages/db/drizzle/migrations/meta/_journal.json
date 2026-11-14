@@ -892,6 +892,13 @@
       "breakpoints": true
     },
     {
+      "idx": 136,
+      "version": "7",
+      "when": 1789776000000,
+      "tag": "0136_template_applicability",
+      "breakpoints": true
+    },
+    {
       "idx": 137,
       "version": "7",
       "when": 1789862400000,

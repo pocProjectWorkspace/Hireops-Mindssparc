@@ -43,6 +43,7 @@ const fn = (key: string, label: string, sortOrder: number) => ({
 export const INDIA_GCC_FINANCE_GBS_STARTER_PACK: StarterPack = {
   key: "india-gcc-finance-gbs",
   // v2 (C2-F7): notetaker glossary of finance / GBS terms.
+  // v2 (C2-F12): + interview loop registry and default applicability rules.
   version: 2,
   label: "India GCC — finance / GBS",
   description:
@@ -213,6 +214,29 @@ export const INDIA_GCC_FINANCE_GBS_STARTER_PACK: StarterPack = {
           { key: "functional", label: "Functional" },
           { key: "competencies", label: "Competencies" },
         ],
+      },
+    ],
+    // C2-F12: the four rounds below are the 'default' loop; the default
+    // assignments make the loop + scorecard choice explicit (no conditions =
+    // applies to every requisition), so a tenant adds band / function
+    // specific loops beside them instead of editing the default.
+    interviewLoops: [{ loopKey: "default", label: "Default loop", isActive: true }],
+    templateAssignments: [
+      {
+        templateKind: "interview_loop",
+        name: "Default interview loop",
+        template: "default",
+        priority: 0,
+        isActive: true,
+        conditions: {},
+      },
+      {
+        templateKind: "scorecard",
+        name: "Default scorecard",
+        template: "gcc_competencies",
+        priority: 0,
+        isActive: true,
+        conditions: {},
       },
     ],
     interviewRounds: [

@@ -432,6 +432,9 @@ describe.skipIf(!HAS_LOCAL_PG)(
       assert.equal(await count("legal_entities", t), 1);
       assert.equal(await count("tenant_lookups", t), 2);
       assert.equal(await count("tenant_interview_round_template", t), 4);
+      // C2-F12: the pack's default loop + default loop/scorecard assignments.
+      assert.equal(await count("interview_loops", t, "loop_key = 'default'"), 1);
+      assert.equal(await count("template_assignments", t, "conditions = '{}'::jsonb"), 2);
       const [sc] = await sql<{ criteria: { label: string }[] }[]>`
       SELECT criteria FROM public.tenant_scorecard_template WHERE tenant_id = ${t}
     `;
