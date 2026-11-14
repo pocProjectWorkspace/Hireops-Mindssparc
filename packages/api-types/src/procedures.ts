@@ -2853,6 +2853,8 @@ export const tenantUserAdminRowSchema = z.object({
   displayName: z.string().nullable(),
   email: z.string().nullable(),
   roles: z.array(z.string()),
+  /** C2-F1 — the custom role in force (null = the system roles above). */
+  roleKey: z.string().nullable().default(null),
   status: z.string(),
   createdAt: z.string(),
   isSelf: z.boolean(),

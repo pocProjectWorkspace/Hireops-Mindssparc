@@ -22,7 +22,7 @@ export const dynamic = "force-dynamic"; // Admin-gated + reads live tenant confi
  * procedures (server-side admin role).
  */
 export default async function InterviewTemplatesPage() {
-  const session = await requireAdmin();
+  const session = await requireAdmin("settings.interview_templates");
   const caller = createServerTRPCCaller(session);
   const [rounds, scorecards] = await Promise.all([
     caller.listInterviewRoundTemplates({}),

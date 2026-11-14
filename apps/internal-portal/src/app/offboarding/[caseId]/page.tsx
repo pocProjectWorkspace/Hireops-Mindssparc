@@ -1,14 +1,12 @@
 import { notFound } from "next/navigation";
 import type { GetOffboardingCaseDetailOutput } from "@hireops/api-types";
-import { requireAuth, sessionUserChip } from "@/lib/auth";
+import { requireAuth, sessionCan, sessionUserChip } from "@/lib/auth";
 import { createServerTRPCCaller } from "@/lib/trpc-server";
 import { AppShell } from "@/components/nav/AppShell";
 import { EmptyState } from "@/components/ui";
 import { OffboardingCaseView } from "@/components/offboarding/OffboardingCaseView";
 
 export const dynamic = "force-dynamic"; // Auth-gated + reads live case state.
-
-const OFFBOARD_ROLES = ["hr_ops", "people_ops", "admin"];
 
 /**
  * Offboarding case detail — deep-linkable from the list. Server-renders the
@@ -27,7 +25,7 @@ export default async function OffboardingCaseDetailPage({
   const { caseId } = await params;
   const session = await requireAuth();
   const isAdmin = session.roles.includes("admin");
-  const canAccess = isAdmin || OFFBOARD_ROLES.some((r) => session.roles.includes(r));
+  const canAccess = sessionCan(session, "onboarding.offboarding");
 
   if (!canAccess) {
     return (

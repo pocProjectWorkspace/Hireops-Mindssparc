@@ -1,4 +1,4 @@
-import { requireAuth, sessionUserChip } from "@/lib/auth";
+import { requireAuth, sessionCan, sessionUserChip } from "@/lib/auth";
 import { createServerTRPCCaller } from "@/lib/trpc-server";
 import { AppShell } from "@/components/nav/AppShell";
 import { PageContainer } from "@/components/nav/PageContainer";
@@ -15,12 +15,10 @@ export const dynamic = "force-dynamic"; // Auth-gated + reads live requisition s
  * a requisition is a draft; posted/approved reqs show read-only.
  */
 
-const WRITE_ROLES = ["hiring_manager", "admin"];
-
 export default async function SkillWeightingPage() {
   const session = await requireAuth();
   const isAdmin = session.roles.includes("admin");
-  const allowed = session.roles.some((r) => WRITE_ROLES.includes(r));
+  const allowed = sessionCan(session, "requisitions.write");
 
   if (!allowed) {
     return (

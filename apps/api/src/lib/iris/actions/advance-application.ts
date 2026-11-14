@@ -11,7 +11,11 @@
  * real `advanceApplicationInputSchema`, byte-identical to what a human submits.
  */
 
-import { advanceApplicationInputSchema, type AdvanceApplicationInput } from "@hireops/api-types";
+import {
+  systemRolesWithCapability,
+  advanceApplicationInputSchema,
+  type AdvanceApplicationInput,
+} from "@hireops/api-types";
 import type { IrisAction } from "../registry";
 
 /** Sentence-case a stage token for a human-readable preview (e.g.
@@ -26,7 +30,10 @@ export const advanceApplicationAction: IrisAction<AdvanceApplicationInput> = {
   label: "Advance candidate",
   group: "Pipeline",
   // The pipeline operators who advance candidates in triage — recruiters + admin.
-  roles: ["admin", "recruiter"],
+  // C2-F1: gated on the capability the app surface checks; `roles` is derived
+  // (the base roles whose platform bundle holds it — the Iris policy columns).
+  capability: "candidates.triage",
+  roles: systemRolesWithCapability("candidates.triage"),
   // Reuse the triage procedure's real input contract, unchanged.
   inputSchema: advanceApplicationInputSchema,
   destructive: false,

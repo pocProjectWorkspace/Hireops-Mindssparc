@@ -1,4 +1,4 @@
-import { requireAuth, sessionUserChip } from "@/lib/auth";
+import { requireAuth, sessionCan, sessionUserChip } from "@/lib/auth";
 import { createServerTRPCCaller } from "@/lib/trpc-server";
 import { AppShell } from "@/components/nav/AppShell";
 import { RoleNotice } from "@/components/nav/RoleNotice";
@@ -19,8 +19,6 @@ export const dynamic = "force-dynamic"; // Role-gated + reads live requisition/J
  * scoped to the caller's own requisitions server-side.
  */
 
-const READ_ROLES = ["hiring_manager", "admin"];
-
 /** Anchor styled as the house primary button (Button renders a <button>). */
 function LinkButton({ href, children }: { href: string; children: React.ReactNode }) {
   return (
@@ -36,7 +34,7 @@ function LinkButton({ href, children }: { href: string; children: React.ReactNod
 export default async function JdLibraryPage() {
   const session = await requireAuth();
   const isAdmin = session.roles.includes("admin");
-  const allowed = session.roles.some((r) => READ_ROLES.includes(r));
+  const allowed = sessionCan(session, "requisitions.owner_insights");
 
   if (!allowed) {
     return (

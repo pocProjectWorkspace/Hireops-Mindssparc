@@ -22,7 +22,7 @@ export const dynamic = "force-dynamic"; // Admin-gated + reads live tenant confi
  * the full list (including archived) so the tree lands populated.
  */
 export default async function BusinessUnitsPage() {
-  const session = await requireAdmin();
+  const session = await requireAdmin("organisation.write");
   const caller = createServerTRPCCaller(session);
   const initial = await caller.listBusinessUnits({ includeArchived: true });
 

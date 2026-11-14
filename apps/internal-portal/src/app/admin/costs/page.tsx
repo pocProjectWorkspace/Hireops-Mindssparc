@@ -17,7 +17,7 @@ export const dynamic = "force-dynamic"; // Admin-gated + reads the live AI usage
  * cost_micros is USD micros.
  */
 export default async function CostsPage() {
-  const session = await requireAdmin();
+  const session = await requireAdmin("admin.ai_budget");
   const caller = createServerTRPCCaller(session);
   const [initial, budgetStatusInitial, budgetInitial] = await Promise.all([
     caller.getAiUsageSummary({}),

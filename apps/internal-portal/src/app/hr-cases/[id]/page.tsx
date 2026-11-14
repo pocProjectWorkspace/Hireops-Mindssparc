@@ -1,6 +1,6 @@
 import { notFound } from "next/navigation";
 import type { GetHrCaseDetailOutput } from "@hireops/api-types";
-import { requireAuth, sessionUserChip } from "@/lib/auth";
+import { requireAuth, sessionCan, sessionUserChip } from "@/lib/auth";
 import { createServerTRPCCaller } from "@/lib/trpc-server";
 import { AppShell } from "@/components/nav/AppShell";
 import { RoleNotice } from "@/components/nav/RoleNotice";
@@ -19,13 +19,11 @@ export const dynamic = "force-dynamic"; // Auth-gated + reads live case state.
  * procedure throws NOT_FOUND, RLS-scoped).
  */
 
-const READ_ROLES = ["hr_ops", "admin"];
-
 export default async function HrCaseDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
   const session = await requireAuth();
   const isAdmin = session.roles.includes("admin");
-  const allowed = session.roles.some((r) => READ_ROLES.includes(r));
+  const allowed = sessionCan(session, "hr_ops.cases");
 
   if (!allowed) {
     return (

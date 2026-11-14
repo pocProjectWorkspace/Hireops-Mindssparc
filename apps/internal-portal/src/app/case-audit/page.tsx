@@ -1,4 +1,4 @@
-import { requireAuth, sessionUserChip } from "@/lib/auth";
+import { requireAuth, sessionCan, sessionUserChip } from "@/lib/auth";
 import { createServerTRPCCaller } from "@/lib/trpc-server";
 import { AppShell } from "@/components/nav/AppShell";
 import { RoleNotice } from "@/components/nav/RoleNotice";
@@ -13,12 +13,10 @@ export const dynamic = "force-dynamic"; // Auth-gated + reads live audit state.
  * hr_ops + admin only (HR_OPS_DOC_ROLES).
  */
 
-const ALLOWED_ROLES = ["hr_ops", "admin"];
-
 export default async function CaseAuditPage() {
   const session = await requireAuth();
   const isAdmin = session.roles.includes("admin");
-  const allowed = session.roles.some((r) => ALLOWED_ROLES.includes(r));
+  const allowed = sessionCan(session, "hr_ops.documents");
 
   if (!allowed) {
     return (

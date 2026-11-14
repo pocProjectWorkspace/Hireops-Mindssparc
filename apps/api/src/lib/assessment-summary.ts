@@ -70,6 +70,10 @@ import {
   panellistDisclosureFor,
   resolveScorecardCriteria,
   resolveSelectionDecisionReasons,
+  capabilityScope,
+  hasCapability,
+  type Capability,
+  type EffectivePermissions,
   type AiInterviewEvidenceReadStatus,
   type AssessmentAiEvidence,
   type AssessmentFeedbackEntry,
@@ -86,36 +90,17 @@ import {
 import { interviewNotesReadPermitted } from "./interview-notes-read";
 import { parsedSkillNames } from "./skill-match";
 
-/** Roles that see the whole summary on role alone. */
-export const ASSESSMENT_FULL_ROLES = new Set<string>(["admin", "recruiter", "hr_ops", "hr_head"]);
-
-/** Roles that may record a selection decision on role alone (HM: own req only). */
-export const SELECTION_DECISION_ROLES = new Set<string>(["admin", "recruiter"]);
-
-/** The coarse persona gate in front of recordSelectionDecision (HM re-checked per req). */
-export const SELECTION_DECISION_GATE_ROLES = new Set<string>([
-  ...SELECTION_DECISION_ROLES,
-  "hiring_manager",
-]);
-
-/** The coarse persona gate in front of the summary read. */
-export const ASSESSMENT_SUMMARY_ROLES = new Set<string>([
-  ...ASSESSMENT_FULL_ROLES,
-  "hiring_manager",
-  "panel_member",
-]);
-
-/**
- * INTERVIEW_MANAGE_ROLES (router) — the role half of BOTH existing read rules
- * this summary must not widen: the notetaker notes rule (getInterviewNotes) and
- * the AI interview evidence rule (getAiInterviewEvidence). hr_ops / hr_head see
- * the human scorecards here, but not the AI evidence digest or the notes link.
+/*
+ * C2-F1 — the role sets that used to live here are capabilities now:
+ *   ASSESSMENT_SUMMARY_ROLES (coarse read gate)  → `candidates.assessment_summary`
+ *   ASSESSMENT_FULL_ROLES (+ HM on own req)      → `candidates.assessment_full`
+ *                                                  (scope all / own)
+ *   SELECTION_DECISION_(GATE_)ROLES (+ HM own)   → `candidates.selection_decide`
+ *                                                  (scope all / own)
+ *   INTERVIEW_MANAGE_ROLES (notes / AI evidence) → `interviews.manage` AND
+ *                                                  `interviews.notes_read` at all
+ * `own` = the viewer is THE hiring manager of the application's requisition.
  */
-const INTERVIEW_MANAGE_ROLES: ReadonlySet<string> = new Set([
-  "admin",
-  "hiring_manager",
-  "recruiter",
-]);
 
 const VALID_RECS: ReadonlySet<string> = new Set(["strong_yes", "yes", "hold", "no"]);
 const EVIDENCE_STATUSES: ReadonlySet<string> = new Set([
@@ -129,7 +114,8 @@ const MAX_QUOTES_PER_ROUND = 6;
 
 export interface AssessmentViewer {
   tenantId: string;
-  roles: readonly string[];
+  /** C2-F1 — the viewer's effective capabilities (ctx.perms). */
+  perms: Pick<EffectivePermissions, "caps">;
   /** The caller's tenant_user_memberships.id, or null. */
   membershipId: string | null;
 }
@@ -192,26 +178,32 @@ export async function loadApplicationAccessFacts(
 }
 
 /** Is the viewer THE hiring manager of this application's requisition? */
-export function isRequisitionHiringManager(
+function viewerOwnsRequisition(
   viewer: AssessmentViewer,
   facts: Pick<ApplicationAccessFacts, "hiringManagerId">,
 ): boolean {
   return (
-    viewer.roles.includes("hiring_manager") &&
     viewer.membershipId !== null &&
     facts.hiringManagerId !== null &&
     viewer.membershipId === facts.hiringManagerId
   );
 }
 
+/** Scope `all` passes; scope `own` passes on the viewer's own requisition. */
+function scopedPass(
+  viewer: AssessmentViewer,
+  cap: Capability,
+  facts: Pick<ApplicationAccessFacts, "hiringManagerId">,
+): boolean {
+  const scope = capabilityScope(viewer.perms, cap);
+  return scope === "all" || (scope === "own" && viewerOwnsRequisition(viewer, facts));
+}
+
 export function isFullAssessmentViewer(
   viewer: AssessmentViewer,
   facts: Pick<ApplicationAccessFacts, "hiringManagerId">,
 ): boolean {
-  return (
-    viewer.roles.some((r) => ASSESSMENT_FULL_ROLES.has(r)) ||
-    isRequisitionHiringManager(viewer, facts)
-  );
+  return scopedPass(viewer, "candidates.assessment_full", facts);
 }
 
 /** May the viewer record a selection decision on this application? */
@@ -219,10 +211,7 @@ export function canRecordSelectionDecision(
   viewer: AssessmentViewer,
   facts: Pick<ApplicationAccessFacts, "hiringManagerId">,
 ): boolean {
-  return (
-    viewer.roles.some((r) => SELECTION_DECISION_ROLES.has(r)) ||
-    isRequisitionHiringManager(viewer, facts)
-  );
+  return scopedPass(viewer, "candidates.selection_decide", facts);
 }
 
 // ═══════════════════════ reasons ═══════════════════════
@@ -303,7 +292,9 @@ export async function buildCandidateAssessmentSummary(
   const facts = { hiringManagerId: app.hiringManagerId ?? null };
   const full = isFullAssessmentViewer(viewer, facts);
   const canDecide = canRecordSelectionDecision(viewer, facts);
-  const hasManageRole = viewer.roles.some((r) => INTERVIEW_MANAGE_ROLES.has(r));
+  const hasManageRole =
+    hasCapability(viewer.perms, "interviews.manage") &&
+    capabilityScope(viewer.perms, "interviews.notes_read") === "all";
 
   // Every round of this application, in order. Cancelled rounds carry no
   // assessment and are left out.

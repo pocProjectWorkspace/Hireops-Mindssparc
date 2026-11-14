@@ -57,6 +57,8 @@ import {
 } from "./trpc-core";
 import { withAudit } from "./with-audit";
 import { writePlatformAudit } from "../lib/platform/platform-ops";
+import { requireCapability } from "./permissions";
+import { invalidatePermissionsCache } from "../lib/permissions/resolve";
 import { getAuthAdminPort } from "../lib/platform/auth-admin-port";
 import {
   ProvisioningError,
@@ -79,13 +81,12 @@ import {
   setTenantSetupStep,
 } from "../lib/tenant-setup";
 
-/** Tenant configuration is the tenant admin's (export, import, setup wizard). */
-export const TENANT_CONFIG_ADMIN_ROLES = new Set(["admin"]);
-
+/**
+ * Tenant configuration (export, import, setup wizard) is the
+ * `settings.tenant_config` capability (C2-F1; platform default: admin).
+ */
 function requireTenantAdmin(ctx: HonoTRPCContext, message: string): string {
-  if (!ctx.roles.some((r) => TENANT_CONFIG_ADMIN_ROLES.has(r))) {
-    throw new TRPCError({ code: "FORBIDDEN", message });
-  }
+  requireCapability(ctx, "settings.tenant_config", message);
   if (!ctx.tenantId)
     throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
   return ctx.tenantId;
@@ -268,6 +269,8 @@ export const provisioningProcedures = {
             { userId: ctx.userId, requestId: ctx.requestId, source: "app" },
             (tx) => applyTenantConfig(tx, tenantId, doc.sections, "replace"),
           );
+          // C2-F1: an import may change custom role bundles.
+          invalidatePermissionsCache(tenantId);
           const sections = res.diff.map((d) => d.section as TenantConfigSectionKey);
           ctx.log.info({ tenant_id: tenantId, sections }, "tenant.config_imported");
           return { applied: res.diff, skipped: res.skipped };

@@ -23,7 +23,7 @@ const entries: CapabilityEntry[] = [
   {
     id: "e1",
     title: "Reject a candidate",
-    roles: ["recruiter"],
+    capabilities: ["candidates.triage"],
     route: "/candidates",
     summary: "End one candidate's application.",
     steps: ["Open the candidate.", "Enter a reason and confirm."],
@@ -32,7 +32,7 @@ const entries: CapabilityEntry[] = [
   {
     id: "e2",
     title: "What Iris can do",
-    roles: [],
+    capabilities: [],
     summary: "Iris runs actions you confirm.",
     steps: ["Click Ask Iris."],
   },

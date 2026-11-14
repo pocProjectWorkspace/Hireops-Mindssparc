@@ -7,11 +7,13 @@ import { loadChromeBranding } from "@/lib/tenant-branding";
 import { ScreeningScoreProvider } from "@/components/ScreeningScoreProvider";
 import { TenantLabelsProvider } from "@/components/TenantLabelsProvider";
 import { TenantModulesProvider } from "@/components/TenantModulesProvider";
+import { CapabilitiesProvider } from "@/components/CapabilitiesProvider";
 import {
   loadScreeningScoreBands,
   loadScreeningScoreVisible,
   loadTenantLabels,
   loadTenantModules,
+  loadSessionCapabilities,
 } from "@/lib/tenant-ui-settings";
 import "../styles/globals.css";
 
@@ -29,15 +31,23 @@ export const metadata: Metadata = {
  * configured, which is what keeps the default chrome unchanged.
  */
 export default async function RootLayout({ children }: { children: React.ReactNode }) {
-  const [branding, screeningScoreVisible, screeningScoreBands, tenantLabels, tenantModules] =
-    await Promise.all([
-      loadChromeBranding(),
-      loadScreeningScoreVisible(),
-      loadScreeningScoreBands(),
-      loadTenantLabels(),
-      // C1-F10 — module entitlements, so the nav hides modules the tenant lacks.
-      loadTenantModules(),
-    ]);
+  const [
+    branding,
+    screeningScoreVisible,
+    screeningScoreBands,
+    tenantLabels,
+    tenantModules,
+    capabilities,
+  ] = await Promise.all([
+    loadChromeBranding(),
+    loadScreeningScoreVisible(),
+    loadScreeningScoreBands(),
+    loadTenantLabels(),
+    // C1-F10 — module entitlements, so the nav hides modules the tenant lacks.
+    loadTenantModules(),
+    // C2-F1 — the member's capabilities, so the nav shows what they may use.
+    loadSessionCapabilities(),
+  ]);
 
   return (
     <html lang="en">
@@ -47,7 +57,9 @@ export default async function RootLayout({ children }: { children: React.ReactNo
             <TenantBrandingProvider branding={branding}>
               <ScreeningScoreProvider visible={screeningScoreVisible} bands={screeningScoreBands}>
                 <TenantLabelsProvider labels={tenantLabels}>
-                  <TenantModulesProvider modules={tenantModules}>{children}</TenantModulesProvider>
+                  <TenantModulesProvider modules={tenantModules}>
+                    <CapabilitiesProvider caps={capabilities}>{children}</CapabilitiesProvider>
+                  </TenantModulesProvider>
                 </TenantLabelsProvider>
               </ScreeningScoreProvider>
             </TenantBrandingProvider>

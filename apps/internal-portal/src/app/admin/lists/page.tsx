@@ -1,5 +1,5 @@
 import { redirect } from "next/navigation";
-import { requireAuth, sessionUserChip } from "@/lib/auth";
+import { requireAuth, sessionCan, sessionUserChip } from "@/lib/auth";
 import { createServerTRPCCaller } from "@/lib/trpc-server";
 import { AppShell } from "@/components/nav/AppShell";
 import { ListsClient } from "./ListsClient";
@@ -14,8 +14,7 @@ export const dynamic = "force-dynamic"; // Gated + reads live tenant config.
  */
 export default async function ListsPage() {
   const session = await requireAuth();
-  const isAdmin = session.roles.includes("admin");
-  if (!isAdmin && !session.roles.includes("hr_head")) {
+  if (!sessionCan(session, "organisation.read")) {
     redirect("/triage");
   }
   const caller = createServerTRPCCaller(session);
@@ -23,7 +22,7 @@ export default async function ListsPage() {
 
   return (
     <AppShell title="Lists" isAdmin active="lists" user={sessionUserChip(session)}>
-      <ListsClient initial={initial} canEdit={isAdmin} />
+      <ListsClient initial={initial} canEdit={sessionCan(session, "organisation.write")} />
     </AppShell>
   );
 }

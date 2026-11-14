@@ -13,7 +13,7 @@ export const dynamic = "force-dynamic"; // Gated + reads live tenant config.
  * Admin-only here AND in updateSchedulingSettings.
  */
 export default async function SchedulingSettingsPage() {
-  const session = await requireAdmin();
+  const session = await requireAdmin("settings.scheduling");
   const caller = createServerTRPCCaller(session);
   const initial = await caller.getSchedulingSettings({});
   return (

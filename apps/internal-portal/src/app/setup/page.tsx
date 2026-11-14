@@ -12,7 +12,7 @@ export const dynamic = "force-dynamic"; // Admin-gated + reads live tenant state
  * when the required checklist passes.
  */
 export default async function SetupPage() {
-  const session = await requireAdmin();
+  const session = await requireAdmin("settings.tenant_config");
   const caller = createServerTRPCCaller(session);
   const setup = await caller.getTenantSetup({});
   return (

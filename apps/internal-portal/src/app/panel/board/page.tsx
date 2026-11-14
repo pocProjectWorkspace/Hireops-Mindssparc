@@ -1,4 +1,4 @@
-import { requireAuth, sessionUserChip } from "@/lib/auth";
+import { requireAuth, sessionCan, sessionUserChip } from "@/lib/auth";
 import { AppShell } from "@/components/nav/AppShell";
 import { RoleNotice } from "@/components/nav/RoleNotice";
 import { SessionBoard } from "@/components/panel/SessionBoard";
@@ -15,12 +15,10 @@ export const dynamic = "force-dynamic"; // Auth-gated + reads live interview sta
  * the same). A direct hit by another role gets a calm in-shell notice.
  */
 
-const PANEL_ROLES = ["panel_member", "admin"];
-
 export default async function PanelBoardPage() {
   const session = await requireAuth();
   const isAdmin = session.roles.includes("admin");
-  const allowed = session.roles.some((r) => PANEL_ROLES.includes(r));
+  const allowed = sessionCan(session, "interviews.panel");
 
   if (!allowed) {
     return (

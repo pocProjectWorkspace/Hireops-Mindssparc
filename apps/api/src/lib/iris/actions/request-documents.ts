@@ -13,6 +13,7 @@
  */
 
 import {
+  systemRolesWithCapability,
   requestApplicationDocumentsInputSchema,
   type RequestApplicationDocumentsInput,
 } from "@hireops/api-types";
@@ -25,7 +26,10 @@ export const requestDocumentsAction: IrisAction<RequestApplicationDocumentsInput
   // Mirrors HR_OPS_DOC_ROLES — the roles that run the Documents & verification
   // surface (the requestApplicationDocuments procedure this dispatches gates the
   // same set).
-  roles: ["admin", "hr_ops"],
+  // C2-F1: gated on the capability the app surface checks; `roles` is derived
+  // (the base roles whose platform bundle holds it — the Iris policy columns).
+  capability: "hr_ops.documents",
+  roles: systemRolesWithCapability("hr_ops.documents"),
   inputSchema: requestApplicationDocumentsInputSchema,
   destructive: false,
   bulk: false,

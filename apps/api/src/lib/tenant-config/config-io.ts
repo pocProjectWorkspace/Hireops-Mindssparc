@@ -33,6 +33,11 @@ import {
   TENANT_CONFIG_SCHEMA_VERSION,
   TENANT_SETTINGS_BLOCKS,
   configRecordKey,
+  isCapability,
+  validateGrants,
+  type Capability,
+  type CapabilityScope,
+  type ConfigRole,
   diffTenantConfig,
   resolveTenantDefaultCountry,
   settingsBlockDef,
@@ -83,6 +88,14 @@ export async function withConfigTx<T>(
   }) as Promise<T>;
 }
 
+/** C2-F1 — does this schema have tenant custom roles (migration 0137)? */
+export async function tenantRolesAvailable(sql: SqlHandle): Promise<boolean> {
+  const [r] = await sql<
+    { t: string | null }[]
+  >`SELECT to_regclass('public.tenant_roles')::text AS t`;
+  return Boolean(r?.t);
+}
+
 /** Does this schema have tenant-scoped document types (C1-BUGS BUG-4)? */
 export async function documentTypesAreTenantScoped(sql: SqlHandle): Promise<boolean> {
   const [r] = await sql<{ n: number }[]>`
@@ -95,8 +108,8 @@ export async function documentTypesAreTenantScoped(sql: SqlHandle): Promise<bool
 // ─────────────────────────── read ───────────────────────────
 
 export interface TenantConfigSnapshot {
-  sections: Required<Omit<TenantConfigSections, "documentTypes">> &
-    Pick<TenantConfigSections, "documentTypes">;
+  sections: Required<Omit<TenantConfigSections, "documentTypes" | "roles">> &
+    Pick<TenantConfigSections, "documentTypes" | "roles">;
   /** Raw (unscrubbed) settings, for restore() on import. */
   rawSettings: Json;
   tenantSlug: string;
@@ -355,6 +368,46 @@ export async function readTenantConfig(
     );
   }
 
+  // C2-F1 — custom roles + their capability bundles (never assignments).
+  let roles: TenantConfigSections["roles"];
+  if (await tenantRolesAvailable(sql)) {
+    const roleRows = await sql<
+      {
+        key: string;
+        label: string;
+        base_role: string;
+        description: string | null;
+        active: boolean;
+        grants: { capability: string; scope: string }[] | null;
+      }[]
+    >`
+      SELECT r.key, r.label, r.base_role::text AS base_role, r.description, r.active,
+             (SELECT json_agg(json_build_object('capability', rc.capability, 'scope', rc.scope)
+                              ORDER BY rc.capability)
+                FROM public.role_capabilities rc
+               WHERE rc.tenant_id = r.tenant_id AND rc.role_key = r.key) AS grants
+        FROM public.tenant_roles r
+       WHERE r.tenant_id = ${tenantId}
+       ORDER BY r.key
+    `;
+    roles = roleRows.map((r) => ({
+      key: r.key,
+      label: r.label,
+      baseRole: r.base_role as ConfigRole["baseRole"],
+      description: r.description,
+      isActive: r.active,
+      // Only grants the platform catalog knows (the resolver ignores others too).
+      grants: (r.grants ?? [])
+        .filter((g) => isCapability(g.capability))
+        .map((g) => ({
+          capability: g.capability as Capability,
+          scope: g.scope as CapabilityScope,
+        })),
+    }));
+  } else {
+    skipped.push("roles: custom roles are not available on this schema");
+  }
+
   // Approval rules naming a specific person (a uuid / email ref) are people
   // data — such matrices are skipped and reported, never exported.
   const PERSON_REF_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$|@/i;
@@ -509,6 +562,7 @@ export async function readTenantConfig(
       approvalMatrices,
       panelPools: pools.map((r) => ({ name: r.name, focus: r.focus, isArchived: r.is_archived })),
       ...(documentTypes ? { documentTypes } : {}),
+      ...(roles ? { roles } : {}),
     },
   };
 }
@@ -564,6 +618,7 @@ export async function applyTenantConfig(
   const skipped: string[] = [];
   const touched = (d: ConfigSectionDiff) => new Set([...d.adds, ...d.changes]);
   const docTypesScoped = await documentTypesAreTenantScoped(tx);
+  const rolesScoped = await tenantRolesAvailable(tx);
 
   for (const d of diff) {
     const section = d.section as TenantConfigSectionKey;
@@ -1055,6 +1110,66 @@ export async function applyTenantConfig(
               ],
             );
           }
+        }
+        break;
+      }
+      case "roles": {
+        if (!rolesScoped) {
+          skipped.push("roles: not applied — custom roles are not available on this schema");
+          break;
+        }
+        const m = byKey(incoming.roles);
+        for (const k of want) {
+          const r = m.get(k);
+          if (!r) continue;
+          const bad = validateGrants(r.grants);
+          if (bad) {
+            skipped.push(`roles: "${r.key}" not applied — ${bad}`);
+            continue;
+          }
+          const [prev] = await tx<{ base_role: string }[]>`
+            SELECT base_role::text AS base_role FROM public.tenant_roles
+             WHERE tenant_id = ${tenantId} AND key = ${r.key}
+          `;
+          await tx`
+            INSERT INTO public.tenant_roles (tenant_id, key, label, base_role, description, active)
+            VALUES (${tenantId}, ${r.key}, ${r.label}, ${r.baseRole}::tenant_role,
+                    ${r.description}, ${r.isActive})
+            ON CONFLICT (tenant_id, key) DO UPDATE
+              SET label = EXCLUDED.label, base_role = EXCLUDED.base_role,
+                  description = EXCLUDED.description, active = EXCLUDED.active,
+                  updated_at = now()
+          `;
+          await tx`DELETE FROM public.role_capabilities
+                    WHERE tenant_id = ${tenantId} AND role_key = ${r.key}`;
+          for (const g of r.grants) {
+            await tx`
+              INSERT INTO public.role_capabilities (tenant_id, role_key, capability, scope)
+              VALUES (${tenantId}, ${r.key}, ${g.capability}, ${g.scope})
+            `;
+          }
+          // Members already on the role carry its base role as their JWT role.
+          if (prev && prev.base_role !== r.baseRole) {
+            await tx`
+              UPDATE public.tenant_user_memberships
+                 SET roles = ARRAY[${r.baseRole}]::tenant_role[], updated_at = now()
+               WHERE tenant_id = ${tenantId} AND role_key = ${r.key}
+            `;
+          }
+        }
+        // Removal = deactivate, but never a role members still hold (that would
+        // silently lock them out) — reported instead.
+        for (const k of d.removals) {
+          const [held] = await tx<{ n: number }[]>`
+            SELECT count(*)::int AS n FROM public.tenant_user_memberships
+             WHERE tenant_id = ${tenantId} AND role_key = ${k}
+          `;
+          if ((held?.n ?? 0) > 0) {
+            skipped.push(`roles: "${k}" kept active — ${held?.n} member(s) still hold it`);
+            continue;
+          }
+          await tx`UPDATE public.tenant_roles SET active = false, updated_at = now()
+                    WHERE tenant_id = ${tenantId} AND key = ${k}`;
         }
         break;
       }

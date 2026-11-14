@@ -12,6 +12,7 @@
  */
 
 import {
+  systemRolesWithCapability,
   resumeRequisitionActionInputSchema,
   type ResumeRequisitionActionInput,
 } from "@hireops/api-types";
@@ -22,7 +23,10 @@ export const resumeRequisitionAction: IrisAction<ResumeRequisitionActionInput> =
   label: "Resume a requisition",
   group: "Requisitions",
   // Mirrors REQUISITION_POST_ROLES — same set hold_requisition uses.
-  roles: ["admin", "hiring_manager", "recruiter"],
+  // C2-F1: gated on the capability the app surface checks; `roles` is derived
+  // (the base roles whose platform bundle holds it — the Iris policy columns).
+  capability: "requisitions.post",
+  roles: systemRolesWithCapability("requisitions.post"),
   inputSchema: resumeRequisitionActionInputSchema,
   destructive: false,
   bulk: false,

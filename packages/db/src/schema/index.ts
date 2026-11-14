@@ -13,6 +13,7 @@ export * from "./panel-pools";
 export * from "./tenant-user-memberships";
 export * from "./users";
 export * from "./roles";
+export * from "./tenant-roles";
 export * from "./location-type";
 export * from "./headcount-envelopes";
 export * from "./positions";

@@ -19,7 +19,7 @@ export const dynamic = "force-dynamic"; // Admin-gated + reads live memberships.
  * tenant_user_memberships carries no authenticated write policy.
  */
 export default async function UsersAdminPage() {
-  const session = await requireAdmin();
+  const session = await requireAdmin("admin.users");
   const caller = createServerTRPCCaller(session);
   const [users, retention] = await Promise.all([
     caller.listTenantUsersAdmin({}),

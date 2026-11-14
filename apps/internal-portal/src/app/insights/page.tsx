@@ -1,4 +1,4 @@
-import { requireAuth, sessionUserChip } from "@/lib/auth";
+import { requireAuth, sessionCan, sessionUserChip } from "@/lib/auth";
 import { createServerTRPCCaller } from "@/lib/trpc-server";
 import { AppShell } from "@/components/nav/AppShell";
 import { RoleNotice } from "@/components/nav/RoleNotice";
@@ -20,12 +20,10 @@ export const dynamic = "force-dynamic"; // Role-gated + reads live pipeline / sc
  * hiring_manager + admin (nav + API enforce the same). Scoped to my reqs.
  */
 
-const READ_ROLES = ["hiring_manager", "admin"];
-
 export default async function InsightsPage() {
   const session = await requireAuth();
   const isAdmin = session.roles.includes("admin");
-  const allowed = session.roles.some((r) => READ_ROLES.includes(r));
+  const allowed = sessionCan(session, "requisitions.owner_insights");
 
   if (!allowed) {
     return (

@@ -1,5 +1,12 @@
 import { decodeJwt } from "jose";
-import { roleLabel } from "@hireops/api-types";
+import {
+  hasAnyCapability,
+  resolveEffectivePermissions,
+  roleLabel,
+  type Capability,
+  type CapabilityBundle,
+  type CapabilityScope,
+} from "@hireops/api-types";
 
 /**
  * Session shape used internally — flattens the bits we care about so
@@ -13,6 +20,36 @@ export interface AuthSession {
   /** Present when the Supabase JWT carries the standard `email` claim.
    * Purely for display (the sidebar user chip); never load-bearing. */
   email?: string;
+  /**
+   * C2-F1 — effective capabilities (custom role bundle, or the platform default
+   * bundles of `roles`). Filled by the server guards (lib/auth.ts); absent on a
+   * bare decoded token, in which case `sessionCan` uses the default bundles.
+   */
+  caps?: CapabilityBundle;
+  /** C2-F1 — the custom role in force, when there is one. */
+  roleKey?: string | null;
+}
+
+function capsOf(session: Pick<AuthSession, "caps" | "roles">): CapabilityBundle {
+  return (
+    session.caps ?? resolveEffectivePermissions({ roles: session.roles, customRole: null }).caps
+  );
+}
+
+/** C2-F1 — does the session hold ANY of these capabilities? (Display gate; the API enforces.) */
+export function sessionCan(
+  session: Pick<AuthSession, "caps" | "roles">,
+  ...caps: Capability[]
+): boolean {
+  return hasAnyCapability({ caps: capsOf(session) }, caps);
+}
+
+/** C2-F1 — the session's scope for a capability, or null. */
+export function sessionScope(
+  session: Pick<AuthSession, "caps" | "roles">,
+  cap: Capability,
+): CapabilityScope | null {
+  return capsOf(session)[cap] ?? null;
 }
 
 /**

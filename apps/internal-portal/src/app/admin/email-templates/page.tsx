@@ -21,7 +21,7 @@ export const dynamic = "force-dynamic"; // Admin-gated + reads live tenant confi
  * server-side). Server-prefetches the catalog so the editor lands populated.
  */
 export default async function EmailTemplatesPage() {
-  const session = await requireAdmin();
+  const session = await requireAdmin("settings.email_templates");
   const caller = createServerTRPCCaller(session);
   const initial = await caller.getEmailTemplateCatalog({});
 

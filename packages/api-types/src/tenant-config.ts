@@ -16,6 +16,13 @@ import {
   resolveScreeningPrivacy,
 } from "./governance";
 import { resolveIrisPolicy } from "./iris";
+import {
+  CUSTOM_ROLE_BASE_ROLES,
+  ROLE_DESCRIPTION_MAX,
+  ROLE_LABEL_MAX,
+  capabilityGrantSchema,
+  customRoleKeySchema,
+} from "./capabilities";
 import { resolvePartnerDefaults } from "./partner-defaults";
 import { resolvePreJoiningEngagementSettings } from "./pre-joining-engagement";
 import { resolveRetentionPolicy } from "./retention-policy";
@@ -421,6 +428,21 @@ export const configDocumentTypeSchema = z.object({
 });
 export type ConfigDocumentType = z.infer<typeof configDocumentTypeSchema>;
 
+/**
+ * C2-F1 — tenant CUSTOM roles (key, label, base role, capability bundle with
+ * scopes). System roles are platform defaults and are never exported. Role
+ * ASSIGNMENTS are people data and are never exported either.
+ */
+export const configRoleSchema = z.object({
+  key: customRoleKeySchema,
+  label: z.string().min(1).max(ROLE_LABEL_MAX),
+  baseRole: z.enum(CUSTOM_ROLE_BASE_ROLES),
+  description: z.string().max(ROLE_DESCRIPTION_MAX).nullable(),
+  isActive: z.boolean(),
+  grants: z.array(capabilityGrantSchema),
+});
+export type ConfigRole = z.infer<typeof configRoleSchema>;
+
 export const tenantConfigSectionsSchema = z.object({
   /** Exportable `tenants.settings` blocks (allowlist: TENANT_SETTINGS_BLOCKS). */
   settings: z.record(z.string(), z.record(z.string(), z.unknown())).optional(),
@@ -442,6 +464,7 @@ export const tenantConfigSectionsSchema = z.object({
   approvalMatrices: z.array(configApprovalMatrixSchema).optional(),
   panelPools: z.array(configPanelPoolSchema).optional(),
   documentTypes: z.array(configDocumentTypeSchema).optional(),
+  roles: z.array(configRoleSchema).optional(),
 });
 export type TenantConfigSections = z.infer<typeof tenantConfigSectionsSchema>;
 export type TenantConfigSectionKey = keyof TenantConfigSections;
@@ -471,6 +494,7 @@ export const TENANT_CONFIG_SECTION_ORDER: readonly TenantConfigSectionKey[] = [
   "approvalMatrices",
   "panelPools",
   "documentTypes",
+  "roles",
 ];
 
 export const TENANT_CONFIG_SECTION_LABELS: Record<TenantConfigSectionKey, string> = {
@@ -493,6 +517,7 @@ export const TENANT_CONFIG_SECTION_LABELS: Record<TenantConfigSectionKey, string
   approvalMatrices: "Approval routing",
   panelPools: "Panel pools (structure only)",
   documentTypes: "Document types",
+  roles: "Roles & permissions (custom roles)",
 };
 
 /**
@@ -522,6 +547,7 @@ export const TENANT_CONFIG_REMOVAL_MODE: Record<
   approvalMatrices: "end_date",
   panelPools: "archive",
   documentTypes: "none",
+  roles: "deactivate",
 };
 
 /** The document itself. */
@@ -603,6 +629,8 @@ export function configRecordKey(section: TenantConfigSectionKey, rec: unknown): 
       return `${String(r.subjectType)}:${String(r.name)}`;
     case "documentTypes":
       return String(r.code);
+    case "roles":
+      return String(r.key);
     default:
       return "";
   }

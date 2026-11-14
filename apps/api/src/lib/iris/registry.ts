@@ -19,6 +19,7 @@
 
 import type { z } from "zod";
 import type {
+  Capability,
   CreateRequisitionDraftInput,
   CreateRequisitionDraftOutput,
   GenerateJdDraftInput,
@@ -156,7 +157,12 @@ export interface IrisAction<P> {
    * irisPreview/irisExecute enforce them), so a persona sees + can run exactly
    * the actions they could do by hand. This is NOT a new gate on the underlying
    * write — the dispatched procedures keep their own RLS + audit unchanged.
+   *
+   * C2-F1: the gate is `capability` (the one the app surface checks); `roles` is
+   * DERIVED from it (the base roles whose platform bundle holds it) and kept for
+   * the per-role Iris policy matrix.
    */
+  capability: Capability;
   roles: string[];
   inputSchema: z.ZodType<P>;
   destructive: boolean;
@@ -181,6 +187,8 @@ export interface AnyIrisAction {
   id: string;
   label: string;
   group: string;
+  /** C2-F1 — the capability the caller must hold to run this action. */
+  capability: Capability;
   /** The app-surface roles that may run this action (IRIS-B1.1). */
   roles: string[];
   destructive: boolean;
@@ -201,6 +209,7 @@ function eraseIrisAction<P>(action: IrisAction<P>): AnyIrisAction {
     id: action.id,
     label: action.label,
     group: action.group,
+    capability: action.capability,
     roles: action.roles,
     destructive: action.destructive,
     bulk: action.bulk,

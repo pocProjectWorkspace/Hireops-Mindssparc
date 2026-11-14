@@ -6,13 +6,9 @@ import { IrisAvatar } from "@/components/iris/IrisAvatar";
 import { useIrisControls } from "@/components/iris/IrisProvider";
 import { trpc } from "@/lib/trpc-client";
 import { humanize } from "@/lib/labels";
-import {
-  MAIN_NAV,
-  ADMIN_NAV,
-  MAIN_NAV_SECTIONS,
-  ADMIN_NAV_SECTIONS,
-  type NavItem,
-} from "@/components/nav/AppShell";
+import { allNavSections, navItemVisible, type NavItem } from "@/components/nav/AppShell";
+import { useCapabilities } from "@/components/CapabilitiesProvider";
+import type { CapabilityBundle } from "@hireops/api-types";
 
 const STEPS = 4;
 
@@ -202,27 +198,13 @@ interface WorkspaceGroup {
 }
 
 /**
- * The workspace groups this user actually sees. Mirrors the sidebar: MAIN_NAV is
- * role-gated per item; the ADMIN section is gated as a WHOLE by isAdmin (its items
- * carry no per-item roles), so we include it ONLY for admins, never for other
- * personas.
+ * The workspace groups this user actually sees. Mirrors the sidebar exactly
+ * (C2-F1): every item gated by the member's capabilities, Admin-section items
+ * also by `admin.console`.
  */
-function workspaceGroups(roles: string[]): WorkspaceGroup[] {
-  const isAdmin = roles.includes("admin");
-  const allItems = [...MAIN_NAV, ...(isAdmin ? ADMIN_NAV : [])];
-  const byKey = new Map(allItems.map((i) => [i.key, i] as const));
-  const visible = new Set(
-    allItems.filter((i) => !i.roles || i.roles.some((r) => roles.includes(r))).map((i) => i.key),
-  );
-  const sections = [...MAIN_NAV_SECTIONS, ...(isAdmin ? ADMIN_NAV_SECTIONS : [])];
-  return sections
-    .map((s) => ({
-      heading: s.heading,
-      items: s.keys
-        .filter((k) => visible.has(k))
-        .map((k) => byKey.get(k))
-        .filter((i): i is NavItem => i !== undefined),
-    }))
+function workspaceGroups(held: CapabilityBundle | null): WorkspaceGroup[] {
+  return allNavSections()
+    .map((s) => ({ heading: s.heading, items: s.items.filter((i) => navItemVisible(i, held)) }))
     .filter((g) => g.items.length > 0);
 }
 
@@ -232,6 +214,7 @@ export function OnboardingJourney({ roles, userLabel }: { roles: string[]; userL
   const [mounted, setMounted] = useState(false);
 
   const { openIris } = useIrisControls();
+  const held = useCapabilities();
   const actionsQuery = trpc.irisListActions.useQuery(undefined, { enabled: open });
 
   useEffect(() => setMounted(true), []);
@@ -270,7 +253,7 @@ export function OnboardingJourney({ roles, userLabel }: { roles: string[]; userL
   const displayName = userLabel && !userLabel.includes("@") ? userLabel : null;
   const greeting = displayName ? `Welcome, ${displayName}` : "Welcome to HireOps";
 
-  const groups = workspaceGroups(roles);
+  const groups = workspaceGroups(held);
 
   const actions = actionsQuery.data?.actions ?? [];
   const groupedActions = new Map<string, { id: string; label: string }[]>();

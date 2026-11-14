@@ -1,5 +1,5 @@
 import { redirect } from "next/navigation";
-import { requireAuth, sessionUserChip } from "@/lib/auth";
+import { requireAuth, sessionCan, sessionUserChip } from "@/lib/auth";
 import { createServerTRPCCaller } from "@/lib/trpc-server";
 import { AppShell } from "@/components/nav/AppShell";
 import { PreJoiningSettingsClient } from "./PreJoiningSettingsClient";
@@ -16,7 +16,7 @@ export const dynamic = "force-dynamic";
  */
 export default async function PreJoiningAdminPage() {
   const session = await requireAuth();
-  if (!session.roles.includes("admin") && !session.roles.includes("hr_head")) {
+  if (!sessionCan(session, "onboarding.prejoining_settings")) {
     redirect("/triage");
   }
   const caller = createServerTRPCCaller(session);

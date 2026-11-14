@@ -21,7 +21,7 @@ export const dynamic = "force-dynamic"; // Admin-gated + reads live tenant confi
  * side). Server-prefetches the registry so the table lands populated.
  */
 export default async function SourcesPage() {
-  const session = await requireAdmin();
+  const session = await requireAdmin("settings.sources_write");
   const caller = createServerTRPCCaller(session);
   const initial = await caller.listTenantSources({});
 

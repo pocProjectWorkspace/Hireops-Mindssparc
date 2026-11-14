@@ -1,4 +1,4 @@
-import { requireAuth, sessionUserChip } from "@/lib/auth";
+import { requireAuth, sessionCan, sessionUserChip } from "@/lib/auth";
 import { createServerTRPCCaller } from "@/lib/trpc-server";
 import { AppShell } from "@/components/nav/AppShell";
 import { RoleNotice } from "@/components/nav/RoleNotice";
@@ -14,12 +14,10 @@ export const dynamic = "force-dynamic"; // Auth-gated + reads live pipeline / of
  * hr_ops + admin. A direct hit by another role gets a calm in-shell notice.
  */
 
-const ROLES = ["hr_ops", "admin"];
-
 export default async function CompOffersPage() {
   const session = await requireAuth();
   const isAdmin = session.roles.includes("admin");
-  const allowed = session.roles.some((r) => ROLES.includes(r));
+  const allowed = sessionCan(session, "offers.comp_desk");
 
   if (!allowed) {
     return (

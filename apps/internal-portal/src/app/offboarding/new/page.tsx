@@ -1,12 +1,10 @@
 import { PageContainer } from "@/components/nav/PageContainer";
-import { requireAuth, sessionUserChip } from "@/lib/auth";
+import { requireAuth, sessionCan, sessionUserChip } from "@/lib/auth";
 import { AppShell } from "@/components/nav/AppShell";
 import { EmptyState } from "@/components/ui";
 import { NewOffboardingForm } from "@/components/offboarding/NewOffboardingForm";
 
 export const dynamic = "force-dynamic"; // Auth-gated.
-
-const OFFBOARD_ROLES = ["hr_ops", "people_ops", "admin"];
 
 /**
  * Initiate-offboarding form route. Server component gates by role (HR-only,
@@ -16,7 +14,7 @@ const OFFBOARD_ROLES = ["hr_ops", "people_ops", "admin"];
 export default async function NewOffboardingPage() {
   const session = await requireAuth();
   const isAdmin = session.roles.includes("admin");
-  const canAccess = isAdmin || OFFBOARD_ROLES.some((r) => session.roles.includes(r));
+  const canAccess = sessionCan(session, "onboarding.offboarding");
 
   return (
     <AppShell

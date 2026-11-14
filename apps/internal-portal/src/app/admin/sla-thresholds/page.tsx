@@ -1,5 +1,5 @@
 import { redirect } from "next/navigation";
-import { requireAuth, sessionUserChip } from "@/lib/auth";
+import { requireAuth, sessionCan, sessionUserChip } from "@/lib/auth";
 import { createServerTRPCCaller } from "@/lib/trpc-server";
 import { AppShell } from "@/components/nav/AppShell";
 import { SlaThresholdsClient } from "./SlaThresholdsClient";
@@ -23,15 +23,16 @@ export const dynamic = "force-dynamic"; // Gated + reads live tenant config.
  */
 export default async function SlaThresholdsPage() {
   const session = await requireAuth();
-  if (!session.roles.includes("admin") && !session.roles.includes("hr_head")) {
+  if (!sessionCan(session, "settings.sla")) {
     redirect("/triage");
   }
   const caller = createServerTRPCCaller(session);
   const initial = await caller.getSlaThresholds({});
   // CFG-LITE / PP1 — the recruiter-urgency policy editor is admin-only (the
   // procedures enforce it too); an HR head sees only the SLA hours.
-  const isAdmin = session.roles.includes("admin");
-  const urgency = isAdmin ? await caller.getUrgencySettings({}) : null;
+  const urgency = sessionCan(session, "settings.system")
+    ? await caller.getUrgencySettings({})
+    : null;
 
   return (
     <AppShell

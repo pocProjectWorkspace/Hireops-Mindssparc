@@ -5,7 +5,7 @@ import type {
   ListPartnerOrgDedupAttemptsOutput,
   RequisitionSummary,
 } from "@hireops/api-types";
-import { requireAuth, sessionUserChip } from "@/lib/auth";
+import { requireAuth, sessionCan, sessionUserChip } from "@/lib/auth";
 import { createServerTRPCCaller } from "@/lib/trpc-server";
 import { AppShell } from "@/components/nav/AppShell";
 import { RoleNotice } from "@/components/nav/RoleNotice";
@@ -32,8 +32,6 @@ export const dynamic = "force-dynamic"; // Auth-gated + reads live partner state
  * out of scope for this ticket.)
  */
 
-const READ_ROLES = ["admin", "hr_ops"];
-
 export default async function PartnerOrgDetailPage({
   params,
 }: {
@@ -42,7 +40,7 @@ export default async function PartnerOrgDetailPage({
   const { partnerOrgId } = await params;
   const session = await requireAuth();
   const isAdmin = session.roles.includes("admin");
-  const allowed = session.roles.some((r) => READ_ROLES.includes(r));
+  const allowed = sessionCan(session, "partners.admin");
 
   if (!allowed) {
     return (

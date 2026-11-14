@@ -23,7 +23,7 @@ export const dynamic = "force-dynamic"; // Admin-gated + reads live tenant confi
  * updateSystemSetup procedures (server-side admin role).
  */
 export default async function SystemSetupPage() {
-  const session = await requireAdmin();
+  const session = await requireAdmin("settings.system");
   const caller = createServerTRPCCaller(session);
   const initial = await caller.getSystemSetup({});
 

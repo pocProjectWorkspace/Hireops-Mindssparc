@@ -24,7 +24,7 @@ export const dynamic = "force-dynamic"; // Admin-gated + reads live tenant confi
  * procedures (server-side admin role).
  */
 export default async function CandidateFieldsPage() {
-  const session = await requireAdmin();
+  const session = await requireAdmin("settings.candidate_fields");
   const caller = createServerTRPCCaller(session);
   const initial = await caller.getCandidateFieldPolicy({});
 

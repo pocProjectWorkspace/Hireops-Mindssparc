@@ -5,15 +5,19 @@
  */
 
 import { sql as poolSql } from "@hireops/db";
-import { resolveBulkCvUploadLimits, type BulkCvUploadLimits } from "@hireops/api-types";
+import {
+  hasCapability,
+  resolveBulkCvUploadLimits,
+  type BulkCvUploadLimits,
+  type EffectivePermissions,
+} from "@hireops/api-types";
 import { MAX_DOCUMENT_BYTES } from "../upload-limits";
 
-/**
- * Who may bulk-upload CVs to a requisition: the roles that own the recruiter
- * Candidates surface today (listCandidatesByRequisition — RECRUITER_SURFACE_ROLES)
- * — recruiter + admin. RLS scopes everything to the tenant on top.
+/*
+ * Who may bulk-upload CVs to a requisition: the `candidates.bulk_upload`
+ * capability (C2-F1; platform default recruiter + admin — the roles that own the
+ * recruiter Candidates surface). RLS scopes everything to the tenant on top.
  */
-export const BULK_CV_UPLOAD_ROLES: ReadonlySet<string> = new Set(["admin", "recruiter"]);
 
 /**
  * Requisition statuses that accept new candidates — the same set the public
@@ -37,6 +41,7 @@ export async function resolveTenantBulkCvLimits(
   return { ...resolveBulkCvUploadLimits(settings.bulkCvUpload), maxFileBytes: MAX_DOCUMENT_BYTES };
 }
 
-export function hasBulkCvUploadRole(roles: readonly string[]): boolean {
-  return roles.some((r) => BULK_CV_UPLOAD_ROLES.has(r));
+/** C2-F1 — may this caller bulk-upload? (Their resolved permissions.) */
+export function canBulkUploadCvs(perms: Pick<EffectivePermissions, "caps">): boolean {
+  return hasCapability(perms, "candidates.bulk_upload");
 }
