@@ -27,6 +27,7 @@ import "../src/bootstrap";
 import { beforeAll, describe, it } from "vitest";
 import { strict as assert } from "node:assert";
 import { createClient } from "@supabase/supabase-js";
+import { screeningScoreTier, type AiSettings } from "@hireops/api-types";
 import { app } from "../src/index.js";
 
 const SUPABASE_URL = process.env.SUPABASE_URL;
@@ -166,19 +167,29 @@ describe("METRICS-01 — getHrMetrics", () => {
     );
 
     // scoreDistribution — 10 width-10 buckets low→high with tier bands.
+    // Since CFG-LITE / BUG-11 the shading is NOT a literal 50/70/90: a bucket
+    // takes the tier its lower bound falls in under the tenant's one score
+    // cut-off setting (aiSettings.screeningScoreBands; platform default
+    // strong 90 / good 75 / partial 60). Expectations follow the tenant's
+    // resolved bands, so a saved value (default or not) can't fail this test.
     assert.equal(m.scoreDistribution.length, 10, "10 score buckets");
-    const expectedTiers = [
-      "neutral", // 0–9
-      "neutral", // 10–19
-      "neutral", // 20–29
-      "neutral", // 30–39
-      "neutral", // 40–49
-      "silver", // 50–59
-      "silver", // 60–69
-      "gold", // 70–79
-      "gold", // 80–89
-      "platinum", // 90–100
-    ];
+    const settingsRes = await app.request(
+      `/trpc/getTenantAiSettings?input=${encodeURIComponent(JSON.stringify({}))}`,
+      { method: "GET", headers: { Authorization: `Bearer ${tok("admin")}` } },
+    );
+    const settings = (await settingsRes.json()) as TRPCSuccess<AiSettings> | TRPCErr;
+    assert.ok(!isErr(settings), `getTenantAiSettings: ${JSON.stringify(settings)}`);
+    const bands = settings.result.data.screeningScoreBands;
+    const SHADE = {
+      strong: "platinum",
+      good: "gold",
+      partial: "silver",
+      below: "neutral",
+    } as const;
+    const expectedTiers = Array.from(
+      { length: 10 },
+      (_, i) => SHADE[screeningScoreTier(i * 10, bands)],
+    );
     m.scoreDistribution.forEach((b, i) => {
       assert.equal(b.min, i * 10, `bucket ${i} min`);
       assert.equal(b.max, i === 9 ? 100 : i * 10 + 9, `bucket ${i} max`);
