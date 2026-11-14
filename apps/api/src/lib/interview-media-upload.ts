@@ -41,11 +41,11 @@ import { TRPCError } from "@trpc/server";
 import { sql as poolSql } from "@hireops/db";
 import type { InterviewRecordingMedia } from "@hireops/api-types";
 import { canRecordInterview, type RecordingGate } from "./interview-recording-consent";
+import { loadEffectiveUploadLimits } from "./policy-parameters";
 import { getStorageClient, StorageNotFoundError, type StorageObjectStat } from "./storage";
 import {
   ALLOWED_AUDIO_TYPES,
   isAllowedAudioType,
-  maxMediaBytes,
   normaliseMediaContentType,
 } from "./upload-limits";
 
@@ -217,7 +217,8 @@ export async function getInterviewMediaState(
   return {
     gate,
     recording: row ? toView(row) : null,
-    maxBytes: maxMediaBytes(),
+    // C2-F7 / PP9 — the tenant's media cap, never above the deployment's.
+    maxBytes: (await loadEffectiveUploadLimits(tenantId)).maxMediaBytes,
     allowedContentTypes: [...ALLOWED_AUDIO_TYPES],
   };
 }
@@ -323,7 +324,7 @@ export async function startUpload(
         `Accepted: ${[...ALLOWED_AUDIO_TYPES].join(", ")}.`,
     });
   }
-  const cap = maxMediaBytes();
+  const cap = (await loadEffectiveUploadLimits(input.tenantId)).maxMediaBytes;
   if (input.sizeBytes > cap) {
     throw new TRPCError({
       code: "BAD_REQUEST",
@@ -497,7 +498,7 @@ export async function completeUpload(
 
   // The cap is enforced HERE as well as at start, because start only saw a
   // number the browser typed. This is the only check that sees the file.
-  const cap = maxMediaBytes();
+  const cap = (await loadEffectiveUploadLimits(input.tenantId)).maxMediaBytes;
   if (stat.sizeBytes > cap) {
     // Delete it: nothing will ever reference an object we refuse to record,
     // and 0118's retention sweep only finds objects a recording row points

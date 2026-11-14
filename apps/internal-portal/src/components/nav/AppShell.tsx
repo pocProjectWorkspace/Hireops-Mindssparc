@@ -155,6 +155,8 @@ export type PortalNavKey =
   | "lists"
   // T4.1 — tenant-configurable SLA thresholds
   | "sla-thresholds"
+  // C2-F7 — policy parameters (screening, uploads, offers, AI interview, notetaker, reports)
+  | "policy-parameters"
   // CFG-LITE — tenant display labels (stage + interview-recommendation wording)
   | "labels"
   // T4.2 — configurable governance/compliance policy
@@ -695,6 +697,14 @@ export const ADMIN_NAV: NavItem[] = [
     href: "/admin/sla-thresholds",
     icon: <IconSlaThresholds />,
   },
+  // C2-F7 — policy parameters: the remaining policy numbers as tenant settings
+  // (screening, uploads, offers, AI interview, notetaker, reports, market gap).
+  {
+    key: "policy-parameters",
+    label: "Policy parameters",
+    href: "/admin/policy-parameters",
+    icon: <IconSlaThresholds />,
+  },
   // PC-8 — tenant interview-scheduling settings (duration presets, working
   // hours, buffer, notice, horizon, slots offered, link lifetime, reschedules).
   {
@@ -874,6 +884,7 @@ export const ADMIN_NAV_SECTIONS: NavSection[] = [
       "scheduling-settings",
       "labels",
       "sla-thresholds",
+      "policy-parameters",
       "governance-policy",
       "diversity-slate",
       "retention-policy",

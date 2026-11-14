@@ -345,7 +345,7 @@ export function computeMustHavePct(
  */
 export type RiskFlag = "skill_mismatch" | "salary_gap";
 
-/** Must-have % at/below this reads as a skill mismatch. */
+/** Must-have % at/below this reads as a skill mismatch (platform default; PP2 tenant policy). */
 export const RISK_SKILL_MISMATCH_MAX_PCT = 50;
 
 export interface RiskFlagInput {
@@ -355,6 +355,21 @@ export interface RiskFlagInput {
   expectedSalaryInrPaise: bigint | null;
   /** Role comp-band ceiling in INR paise, or null when no band is set. */
   compBandMaxInrPaise: bigint | null;
+  /** Role comp-band floor in INR paise — needed only by the compa-ratio rule. */
+  compBandMinInrPaise?: bigint | null;
+}
+
+/**
+ * C2-F7 / PP2 — the tenant's risk-flag policy (screeningPolicy). Omitted →
+ * the historical rule: must-have ≤ 50 %, salary over the band maximum.
+ *   over_band_max     expected > band max
+ *   over_compa_ratio  expected > compaRatioPct % of the band MIDPOINT
+ *                     (falls back to over_band_max when the band has no floor)
+ */
+export interface RiskFlagPolicy {
+  riskSkillMismatchMaxPct: number;
+  riskSalaryRule: "over_band_max" | "over_compa_ratio";
+  riskSalaryCompaRatioPct: number;
 }
 
 export const RISK_FLAG_LABELS: Record<RiskFlag, string> = {
@@ -362,17 +377,24 @@ export const RISK_FLAG_LABELS: Record<RiskFlag, string> = {
   salary_gap: "Salary gap",
 };
 
-export function computeRiskFlags(input: RiskFlagInput): RiskFlag[] {
+export function computeRiskFlags(input: RiskFlagInput, policy?: RiskFlagPolicy): RiskFlag[] {
   const flags: RiskFlag[] = [];
-  if (input.mustHavePct != null && input.mustHavePct <= RISK_SKILL_MISMATCH_MAX_PCT) {
+  const maxPct = policy?.riskSkillMismatchMaxPct ?? RISK_SKILL_MISMATCH_MAX_PCT;
+  if (input.mustHavePct != null && input.mustHavePct <= maxPct) {
     flags.push("skill_mismatch");
   }
-  if (
-    input.expectedSalaryInrPaise != null &&
-    input.compBandMaxInrPaise != null &&
-    input.expectedSalaryInrPaise > input.compBandMaxInrPaise
-  ) {
-    flags.push("salary_gap");
+  const expected = input.expectedSalaryInrPaise;
+  const max = input.compBandMaxInrPaise;
+  if (expected != null && max != null) {
+    const min = input.compBandMinInrPaise ?? null;
+    if (policy?.riskSalaryRule === "over_compa_ratio" && min != null) {
+      // expected / midpoint > pct/100  ⇔  expected * 200 > (min + max) * pct
+      const lhs = expected * 200n;
+      const rhs = (min + max) * BigInt(Math.round(policy.riskSalaryCompaRatioPct));
+      if (lhs > rhs) flags.push("salary_gap");
+    } else if (expected > max) {
+      flags.push("salary_gap");
+    }
   }
   return flags;
 }

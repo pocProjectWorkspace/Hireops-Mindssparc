@@ -30,6 +30,7 @@ import { recordPiiAccess, onboardingDocuments } from "@hireops/db";
 import type { TenantContextVars } from "../middleware/tenant-context";
 import { getStorageClient, StorageError, StorageNotFoundError } from "../lib/storage";
 import { storeUploadedDocument } from "../lib/document-upload";
+import { loadEffectiveUploadLimits } from "../lib/policy-parameters";
 
 export const onboardingDocumentRoutes = new Hono<{ Variables: TenantContextVars }>();
 
@@ -40,7 +41,12 @@ onboardingDocumentRoutes.post("/upload", async (c) => {
   } catch {
     return c.json({ error: "invalid_form" }, 400);
   }
-  const result = await storeUploadedDocument(body, c.var.log);
+  // C2-F7 / PP9 — the tenant's document cap + allowed types.
+  const tenantLimits = await loadEffectiveUploadLimits(c.var.tenantId);
+  const result = await storeUploadedDocument(body, c.var.log, {
+    maxBytes: tenantLimits.maxDocumentBytes,
+    allowedTypes: tenantLimits.documentMimeTypes,
+  });
   if (!result.ok) {
     return c.json(result.body, result.status);
   }

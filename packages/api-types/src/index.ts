@@ -74,3 +74,5 @@ export * from "./org-architecture";
 export * from "./tenant-config";
 export * from "./provisioning";
 export * from "./starter-packs";
+// C2-F7 — policy parameters (screening, upload, offer, AI interview, notetaker, reports, market intel)
+export * from "./policy-parameters";

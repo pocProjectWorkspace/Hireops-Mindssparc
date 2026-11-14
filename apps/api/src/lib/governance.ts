@@ -13,6 +13,7 @@
 
 import { sql } from "drizzle-orm";
 import { resolveSlaThresholds } from "./sla-thresholds";
+import { loadMarketIntelPolicy, loadOfferPolicy } from "./policy-parameters";
 import type { ApplicationStage } from "@hireops/db";
 import {
   REQUISITION_APPROVAL_SLA_DAYS,
@@ -27,6 +28,7 @@ import {
   type DropOffReason,
   type GetGovernanceRiskFlagsOutput,
   type GetExecutiveAuditOutput,
+  marketGapPercentLabel,
 } from "@hireops/api-types";
 
 // A minimal structural type for the tenant-bound drizzle client's execute().
@@ -284,6 +286,8 @@ export async function computeGovernanceRiskFlags(
           "market_benchmarks present but its columns differ from the expected shape (role_title, median_salary_minor)",
       });
     } else {
+      // C2-F7 / PP4 — the tenant's market-gap threshold (default 0.9).
+      const gapThreshold = (await loadMarketIntelPolicy(tenantId)).gapThreshold;
       const benchRes = await db.execute(sql`
         SELECT r.id AS req_id, p.title AS title
         FROM public.requisitions r
@@ -296,7 +300,7 @@ export async function computeGovernanceRiskFlags(
           AND r.status IN ${OPEN_REQ_STATUSES}
           AND p.comp_band_max IS NOT NULL
           AND mb.median_salary_minor IS NOT NULL
-          AND p.comp_band_max < (mb.median_salary_minor / 100.0) * 0.9
+          AND p.comp_band_max < (mb.median_salary_minor / 100.0) * ${gapThreshold}::numeric
       `);
       for (const row of asRows<{ req_id: string; title: string }>(benchRes)) {
         push(
@@ -305,7 +309,7 @@ export async function computeGovernanceRiskFlags(
           "requisition",
           row.req_id,
           `Budget below market for "${row.title}"`,
-          "The approved comp band tops out more than 10% below the market benchmark median.",
+          `The approved comp band tops out more than ${marketGapPercentLabel(gapThreshold)} below the market benchmark median.`,
           "Offers at this band risk losing candidates to better-paying competitors.",
           `/requisitions/${row.req_id}`,
         );
@@ -379,8 +383,15 @@ const SLA_TABLE: Record<SlaTableKey, { label: string; targetHours: number }> = {
   recruiter_review: { label: "Recruiter review", targetHours: 48 },
   tech_interview: { label: "Panel interview stage", targetHours: 72 },
   interview_feedback: { label: "Interview feedback submission", targetHours: FEEDBACK_SLA_HOURS },
+  // C2-F7 / PP17 — the platform default; the tenant's offerPolicy.decisionSlaHours
+  // replaces it (and the label) in computeSlaTable.
   offer_decision: { label: "Offer decision (extend → accept/decline)", targetHours: 24 },
 };
+
+/** PP17 — the offer-decision SLA row label, carrying the configured target. */
+export function offerDecisionSlaLabel(hours: number): string {
+  return `Offer decision within ${hours}h (extend → accept/decline)`;
+}
 
 export async function computeExecutiveAudit(
   db: ExecClient,
@@ -471,7 +482,14 @@ export async function computeExecutiveAudit(
   const complianceScore = Math.round(components.reduce((acc, c) => acc + c.value * c.weightPct, 0));
 
   // Per-stage SLA table.
-  const slaTable = await computeSlaTable(db, tenantId, slaThresholds, policy);
+  const offerDecisionSlaHours = (await loadOfferPolicy(tenantId)).decisionSlaHours;
+  const slaTable = await computeSlaTable(
+    db,
+    tenantId,
+    slaThresholds,
+    policy,
+    offerDecisionSlaHours,
+  );
 
   // Top drop-off reasons — terminal-stage tallies.
   const dropOffRes = await db.execute(sql`
@@ -529,6 +547,7 @@ async function computeSlaTable(
   tenantId: string,
   thresholds: Record<ApplicationStage, number | null>,
   policy: GovernancePolicy,
+  offerDecisionSlaHours: number = SLA_TABLE.offer_decision.targetHours,
 ): Promise<SlaComplianceRow[]> {
   // T4.1 — the two APPLICATION-STAGE rows (recruiter_review, tech_interview)
   // read the tenant's resolved per-stage thresholds; a disabled (null) stage
@@ -536,7 +555,8 @@ async function computeSlaTable(
   // T4.2 — the two GOVERNANCE-SLA rows (requisition_approval, interview_feedback)
   // read the tenant's governance policy (approvalSlaDays → hours, feedbackSlaHours)
   // so the SLA-table targets track the same policy that drives the score + flags.
-  // offer_decision has no policy knob and keeps its own constant.
+  // C2-F7 / PP17 — offer_decision reads the tenant's offerPolicy.decisionSlaHours,
+  // and its label states that target.
   const effectiveTable: Record<SlaTableKey, { label: string; targetHours: number }> = {
     ...SLA_TABLE,
     requisition_approval: {
@@ -554,6 +574,10 @@ async function computeSlaTable(
     interview_feedback: {
       ...SLA_TABLE.interview_feedback,
       targetHours: policy.feedbackSlaHours,
+    },
+    offer_decision: {
+      label: offerDecisionSlaLabel(offerDecisionSlaHours),
+      targetHours: offerDecisionSlaHours,
     },
   };
 

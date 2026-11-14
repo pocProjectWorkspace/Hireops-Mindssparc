@@ -677,7 +677,7 @@ describe.skipIf(!HAS_LOCAL_PG)(
         "apiKey",
         "sk-should-never-leave",
         "anthropic",
-        'starterPack":{"key":"india-gcc-finance-gbs","version":1,"appliedAt',
+        'starterPack":{"key":"india-gcc-finance-gbs","version":2,"appliedAt',
       ]) {
         assert.ok(!json.includes(forbidden), `export leaks ${forbidden}`);
       }

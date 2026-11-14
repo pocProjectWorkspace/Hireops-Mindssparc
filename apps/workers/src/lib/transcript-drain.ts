@@ -65,7 +65,7 @@
 import { randomUUID } from "node:crypto";
 import { sql as poolSql } from "@hireops/db";
 import type { Logger } from "@hireops/observability";
-import { loadInterviewKeyterms } from "./asr-keyterms";
+import { loadInterviewAsrHints } from "./asr-keyterms";
 import { z } from "zod";
 import {
   coerceScorecardCriteria,
@@ -451,12 +451,16 @@ export async function drainTranscriptOutboxOnce(
       const contentType = recording.media_type ?? media.contentType ?? "application/octet-stream";
       const asr = getASRClient(row.tenant_id);
       // A spelling hint only — a failed lookup transcribes without it.
-      const keyterms = await loadInterviewKeyterms(row.tenant_id, recording.interview_id).catch(
-        () => [],
+      // C2-F7 / PP16 — plus the tenant's glossary + transcription language.
+      const hints = await loadInterviewAsrHints(row.tenant_id, recording.interview_id).catch(
+        () => ({ keyterms: [] as string[], language: "en" }),
       );
       const result = await asr.transcribe(media.buffer, {
         contentType,
-        keyterms,
+        keyterms: hints.keyterms,
+        // Only a non-default language is sent: "en" is every provider's
+        // default, and the local fixture tier hashes the option verbatim.
+        ...(hints.language !== "en" ? { language: hints.language } : {}),
         ...(recording.duration_seconds !== null
           ? { durationSecondsHint: recording.duration_seconds }
           : {}),

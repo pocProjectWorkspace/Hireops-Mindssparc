@@ -33,10 +33,12 @@ export default async function RetentionPolicyPage() {
     redirect("/triage");
   }
   const caller = createServerTRPCCaller(session);
-  const [policy, retention, overdue] = await Promise.all([
+  const [policy, retention, overdue, cvRegister] = await Promise.all([
     caller.getRetentionPolicy({}),
     caller.getDocumentRetention({}),
     caller.listDocumentsPastRetention({}),
+    // C2-F7 / PP20 — CVs past the talent-pool retention (register only).
+    caller.listCvsPastRetention({}),
   ]);
 
   return (
@@ -50,6 +52,7 @@ export default async function RetentionPolicyPage() {
         initialPolicy={policy}
         initialRetention={retention}
         initialOverdue={overdue}
+        initialCvRegister={cvRegister}
       />
     </AppShell>
   );

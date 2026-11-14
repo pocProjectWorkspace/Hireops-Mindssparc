@@ -52,7 +52,7 @@ import { getStorageClient } from "../lib/storage";
 import { countsForBatches, emptyCounts } from "../lib/bulk-cv/read";
 import { expandUpload, type AcceptedCv, type UploadedFile } from "../lib/bulk-cv/expand";
 import {
-  BULK_CV_ACCEPTING_REQ_STATUSES,
+  loadTenantAcceptingStatuses,
   BULK_CV_MAX_ZIP_ENTRIES,
   hasBulkCvUploadRole,
   resolveTenantBulkCvLimits,
@@ -130,7 +130,7 @@ bulkCvUploadRoutes.post("/", async (c) => {
     WHERE tenant_id = ${tenantId} AND id = ${requisitionId} LIMIT 1
   `;
   if (!req) return c.json({ error: "requisition_not_found" }, 404);
-  if (!BULK_CV_ACCEPTING_REQ_STATUSES.has(req.status)) {
+  if (!(await loadTenantAcceptingStatuses(tenantId)).has(req.status)) {
     return c.json({ error: "requisition_not_accepting", status: req.status }, 409);
   }
 

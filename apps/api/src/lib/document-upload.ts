@@ -47,15 +47,22 @@ export type DocumentUploadResult =
 export async function storeUploadedDocument(
   parsedBody: Record<string, unknown>,
   log: Logger,
+  /**
+   * C2-F7 / PP9 — the tenant's effective limits (uploadPolicy, never above the
+   * platform ceiling). Omitted → the platform ceiling + the full type list.
+   */
+  limits?: { maxBytes: number; allowedTypes: ReadonlySet<string> },
 ): Promise<DocumentUploadResult> {
+  const maxBytes = Math.min(limits?.maxBytes ?? MAX_BYTES, MAX_BYTES);
+  const allowedTypes = limits?.allowedTypes ?? ALLOWED_TYPES;
   const file = parsedBody["file"];
   if (!(file instanceof File)) {
     return { ok: false, status: 400, body: { error: "no_file" } };
   }
-  if (file.size > MAX_BYTES) {
-    return { ok: false, status: 400, body: { error: "file_too_large", maxBytes: MAX_BYTES } };
+  if (file.size > maxBytes) {
+    return { ok: false, status: 400, body: { error: "file_too_large", maxBytes } };
   }
-  if (!ALLOWED_TYPES.has(file.type)) {
+  if (!allowedTypes.has(file.type) || !ALLOWED_TYPES.has(file.type)) {
     return { ok: false, status: 400, body: { error: "unsupported_type", contentType: file.type } };
   }
 

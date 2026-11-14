@@ -1,7 +1,9 @@
 import { requireAdmin, sessionUserChip } from "@/lib/auth";
 import { createServerTRPCCaller } from "@/lib/trpc-server";
 import { AppShell } from "@/components/nav/AppShell";
+import { loadTenantModules } from "@/lib/tenant-ui-settings";
 import { SystemSetupClient } from "./SystemSetupClient";
+import { ModulesCard } from "./ModulesCard";
 
 export const dynamic = "force-dynamic"; // Admin-gated + reads live tenant config.
 
@@ -26,10 +28,13 @@ export default async function SystemSetupPage() {
   const session = await requireAdmin();
   const caller = createServerTRPCCaller(session);
   const initial = await caller.getSystemSetup({});
+  // C2-F7 / PP21 — read-only module entitlements (the operator owns them).
+  const modules = await loadTenantModules();
 
   return (
     <AppShell title="System setup" isAdmin active="system-setup" user={sessionUserChip(session)}>
       <SystemSetupClient initial={initial} />
+      <ModulesCard modules={modules} />
     </AppShell>
   );
 }
