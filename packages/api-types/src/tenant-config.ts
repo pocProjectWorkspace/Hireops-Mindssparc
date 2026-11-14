@@ -24,6 +24,15 @@ import {
   customRoleKeySchema,
 } from "./capabilities";
 import { resolvePartnerDefaults } from "./partner-defaults";
+import {
+  resolveAiInterviewPolicy,
+  resolveMarketIntelPolicy,
+  resolveNotetakerPolicy,
+  resolveOfferPolicy,
+  resolveReportPolicy,
+  resolveScreeningPolicy,
+  resolveUploadPolicy,
+} from "./policy-parameters";
 import { resolvePreJoiningEngagementSettings } from "./pre-joining-engagement";
 import { resolveRetentionPolicy } from "./retention-policy";
 import { resolveRoleLabels } from "./role-labels";
@@ -171,6 +180,14 @@ export const TENANT_SETTINGS_BLOCKS: readonly TenantSettingsBlockDef[] = [
     label: "Communications (sender display name)",
     normalize: (raw) => resolveCommunicationsSettings(raw),
   },
+  // C2-F7 — policy parameters (Plan A §8). No people data in any of them.
+  { key: "screeningPolicy", label: "Screening policy", normalize: resolveScreeningPolicy },
+  { key: "uploadPolicy", label: "Upload limits", normalize: resolveUploadPolicy },
+  { key: "offerPolicy", label: "Offer defaults", normalize: resolveOfferPolicy },
+  { key: "aiInterviewPolicy", label: "AI interview policy", normalize: resolveAiInterviewPolicy },
+  { key: "notetakerPolicy", label: "Notetaker policy", normalize: resolveNotetakerPolicy },
+  { key: "reportPolicy", label: "Report definitions", normalize: resolveReportPolicy },
+  { key: "marketIntelPolicy", label: "Market intel policy", normalize: resolveMarketIntelPolicy },
 ];
 
 export const TENANT_SETTINGS_BLOCK_KEYS = TENANT_SETTINGS_BLOCKS.map((b) => b.key);

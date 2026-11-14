@@ -134,6 +134,7 @@ const NAV_HELP: Record<string, string> = {
   lists: "Your organisation's lists: employment types, requisition types and reasons.",
   "panel-pools": "Interviewer pools for panels.",
   "sla-thresholds": "SLA hours per pipeline stage.",
+  "policy-parameters": "Screening, upload, offer, AI interview, notetaker and report rules.",
   labels: "Stage and recommendation wording.",
   "governance-policy": "Governance and compliance rules.",
   "diversity-slate": "Diverse-slate minimums and voluntary self-ID questions.",

@@ -105,6 +105,7 @@ import type {
 } from "@hireops/api-types";
 
 import { buSubtreePredicate } from "./bu-tree";
+import { loadReportPolicy } from "../policy-parameters";
 
 /**
  * The five `onboarding_cases.status` values in the order the CHECK constraint
@@ -127,10 +128,10 @@ export const ACTIVE_ONBOARDING_CASE_STATUSES: readonly string[] = [
   "in_progress",
 ];
 
-/** Row cap on the active-case list. The rollups are computed over the full set. */
+/** Row cap on the active-case list (platform default; C2-F7 reportPolicy.onboardingRowCap). The rollups are computed over the full set. */
 export const ONBOARDING_READINESS_ROW_CAP = 200;
 
-/** The fortnight the "starting soon" tile looks ahead over. */
+/** The fortnight the "starting soon" tile looks ahead over (platform default; C2-F7 reportPolicy.onboardingWindowDays). */
 export const STARTING_SOON_DAYS = 14;
 
 /** postgres-js returns `{rows: …}`; fall back to the array form (matches measures.ts). */
@@ -253,6 +254,10 @@ export async function getOnboardingReadinessReport(
 ): Promise<GetOnboardingReadinessReportOutput> {
   const base = scopedCasesCte(tenantId, filters);
   const bgv = latestBgvCte(tenantId);
+  // C2-F7 / PP23 — the tenant's row cap + "starting soon" window (reportPolicy).
+  const reportPolicy = await loadReportPolicy(tenantId);
+  const rowCap = reportPolicy.onboardingRowCap;
+  const soonDays = reportPolicy.onboardingWindowDays;
 
   // 1. Case mix — over EVERY case in range, terminal ones included.
   const statusRes = await db.execute(dsql`
@@ -334,27 +339,25 @@ export async function getOnboardingReadinessReport(
       act.expected_start_date ASC NULLS LAST,
       pe.full_name ASC NULLS LAST,
       act.id ASC
-    LIMIT ${ONBOARDING_READINESS_ROW_CAP + 1}
+    LIMIT ${rowCap + 1}
   `);
   const rawRows = asRows<RowSqlRow>(rowsRes);
-  const truncated = rawRows.length > ONBOARDING_READINESS_ROW_CAP;
-  const rows: OnboardingReadinessRow[] = rawRows
-    .slice(0, ONBOARDING_READINESS_ROW_CAP)
-    .map((r) => ({
-      caseId: r.case_id,
-      candidateName: r.candidate_name,
-      status: r.status,
-      expectedStartDate: r.expected_start_date,
-      daysToStart: r.days_to_start,
-      tasksDone: r.tasks_done,
-      tasksTotal: r.tasks_total,
-      overdueTasks: r.overdue_tasks,
-      docsVerified: r.docs_verified,
-      docsTotal: r.docs_total,
-      bgvStatus: r.bgv_status,
-      itProvisioned: r.it_provisioned,
-      itTotal: r.it_total,
-    }));
+  const truncated = rawRows.length > rowCap;
+  const rows: OnboardingReadinessRow[] = rawRows.slice(0, rowCap).map((r) => ({
+    caseId: r.case_id,
+    candidateName: r.candidate_name,
+    status: r.status,
+    expectedStartDate: r.expected_start_date,
+    daysToStart: r.days_to_start,
+    tasksDone: r.tasks_done,
+    tasksTotal: r.tasks_total,
+    overdueTasks: r.overdue_tasks,
+    docsVerified: r.docs_verified,
+    docsTotal: r.docs_total,
+    bgvStatus: r.bgv_status,
+    itProvisioned: r.it_provisioned,
+    itTotal: r.it_total,
+  }));
 
   // 3. The fortnight rollups, over the FULL active set — so a capped list
   // never makes the tiles wrong.
@@ -375,7 +378,7 @@ export async function getOnboardingReadinessReport(
       (SELECT COUNT(*) FROM active
          WHERE expected_start_date IS NOT NULL
            AND expected_start_date >= CURRENT_DATE
-           AND expected_start_date <= CURRENT_DATE + ${STARTING_SOON_DAYS}::int
+           AND expected_start_date <= CURRENT_DATE + ${soonDays}::int
       )::int AS starting_within_14_days,
       (SELECT COUNT(*) FROM active
          WHERE expected_start_date IS NOT NULL AND expected_start_date < CURRENT_DATE

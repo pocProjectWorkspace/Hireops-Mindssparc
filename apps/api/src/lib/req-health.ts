@@ -28,7 +28,9 @@
 // ─────────────────────────────── health ───────────────────────────────
 
 /**
- * Component weights (sum = 100). Ordered by how load-bearing each facet is for
+ * Component weights (sum = 100) — the PLATFORM DEFAULT; a tenant may override
+ * them via tenants.settings.screeningPolicy.reqHealthWeights (C2-F7 / PP3,
+ * mirrored as REQ_HEALTH_WEIGHTS_DEFAULT in @hireops/api-types). Ordered by how load-bearing each facet is for
  * a req that can actually run. Documented here so the UI copy and the unit test
  * cite one source.
  */
@@ -50,6 +52,7 @@ export const REQ_HEALTH_WEIGHTS = {
 } as const;
 
 export type ReqHealthComponentKey = keyof typeof REQ_HEALTH_WEIGHTS;
+const REQ_HEALTH_KEYS = Object.keys(REQ_HEALTH_WEIGHTS) as ReqHealthComponentKey[];
 
 export interface ReqHealthComponent {
   key: ReqHealthComponentKey;
@@ -136,7 +139,10 @@ function pipelinePoints(candidatesInFlight: number): number {
  * yields the same score + component breakdown. Every component's `earned` is in
  * [0, max]; the score is the integer sum, in [0, 100].
  */
-export function computeReqHealth(input: ReqHealthInput): ReqHealthResult {
+export function computeReqHealth(
+  input: ReqHealthInput,
+  weights?: Readonly<Record<ReqHealthComponentKey, number>>,
+): ReqHealthResult {
   const W = REQ_HEALTH_WEIGHTS;
 
   // JD (20): text is the bulk (10), a summary (4), structured sections up to 3 (6).
@@ -202,8 +208,21 @@ export function computeReqHealth(input: ReqHealthInput): ReqHealthResult {
     },
   ];
 
-  const score = components.reduce((sum, c) => sum + c.earned, 0);
-  return { score: clamp(score, 0, 100), components };
+  // C2-F7 / PP3 — a tenant weight profile (screeningPolicy.reqHealthWeights,
+  // sum 100) rescales each component: the SAME share of the facet earned,
+  // out of the tenant's max instead of the platform's. Omitted / identical →
+  // the historical composite, byte-for-byte.
+  const scaled =
+    weights && REQ_HEALTH_KEYS.some((k) => weights[k] !== W[k])
+      ? components.map((c) => {
+          const max = Math.max(0, Math.round(weights[c.key] ?? c.max));
+          const earned = c.max > 0 ? Math.round((c.earned / c.max) * max) : 0;
+          return { ...c, earned: clamp(earned, 0, max), max };
+        })
+      : components;
+
+  const score = scaled.reduce((sum, c) => sum + c.earned, 0);
+  return { score: clamp(score, 0, 100), components: scaled };
 }
 
 // ───────────────────────────── difficulty ─────────────────────────────

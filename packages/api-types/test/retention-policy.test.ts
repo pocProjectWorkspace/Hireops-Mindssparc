@@ -8,6 +8,7 @@ import {
   retentionPolicySchema,
   updateRetentionPolicyInputSchema,
   type RetentionPolicy,
+  TALENT_POOL_RETENTION_MONTHS_DEFAULT,
 } from "../src/retention-policy";
 
 /**
@@ -55,6 +56,7 @@ describe("retentionPolicySchema — defaults", () => {
       overridesByCode: {},
       defaultYears: null,
       interviewAudioDays: INTERVIEW_AUDIO_RETENTION_DAYS_DEFAULT,
+      talentPoolRetentionMonths: TALENT_POOL_RETENTION_MONTHS_DEFAULT,
     });
     expect(INTERVIEW_AUDIO_RETENTION_DAYS_DEFAULT).toBe(30);
     expect(INTERVIEW_AUDIO_HARD_CEILING_DAYS).toBe(90);
@@ -79,6 +81,7 @@ describe("resolveRetentionPolicy — a pre-A2 stored block (the no-migration gua
       // ...and the tenant lands on the constant the worker used before A2, so
       // its audio purges on exactly the schedule it did yesterday.
       interviewAudioDays: INTERVIEW_AUDIO_RETENTION_DAYS_DEFAULT,
+      talentPoolRetentionMonths: TALENT_POOL_RETENTION_MONTHS_DEFAULT,
     });
   });
 
@@ -89,6 +92,7 @@ describe("resolveRetentionPolicy — a pre-A2 stored block (the no-migration gua
       overridesByCode: { government_id: 3, offer_letter: 10 },
       defaultYears: 5,
       interviewAudioDays: INTERVIEW_AUDIO_RETENTION_DAYS_DEFAULT,
+      talentPoolRetentionMonths: TALENT_POOL_RETENTION_MONTHS_DEFAULT,
     });
   });
 });
@@ -105,6 +109,7 @@ describe("interviewAudioDays — the accepted range", () => {
       overridesByCode: { government_id: 3, offer_letter: 10 },
       defaultYears: 5,
       interviewAudioDays: 7,
+      talentPoolRetentionMonths: TALENT_POOL_RETENTION_MONTHS_DEFAULT,
     });
   });
 });
@@ -181,6 +186,7 @@ describe("updateRetentionPolicyInputSchema (the write path)", () => {
       overridesByCode: { government_id: 3, offer_letter: 10 },
       defaultYears: 5,
       interviewAudioDays: INTERVIEW_AUDIO_RETENTION_DAYS_DEFAULT,
+      talentPoolRetentionMonths: TALENT_POOL_RETENTION_MONTHS_DEFAULT,
     });
   });
 });
@@ -214,5 +220,41 @@ describe("effectiveRetentionYears — unchanged by A2", () => {
     expect(effectiveRetentionYears("unknown_code", null, { ...policy, defaultYears: null })).toBe(
       null,
     );
+  });
+});
+
+describe("talentPoolRetentionMonths (C2-F7 / PP20)", () => {
+  it("defaults to 24 months", () => {
+    expect(TALENT_POOL_RETENTION_MONTHS_DEFAULT).toBe(24);
+    expect(resolveRetentionPolicy({}).talentPoolRetentionMonths).toBe(24);
+  });
+  it("a configured value round-trips and keeps the document overrides", () => {
+    const r = resolveRetentionPolicy({ ...PRE_A2_BLOCK, talentPoolRetentionMonths: 36 });
+    expect(r.talentPoolRetentionMonths).toBe(36);
+    expect(r.overridesByCode).toEqual({ government_id: 3, offer_letter: 10 });
+  });
+  it("out of range is CLAMPED to the 1..60 guardrail without discarding the block", () => {
+    expect(resolveRetentionPolicy({ ...PRE_A2_BLOCK, talentPoolRetentionMonths: 600 })).toEqual(
+      expect.objectContaining({ talentPoolRetentionMonths: 60, defaultYears: 5 }),
+    );
+    expect(resolveRetentionPolicy({ talentPoolRetentionMonths: 0 }).talentPoolRetentionMonths).toBe(
+      1,
+    );
+    expect(
+      resolveRetentionPolicy({ talentPoolRetentionMonths: 12.6 }).talentPoolRetentionMonths,
+    ).toBe(13);
+  });
+  it("garbage falls back to the default for that field only", () => {
+    const r = resolveRetentionPolicy({ ...PRE_A2_BLOCK, talentPoolRetentionMonths: "lots" });
+    expect(r.talentPoolRetentionMonths).toBe(24);
+    expect(r.defaultYears).toBe(5);
+  });
+  it("the write schema rejects values outside 1..60", () => {
+    expect(
+      updateRetentionPolicyInputSchema.safeParse({ talentPoolRetentionMonths: 61 }).success,
+    ).toBe(false);
+    expect(
+      updateRetentionPolicyInputSchema.safeParse({ talentPoolRetentionMonths: 60 }).success,
+    ).toBe(true);
   });
 });

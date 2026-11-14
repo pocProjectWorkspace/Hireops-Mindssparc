@@ -70,6 +70,7 @@ import {
   type ParserOutput,
 } from "@hireops/ai-client";
 import { tenantGateSql } from "./tenant-gate";
+import { resolveScreeningPolicy } from "@hireops/api-types";
 
 export interface DrainOpts {
   /** Rows claimed per pass. Raised to `concurrency` if smaller. */
@@ -333,6 +334,13 @@ async function scoreOneRow(row: ClaimedRow, log: Logger): Promise<RowOutcome> {
       ? null
       : scoringWeightsEmphasis(scoringWeights);
 
+    // C2-F7 / PP6 — the tenant's JD character cap (screeningPolicy.jdCharCap).
+    const [policyRow] = await poolSql<{ screening_policy: unknown }[]>`
+      SELECT settings -> 'screeningPolicy' AS screening_policy
+      FROM public.tenants WHERE id = ${row.tenant_id}
+    `;
+    const jdCharCap = resolveScreeningPolicy(policyRow?.screening_policy).jdCharCap;
+
     const ctxRow = await loadContext(row.tenant_id, row.application_id);
     // PC-6: the requisition's screening criteria (must-haves + JD requirements).
     const criteria = buildScreeningCriteria({
@@ -342,7 +350,8 @@ async function scoreOneRow(row: ClaimedRow, log: Logger): Promise<RowOutcome> {
     const built = buildAIScoringPrompt({
       positionTitle: ctxRow.positionTitle,
       // PP6: the FULL JD (capped), not a 500-char summary slice.
-      jdDescription: composeScreeningJd(ctxRow.jdText, ctxRow.jdSummary),
+      jdDescription: composeScreeningJd(ctxRow.jdText, ctxRow.jdSummary, jdCharCap),
+      jdCharCap,
       jdSkills: ctxRow.jdSkills,
       parsedCv: ctxRow.parsedCv,
       criteria,

@@ -139,6 +139,8 @@ function policyWith(partial: Partial<RetentionPolicy>): RetentionPolicy {
     // A2 — the block gained an interview-audio window. Defaulted here so these
     // document-focused cases keep writing a complete, valid policy.
     interviewAudioDays: partial.interviewAudioDays ?? base.interviewAudioDays,
+    // C2-F7 — CV / talent-pool retention months.
+    talentPoolRetentionMonths: partial.talentPoolRetentionMonths ?? base.talentPoolRetentionMonths,
   };
 }
 
@@ -315,6 +317,7 @@ describe("T4.3 — document retention policy + honest overdue register", () => {
       overridesByCode: {},
       defaultYears: null,
       interviewAudioDays: INTERVIEW_AUDIO_RETENTION_DAYS_DEFAULT,
+      talentPoolRetentionMonths: 24,
     });
   });
 

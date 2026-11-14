@@ -1170,7 +1170,8 @@ export const draftOfferInputSchema = z.object({
   joiningDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Expected YYYY-MM-DD"),
   location: z.string().min(1).max(200),
   termsHtml: z.string().max(50_000).optional(),
-  expiryDays: z.number().int().min(1).max(60),
+  /** C2-F7 / PP13 — omitted → the tenant's offerPolicy.defaultExpiryDays (platform 7). */
+  expiryDays: z.number().int().min(1).max(60).optional(),
 });
 
 export const draftOfferOutputSchema = z.object({

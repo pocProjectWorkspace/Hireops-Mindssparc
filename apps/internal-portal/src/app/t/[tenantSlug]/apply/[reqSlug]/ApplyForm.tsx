@@ -266,6 +266,8 @@ export function ApplyForm({
     try {
       const fd = new FormData();
       fd.append("file", parsed.data.resume);
+      // C2-F7 / PP9 — lets the upload apply this employer's file limits.
+      fd.append("tenantSlug", tenantSlug);
       const res = await fetch(`${API_BASE}/api/upload/resume`, { method: "POST", body: fd });
       if (!res.ok) {
         const body = (await res.json().catch(() => ({}))) as { error?: string };

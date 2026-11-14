@@ -186,7 +186,11 @@ function DraftOfferForm({ applicationId, onCreated, onCancel }: DraftFormProps) 
   const [bonusInr, setBonusInr] = useState("");
   const [joiningDate, setJoiningDate] = useState("");
   const [location, setLocation] = useState("Bengaluru (Hybrid)");
-  const [expiryDays, setExpiryDays] = useState(7);
+  // C2-F7 / PP13 — pre-filled from the tenant's offer policy; null = untouched,
+  // so draftOffer applies the policy default server-side.
+  const offerDefaults = trpc.getOfferPolicyDefaults.useQuery({});
+  const [expiryTouched, setExpiryDays] = useState<number | null>(null);
+  const expiryDays = expiryTouched ?? offerDefaults.data?.defaultExpiryDays ?? 7;
   const [termsHtml, setTermsHtml] = useState("");
 
   const baseInrInt = parseInt(baseInr, 10);
@@ -208,7 +212,7 @@ function DraftOfferForm({ applicationId, onCreated, onCancel }: DraftFormProps) 
           joiningDate,
           location,
           termsHtml: termsHtml || undefined,
-          expiryDays,
+          expiryDays: expiryTouched ?? undefined,
         });
       }}
     >
@@ -225,7 +229,7 @@ function DraftOfferForm({ applicationId, onCreated, onCancel }: DraftFormProps) 
       <NumField
         label="Expiry (days)"
         value={String(expiryDays)}
-        onChange={(v) => setExpiryDays(Math.max(1, parseInt(v, 10) || 7))}
+        onChange={(v) => setExpiryDays(Math.max(1, parseInt(v, 10) || expiryDays))}
       />
       <label className="block">
         <span className="text-xs font-medium text-neutral-700">Terms / boilerplate</span>

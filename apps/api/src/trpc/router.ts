@@ -1321,6 +1321,38 @@ import {
   countNicheSkills,
   type ReqDifficulty,
 } from "../lib/req-health";
+// C2-F7 — policy parameters (Plan A §8).
+import {
+  APPLY_ACCEPTING_STATUS_OPTIONS,
+  getOfferPolicyDefaultsInputSchema,
+  getOfferPolicyDefaultsOutputSchema,
+  getPolicyParametersInputSchema,
+  getPolicyParametersOutputSchema,
+  listCvsPastRetentionInputSchema,
+  listCvsPastRetentionOutputSchema,
+  resolveAiInterviewPolicy,
+  resolveBulkCvUploadLimits,
+  resolveMarketIntelPolicy,
+  resolveNotetakerPolicy,
+  resolveOfferPolicy,
+  resolveReportPolicy,
+  resolveScreeningPolicy,
+  resolveUploadPolicy,
+  updatePolicyParametersInputSchema,
+  updatePolicyParametersOutputSchema,
+  UPLOAD_DOCUMENT_BYTES_CEILING,
+  type GetPolicyParametersOutput,
+  type ReqHealthWeights,
+} from "@hireops/api-types";
+import {
+  loadAcceptingStatuses,
+  loadEffectiveUploadLimits,
+  loadMarketIntelPolicy,
+  loadOfferPolicy,
+  loadScreeningPolicy,
+  loadTenantSettingsRaw,
+} from "../lib/policy-parameters";
+import { listCvsPastRetention } from "../lib/cv-retention";
 import { displayForCandidateNotification } from "../lib/candidate-notifications";
 import {
   canSeeScreeningComp,
@@ -1359,7 +1391,7 @@ import {
   type ApplyScreeningPolicy,
   type ScreeningAnswersInput,
 } from "@hireops/api-types";
-import { BULK_CV_ACCEPTING_REQ_STATUSES, resolveTenantBulkCvLimits } from "../lib/bulk-cv/policy";
+import { loadTenantAcceptingStatuses, resolveTenantBulkCvLimits } from "../lib/bulk-cv/policy";
 import {
   getBatchWithItems as getBulkCvBatchWithItems,
   listBatchesForRequisition as listBulkCvBatchesForRequisition,
@@ -1369,6 +1401,7 @@ import { newClaimScope, resolveClaimForSubmission } from "../lib/partner-claims"
 import {
   computeInitialScoringState,
   findPersonByContact,
+  findReapplyCoolingOff,
   ingestApplication,
   normaliseEmail,
   normalisePhone,
@@ -3040,6 +3073,8 @@ interface RoReqFacet {
   latestDecisionAt: Date | null;
   /** Days from first application to offer_accepted, for accepted apps only. */
   timeToHireDays: number[];
+  /** C2-F7 / PP3 — the tenant's requisition-health weights (screeningPolicy). */
+  healthWeights: ReqHealthWeights;
 }
 
 function countJdSections(metadata: unknown): number {
@@ -3107,6 +3142,7 @@ async function loadRequirementOwnerFacets(
   limit: number,
   population: Population = { kind: "all" },
 ): Promise<RoReqFacet[]> {
+  const healthWeights = (await loadScreeningPolicy(tenantId)).reqHealthWeights;
   const reqRows = await db
     .select({
       id: requisitions.id,
@@ -3150,6 +3186,7 @@ async function loadRequirementOwnerFacets(
     .limit(limit);
 
   const facets: RoReqFacet[] = reqRows.map((r) => ({
+    healthWeights,
     id: r.id,
     status: r.status,
     title: r.title ?? null,
@@ -3336,19 +3373,22 @@ function facetDifficulty(f: RoReqFacet, benchmark: TenantBenchmark | null): ReqD
 }
 
 function facetHealth(f: RoReqFacet): ReqHealthWire {
-  const { score, components } = computeReqHealth({
-    jd: { hasText: f.jdHasText, hasSummary: f.jdHasSummary, sectionCount: f.jdSectionCount },
-    skills: {
-      count: f.skillCount,
-      weightedCount: f.weightedSkillCount,
-      mustHaveCount: f.mustHaveCount,
+  const { score, components } = computeReqHealth(
+    {
+      jd: { hasText: f.jdHasText, hasSummary: f.jdHasSummary, sectionCount: f.jdSectionCount },
+      skills: {
+        count: f.skillCount,
+        weightedCount: f.weightedSkillCount,
+        mustHaveCount: f.mustHaveCount,
+      },
+      interviewPlan: { configured: f.interviewRounds > 0, roundCount: f.interviewRounds },
+      budget: { hasBand: f.compBandMin != null && f.compBandMax != null },
+      // A never-submitted draft has no approval row; status still reflects lifecycle.
+      approvalStatus: f.status,
+      pipeline: { candidatesInFlight: f.candidatesInFlight },
     },
-    interviewPlan: { configured: f.interviewRounds > 0, roundCount: f.interviewRounds },
-    budget: { hasBand: f.compBandMin != null && f.compBandMax != null },
-    // A never-submitted draft has no approval row; status still reflects lifecycle.
-    approvalStatus: f.status,
-    pipeline: { candidatesInFlight: f.candidatesInFlight },
-  });
+    f.healthWeights,
+  );
   return { score, components };
 }
 
@@ -3712,8 +3752,12 @@ function decodeAuditCursor(cursor: string | undefined): { createdAt: Date; id: s
  * against. Shared by `submitApplication` (rejects 400) and
  * `resolvePublicRequisition` (returns 404 — keeps slug existence
  * private from passers-by). Keep this single source of truth.
+ *
+ * C2-F7 / PP10 — this is now the tenant's `screeningPolicy.acceptingStatuses`
+ * (loadAcceptingStatuses), a non-empty subset of APPLY_ACCEPTING_STATUS_OPTIONS
+ * ({approved, posted}); the platform default is both. The bulk-CV upload and
+ * drain read the same setting (lib/bulk-cv/policy.ts).
  */
-const PUBLIC_APPLY_ACCEPTING_STATUSES = new Set<string>(["approved", "posted"]);
 
 /**
  * Materialise a partner-sourced candidate into the recruitment pipeline:
@@ -4436,7 +4480,7 @@ export const appRouter = router({
       // others are open game for an apply form. Shared with the public
       // resolver below so the page-level 404 and the procedure-level
       // 400 cannot disagree about which slugs are "live".
-      if (!PUBLIC_APPLY_ACCEPTING_STATUSES.has(req.status)) {
+      if (!(await loadAcceptingStatuses(req.tenantId)).has(req.status)) {
         throw new TRPCError({
           code: "BAD_REQUEST",
           message: `Requisition not accepting applications (status=${req.status})`,
@@ -4478,6 +4522,29 @@ export const appRouter = router({
           // 2. Fetch resume from storage, parse it.
           const storage = getStorageClient();
           const obj = await storage.get(input.resumeUploadKey);
+          // C2-F7 / PP9 — the tenant's resume cap + types, checked on the
+          // STORED object (the upload route only knows the tenant when the
+          // form names it; this is the authoritative check).
+          {
+            const limits = await loadEffectiveUploadLimits(req.tenantId);
+            const contentType = (obj.contentType ?? "").split(";")[0]?.trim().toLowerCase() ?? "";
+            if (obj.buffer.length > limits.maxDocumentBytes) {
+              throw new TRPCError({
+                code: "BAD_REQUEST",
+                message: `The CV is larger than this employer accepts (${Math.floor(limits.maxDocumentBytes / (1024 * 1024))} MB).`,
+              });
+            }
+            if (
+              contentType &&
+              contentType !== "application/octet-stream" &&
+              !limits.resumeMimeTypes.has(contentType)
+            ) {
+              throw new TRPCError({
+                code: "BAD_REQUEST",
+                message: "This employer does not accept CVs in that file format.",
+              });
+            }
+          }
           let parseStatus: "received" | "parse_failed" = "received";
           let parsedSkills: unknown = null;
           let parserConfidence: number | null = null;
@@ -4564,7 +4631,10 @@ export const appRouter = router({
             input.applicant.phone,
             await resolvePhoneCountry(poolDb, req.tenantId, input.applicant.locationCountry),
           );
-          const [emailMatch] = await poolDb
+          // C2-F7 / PP8 — the tenant's dedup rule + re-apply cooling-off.
+          const screeningPolicy = await loadScreeningPolicy(req.tenantId);
+          const dedupMode = screeningPolicy.dedupMatchOn;
+          const [emailMatchRaw] = await poolDb
             .select({
               id: persons.id,
               emailNorm: persons.emailNormalised,
@@ -4574,7 +4644,7 @@ export const appRouter = router({
             .from(persons)
             .where(and(eq(persons.tenantId, req.tenantId), eq(persons.emailNormalised, emailNorm)))
             .limit(1);
-          const [phoneMatch] = await poolDb
+          const [phoneMatchRaw] = await poolDb
             .select({
               id: persons.id,
               emailNorm: persons.emailNormalised,
@@ -4590,16 +4660,37 @@ export const appRouter = router({
             )
             .orderBy(persons.createdAt)
             .limit(1);
+          // PP8: a mode that ignores an identifier drops its match.
+          const emailMatch = dedupMode === "phone" ? undefined : emailMatchRaw;
+          const phoneMatch = dedupMode === "email" ? undefined : phoneMatchRaw;
 
           let personId: string;
           let dedupDecision: "allow_new" | "link_existing";
           let dedupReason: string | null = null;
 
           const sameMatch = emailMatch && phoneMatch && emailMatch.id === phoneMatch.id;
-          const winner = sameMatch ? emailMatch : (emailMatch ?? phoneMatch);
+          // email_and_phone: only a person matched on BOTH counts as the same person.
+          const winner = sameMatch
+            ? emailMatch
+            : dedupMode === "email_and_phone"
+              ? undefined
+              : (emailMatch ?? phoneMatch);
           const isCollision = !!emailMatch && !!phoneMatch && emailMatch.id !== phoneMatch.id;
 
           if (winner && !isCollision) {
+            // PP8 — re-apply cooling-off after a rejection (0 = off).
+            const coolingEndsAt = await findReapplyCoolingOff(
+              poolDb,
+              req.tenantId,
+              winner.id,
+              screeningPolicy.reapplyCoolingOffDays,
+            );
+            if (coolingEndsAt) {
+              throw new TRPCError({
+                code: "BAD_REQUEST",
+                message: `You can apply to this employer again from ${coolingEndsAt.toISOString().slice(0, 10)}.`,
+              });
+            }
             personId = winner.id;
             dedupDecision = "link_existing";
             dedupReason = sameMatch
@@ -4712,6 +4803,7 @@ export const appRouter = router({
             knockoutEval.passed,
             parserConfidence,
             knockoutEvaluatedAt,
+            screeningPolicy.parserConfidenceFloor,
           );
 
           const wasNewApplication = !existingApp?.id;
@@ -4847,7 +4939,7 @@ export const appRouter = router({
       if (!row) {
         throw new TRPCError({ code: "NOT_FOUND", message: "Requisition not found" });
       }
-      if (!PUBLIC_APPLY_ACCEPTING_STATUSES.has(row.status)) {
+      if (!(await loadAcceptingStatuses(row.tenantId)).has(row.status)) {
         throw new TRPCError({
           code: "NOT_FOUND",
           message: "Requisition not accepting applications",
@@ -7509,7 +7601,10 @@ export const appRouter = router({
           });
         }
 
-        const expiryAt = new Date(Date.now() + input.expiryDays * 24 * 60 * 60 * 1000);
+        // C2-F7 / PP13 — an omitted expiry / probation takes the tenant's offer policy.
+        const offerPolicy = await loadOfferPolicy(app.tenantId);
+        const expiryDays = input.expiryDays ?? offerPolicy.defaultExpiryDays;
+        const expiryAt = new Date(Date.now() + expiryDays * 24 * 60 * 60 * 1000);
 
         const [created] = await db
           .insert(offers)
@@ -12313,6 +12408,132 @@ export const appRouter = router({
         }
         return { ok: true as const, urgency: nextBlock };
       });
+    }),
+
+  // ─────────────────────── C2-F7 — policy parameters (Plan A §8) ───────────────────────
+  //
+  // Seven tenants.settings SIBLING blocks (screeningPolicy, uploadPolicy,
+  // offerPolicy, aiInterviewPolicy, notetakerPolicy, reportPolicy,
+  // marketIntelPolicy) plus the existing bulkCvUpload caps, read and written
+  // as one admin surface (/admin/policy-parameters). Admin-only; every write
+  // audited (`update_policy_parameters`, input carries the block name); the
+  // write is the same atomic top-level jsonb `||` merge every settings block
+  // uses, so other keys survive verbatim. Write schemas are strict (an
+  // out-of-range value is BAD_REQUEST); readers resolve leniently and clamp
+  // to the platform guardrail (packages/api-types policy-parameters.ts).
+  getPolicyParameters: protectedProcedure
+    .input(getPolicyParametersInputSchema)
+    .output(getPolicyParametersOutputSchema)
+    .query(async ({ ctx }): Promise<GetPolicyParametersOutput> => {
+      requireCapability(ctx, "settings.system", "Policy parameters are admin-only");
+      if (!ctx.tenantId) {
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: "protected procedure missing tenantId",
+        });
+      }
+      const settings = await loadTenantSettingsRaw(ctx.tenantId);
+      const limits = await loadEffectiveUploadLimits(null);
+      return {
+        screeningPolicy: resolveScreeningPolicy(settings.screeningPolicy),
+        uploadPolicy: resolveUploadPolicy(settings.uploadPolicy),
+        offerPolicy: resolveOfferPolicy(settings.offerPolicy),
+        aiInterviewPolicy: resolveAiInterviewPolicy(settings.aiInterviewPolicy),
+        notetakerPolicy: resolveNotetakerPolicy(settings.notetakerPolicy),
+        reportPolicy: resolveReportPolicy(settings.reportPolicy),
+        marketIntelPolicy: resolveMarketIntelPolicy(settings.marketIntelPolicy),
+        bulkCvUpload: resolveBulkCvUploadLimits(settings.bulkCvUpload),
+        platform: {
+          mediaCeilingBytes: limits.maxMediaBytes,
+          documentCeilingBytes: UPLOAD_DOCUMENT_BYTES_CEILING,
+          // PP18 — platform-controlled; shown read-only, never written here.
+          aiProvider:
+            typeof settings.ai_provider === "string" && settings.ai_provider.trim()
+              ? settings.ai_provider
+              : "anthropic",
+        },
+      };
+    }),
+
+  updatePolicyParameters: protectedProcedure
+    .input(updatePolicyParametersInputSchema)
+    .output(updatePolicyParametersOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      return withAudit("update_policy_parameters", ctx, input, async () => {
+        requireCapability(ctx, "settings.system", "Policy parameters are admin-only");
+        if (!ctx.tenantId) {
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: "protected procedure missing tenantId",
+          });
+        }
+        const tenantId = ctx.tenantId;
+        // De-duplicate list fields in canonical order before storing.
+        let value: unknown = input.value;
+        if (input.block === "screeningPolicy") {
+          value = {
+            ...input.value,
+            acceptingStatuses: APPLY_ACCEPTING_STATUS_OPTIONS.filter((s) =>
+              input.value.acceptingStatuses.includes(s),
+            ),
+          };
+        } else if (input.block === "uploadPolicy" || input.block === "notetakerPolicy") {
+          value =
+            input.block === "uploadPolicy"
+              ? resolveUploadPolicy(input.value)
+              : resolveNotetakerPolicy(input.value);
+        }
+        const res = await poolDb.execute(dsql`
+          UPDATE public.tenants
+          SET settings = COALESCE(settings, '{}'::jsonb)
+              || jsonb_build_object(${input.block}::text, ${JSON.stringify(value)}::jsonb)
+          WHERE id = ${tenantId}::uuid
+          RETURNING id
+        `);
+        const updated = (res as { rows?: unknown[] }).rows ?? (res as unknown[]);
+        if (updated.length !== 1) {
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: "tenant settings update affected an unexpected number of rows",
+          });
+        }
+        return { ok: true as const, block: input.block };
+      });
+    }),
+
+  /**
+   * PP13 — the offer form defaults (expiry days, probation months, decision
+   * SLA). Any signed-in staff member: the values are tenant policy, not data,
+   * and both offer forms pre-fill from them.
+   */
+  getOfferPolicyDefaults: protectedProcedure
+    .input(getOfferPolicyDefaultsInputSchema)
+    .output(getOfferPolicyDefaultsOutputSchema)
+    .query(async ({ ctx }) => loadOfferPolicy(ctx.tenantId)),
+
+  /**
+   * PP20 — CVs held past the tenant's talent-pool retention (register only —
+   * nothing is deleted). Admin / hr_head (the retention page's roles).
+   */
+  listCvsPastRetention: protectedProcedure
+    .input(listCvsPastRetentionInputSchema)
+    .output(listCvsPastRetentionOutputSchema)
+    .query(async ({ ctx }) => {
+      // Same gate as listDocumentsPastRetention — the retention page's roles.
+      requireCapability(
+        ctx,
+        "governance.manage",
+        "Retention register requires the hr_head or admin role",
+      );
+      const db = requireDb(ctx);
+      if (!ctx.tenantId) {
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: "protected procedure missing tenantId",
+        });
+      }
+      const settings = await loadTenantSettingsRaw(ctx.tenantId);
+      return listCvsPastRetention(db, ctx.tenantId, settings);
     }),
 
   // ─────────────────────── getIrisPolicy (T-POLICY) ───────────────────────
@@ -18512,7 +18733,7 @@ export const appRouter = router({
           if (!assignment) {
             throw new TRPCError({ code: "FORBIDDEN", message: "requisition_not_assigned" });
           }
-          if (!PUBLIC_APPLY_ACCEPTING_STATUSES.has(assignment.reqStatus)) {
+          if (!(await loadAcceptingStatuses(tenantId)).has(assignment.reqStatus)) {
             throw new TRPCError({
               code: "BAD_REQUEST",
               message: `Requisition not accepting submissions (status=${assignment.reqStatus})`,
@@ -18554,6 +18775,22 @@ export const appRouter = router({
           //    at most one org_wide claim (partial unique, 0132). The person
           //    lock serialises concurrent submissions of the same person, so
           //    the read-decide-insert below cannot interleave.
+          // C2-F7 / PP8 — a person the tenant rejected within its re-apply
+          // cooling-off period cannot be re-submitted until it ends.
+          if (existingPerson) {
+            const coolingEndsAt = await findReapplyCoolingOff(
+              db,
+              tenantId,
+              existingPerson.id,
+              (await loadScreeningPolicy(tenantId)).reapplyCoolingOffDays,
+            );
+            if (coolingEndsAt) {
+              throw new TRPCError({
+                code: "BAD_REQUEST",
+                message: `This candidate was recently declined and can be submitted again from ${coolingEndsAt.toISOString().slice(0, 10)}.`,
+              });
+            }
+          }
           let personHasActiveClaims = false;
           if (existingPerson) {
             await db.execute(
@@ -22223,7 +22460,10 @@ export const appRouter = router({
         const bandMaxPaise = pos ? majorRupeesToPaise(pos.bandMax) : null;
         const needsApproval = bandMaxPaise != null && input.baseSalaryInrPaise > bandMaxPaise;
 
-        const expiryAt = new Date(Date.now() + input.expiryDays * 24 * 60 * 60 * 1000);
+        // C2-F7 / PP13 — an omitted expiry / probation takes the tenant's offer policy.
+        const offerPolicy = await loadOfferPolicy(app.tenantId);
+        const expiryDays = input.expiryDays ?? offerPolicy.defaultExpiryDays;
+        const expiryAt = new Date(Date.now() + expiryDays * 24 * 60 * 60 * 1000);
         const [created] = await db
           .insert(offers)
           .values({
@@ -22240,7 +22480,7 @@ export const appRouter = router({
             joiningDate: input.joiningDate,
             location: input.location,
             contractType: input.contractType,
-            probationMonths: input.probationMonths,
+            probationMonths: input.probationMonths ?? offerPolicy.defaultProbationMonths,
             benefits: input.benefits,
             termsHtml: input.termsHtml ?? null,
             expiryAt,
@@ -24963,6 +25203,8 @@ export const appRouter = router({
       let slaThresholds: Record<ApplicationStage, number | null> = SLA_THRESHOLDS_HOURS;
       // CFG-LITE / PP1 — the tenant's urgency weights + notice bands.
       let urgencySettings: UrgencySettings = defaultUrgencySettings();
+      // C2-F7 / PP2 — the tenant's risk-flag rules (must-have %, salary rule).
+      let screeningPolicy = resolveScreeningPolicy({});
       if (ctx.tenantId) {
         const [settingsRow] = await db
           .select({ settings: tenants.settings })
@@ -24976,6 +25218,7 @@ export const appRouter = router({
         );
         slaThresholds = resolveSlaThresholds(settings.slaThresholds);
         urgencySettings = resolveUrgencySettings(settings.urgency);
+        screeningPolicy = resolveScreeningPolicy(settings.screeningPolicy);
       }
       const effectiveThreshold = input.threshold ?? shortlistDefaults.threshold;
       const cutoffs = shortlistDefaults.tierCutoffs;
@@ -24986,6 +25229,7 @@ export const appRouter = router({
           applicationId: applications.id,
           jdVersionId: requisitions.jdVersionId,
           roleTitle: positions.title,
+          compBandMin: positions.compBandMin,
           compBandMax: positions.compBandMax,
           compCurrency: positions.compCurrency,
           fullName: persons.fullName,
@@ -25076,11 +25320,15 @@ export const appRouter = router({
           },
           urgencySettings,
         );
-        const riskFlags = computeRiskFlags({
-          mustHavePct,
-          expectedSalaryInrPaise: r.expectedSalaryInrPaise,
-          compBandMaxInrPaise: compBandMaxToPaise(r.compBandMax, r.compCurrency),
-        });
+        const riskFlags = computeRiskFlags(
+          {
+            mustHavePct,
+            expectedSalaryInrPaise: r.expectedSalaryInrPaise,
+            compBandMaxInrPaise: compBandMaxToPaise(r.compBandMax, r.compCurrency),
+            compBandMinInrPaise: compBandMaxToPaise(r.compBandMin, r.compCurrency),
+          },
+          screeningPolicy,
+        );
         const mask = resolveCandidateMasking({ roles: ctx.roles, stage: r.stage, privacy });
 
         shaped.push({
@@ -25722,7 +25970,7 @@ export const appRouter = router({
       ]);
       return {
         limits,
-        acceptingUploads: BULK_CV_ACCEPTING_REQ_STATUSES.has(req.status),
+        acceptingUploads: (await loadTenantAcceptingStatuses(tenantId)).has(req.status),
         batches,
       };
     }),
@@ -30524,6 +30772,8 @@ async function buildHrHeadDashboardExtras(
   // Reconciled to HRHEAD-02's actual table: market_benchmarks(role_title,
   // median_salary_minor /* paise */), matched on normalised position title.
   // Probe stays defensive so environments without the table render no row.
+  // C2-F7 / PP4 — the tenant's market-gap threshold (default 0.9 × median).
+  const gapThreshold = (await loadMarketIntelPolicy(tenantId)).gapThreshold;
   const benchmarkExists = await dashScalar(
     db,
     dsql`SELECT (to_regclass('public.market_benchmarks') IS NOT NULL)::int AS n`,
@@ -30542,7 +30792,7 @@ async function buildHrHeadDashboardExtras(
           AND r.status IN ('approved', 'posted')
           AND p.comp_band_max IS NOT NULL
           AND mb.median_salary_minor IS NOT NULL
-          AND p.comp_band_max < (mb.median_salary_minor / 100.0) * 0.9`,
+          AND p.comp_band_max < (mb.median_salary_minor / 100.0) * ${gapThreshold}::numeric`,
     );
   }
 

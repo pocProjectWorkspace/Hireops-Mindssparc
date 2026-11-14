@@ -16,12 +16,16 @@
  * and MAX_DOCUMENT_BYTES stays exactly where it was.
  */
 
+import { UPLOAD_DOCUMENT_BYTES_CEILING } from "@hireops/api-types";
+
 /**
- * Resume / onboarding-document ceiling. UNCHANGED at 10MB — real CVs are
+ * Resume / onboarding-document ceiling — the PLATFORM ceiling (C2-F7 PP9: a
+ * tenant's uploadPolicy may lower it, never raise it; the constant lives in
+ * @hireops/api-types so the admin surface shows the same number). UNCHANGED at 10MB — real CVs are
  * usually under 1MB, but image-heavy design and product portfolios
  * routinely pass 5MB, and ID documents are phone photos.
  */
-export const MAX_DOCUMENT_BYTES = 10 * 1024 * 1024;
+export const MAX_DOCUMENT_BYTES = UPLOAD_DOCUMENT_BYTES_CEILING;
 
 /**
  * Interview-media ceiling, in bytes. The arithmetic, so the next person can

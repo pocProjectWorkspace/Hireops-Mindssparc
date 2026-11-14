@@ -27,7 +27,7 @@ import type {
   ReportFilters,
   TenantLabels,
 } from "@hireops/api-types";
-import { PLATFORM_STAGE_LABELS, resolveStageLabel } from "@hireops/api-types";
+import { PLATFORM_STAGE_LABELS, describeTimeToFill, resolveStageLabel } from "@hireops/api-types";
 
 import * as measures from "../reports/measures";
 import { buSubtreePredicate } from "../reports/bu-tree";
@@ -38,6 +38,7 @@ import { getPartnerScorecardReport } from "../reports/partner-scorecard";
 import { getInterviewHealthReport } from "../reports/interview-health";
 import { getOnboardingReadinessReport } from "../reports/onboarding-readiness";
 import type { AskDataLookups, NamedItem, ResolvedAskDataFilters } from "./interpret";
+import { loadReportPolicy } from "../policy-parameters";
 
 export interface AskDataExecDeps {
   db: TenantBoundDb;
@@ -310,7 +311,10 @@ const oldestOpenReqs: Executor = async (deps, f) => {
 };
 
 const timeToFill: Executor = async (deps, f) => {
-  const s = await measures.timeToFillStats(deps.db, deps.tenantId, reportFilters(f));
+  // C2-F7 / PP22 — the tenant's time-to-fill definition drives both the
+  // number and the footnote that explains it.
+  const defs = await loadReportPolicy(deps.tenantId);
+  const s = await measures.timeToFillStats(deps.db, deps.tenantId, reportFilters(f), defs);
   const median = s.median_days;
   const empty = s.hires_count === 0 || median === null;
   const summary =
@@ -334,19 +338,20 @@ const timeToFill: Executor = async (deps, f) => {
       },
     ],
     summary,
-    footnote:
-      "Source: applications and stage history (Pipeline & speed report). Time to fill = days from application to its accepted offer, for applications created in the period. Reported as the median (the typical hire), which a few very slow hires cannot skew the way an average can.",
+    footnote: `Source: applications and stage history (Pipeline & speed report). Time to fill = ${describeTimeToFill(defs)}, for applications created in the period. Reported as the median (the typical hire), which a few very slow hires cannot skew the way an average can.`,
     empty,
   };
 };
 
 const timeToFillTrend: Executor = async (deps, f) => {
   const months = f.months ?? 6;
+  const defs = await loadReportPolicy(deps.tenantId);
   const points = await measures.timeToFillTrend(
     deps.db,
     deps.tenantId,
     { businessUnitId: f.businessUnitId, requisitionId: f.requisitionId },
     { months },
+    defs,
   );
   const rows = points.map((p) => ({
     month: monthLabel(p.month),
@@ -384,8 +389,7 @@ const timeToFillTrend: Executor = async (deps, f) => {
     rows,
     chart: { x: "month", y: ["median_days"] },
     summary,
-    footnote:
-      "Source: applications and stage history (Executive summary trend). Each month = the hires that landed in that month; median days from application to accepted offer. Months with no hires show no value (unknown, not zero).",
+    footnote: `Source: applications and stage history (Executive summary trend). Each month = the hires that landed in that month; median ${describeTimeToFill(defs)}. Months with no hires show no value (unknown, not zero).`,
     empty: withData.length === 0,
   };
 };

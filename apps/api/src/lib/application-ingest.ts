@@ -30,7 +30,7 @@
  * and is owned by the apply-form work, so it was left untouched here.
  */
 
-import { and, eq, inArray } from "drizzle-orm";
+import { and, eq, inArray, sql as drizzleSql } from "drizzle-orm";
 import {
   aiScoreOutbox,
   applications,
@@ -48,10 +48,12 @@ import {
   normalisePhone as normalisePhoneE164,
   phoneMatchKeys,
   resolveTenantDefaultCountry,
+  type DedupMatchMode,
   type ScreeningAnswersInput,
   type ScreeningAnswersSource,
 } from "@hireops/api-types";
 import { getStorageClient } from "./storage";
+import { loadScreeningPolicy } from "./policy-parameters";
 import { resolveScreeningAnswersForInsert, screeningKnockoutView } from "./screening-answers";
 
 // ─────────────────────────── contact normalisation ───────────────────────────
@@ -119,7 +121,8 @@ export function phoneLookupKeys(phoneNormalised: string): string[] {
  * unreliable to score against. Logged on the application as
  * `ai_score_explanation = { scored_by: 'skipped', reason:
  * 'parser_confidence_below_threshold', confidence: <value> }`. 0.5 is
- * the AI-03 v1 threshold; tunable here, not per-tenant.
+ * the AI-03 v1 threshold and the PLATFORM DEFAULT; C2-F7 / PP5 makes it
+ * tenant policy (`screeningPolicy.parserConfidenceFloor`, 0–0.9).
  */
 export const PARSER_CONFIDENCE_SCORING_FLOOR = 0.5;
 
@@ -134,6 +137,7 @@ export function computeInitialScoringState(
   knockoutPassed: boolean | null,
   parserConfidence: number | null,
   evaluatedAt: Date,
+  floor: number = PARSER_CONFIDENCE_SCORING_FLOOR,
 ): { initialAiScoreExplanation: Record<string, unknown> | null; outboxEligible: boolean } {
   if (knockoutPassed === false) {
     return {
@@ -145,7 +149,7 @@ export function computeInitialScoringState(
       outboxEligible: false,
     };
   }
-  if (parserConfidence !== null && parserConfidence < PARSER_CONFIDENCE_SCORING_FLOOR) {
+  if (parserConfidence !== null && parserConfidence < floor) {
     return {
       initialAiScoreExplanation: {
         scored_by: "skipped",
@@ -246,14 +250,22 @@ export interface PersonMatch {
  * pivot per partner-data-model.md), falling back to normalised phone. No fuzzy
  * matching. Lookup only — creating the person is the caller's decision.
  * A null/empty identifier is simply not used for matching.
+ *
+ * C2-F7 / PP8 — which identifiers count is tenant policy
+ * (`screeningPolicy.dedupMatchOn`): email_or_phone (default — the rule above),
+ * email, phone, or email_and_phone (both must point at the SAME person).
+ * Omitted `matchOn` → the tenant's setting is read.
  */
 export async function findPersonByContact(
   db: TenantBoundDb,
   tenantId: string,
   contact: { emailNormalised: string | null; phoneNormalised: string | null },
+  matchOn?: DedupMatchMode,
 ): Promise<PersonMatch | null> {
+  const mode = matchOn ?? (await loadScreeningPolicy(tenantId)).dedupMatchOn;
   const cols = { id: persons.id, linkedinUrl: persons.linkedinUrl, fullName: persons.fullName };
-  if (contact.emailNormalised) {
+  const byEmail = async () => {
+    if (!contact.emailNormalised) return null;
     const [emailMatch] = await db
       .select(cols)
       .from(persons)
@@ -261,9 +273,10 @@ export async function findPersonByContact(
         and(eq(persons.tenantId, tenantId), eq(persons.emailNormalised, contact.emailNormalised)),
       )
       .limit(1);
-    if (emailMatch) return emailMatch;
-  }
-  if (contact.phoneNormalised) {
+    return emailMatch ?? null;
+  };
+  const byPhone = async () => {
+    if (!contact.phoneNormalised) return null;
     // BUG-5: match the E.164 value AND the legacy digits-only forms.
     const [phoneMatch] = await db
       .select(cols)
@@ -276,9 +289,66 @@ export async function findPersonByContact(
       )
       .orderBy(persons.createdAt)
       .limit(1);
-    if (phoneMatch) return phoneMatch;
+    return phoneMatch ?? null;
+  };
+  return decideDedupMatch(mode, byEmail, byPhone);
+}
+
+/**
+ * PP8 — the match decision over the two lookups, shared by every door
+ * (findPersonByContact and the public apply form). Lookups are lazy so a mode
+ * that ignores an identifier never queries it. Returns the matched person or
+ * null. For `email_or_phone` an email match wins over a phone match.
+ */
+export async function decideDedupMatch<T extends { id: string }>(
+  mode: DedupMatchMode,
+  byEmail: () => Promise<T | null>,
+  byPhone: () => Promise<T | null>,
+): Promise<T | null> {
+  if (mode === "email") return byEmail();
+  if (mode === "phone") return byPhone();
+  if (mode === "email_and_phone") {
+    const e = await byEmail();
+    if (!e) return null;
+    const p = await byPhone();
+    return p && p.id === e.id ? e : null;
   }
-  return null;
+  return (await byEmail()) ?? (await byPhone());
+}
+
+// ─────────────────────────── re-apply cooling-off (PP8) ───────────────────────────
+
+/**
+ * C2-F7 / PP8 — a person rejected by this tenant within the last `days` days
+ * may not apply again until the cooling-off period ends. Returns the date the
+ * period ends, or null when the person is free to apply (days = 0 → off).
+ * "Rejected" = an application whose current stage is recruiter_rejected; the
+ * clock runs from when it entered that stage.
+ */
+export async function findReapplyCoolingOff(
+  db: Pick<TenantBoundDb, "execute">,
+  tenantId: string,
+  personId: string,
+  days: number,
+  now: Date = new Date(),
+): Promise<Date | null> {
+  if (!(days > 0)) return null;
+  const res = await db.execute(drizzleSql`
+    SELECT MAX(a.stage_entered_at) AS rejected_at
+    FROM public.applications a
+    JOIN public.candidates c ON c.tenant_id = a.tenant_id AND c.id = a.candidate_id
+    WHERE a.tenant_id = ${tenantId}::uuid
+      AND c.person_id = ${personId}::uuid
+      AND a.current_stage = 'recruiter_rejected'
+  `);
+  const rows =
+    (res as { rows?: { rejected_at: Date | string | null }[] }).rows ??
+    (res as unknown as { rejected_at: Date | string | null }[]);
+  const raw = rows[0]?.rejected_at;
+  if (!raw) return null;
+  const rejectedAt = raw instanceof Date ? raw : new Date(raw);
+  const endsAt = new Date(rejectedAt.getTime() + days * 86_400_000);
+  return endsAt.getTime() > now.getTime() ? endsAt : null;
 }
 
 /** The candidate's application on a requisition, if any. */
@@ -449,6 +519,7 @@ export async function ingestApplication(
     knockoutEval.passed,
     parse.parserConfidence,
     knockoutEvaluatedAt,
+    (await loadScreeningPolicy(tenantId)).parserConfidenceFloor,
   );
 
   const wasNewApplication = !existingApp?.id;

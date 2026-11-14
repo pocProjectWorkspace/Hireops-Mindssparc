@@ -45,6 +45,7 @@ import type {
 
 import { buildRequisitionScope } from "./dimensions";
 import { buGroupFor, indexBusinessUnitTree, loadBusinessUnitTree } from "./bu-tree";
+import { loadReportPolicy } from "../policy-parameters";
 
 /**
  * The eight `requisitions.status` values in the order the CHECK
@@ -75,7 +76,8 @@ export const TERMINAL_REQUISITION_STATUSES: ReadonlySet<string> = new Set([
 ]);
 
 /**
- * Row cap on the detail list. At POC scale a tenant has tens of
+ * Row cap on the detail list — the PLATFORM DEFAULT (C2-F7 / PP23: tenant
+ * reportPolicy.requisitionAgingRowCap, 50–5000). At POC scale a tenant has tens of
  * requisitions; the cap exists so a runaway tenant can't stream thousands
  * of rows into a browser table. The `byStatus` rollup is computed over
  * the FULL filtered set, so the headline numbers stay correct even when
@@ -205,6 +207,8 @@ export async function getRequisitionAgingReport(
   filters: ReportFilters = {},
 ): Promise<RequisitionAgingReport> {
   const base = agedCte(tenantId, filters);
+  // C2-F7 / PP23 — the tenant's row cap (reportPolicy; platform 500, 50–5000).
+  const rowCap = (await loadReportPolicy(tenantId)).requisitionAgingRowCap;
 
   const rowRes = await db.execute(dsql`
     ${base}
@@ -221,12 +225,12 @@ export async function getRequisitionAgingReport(
       days_open
     FROM aged
     ORDER BY days_open DESC, created_at ASC
-    LIMIT ${REQUISITION_AGING_ROW_CAP + 1}
+    LIMIT ${rowCap + 1}
   `);
   const raw = asRows<AgingSqlRow>(rowRes);
-  const truncated = raw.length > REQUISITION_AGING_ROW_CAP;
+  const truncated = raw.length > rowCap;
 
-  const rows: RequisitionAgingRowBase[] = raw.slice(0, REQUISITION_AGING_ROW_CAP).map((r) => ({
+  const rows: RequisitionAgingRowBase[] = raw.slice(0, rowCap).map((r) => ({
     requisitionId: r.requisition_id,
     title: r.title,
     status: r.status,
