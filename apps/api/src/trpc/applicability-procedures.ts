@@ -3,12 +3,16 @@
  * preview and named interview loops (Plan A §15 P3 + "resolved configuration
  * preview").
  *
- * Role gates:
- *   - listTemplateAssignments, previewResolvedConfiguration, listInterviewLoops
- *     — admin + hr_head (read);
- *   - create/update/deleteTemplateAssignment, create/updateInterviewLoop —
- *     admin only, wrapped in withAudit (the 0136 audit triggers also record
- *     the row change).
+ * Capability gates (C2-F1 — no role lists):
+ *   - listTemplateAssignments, previewResolvedConfiguration,
+ *     listApplicabilityRequisitions — `settings.applicability_read`
+ *     (default admin + hr_head);
+ *   - create/update/deleteTemplateAssignment — `settings.applicability_write`
+ *     (default admin);
+ *   - list/create/updateInterviewLoop — `settings.interview_templates`
+ *     (default admin; loops are part of interview-template configuration).
+ *   Writes are wrapped in withAudit (the 0136 audit triggers also record the
+ *   row change).
  *
  * Writes validate the target template (must be a live template of that kind
  * in this tenant) and every id inside the conditions (must be this tenant's
@@ -20,8 +24,6 @@
 import { TRPCError } from "@trpc/server";
 import { sql as dsql } from "drizzle-orm";
 import {
-  APPLICABILITY_READ_ROLES,
-  APPLICABILITY_WRITE_ROLES,
   DEFAULT_INTERVIEW_LOOP_KEY,
   TEMPLATE_KINDS,
   TEMPLATE_KIND_META,
@@ -58,20 +60,24 @@ import {
   loadTemplateTargets,
   type TemplateTarget,
 } from "../lib/applicability";
+import { can, requireCapability } from "./permissions";
 import { protectedProcedure, type HonoTRPCContext } from "./trpc-core";
 import { withAudit } from "./with-audit";
 
 type TxDb = NonNullable<HonoTRPCContext["db"]>;
 
-const READ = new Set<string>(APPLICABILITY_READ_ROLES);
-const WRITE = new Set<string>(APPLICABILITY_WRITE_ROLES);
-
 function asRows<T>(res: unknown): T[] {
   return (res as { rows?: T[] }).rows ?? (res as T[]);
 }
 
-function gate(ctx: HonoTRPCContext, allowed: Set<string>, message: string) {
-  if (!ctx.roles.some((r) => allowed.has(r))) throw new TRPCError({ code: "FORBIDDEN", message });
+type GateCap =
+  | "settings.applicability_read"
+  | "settings.applicability_write"
+  | "settings.interview_templates";
+
+/** C2-F1 — capability gate (no role lists), then the tenant-bound db. */
+function gate(ctx: HonoTRPCContext, cap: GateCap, message: string) {
+  requireCapability(ctx, cap, message);
   if (!ctx.db) {
     throw new TRPCError({
       code: "INTERNAL_SERVER_ERROR",
@@ -84,6 +90,9 @@ function gate(ctx: HonoTRPCContext, allowed: Set<string>, message: string) {
   return { db: ctx.db, tenantId: ctx.tenantId };
 }
 
+const READ = "settings.applicability_read" as const;
+const WRITE = "settings.applicability_write" as const;
+const LOOPS = "settings.interview_templates" as const;
 const READ_MSG = "Template assignments are visible to admin and hr_head only";
 const WRITE_MSG = "Managing template assignments is admin-only";
 
@@ -246,7 +255,7 @@ export const applicabilityProcedures = {
             label: t.label,
             isActive: t.isActive,
           })),
-        canWrite: ctx.roles.some((r) => WRITE.has(r)),
+        canWrite: can(ctx, WRITE),
       };
     }),
 
@@ -415,11 +424,7 @@ export const applicabilityProcedures = {
     .input(listInterviewLoopsInputSchema)
     .output(listInterviewLoopsOutputSchema)
     .query(async ({ ctx }) => {
-      const { db, tenantId } = gate(
-        ctx,
-        READ,
-        "Interview loops are visible to admin and hr_head only",
-      );
+      const { db, tenantId } = gate(ctx, LOOPS, "Interview loops are admin-only");
       return { loops: await loopRows(db, tenantId) };
     }),
 
@@ -428,7 +433,7 @@ export const applicabilityProcedures = {
     .output(interviewLoopMutationOutputSchema)
     .mutation(async ({ ctx, input }) =>
       withAudit("create_interview_loop", ctx, input, async () => {
-        const { db, tenantId } = gate(ctx, WRITE, "Managing interview loops is admin-only");
+        const { db, tenantId } = gate(ctx, LOOPS, "Managing interview loops is admin-only");
         const by = await actorMembership(db, ctx);
         await guarded(
           db,
@@ -451,7 +456,7 @@ export const applicabilityProcedures = {
     .output(interviewLoopMutationOutputSchema)
     .mutation(async ({ ctx, input }) =>
       withAudit("update_interview_loop", ctx, input, async () => {
-        const { db, tenantId } = gate(ctx, WRITE, "Managing interview loops is admin-only");
+        const { db, tenantId } = gate(ctx, LOOPS, "Managing interview loops is admin-only");
         const current = (await loopRows(db, tenantId)).find((l) => l.id === input.id);
         if (!current)
           throw new TRPCError({ code: "NOT_FOUND", message: "Interview loop not found" });

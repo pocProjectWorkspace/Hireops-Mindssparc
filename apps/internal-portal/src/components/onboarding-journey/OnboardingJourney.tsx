@@ -127,6 +127,7 @@ const NAV_HELP: Record<string, string> = {
   "email-templates": "Email templates for candidate comms.",
   "candidate-fields": "Custom candidate fields.",
   "interview-templates": "Reusable interview templates.",
+  applicability: "Which interview loop and scorecard applies to which requisition.",
   "business-units": "Business units and org structure.",
   "comp-bands": "Compensation bands by role and level.",
   organisation: "Legal entities, locations and which entity each business unit belongs to.",

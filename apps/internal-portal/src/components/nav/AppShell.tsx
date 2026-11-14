@@ -717,6 +717,7 @@ export const ADMIN_NAV: NavItem[] = [
     key: "applicability",
     label: "Applicability",
     href: "/admin/applicability",
+    caps: ["settings.applicability_read"],
     icon: <IconSources />,
   },
   // T3.1 / G14 — business-unit management (org structure). The managed list

@@ -1,5 +1,5 @@
 import { redirect } from "next/navigation";
-import { requireAuth, sessionUserChip } from "@/lib/auth";
+import { requireAuth, sessionCan, sessionUserChip } from "@/lib/auth";
 import { createServerTRPCCaller } from "@/lib/trpc-server";
 import { AppShell } from "@/components/nav/AppShell";
 import { ApplicabilityClient } from "./ApplicabilityClient";
@@ -16,15 +16,16 @@ export const dynamic = "force-dynamic"; // Gated + reads live tenant config.
  * match keeps today's tenant default. A "Test against a requisition" panel
  * shows the resolved configuration and why.
  *
- * Readable by admin + hr_head (hr_head read-only); writes are admin-only and
- * enforced server-side as well.
+ * Gated on capabilities (C2-F1): `settings.applicability_read` to see the page
+ * (default admin + hr_head), `settings.applicability_write` to edit (default
+ * admin). The procedures enforce the same capabilities server-side.
  */
 export default async function ApplicabilityPage() {
   const session = await requireAuth();
-  const isAdmin = session.roles.includes("admin");
-  if (!isAdmin && !session.roles.includes("hr_head")) {
+  if (!sessionCan(session, "settings.applicability_read")) {
     redirect("/triage");
   }
+  const canEdit = sessionCan(session, "settings.applicability_write");
   const caller = createServerTRPCCaller(session);
   const [initial, architecture] = await Promise.all([
     caller.listTemplateAssignments({}),
@@ -32,8 +33,8 @@ export default async function ApplicabilityPage() {
   ]);
 
   return (
-    <AppShell title="Applicability" isAdmin active="applicability" user={sessionUserChip(session)}>
-      <ApplicabilityClient initial={initial} architecture={architecture} canEdit={isAdmin} />
+    <AppShell title="Applicability" active="applicability" user={sessionUserChip(session)}>
+      <ApplicabilityClient initial={initial} architecture={architecture} canEdit={canEdit} />
     </AppShell>
   );
 }

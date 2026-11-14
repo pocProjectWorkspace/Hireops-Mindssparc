@@ -100,6 +100,10 @@ const LEGACY: Record<Capability, LegacyGate> = {
   "settings.candidate_fields": { was: "CANDIDATE_FIELD_POLICY_ROLES", full: ["admin"] },
   "settings.email_templates": { was: "EMAIL_TEMPLATE_ROLES", full: ["admin"] },
   "settings.interview_templates": { was: "INTERVIEW_TEMPLATE_ADMIN_ROLES", full: ["admin"] },
+  // NEW capabilities (C2-F12 merged after C2-F1) — not in b19322f; the grants
+  // equal F12's own role sets, which these capabilities replace.
+  "settings.applicability_read": { was: "(new — C2-F12 APPLICABILITY_READ_ROLES)", full: ["admin", "hr_head"] },
+  "settings.applicability_write": { was: "(new — C2-F12 APPLICABILITY_WRITE_ROLES)", full: ["admin"] },
   "settings.scheduling": { was: "SCHEDULING_SETTINGS_ADMIN_ROLES", full: ["admin"] },
   "settings.sources_read": { was: "TENANT_SOURCE_READ_ROLES", full: ["admin", "recruiter"] },
   "settings.sources_write": { was: "TENANT_SOURCE_ADMIN_ROLES", full: ["admin"] },

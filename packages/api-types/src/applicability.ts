@@ -457,10 +457,6 @@ export function rankAssignments(
 
 // ─────────────────────────── procedure contracts ───────────────────────────
 
-/** Admin write; hr_head read (list + preview). */
-export const APPLICABILITY_WRITE_ROLES = ["admin"] as const;
-export const APPLICABILITY_READ_ROLES = ["admin", "hr_head"] as const;
-
 export const templateAssignmentNameSchema = z.string().trim().min(1).max(120);
 export const templateAssignmentPrioritySchema = z.number().int().min(-1000).max(1000);
 

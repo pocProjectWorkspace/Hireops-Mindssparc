@@ -345,12 +345,13 @@ describe.skipIf(!HAS_LOCAL_PG)("C2-F12 applicability resolver (local Postgres)",
     );
   });
 
-  it("role gates: admin write, hr_head read + preview, everyone else forbidden", async () => {
+  it("capability gates: admin write, hr_head read + preview, everyone else forbidden", async () => {
     const hr = caller(["hr_head"]);
     const list = await hr.listTemplateAssignments({});
     assert.equal(list.canWrite, false);
     await hr.previewResolvedConfiguration({ requisitionId: R_AP15 });
-    await hr.listInterviewLoops({});
+    // Named loops are interview-template configuration (settings.interview_templates, admin).
+    await expectTrpc(hr.listInterviewLoops({}), "FORBIDDEN");
     const loop = await loopId("default");
     await expectTrpc(
       hr.createTemplateAssignment({ templateKind: "interview_loop", name: "x", templateId: loop }),

@@ -655,6 +655,24 @@ export const CAPABILITY_CATALOG = {
     scopes: ALL_ONLY,
     defaults: all("admin"),
   },
+  // C2-F12 (merged after C2-F1) — template applicability rules + the
+  // resolved-configuration preview. NEW capabilities: the default grants equal
+  // F12's own role sets (APPLICABILITY_READ_ROLES / _WRITE_ROLES, now deleted).
+  "settings.applicability_read": {
+    area: "settings",
+    label: "Read applicability rules",
+    description:
+      "See which template applies to which requisition, test the resolved configuration, list interview loops.",
+    scopes: ALL_ONLY,
+    defaults: all("admin", "hr_head"),
+  },
+  "settings.applicability_write": {
+    area: "settings",
+    label: "Manage applicability rules",
+    description: "Create, edit and delete template applicability rules.",
+    scopes: ALL_ONLY,
+    defaults: all("admin"),
+  },
   "settings.scheduling": {
     area: "settings",
     label: "Scheduling settings",
