@@ -13,7 +13,11 @@
  * destructive review card shows what will be recorded.
  */
 
-import { cancelInterviewInputSchema, type CancelInterviewInput } from "@hireops/api-types";
+import {
+  systemRolesWithCapability,
+  cancelInterviewInputSchema,
+  type CancelInterviewInput,
+} from "@hireops/api-types";
 import type { IrisAction } from "../registry";
 
 export const cancelInterviewAction: IrisAction<CancelInterviewInput> = {
@@ -22,7 +26,10 @@ export const cancelInterviewAction: IrisAction<CancelInterviewInput> = {
   group: "Interviews",
   // Mirrors INTERVIEW_MANAGE_ROLES — the roles that schedule / cancel interviews
   // in the app (the cancelInterview procedure this dispatches gates the same set).
-  roles: ["admin", "hiring_manager", "recruiter"],
+  // C2-F1: gated on the capability the app surface checks; `roles` is derived
+  // (the base roles whose platform bundle holds it — the Iris policy columns).
+  capability: "interviews.manage",
+  roles: systemRolesWithCapability("interviews.manage"),
   inputSchema: cancelInterviewInputSchema,
   // Cancelling a scheduled interview notifies the candidate → destructive framing.
   destructive: true,

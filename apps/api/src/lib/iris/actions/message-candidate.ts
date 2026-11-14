@@ -17,7 +17,11 @@
  * draft to prefill it. Sending requires the explicit human Confirm.
  */
 
-import { messageCandidateInputSchema, type MessageCandidateInput } from "@hireops/api-types";
+import {
+  systemRolesWithCapability,
+  messageCandidateInputSchema,
+  type MessageCandidateInput,
+} from "@hireops/api-types";
 import type { IrisAction } from "../registry";
 
 /** How much of the body to echo into the pre-confirm preview. */
@@ -29,7 +33,10 @@ export const messageCandidateAction: IrisAction<MessageCandidateInput> = {
   group: "Communication",
   // Mirrors RECRUITER_SURFACE_ROLES — the roles that message candidates in the
   // app (the messageCandidate procedure this dispatches gates the same set).
-  roles: ["admin", "recruiter"],
+  // C2-F1: gated on the capability the app surface checks; `roles` is derived
+  // (the base roles whose platform bundle holds it — the Iris policy columns).
+  capability: "candidates.triage",
+  roles: systemRolesWithCapability("candidates.triage"),
   inputSchema: messageCandidateInputSchema,
   destructive: false,
   bulk: false,

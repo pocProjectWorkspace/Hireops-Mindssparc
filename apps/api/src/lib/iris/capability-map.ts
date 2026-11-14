@@ -9,20 +9,28 @@
  * capability that is not here. When a question isn't covered by any eligible
  * entry, Iris says so honestly rather than guessing.
  *
- * `roles` gates an entry to the personas who can actually reach that feature
- * (mirrors the nav + action-catalog role model). An entry with an EMPTY roles
- * array is universal (shown to everyone). The help proc filters to the caller's
+ * `capabilities` gates an entry to the members who can actually reach that
+ * feature (C2-F1: the same capability the nav + the action catalog check; the
+ * entry shows when the caller holds ANY of them). An EMPTY list is universal
+ * (shown to everyone). The help proc filters to the caller's
  * eligible entries before building the prompt, so Iris never explains a feature
  * the user can't use.
  */
+
+import {
+  hasAnyCapability,
+  resolveEffectivePermissions,
+  type Capability,
+  type EffectivePermissions,
+} from "@hireops/api-types";
 
 export interface CapabilityEntry {
   /** Stable id (used for citation + dedupe). */
   id: string;
   /** Short human title of the feature / task. */
   title: string;
-  /** Roles that can reach this; empty = universal. */
-  roles: string[];
+  /** Capabilities that reach this (any of); empty = universal. */
+  capabilities: Capability[];
   /** The real portal route this lives on (for "where do I go"). */
   route?: string;
   /** One-line description of what it's for. */
@@ -42,7 +50,7 @@ export const CAPABILITY_MAP: CapabilityEntry[] = [
   {
     id: "create-requisition",
     title: "Open a new requisition and generate its JD",
-    roles: ["hiring_manager", "admin"],
+    capabilities: ["requisitions.write"],
     route: "/requisitions",
     summary: "Start a new open role and let Iris draft the job description.",
     steps: [
@@ -55,7 +63,7 @@ export const CAPABILITY_MAP: CapabilityEntry[] = [
   {
     id: "requisition-approval-track",
     title: "Track a requisition's approval",
-    roles: ["hiring_manager", "recruiter", "admin"],
+    capabilities: ["requisitions.workspace"],
     route: "/approval-tracker",
     summary: "See where a requisition sits in the approval chain.",
     steps: [
@@ -66,7 +74,7 @@ export const CAPABILITY_MAP: CapabilityEntry[] = [
   {
     id: "approve-requisition",
     title: "Approve or reject a requisition",
-    roles: ["hr_head", "admin"],
+    capabilities: ["requisitions.approve"],
     route: "/requisition-approvals",
     summary: "Review requisitions submitted for HR-head approval and decide.",
     steps: [
@@ -78,7 +86,7 @@ export const CAPABILITY_MAP: CapabilityEntry[] = [
   {
     id: "hold-resume-requisition",
     title: "Put a requisition on hold or resume it",
-    roles: ["hiring_manager", "recruiter", "admin"],
+    capabilities: ["requisitions.post"],
     route: "/requisitions",
     summary: "Pause hiring on a role, then bring it back when ready.",
     steps: [
@@ -90,7 +98,7 @@ export const CAPABILITY_MAP: CapabilityEntry[] = [
   {
     id: "skill-weighting",
     title: "Tune skill weighting for a role",
-    roles: ["hiring_manager", "admin"],
+    capabilities: ["requisitions.write"],
     route: "/skill-weighting",
     summary: "Shape how candidates are scored against a requisition's skills.",
     steps: [
@@ -101,7 +109,7 @@ export const CAPABILITY_MAP: CapabilityEntry[] = [
   {
     id: "jd-library",
     title: "Browse the JD library",
-    roles: ["hiring_manager", "admin"],
+    capabilities: ["requisitions.owner_insights"],
     route: "/jd-library",
     summary: "See every job description across your requisitions.",
     steps: ["Open JD library from the left nav.", "Search or expand a row to read its full JD."],
@@ -111,7 +119,7 @@ export const CAPABILITY_MAP: CapabilityEntry[] = [
   {
     id: "triage-candidates",
     title: "Triage incoming candidates",
-    roles: ["recruiter", "admin"],
+    capabilities: ["candidates.triage"],
     route: "/triage",
     summary: "Work the freshest applications with AI scores and quick actions.",
     steps: [
@@ -122,7 +130,7 @@ export const CAPABILITY_MAP: CapabilityEntry[] = [
   {
     id: "advance-candidate",
     title: "Advance a candidate to the next stage",
-    roles: ["recruiter", "admin"],
+    capabilities: ["candidates.triage"],
     route: "/candidates",
     summary: "Move one candidate forward in the pipeline.",
     steps: [
@@ -134,7 +142,7 @@ export const CAPABILITY_MAP: CapabilityEntry[] = [
   {
     id: "reject-candidate",
     title: "Reject a candidate (with a reason)",
-    roles: ["recruiter", "admin"],
+    capabilities: ["candidates.triage"],
     route: "/candidates",
     summary: "End one candidate's application; the reason is recorded and shown on their record.",
     steps: [
@@ -146,7 +154,7 @@ export const CAPABILITY_MAP: CapabilityEntry[] = [
   {
     id: "bulk-pipeline",
     title: "Advance or reject a whole stage in bulk",
-    roles: ["recruiter", "admin"],
+    capabilities: ["candidates.triage"],
     route: "/candidates",
     summary: "Act on every candidate on a requisition currently at a given stage.",
     steps: [
@@ -158,7 +166,7 @@ export const CAPABILITY_MAP: CapabilityEntry[] = [
   {
     id: "message-candidate",
     title: "Message a candidate",
-    roles: ["recruiter", "admin"],
+    capabilities: ["candidates.triage"],
     route: "/candidates",
     summary: "Send a candidate an email; Iris can draft it from their real context.",
     steps: [
@@ -170,7 +178,7 @@ export const CAPABILITY_MAP: CapabilityEntry[] = [
   {
     id: "shortlist",
     title: "Review the AI shortlist",
-    roles: ["recruiter", "admin"],
+    capabilities: ["candidates.triage"],
     route: "/shortlist",
     summary: "See the AI-ranked shortlist for your roles.",
     steps: [
@@ -181,7 +189,7 @@ export const CAPABILITY_MAP: CapabilityEntry[] = [
   {
     id: "missing-info",
     title: "Chase missing candidate info",
-    roles: ["recruiter", "admin"],
+    capabilities: ["candidates.triage"],
     route: "/missing-info",
     summary: "Find candidates missing required details and request them.",
     steps: [
@@ -194,7 +202,7 @@ export const CAPABILITY_MAP: CapabilityEntry[] = [
   {
     id: "cancel-interview",
     title: "Cancel a scheduled interview",
-    roles: ["hiring_manager", "recruiter", "admin"],
+    capabilities: ["interviews.manage"],
     route: "/interviews",
     summary: "Cancel an interview; the candidate is notified and it's recorded.",
     steps: [
@@ -206,7 +214,7 @@ export const CAPABILITY_MAP: CapabilityEntry[] = [
   {
     id: "panel-feedback",
     title: "Submit interview feedback",
-    roles: ["panel_member", "admin"],
+    capabilities: ["interviews.panel"],
     route: "/panel",
     summary: "See your assigned interviews and submit structured feedback.",
     steps: [
@@ -219,7 +227,7 @@ export const CAPABILITY_MAP: CapabilityEntry[] = [
   {
     id: "open-onboarding-case",
     title: "Open an onboarding case",
-    roles: ["recruiter", "hr_ops", "people_ops", "admin"],
+    capabilities: ["onboarding.manage"],
     route: "/onboarding",
     summary: "Start onboarding for a candidate who has accepted.",
     steps: [
@@ -231,7 +239,7 @@ export const CAPABILITY_MAP: CapabilityEntry[] = [
   {
     id: "request-documents",
     title: "Request documents from a candidate",
-    roles: ["hr_ops", "admin"],
+    capabilities: ["hr_ops.documents"],
     route: "/hr-cases",
     summary: "Ask a candidate for specific documents.",
     steps: [
@@ -243,7 +251,7 @@ export const CAPABILITY_MAP: CapabilityEntry[] = [
   {
     id: "request-offer-approval",
     title: "Send an offer for approval",
-    roles: ["hr_ops", "admin"],
+    capabilities: ["offers.comp_desk"],
     route: "/hr-cases",
     summary: "Route an offer to the comp desk for approval.",
     steps: [
@@ -255,7 +263,7 @@ export const CAPABILITY_MAP: CapabilityEntry[] = [
   {
     id: "hr-cases",
     title: "Work HR cases and rounds",
-    roles: ["hr_ops", "admin"],
+    capabilities: ["hr_ops.cases"],
     route: "/hr-cases",
     summary: "Manage HR cases, rounds and documents in one workspace.",
     steps: ["Open HR cases from the left nav.", "Open a case to see its checklist and documents."],
@@ -263,7 +271,7 @@ export const CAPABILITY_MAP: CapabilityEntry[] = [
   {
     id: "offboarding",
     title: "Start or track offboarding",
-    roles: ["hr_ops", "people_ops", "admin"],
+    capabilities: ["onboarding.offboarding"],
     route: "/offboarding",
     summary: "Manage separations and settlements.",
     steps: ["Open Offboarding from the left nav.", "Start a new case or open an existing one."],
@@ -273,7 +281,7 @@ export const CAPABILITY_MAP: CapabilityEntry[] = [
   {
     id: "ask-iris",
     title: "What Iris can do for you",
-    roles: [],
+    capabilities: [],
     summary: "Iris can run real actions you confirm, and help you find your way around.",
     steps: [
       "Click Ask Iris in the top bar.",
@@ -283,12 +291,19 @@ export const CAPABILITY_MAP: CapabilityEntry[] = [
 ];
 
 /**
- * The capability entries a role set may see. An entry with no `roles` is
- * universal; otherwise the caller must carry at least one listed role. Mirrors
- * the nav + action-catalog gate, so Iris only ever explains reachable features.
+ * The capability entries the caller may see: universal entries plus any whose
+ * capabilities the caller holds. Mirrors the nav + action-catalog gate, so Iris
+ * only ever explains reachable features.
  */
-export function capabilityEntriesForRoles(roles: string[]): CapabilityEntry[] {
+export function capabilityEntriesForPermissions(
+  perms: Pick<EffectivePermissions, "caps">,
+): CapabilityEntry[] {
   return CAPABILITY_MAP.filter(
-    (e) => e.roles.length === 0 || e.roles.some((r) => roles.includes(r)),
+    (e) => e.capabilities.length === 0 || hasAnyCapability(perms, e.capabilities),
   );
+}
+
+/** The entries for a set of base roles under the PLATFORM DEFAULT bundles. */
+export function capabilityEntriesForRoles(roles: string[]): CapabilityEntry[] {
+  return capabilityEntriesForPermissions(resolveEffectivePermissions({ roles, customRole: null }));
 }

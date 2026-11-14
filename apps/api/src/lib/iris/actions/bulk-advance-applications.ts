@@ -15,6 +15,7 @@
  */
 
 import {
+  systemRolesWithCapability,
   bulkAdvanceApplicationsInputSchema,
   type BulkAdvanceApplicationsInput,
 } from "@hireops/api-types";
@@ -26,7 +27,10 @@ export const bulkAdvanceApplicationsAction: IrisAction<BulkAdvanceApplicationsIn
   label: "Advance candidates in bulk",
   group: "Pipeline",
   // Same pipeline operators as the single advance — recruiters + admin.
-  roles: ["admin", "recruiter"],
+  // C2-F1: gated on the capability the app surface checks; `roles` is derived
+  // (the base roles whose platform bundle holds it — the Iris policy columns).
+  capability: "candidates.triage",
+  roles: systemRolesWithCapability("candidates.triage"),
   inputSchema: bulkAdvanceApplicationsInputSchema,
   destructive: false,
   bulk: true,

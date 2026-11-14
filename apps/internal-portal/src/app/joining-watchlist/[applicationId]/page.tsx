@@ -1,6 +1,6 @@
 import { notFound, redirect } from "next/navigation";
 import { TRPCError } from "@trpc/server";
-import { requireAuth, sessionUserChip } from "@/lib/auth";
+import { requireAuth, sessionCan, sessionUserChip } from "@/lib/auth";
 import { createServerTRPCCaller } from "@/lib/trpc-server";
 import { AppShell } from "@/components/nav/AppShell";
 import { EngagementTimelineClient } from "./EngagementTimelineClient";
@@ -19,8 +19,7 @@ export default async function EngagementTimelinePage({
   params: { applicationId: string };
 }) {
   const session = await requireAuth();
-  const allowed = ["recruiter", "hr_head", "admin"];
-  if (!session.roles.some((r) => allowed.includes(r))) redirect("/triage");
+  if (!sessionCan(session, "onboarding.prejoining_watchlist")) redirect("/triage");
   const caller = createServerTRPCCaller(session);
   let timeline;
   try {

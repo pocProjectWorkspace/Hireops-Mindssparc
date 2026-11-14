@@ -19,7 +19,7 @@ export const dynamic = "force-dynamic"; // Admin-gated + reads the live notifica
  * screen lands with data.
  */
 export default async function MessagingPage() {
-  const session = await requireAdmin();
+  const session = await requireAdmin("governance.audit_log");
   const caller = createServerTRPCCaller(session);
   const initial = await caller.listNotificationLog({ limit: 100 });
 

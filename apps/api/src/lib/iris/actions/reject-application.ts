@@ -11,7 +11,11 @@
  * `rejectApplicationInputSchema`, unchanged.
  */
 
-import { rejectApplicationInputSchema, type RejectApplicationInput } from "@hireops/api-types";
+import {
+  systemRolesWithCapability,
+  rejectApplicationInputSchema,
+  type RejectApplicationInput,
+} from "@hireops/api-types";
 import type { IrisAction } from "../registry";
 
 export const rejectApplicationAction: IrisAction<RejectApplicationInput> = {
@@ -19,7 +23,10 @@ export const rejectApplicationAction: IrisAction<RejectApplicationInput> = {
   label: "Reject candidate",
   group: "Pipeline",
   // The pipeline operators who reject candidates in triage — recruiters + admin.
-  roles: ["admin", "recruiter"],
+  // C2-F1: gated on the capability the app surface checks; `roles` is derived
+  // (the base roles whose platform bundle holds it — the Iris policy columns).
+  capability: "candidates.triage",
+  roles: systemRolesWithCapability("candidates.triage"),
   // Reuse the triage procedure's real input contract, unchanged.
   inputSchema: rejectApplicationInputSchema,
   // Ends the candidate's application — the client shows destructive framing.

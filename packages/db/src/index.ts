@@ -21,6 +21,9 @@ export {
 } from "./envelope";
 export { storeIntegrationCredential, getIntegrationCredential } from "./integration-credentials";
 export { recordPiiAccess } from "./pii-access";
+// C2-F1 — the shared custom-role + capability-grants read.
+export { readMemberPermissionRow } from "./member-permissions";
+export type { MemberPermissionRow } from "./member-permissions";
 export type { RecordPiiAccessArgs } from "./pii-access";
 export type {
   StoreCredentialArgs,

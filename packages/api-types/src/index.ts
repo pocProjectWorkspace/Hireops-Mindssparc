@@ -74,3 +74,4 @@ export * from "./org-architecture";
 export * from "./tenant-config";
 export * from "./provisioning";
 export * from "./starter-packs";
+export * from "./capabilities";

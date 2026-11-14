@@ -14,6 +14,7 @@
  */
 
 import {
+  systemRolesWithCapability,
   bulkRejectApplicationsInputSchema,
   type BulkRejectApplicationsInput,
 } from "@hireops/api-types";
@@ -25,7 +26,10 @@ export const bulkRejectApplicationsAction: IrisAction<BulkRejectApplicationsInpu
   label: "Reject candidates in bulk",
   group: "Pipeline",
   // Same pipeline operators as the single reject — recruiters + admin.
-  roles: ["admin", "recruiter"],
+  // C2-F1: gated on the capability the app surface checks; `roles` is derived
+  // (the base roles whose platform bundle holds it — the Iris policy columns).
+  capability: "candidates.triage",
+  roles: systemRolesWithCapability("candidates.triage"),
   inputSchema: bulkRejectApplicationsInputSchema,
   // Ends every matching candidate's application — the client shows destructive
   // framing on the confirm step.

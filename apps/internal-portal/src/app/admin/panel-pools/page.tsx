@@ -1,5 +1,5 @@
 import { redirect } from "next/navigation";
-import { requireAuth, sessionUserChip } from "@/lib/auth";
+import { requireAuth, sessionCan, sessionUserChip } from "@/lib/auth";
 import { createServerTRPCCaller } from "@/lib/trpc-server";
 import { AppShell } from "@/components/nav/AppShell";
 import { PanelPoolsClient } from "./PanelPoolsClient";
@@ -24,7 +24,7 @@ export const dynamic = "force-dynamic"; // Gated + reads live tenant config.
  */
 export default async function PanelPoolsPage() {
   const session = await requireAuth();
-  if (!session.roles.includes("admin") && !session.roles.includes("recruiter")) {
+  if (!sessionCan(session, "interviews.panel_pools_write")) {
     redirect("/triage");
   }
   const caller = createServerTRPCCaller(session);

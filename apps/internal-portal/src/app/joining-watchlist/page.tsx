@@ -1,5 +1,5 @@
 import { redirect } from "next/navigation";
-import { requireAuth, sessionUserChip } from "@/lib/auth";
+import { requireAuth, sessionCan, sessionUserChip } from "@/lib/auth";
 import { createServerTRPCCaller } from "@/lib/trpc-server";
 import { AppShell } from "@/components/nav/AppShell";
 import { JoiningWatchlistClient } from "./JoiningWatchlistClient";
@@ -13,12 +13,11 @@ export const dynamic = "force-dynamic"; // Gated + reads live engagement state.
  * missed check-ins. No score, no ranking, no prediction.
  *
  * recruiter (own applications) + hr_head + admin. Double-gated: this redirect
- * and the listJoiningWatchlist procedure (JOINING_WATCHLIST_ROLES).
+ * and the listJoiningWatchlist procedure (the onboarding.prejoining_watchlist capability).
  */
 export default async function JoiningWatchlistPage() {
   const session = await requireAuth();
-  const allowed = ["recruiter", "hr_head", "admin"];
-  if (!session.roles.some((r) => allowed.includes(r))) redirect("/triage");
+  if (!sessionCan(session, "onboarding.prejoining_watchlist")) redirect("/triage");
   const caller = createServerTRPCCaller(session);
   const initial = await caller.listJoiningWatchlist({});
   return (
@@ -31,7 +30,7 @@ export default async function JoiningWatchlistPage() {
     >
       <JoiningWatchlistClient
         initial={initial}
-        canConfigure={session.roles.includes("admin") || session.roles.includes("hr_head")}
+        canConfigure={sessionCan(session, "onboarding.prejoining_settings")}
       />
     </AppShell>
   );

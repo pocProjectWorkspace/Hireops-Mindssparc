@@ -1,4 +1,4 @@
-import { requireAuth, sessionUserChip } from "@/lib/auth";
+import { requireAuth, sessionCan, sessionUserChip } from "@/lib/auth";
 import { AppShell } from "@/components/nav/AppShell";
 import { AvailabilityClient } from "./AvailabilityClient";
 
@@ -14,9 +14,7 @@ export const dynamic = "force-dynamic"; // Auth-gated + reads live availability.
  */
 export default async function AvailabilityPage() {
   const session = await requireAuth();
-  const canViewOthers = ["recruiter", "hiring_manager", "admin"].some((r) =>
-    session.roles.includes(r),
-  );
+  const canViewOthers = sessionCan(session, "interviews.manage");
   return (
     <AppShell
       title="My availability"

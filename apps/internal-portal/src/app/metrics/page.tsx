@@ -1,4 +1,4 @@
-import { requireAuth, sessionUserChip } from "@/lib/auth";
+import { requireAuth, sessionCan, sessionUserChip } from "@/lib/auth";
 import { createServerTRPCCaller } from "@/lib/trpc-server";
 import { AppShell } from "@/components/nav/AppShell";
 import { RoleNotice } from "@/components/nav/RoleNotice";
@@ -21,12 +21,10 @@ export const dynamic = "force-dynamic"; // Role-gated + reads live pipeline/AI/o
  * rather than a bare 403.
  */
 
-const READ_ROLES = ["hr_head", "admin"];
-
 export default async function MetricsPage() {
   const session = await requireAuth();
   const isAdmin = session.roles.includes("admin");
-  const allowed = session.roles.some((r) => READ_ROLES.includes(r));
+  const allowed = sessionCan(session, "reports.hr_metrics");
 
   if (!allowed) {
     return (

@@ -15,7 +15,7 @@ export const dynamic = "force-dynamic"; // Admin-gated + reads the live audit lo
  * expand, and Load-more paging off nextCursor.
  */
 export default async function AuditPage() {
-  const session = await requireAdmin();
+  const session = await requireAdmin("governance.audit_log");
   const caller = createServerTRPCCaller(session);
   const initial = await caller.listAuditEvents({ limit: 50 });
 

@@ -23,7 +23,7 @@ export const dynamic = "force-dynamic"; // Admin-gated + reads live tenant confi
  * this page links to. Nothing is duplicated or rewritten.
  */
 export default async function BiasShieldPage() {
-  const session = await requireAdmin();
+  const session = await requireAdmin("settings.ai");
   const caller = createServerTRPCCaller(session);
   const lexicon = await caller.getBiasLexicon({});
 

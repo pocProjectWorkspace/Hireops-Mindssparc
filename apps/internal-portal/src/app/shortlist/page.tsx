@@ -1,4 +1,4 @@
-import { requireAuth, sessionUserChip } from "@/lib/auth";
+import { requireAuth, sessionCan, sessionUserChip } from "@/lib/auth";
 import { createServerTRPCCaller } from "@/lib/trpc-server";
 import { AppShell } from "@/components/nav/AppShell";
 import { RoleNotice } from "@/components/nav/RoleNotice";
@@ -19,12 +19,10 @@ export const dynamic = "force-dynamic"; // Auth-gated + reads live scored pipeli
  * reject actions use undo).
  */
 
-const READ_ROLES = ["recruiter", "admin"];
-
 export default async function ShortlistPage() {
   const session = await requireAuth();
   const isAdmin = session.roles.includes("admin");
-  const allowed = session.roles.some((r) => READ_ROLES.includes(r));
+  const allowed = sessionCan(session, "candidates.triage");
 
   if (!allowed) {
     return (
@@ -64,7 +62,11 @@ export default async function ShortlistPage() {
       >
         {/* PC-26 — roles short of their diverse slate (counts only). */}
         <DiverseSlateShortRoles variant="banner" />
-        <ShortlistView initial={initial} canManageDefaults={isAdmin} sourceLabels={sourceLabels} />
+        <ShortlistView
+          initial={initial}
+          canManageDefaults={sessionCan(session, "settings.system")}
+          sourceLabels={sourceLabels}
+        />
         <CandidateDetailDrawer />
       </AppShell>
     </UndoToastProvider>

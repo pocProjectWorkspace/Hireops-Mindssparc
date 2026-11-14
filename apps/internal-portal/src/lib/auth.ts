@@ -3,10 +3,12 @@ import { redirect } from "next/navigation";
 import { sql as poolSql } from "@hireops/db";
 import { decodeJwt } from "jose";
 import { createSupabaseServerClient } from "./supabase-server";
-import { readSessionClaims, type AuthSession } from "./session-claims";
+import { readSessionClaims, sessionCan, type AuthSession } from "./session-claims";
+import { loadSessionPermissions } from "./permissions";
+import type { Capability } from "@hireops/api-types";
 
 export type { AuthSession } from "./session-claims";
-export { sessionUserChip } from "./session-claims";
+export { sessionCan, sessionScope, sessionUserChip } from "./session-claims";
 
 /**
  * Where a signed-in-but-not-internal identity gets sent. It goes through
@@ -91,7 +93,9 @@ export async function requireAuth(): Promise<AuthSession> {
   if ((await loadTenantStatus(claims.tenantId)) !== "active") {
     redirect(TENANT_INACTIVE_EXIT);
   }
-  return claims;
+  // C2-F1: pages + nav gate on capabilities, resolved once per request.
+  const perms = await loadSessionPermissions(claims);
+  return { ...claims, caps: perms.caps, roleKey: perms.roleKey };
 }
 
 /**
@@ -116,14 +120,16 @@ export async function requirePlatformOperator(): Promise<{ userId: string; email
 }
 
 /**
- * Stronger guard: requires the caller to have the 'admin' role on
- * their tenant membership. /admin/* routes use this. Anyone else gets
- * a 403-equivalent (we redirect to /triage rather than show a bare 403
- * — the user is authenticated, just on the wrong screen).
+ * Stronger guard for /admin/* routes: requires the capability the page
+ * administers (C2-F1 — `admin.console` when the page names none). The platform
+ * default bundle gives every admin capability to `admin` only, so for a member
+ * without a custom role this is exactly the old "has the admin role" check.
+ * Anyone else gets a 403-equivalent (we redirect to /triage rather than show a
+ * bare 403 — the user is authenticated, just on the wrong screen).
  */
-export async function requireAdmin(): Promise<AuthSession> {
+export async function requireAdmin(cap: Capability = "admin.console"): Promise<AuthSession> {
   const session = await requireAuth();
-  if (!session.roles.includes("admin")) {
+  if (!sessionCan(session, cap)) {
     redirect("/triage");
   }
   return session;

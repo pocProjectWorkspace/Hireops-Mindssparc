@@ -2,12 +2,14 @@
 
 import { cn } from "@/components/ui/cn";
 import { useModuleFilter } from "@/components/TenantModulesProvider";
-import type { NavItem, PortalNavKey } from "./AppShell";
+import { useCapabilities } from "@/components/CapabilitiesProvider";
+import { navItemVisible, type NavItem, type PortalNavKey } from "./AppShell";
 
 /**
  * Sidebar nav group (moved out of AppShell for C1-F10). A client component so
  * it can read the tenant's module entitlements from TenantModulesProvider and
- * drop items whose module is switched off — AppShell itself stays a server
+ * the member's capabilities from CapabilitiesProvider (C2-F1), and drop items
+ * whose module is switched off or that the member may not use — AppShell itself stays a server
  * component with plain props. A group left with no visible items renders
  * nothing (heading included).
  */
@@ -47,7 +49,9 @@ export function NavGroup({
   active?: PortalNavKey;
 }) {
   const moduleEnabled = useModuleFilter();
-  const visible = items.filter((item) => moduleEnabled(item.module));
+  // C2-F1: the member's capabilities decide what shows (no admin bypass).
+  const held = useCapabilities();
+  const visible = items.filter((item) => moduleEnabled(item.module) && navItemVisible(item, held));
   if (visible.length === 0) return null;
   return (
     <div className="px-3">

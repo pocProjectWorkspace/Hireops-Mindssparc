@@ -4,6 +4,7 @@ import { useMemo, useState } from "react";
 import {
   INTERNAL_TENANT_ROLES,
   type InternalTenantRole,
+  type RoleRow,
   type TenantUserAdminRow,
 } from "@hireops/api-types";
 import { Input, Button, Checkbox } from "@hireops/ui";
@@ -46,6 +47,9 @@ export function UsersAdminClient({ initialUsers }: { initialUsers: TenantUserAdm
     { initialData: { items: initialUsers } },
   );
   const users = usersQuery.data?.items ?? initialUsers;
+  // C2-F1 — the tenant's custom roles, for the role-assignment picker.
+  const rolesQuery = trpc.listRoles.useQuery({}, { refetchOnWindowFocus: false });
+  const customRoles = (rolesQuery.data?.roles ?? []).filter((r) => !r.isSystem);
 
   const [notice, setNotice] = useState<string | null>(null);
   const [search, setSearch] = useState("");
@@ -154,7 +158,14 @@ export function UsersAdminClient({ initialUsers }: { initialUsers: TenantUserAdm
                 </Td>
               </Tr>
             ) : (
-              filtered.map((u) => <UserRow key={u.membershipId} user={u} onChanged={refresh} />)
+              filtered.map((u) => (
+                <UserRow
+                  key={u.membershipId}
+                  user={u}
+                  customRoles={customRoles}
+                  onChanged={refresh}
+                />
+              ))
             )}
           </Tbody>
         </TableShell>
@@ -326,8 +337,17 @@ function InvitePanel({
   );
 }
 
-function UserRow({ user, onChanged }: { user: TenantUserAdminRow; onChanged: () => void }) {
+function UserRow({
+  user,
+  customRoles,
+  onChanged,
+}: {
+  user: TenantUserAdminRow;
+  customRoles: RoleRow[];
+  onChanged: () => void;
+}) {
   const roleLabel = useRoleLabel();
+  const customRole = user.roleKey ? customRoles.find((r) => r.key === user.roleKey) : undefined;
   const [editing, setEditing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const active = user.status === "active";
@@ -362,7 +382,9 @@ function UserRow({ user, onChanged }: { user: TenantUserAdminRow; onChanged: () 
         </Td>
         <Td label="Roles">
           <div className="flex flex-wrap gap-1">
-            {user.roles.length === 0 ? (
+            {user.roleKey ? (
+              <Badge tone="accent">{customRole?.label ?? user.roleKey}</Badge>
+            ) : user.roles.length === 0 ? (
               <span className="text-xs text-neutral-400">No roles</span>
             ) : (
               user.roles.map((r) => (
@@ -418,16 +440,26 @@ function UserRow({ user, onChanged }: { user: TenantUserAdminRow; onChanged: () 
       {editing ? (
         <Tr>
           <Td colSpan={5} className="bg-neutral-50">
-            <RoleEditor
+            <CustomRoleAssign
               user={user}
-              saving={updateRoles.isPending}
-              error={error}
-              onSave={(roles) => updateRoles.mutate({ membershipId: user.membershipId, roles })}
-              onCancel={() => {
+              customRoles={customRoles}
+              onAssigned={() => {
                 setEditing(false);
-                setError(null);
+                onChanged();
               }}
             />
+            {user.roleKey ? null : (
+              <RoleEditor
+                user={user}
+                saving={updateRoles.isPending}
+                error={error}
+                onSave={(roles) => updateRoles.mutate({ membershipId: user.membershipId, roles })}
+                onCancel={() => {
+                  setEditing(false);
+                  setError(null);
+                }}
+              />
+            )}
           </Td>
         </Tr>
       ) : null}
@@ -502,6 +534,74 @@ function RoleEditor({
           Cancel
         </button>
       </div>
+    </div>
+  );
+}
+
+/**
+ * C2-F1 — put a member on a tenant custom role (their permissions become that
+ * role's capability bundle and their JWT role its base role), or back on the
+ * system roles. The API refuses roles granting permissions the acting admin
+ * doesn't hold, and refuses removing your own user administration.
+ */
+function CustomRoleAssign({
+  user,
+  customRoles,
+  onAssigned,
+}: {
+  user: TenantUserAdminRow;
+  customRoles: RoleRow[];
+  onAssigned: () => void;
+}) {
+  const [value, setValue] = useState<string>(user.roleKey ?? "");
+  const [error, setError] = useState<string | null>(null);
+  const assign = trpc.assignMemberRole.useMutation({
+    onSuccess: () => {
+      setError(null);
+      onAssigned();
+    },
+    onError: (err) => setError(err.message),
+  });
+  const choices = customRoles.filter((r) => r.active || r.key === user.roleKey);
+  if (choices.length === 0 && !user.roleKey) {
+    return (
+      <p className="py-2 text-xs text-neutral-500">
+        No custom roles yet. Define one under{" "}
+        <a href="/admin/roles" className="underline">
+          Roles &amp; permissions
+        </a>{" "}
+        to assign a tailored set of permissions; otherwise pick system roles below.
+      </p>
+    );
+  }
+  return (
+    <div className="flex flex-wrap items-center gap-3 border-b border-neutral-200 py-2">
+      <label className="text-sm text-neutral-700" htmlFor={`custom-role-${user.membershipId}`}>
+        Role
+      </label>
+      <select
+        id={`custom-role-${user.membershipId}`}
+        className={inputCls}
+        value={value}
+        onChange={(e) => setValue(e.target.value)}
+      >
+        <option value="">System roles (choose below)</option>
+        {choices.map((r) => (
+          <option key={r.key} value={r.key}>
+            {r.label} (based on {r.baseRole})
+          </option>
+        ))}
+      </select>
+      <Button
+        variant="secondary"
+        disabled={assign.isPending || value === (user.roleKey ?? "")}
+        onClick={() =>
+          assign.mutate({ membershipId: user.membershipId, roleKey: value === "" ? null : value })
+        }
+      >
+        {assign.isPending ? "Saving…" : "Apply role"}
+      </Button>
+      {error ? <p className="w-full text-sm text-status-error-700">{error}</p> : null}
     </div>
   );
 }

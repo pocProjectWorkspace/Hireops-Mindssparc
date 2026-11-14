@@ -5,7 +5,8 @@ import { cn } from "@/components/ui/cn";
 import { RoleName } from "@/lib/role-labels";
 import { IconSignOut } from "./nav-icons";
 import { useModuleFilter } from "@/components/TenantModulesProvider";
-import type { AppShellUser, NavItem, PortalNavKey } from "./AppShell";
+import { useCapabilities } from "@/components/CapabilitiesProvider";
+import { navItemVisible, type AppShellUser, type NavItem, type PortalNavKey } from "./AppShell";
 
 /**
  * MobileNav — the small-screen counterpart to the desktop Sidebar. Renders a
@@ -70,23 +71,23 @@ function BottomTab({ item, active }: { item: NavItem; active: boolean }) {
 }
 
 export function MobileNav({
-  primary: primaryIn,
-  more: moreIn,
+  items,
   active,
   user,
 }: {
-  primary: NavItem[];
-  more: NavItem[];
+  items: NavItem[];
   active?: PortalNavKey;
   user: AppShellUser;
 }) {
   const [open, setOpen] = useState(false);
-  // C1-F10 (D4): drop modules the tenant does not have, then re-split so the
-  // tab bar still shows the first four VISIBLE destinations.
+  // C1-F10 (D4) + C2-F1: drop modules the tenant does not have and items the
+  // member's capabilities don't reach, then split so the tab bar shows the
+  // first four VISIBLE destinations.
   const moduleEnabled = useModuleFilter();
-  const visible = [...primaryIn, ...moreIn].filter((i) => moduleEnabled(i.module));
-  const primary = visible.slice(0, primaryIn.length);
-  const more = visible.slice(primaryIn.length);
+  const held = useCapabilities();
+  const visible = items.filter((i) => moduleEnabled(i.module) && navItemVisible(i, held));
+  const primary = visible.slice(0, 4);
+  const more = visible.slice(4);
   const moreActive = more.some((i) => i.key === active);
   const initial = (user.label.trim()[0] ?? "?").toUpperCase();
 

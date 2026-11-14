@@ -13,6 +13,7 @@ import {
 import { tenants } from "./tenants";
 import { businessUnits } from "./business-units";
 import { tenantRoleEnum } from "./roles";
+import { tenantRoles } from "./tenant-roles";
 
 /**
  * Maps Supabase Auth users (auth.users.id) to HireOps tenants. A user can
@@ -39,6 +40,9 @@ export const tenantUserMemberships = pgTable(
     jobTitle: text("job_title"),
     managerId: uuid("manager_id"),
     businessUnitId: uuid("business_unit_id"),
+    // C2-F1 (0137): the tenant custom role in force. NULL = the base roles above
+    // resolve to the platform default bundles. Not a JWT claim.
+    roleKey: text("role_key"),
     joinedTenantAt: timestamp("joined_tenant_at", { withTimezone: true }).notNull().defaultNow(),
     invitedAt: timestamp("invited_at", { withTimezone: true }),
     acceptedAt: timestamp("accepted_at", { withTimezone: true }),
@@ -52,6 +56,9 @@ export const tenantUserMemberships = pgTable(
     index("idx_membership_tenant").on(table.tenantId),
     index("idx_membership_manager").on(table.managerId),
     index("idx_membership_business_unit").on(table.businessUnitId),
+    index("idx_membership_role_key")
+      .on(table.tenantId, table.roleKey)
+      .where(sql`${table.roleKey} IS NOT NULL`),
     // tenant_id FK was created by Drizzle in 0001, so its constraint name
     // follows Drizzle's auto-derivation convention (table_col_reftable_refcol_fk),
     // not the Postgres-default _fkey shorthand.
@@ -71,6 +78,13 @@ export const tenantUserMemberships = pgTable(
       foreignColumns: [businessUnits.tenantId, businessUnits.id],
       name: "fk_membership_business_unit",
     }).onDelete("set null"),
+    foreignKey({
+      columns: [table.tenantId, table.roleKey],
+      foreignColumns: [tenantRoles.tenantId, tenantRoles.key],
+      name: "fk_membership_tenant_role",
+    })
+      .onDelete("restrict")
+      .onUpdate("cascade"),
     pgPolicy("memberships_self_select", {
       as: "permissive",
       for: "select",

@@ -74,25 +74,16 @@ import {
   reofferForInterview,
 } from "../lib/interview-scheduling";
 import { candidateProcedure, protectedProcedure, type HonoTRPCContext } from "./trpc-core";
+import { can, requireCapability } from "./permissions";
 import { withAudit } from "./with-audit";
 import { requireModule } from "../lib/platform/tenant-access";
 
-/** Recruiter-side scheduling actions — same set as scheduleInterview. */
-const INTERVIEW_MANAGE_ROLES = new Set(["admin", "hiring_manager", "recruiter"]);
-/** Tenant scheduling settings are an admin configuration surface. */
-const SCHEDULING_SETTINGS_ADMIN_ROLES = new Set(["admin"]);
-/** Who may see another member's availability. */
-const AVAILABILITY_VIEW_OTHERS_ROLES = INTERVIEW_MANAGE_ROLES;
-/** Who may edit another member's availability. */
-const AVAILABILITY_EDIT_OTHERS_ROLES = new Set(["admin"]);
-
-function hasAnyRole(ctx: HonoTRPCContext, allowed: Set<string>): boolean {
-  return ctx.roles.some((r) => allowed.has(r));
-}
-
-function requireAnyRole(ctx: HonoTRPCContext, allowed: Set<string>, message: string): void {
-  if (!hasAnyRole(ctx, allowed)) throw new TRPCError({ code: "FORBIDDEN", message });
-}
+/*
+ * C2-F1 — gates are capabilities: `interviews.manage` (recruiter-side
+ * scheduling + viewing another member's availability), `settings.scheduling`
+ * (tenant scheduling settings), `interviews.availability_admin` (editing
+ * another member's availability). Platform defaults = the old role sets.
+ */
 
 function requireTenant(ctx: HonoTRPCContext): string {
   if (!ctx.tenantId) {
@@ -172,10 +163,9 @@ async function availabilityTarget(
   if (!requested || requested === self) {
     return { tenantId, membershipId: self, isSelf: true, actor: self };
   }
-  const allowed = mode === "view" ? AVAILABILITY_VIEW_OTHERS_ROLES : AVAILABILITY_EDIT_OTHERS_ROLES;
-  requireAnyRole(
+  requireCapability(
     ctx,
-    allowed,
+    mode === "view" ? "interviews.manage" : "interviews.availability_admin",
     mode === "view"
       ? "Only recruiters, hiring managers and admins can view someone else's availability."
       : "Only admins can edit someone else's availability.",
@@ -202,9 +192,9 @@ export const schedulingProcedures = {
     .input(updateSchedulingSettingsInputSchema)
     .output(updateSchedulingSettingsOutputSchema)
     .mutation(async ({ ctx, input }) => {
-      requireAnyRole(
+      requireCapability(
         ctx,
-        SCHEDULING_SETTINGS_ADMIN_ROLES,
+        "settings.scheduling",
         "Only admins can change the scheduling settings.",
       );
       return withAudit("update_scheduling_settings", ctx, input, async () => {
@@ -268,7 +258,7 @@ export const schedulingProcedures = {
       return {
         membershipId: t.membershipId,
         displayName: info.get(t.membershipId)?.name ?? info.get(t.membershipId)?.email ?? null,
-        canEdit: t.isSelf || hasAnyRole(ctx, AVAILABILITY_EDIT_OTHERS_ROLES),
+        canEdit: t.isSelf || can(ctx, "interviews.availability_admin"),
         windows: windows.map((w) => ({
           id: w.id,
           dayOfWeek: Number(w.day_of_week),
@@ -362,7 +352,7 @@ export const schedulingProcedures = {
           WHERE tenant_id = ${tenantId} AND id = ${input.exceptionId}
         `;
         if (!row) throw new TRPCError({ code: "NOT_FOUND", message: "Not found" });
-        if (row.membership_id !== self && !hasAnyRole(ctx, AVAILABILITY_EDIT_OTHERS_ROLES)) {
+        if (row.membership_id !== self && !can(ctx, "interviews.availability_admin")) {
           throw new TRPCError({ code: "FORBIDDEN", message: "Not your availability." });
         }
         await ctx.sql`
@@ -384,7 +374,7 @@ export const schedulingProcedures = {
     .output(proposeInterviewSlotsOutputSchema)
     .query(async ({ ctx, input }) => {
       await requireModule(ctx, "scheduling");
-      requireAnyRole(ctx, INTERVIEW_MANAGE_ROLES, "You don't have access to interview scheduling.");
+      requireCapability(ctx, "interviews.manage", "You don't have access to interview scheduling.");
       const tenantId = requireTenant(ctx);
       return run(async () => {
         const r = await proposeSlotsForRound(ctx.sql, tenantId, input);
@@ -417,9 +407,9 @@ export const schedulingProcedures = {
     .output(offerInterviewSlotsOutputSchema)
     .mutation(async ({ ctx, input }) => {
       await requireModule(ctx, "scheduling");
-      requireAnyRole(
+      requireCapability(
         ctx,
-        INTERVIEW_MANAGE_ROLES,
+        "interviews.manage",
         "Only hiring managers, recruiters and admins can offer interview slots.",
       );
       const tenantId = requireTenant(ctx);
@@ -447,7 +437,7 @@ export const schedulingProcedures = {
     .input(listSlotOffersByApplicationInputSchema)
     .output(listSlotOffersByApplicationOutputSchema)
     .query(async ({ ctx, input }) => {
-      requireAnyRole(ctx, INTERVIEW_MANAGE_ROLES, "You don't have access to interviews.");
+      requireCapability(ctx, "interviews.manage", "You don't have access to interviews.");
       const tenantId = requireTenant(ctx);
       const rows = await listOffersForApplication(ctx.sql, tenantId, input.applicationId);
       const needsReschedule = await listNeedsReschedule(ctx.sql, tenantId, input.applicationId);
@@ -458,7 +448,7 @@ export const schedulingProcedures = {
     .input(cancelSlotOfferInputSchema)
     .output(cancelSlotOfferOutputSchema)
     .mutation(async ({ ctx, input }) => {
-      requireAnyRole(ctx, INTERVIEW_MANAGE_ROLES, "You don't have access to interviews.");
+      requireCapability(ctx, "interviews.manage", "You don't have access to interviews.");
       const tenantId = requireTenant(ctx);
       return withAudit("cancel_slot_offer", ctx, input, async () => {
         const rows = await ctx.sql<{ id: string }[]>`
@@ -488,7 +478,7 @@ export const schedulingProcedures = {
       const tenantId = requireTenant(ctx);
       const self = await callerMembership(ctx);
       const target = input.membershipId ?? self;
-      const isManager = hasAnyRole(ctx, INTERVIEW_MANAGE_ROLES);
+      const isManager = can(ctx, "interviews.manage");
       if (target !== self && !isManager) {
         throw new TRPCError({
           code: "FORBIDDEN",
@@ -519,7 +509,7 @@ export const schedulingProcedures = {
     .input(listPanelReplacementCandidatesInputSchema)
     .output(listPanelReplacementCandidatesOutputSchema)
     .query(async ({ ctx, input }) => {
-      requireAnyRole(ctx, INTERVIEW_MANAGE_ROLES, "You don't have access to interviews.");
+      requireCapability(ctx, "interviews.manage", "You don't have access to interviews.");
       const tenantId = requireTenant(ctx);
       return run(async () => ({
         items: await listReplacementCandidates(ctx.sql, tenantId, input.interviewId),

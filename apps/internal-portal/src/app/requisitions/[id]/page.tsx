@@ -1,11 +1,10 @@
 import { notFound } from "next/navigation";
 import type { GetRequisitionDetailOutput } from "@hireops/api-types";
-import { requireAuth, sessionUserChip } from "@/lib/auth";
+import { requireAuth, sessionCan, sessionUserChip } from "@/lib/auth";
 import { createServerTRPCCaller } from "@/lib/trpc-server";
 import { AppShell } from "@/components/nav/AppShell";
 import { RoleNotice } from "@/components/nav/RoleNotice";
 import { RequisitionDetailView } from "@/components/requisitions/RequisitionDetailView";
-import { canViewDiverseSlate } from "@hireops/api-types";
 
 export const dynamic = "force-dynamic"; // Auth-gated + reads live requisition state.
 
@@ -20,16 +19,10 @@ export const dynamic = "force-dynamic"; // Auth-gated + reads live requisition s
  * 404s (the procedure throws NOT_FOUND under RLS).
  */
 
-const READ_ROLES = ["hiring_manager", "recruiter", "admin", "hr_head"];
-const WRITE_ROLES = ["hiring_manager", "admin"];
 // REQ-03: the HR head decides (approve / send back / reject); the recruiter /
 // hiring-manager side posts an approved req live.
-const DECIDE_ROLES = ["hr_head", "admin"];
-const POST_ROLES = ["hiring_manager", "recruiter", "admin"];
 // INT-02: interview plan editing — hiring_manager / recruiter / admin.
-const INTERVIEW_MANAGE_ROLES = ["hiring_manager", "recruiter", "admin"];
 // PC-2: bulk CV upload — the Candidates-surface roles (the API enforces the same).
-const CV_UPLOAD_ROLES = ["recruiter", "admin"];
 
 export default async function RequisitionDetailPage({
   params,
@@ -39,12 +32,12 @@ export default async function RequisitionDetailPage({
   const { id } = await params;
   const session = await requireAuth();
   const isAdmin = session.roles.includes("admin");
-  const allowed = session.roles.some((r) => READ_ROLES.includes(r));
-  const canWrite = session.roles.some((r) => WRITE_ROLES.includes(r));
-  const canDecide = session.roles.some((r) => DECIDE_ROLES.includes(r));
-  const canPost = session.roles.some((r) => POST_ROLES.includes(r));
-  const canManageInterviews = session.roles.some((r) => INTERVIEW_MANAGE_ROLES.includes(r));
-  const canUploadCvs = session.roles.some((r) => CV_UPLOAD_ROLES.includes(r));
+  const allowed = sessionCan(session, "requisitions.read");
+  const canWrite = sessionCan(session, "requisitions.write");
+  const canDecide = sessionCan(session, "requisitions.approve");
+  const canPost = sessionCan(session, "requisitions.post");
+  const canManageInterviews = sessionCan(session, "interviews.manage");
+  const canUploadCvs = sessionCan(session, "candidates.bulk_upload");
 
   if (!allowed) {
     return (
@@ -89,7 +82,7 @@ export default async function RequisitionDetailPage({
         canDecide={canDecide}
         canPost={canPost}
         canManageInterviews={canManageInterviews}
-        canViewDiverseSlate={canViewDiverseSlate(session.roles)}
+        canViewDiverseSlate={sessionCan(session, "governance.diversity_slate_view")}
         canUploadCvs={canUploadCvs}
       />
     </AppShell>

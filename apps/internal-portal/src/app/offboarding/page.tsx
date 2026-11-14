@@ -1,13 +1,10 @@
-import { requireAuth, sessionUserChip } from "@/lib/auth";
+import { requireAuth, sessionCan, sessionUserChip } from "@/lib/auth";
 import { createServerTRPCCaller } from "@/lib/trpc-server";
 import { AppShell } from "@/components/nav/AppShell";
 import { EmptyState } from "@/components/ui";
 import { OffboardingList } from "@/components/offboarding/OffboardingList";
 
 export const dynamic = "force-dynamic"; // Auth-gated + reads live case state.
-
-/** hr_ops / people_ops / admin only — mirrors the OFFBOARD_MANAGE_ROLES gate. */
-const OFFBOARD_ROLES = ["hr_ops", "people_ops", "admin"];
 
 /**
  * The offboarding pillar's list surface — one row per departure: employee,
@@ -22,7 +19,7 @@ const OFFBOARD_ROLES = ["hr_ops", "people_ops", "admin"];
 export default async function OffboardingPage() {
   const session = await requireAuth();
   const isAdmin = session.roles.includes("admin");
-  const canAccess = isAdmin || OFFBOARD_ROLES.some((r) => session.roles.includes(r));
+  const canAccess = sessionCan(session, "onboarding.offboarding");
 
   if (!canAccess) {
     return (

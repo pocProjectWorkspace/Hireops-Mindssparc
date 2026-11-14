@@ -10,7 +10,7 @@ export const dynamic = "force-dynamic";
  * Import is a dry-run diff first, then one transaction.
  */
 export default async function ConfigTransferPage() {
-  const session = await requireAdmin();
+  const session = await requireAdmin("settings.tenant_config");
   return (
     <AppShell
       title="Configuration export / import"

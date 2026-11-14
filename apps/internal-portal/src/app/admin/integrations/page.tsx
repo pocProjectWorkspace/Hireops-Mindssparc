@@ -20,7 +20,7 @@ import { AppShell } from "@/components/nav/AppShell";
 import { IntegrationsClient } from "./IntegrationsClient";
 
 export default async function IntegrationsPage() {
-  const session = await requireAdmin();
+  const session = await requireAdmin("admin.integrations");
   return (
     <AppShell
       title="Integration Health"

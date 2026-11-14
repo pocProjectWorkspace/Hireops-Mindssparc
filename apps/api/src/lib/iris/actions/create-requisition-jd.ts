@@ -17,6 +17,7 @@
  */
 
 import {
+  systemRolesWithCapability,
   createRequisitionDraftInputSchema,
   type CreateRequisitionDraftInput,
 } from "@hireops/api-types";
@@ -28,7 +29,10 @@ export const createRequisitionJdAction: IrisAction<CreateRequisitionDraftInput> 
   group: "Requisitions",
   // Mirrors REQUISITION_WRITE_ROLES — the roles that create requisitions in the
   // app (the createRequisitionDraft / generateJdDraft gate this chains).
-  roles: ["admin", "hiring_manager"],
+  // C2-F1: gated on the capability the app surface checks; `roles` is derived
+  // (the base roles whose platform bundle holds it — the Iris policy columns).
+  capability: "requisitions.write",
+  roles: systemRolesWithCapability("requisitions.write"),
   // Reuse the wizard's real input contract — the minimum to create a req and
   // generate its JD, unchanged.
   inputSchema: createRequisitionDraftInputSchema,

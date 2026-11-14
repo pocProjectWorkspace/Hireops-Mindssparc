@@ -19,7 +19,7 @@ export const dynamic = "force-dynamic"; // Admin-gated + reads live tenant confi
  * block via the in-process tRPC caller so the form lands populated.
  */
 export default async function ReportDigestsPage() {
-  const session = await requireAdmin();
+  const session = await requireAdmin("reports.admin");
   const caller = createServerTRPCCaller(session);
   const initial = await caller.getReportDigests({});
 

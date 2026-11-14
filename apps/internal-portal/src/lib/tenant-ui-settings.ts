@@ -1,6 +1,7 @@
 import { cache } from "react";
 import { sql as poolSql } from "@hireops/db";
 import {
+  type CapabilityBundle,
   resolveAiSettings,
   resolveLandingHref,
   resolveSystemSetup,
@@ -11,6 +12,7 @@ import {
   type TenantLabels,
 } from "@hireops/api-types";
 import { getOptionalSession } from "./auth";
+import { loadSessionPermissions } from "./permissions";
 
 /**
  * Display settings the whole portal needs on every request, read the same way
@@ -142,3 +144,13 @@ export const loadTenantModules = cache(
     }
   },
 );
+
+/**
+ * C2-F1 — the signed-in member's effective capabilities for the nav (null when
+ * signed out). Same resolution the server page guards use (lib/permissions.ts).
+ */
+export const loadSessionCapabilities = cache(async (): Promise<CapabilityBundle | null> => {
+  const session = await getOptionalSession();
+  if (!session) return null;
+  return (await loadSessionPermissions(session)).caps;
+});

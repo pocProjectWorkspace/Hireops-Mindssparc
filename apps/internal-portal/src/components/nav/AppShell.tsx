@@ -22,7 +22,8 @@
  * shell.
  */
 import type { ReactNode } from "react";
-import type { PlatformModuleKey } from "@hireops/api-types";
+import type { Capability, CapabilityBundle, PlatformModuleKey } from "@hireops/api-types";
+import { capsAllow } from "@/lib/nav-capabilities";
 import { RoleName } from "@/lib/role-labels";
 import {
   IconHome,
@@ -132,6 +133,7 @@ export type PortalNavKey =
   | "integrations"
   | "sources"
   | "users"
+  | "roles"
   // AD-03 admin persona pass
   | "messaging"
   | "system-setup"
@@ -185,17 +187,19 @@ export interface NavItem {
   href: string;
   icon: ReactNode;
   /**
-   * Persona gate (REQ-01). Omitted → visible to everyone (the pre-existing
-   * recruiter surfaces keep their current always-on visibility). When set,
-   * the item shows only if the session carries ANY of these roles — or the
-   * session is admin, the super-role that sees everything.
+   * C2-F1 capability gate. Omitted → visible to everyone. When set, the item
+   * shows only if the member holds ANY of these capabilities (no admin bypass —
+   * admin holds them through its platform default bundle). Admin-section items
+   * additionally need `admin.console` (`console`).
    */
-  roles?: string[];
+  caps?: Capability[];
+  /** C2-F1 — an Admin-section item: also requires `admin.console`. */
+  console?: boolean;
   /**
    * C1-F10 (D4) — the platform module this surface belongs to. When the
    * tenant has the module switched off the item is hidden (NavGroup /
    * MobileNav read the entitlements from TenantModulesProvider). Omitted →
-   * core surface, always shown subject to `roles`.
+   * core surface, always shown subject to `caps`.
    */
   module?: PlatformModuleKey;
 }
@@ -210,7 +214,7 @@ export const MAIN_NAV: NavItem[] = [
     label: "Triage",
     href: "/triage",
     icon: <IconTriage />,
-    roles: ["recruiter", "admin"],
+    caps: ["candidates.triage"],
   },
   {
     // RECR-02: the recruiter's grouped-by-role candidates surface + the AI
@@ -220,14 +224,14 @@ export const MAIN_NAV: NavItem[] = [
     label: "Candidates",
     href: "/candidates",
     icon: <IconUsers />,
-    roles: ["recruiter", "admin"],
+    caps: ["candidates.triage"],
   },
   {
     key: "shortlist",
     label: "AI Shortlist",
     href: "/shortlist",
     icon: <IconFeasibility />,
-    roles: ["recruiter", "admin"],
+    caps: ["candidates.triage"],
   },
   {
     // RBAC-01: the agent-draft approval queue — owned by the recruiter
@@ -236,7 +240,7 @@ export const MAIN_NAV: NavItem[] = [
     label: "Approvals",
     href: "/approvals",
     icon: <IconApprovals />,
-    roles: ["recruiter", "admin"],
+    caps: ["candidates.triage"],
   },
   {
     // RBAC-01: onboarding is worked by the recruiter (day-0) and HR ops —
@@ -246,7 +250,7 @@ export const MAIN_NAV: NavItem[] = [
     href: "/onboarding",
     module: "onboarding",
     icon: <IconOnboarding />,
-    roles: ["recruiter", "hr_ops", "people_ops", "admin"],
+    caps: ["onboarding.manage"],
   },
   {
     // PC-16 — accepted-not-joined candidates during their notice period: last
@@ -258,7 +262,7 @@ export const MAIN_NAV: NavItem[] = [
     href: "/joining-watchlist",
     module: "pre_joining_engagement",
     icon: <IconOnboarding />,
-    roles: ["recruiter", "hr_head", "admin"],
+    caps: ["onboarding.prejoining_watchlist"],
   },
   {
     // OFFBOARD-03: departures are an HR operation — hr_ops + people_ops + admin
@@ -267,7 +271,7 @@ export const MAIN_NAV: NavItem[] = [
     label: "Offboarding",
     href: "/offboarding",
     icon: <IconOffboarding />,
-    roles: ["hr_ops", "people_ops", "admin"],
+    caps: ["onboarding.offboarding"],
   },
   {
     // HROPS-01: the HR-Ops offer-desk workspace — cases post-technical-rounds.
@@ -276,7 +280,7 @@ export const MAIN_NAV: NavItem[] = [
     label: "HR cases",
     href: "/hr-cases",
     icon: <IconHrCases />,
-    roles: ["hr_ops", "admin"],
+    caps: ["hr_ops.cases"],
   },
   {
     // HROPS-01: the HR-round scheduler + assessment view. hr_ops + admin.
@@ -284,14 +288,14 @@ export const MAIN_NAV: NavItem[] = [
     label: "HR rounds",
     href: "/hr-rounds",
     icon: <IconHrRounds />,
-    roles: ["hr_ops", "admin"],
+    caps: ["hr_ops.cases"],
   },
   {
     key: "requisitions",
     label: "Requisitions",
     href: "/requisitions",
     icon: <IconRequisitions />,
-    roles: ["hiring_manager", "recruiter", "admin"],
+    caps: ["requisitions.workspace"],
   },
   {
     // RO-01: the requirement-owner's approval tracker — where their submitted
@@ -301,7 +305,7 @@ export const MAIN_NAV: NavItem[] = [
     label: "Approval tracker",
     href: "/approval-tracker",
     icon: <IconReqApprovals />,
-    roles: ["hiring_manager", "admin"],
+    caps: ["requisitions.owner_dashboard"],
   },
   {
     // RO-02: standalone skill-weighting surface — hiring_manager (the
@@ -311,14 +315,14 @@ export const MAIN_NAV: NavItem[] = [
     label: "Skill weighting",
     href: "/skill-weighting",
     icon: <IconSkillWeighting />,
-    roles: ["hiring_manager", "admin"],
+    caps: ["requisitions.write"],
   },
   {
     key: "requisition-approvals",
     label: "Req approvals",
     href: "/requisition-approvals",
     icon: <IconReqApprovals />,
-    roles: ["hr_head", "admin"],
+    caps: ["requisitions.approvals_read"],
   },
   // RO-03: the hiring-manager persona surfaces. hiring_manager + admin only,
   // matching the HM_INSIGHTS_ROLES API gate; every read is scoped to the
@@ -328,21 +332,21 @@ export const MAIN_NAV: NavItem[] = [
     label: "JD library",
     href: "/jd-library",
     icon: <IconDocuments />,
-    roles: ["hiring_manager", "admin"],
+    caps: ["requisitions.owner_insights"],
   },
   {
     key: "panel-setup",
     label: "Panel setup",
     href: "/panel-setup",
     icon: <IconInterviews />,
-    roles: ["hiring_manager", "admin"],
+    caps: ["requisitions.owner_insights"],
   },
   {
     key: "insights",
     label: "Insights",
     href: "/insights",
     icon: <IconHrAnalytics />,
-    roles: ["hiring_manager", "admin"],
+    caps: ["requisitions.owner_insights"],
   },
   {
     // METRICS-01: the HR analytics surface — hr_head (the people-metrics
@@ -352,7 +356,7 @@ export const MAIN_NAV: NavItem[] = [
     label: "Metrics",
     href: "/metrics",
     icon: <IconMetrics />,
-    roles: ["hr_head", "admin"],
+    caps: ["reports.hr_metrics"],
   },
   {
     // R0.2: the reporting catalog — one filter bar over every report.
@@ -363,7 +367,7 @@ export const MAIN_NAV: NavItem[] = [
     label: "Reports",
     href: "/reports",
     icon: <IconReports />,
-    roles: ["hr_head", "hr_ops", "admin"],
+    caps: ["reports.read"],
   },
   {
     // ASK-DATA: natural-language questions over the same reporting layer —
@@ -374,7 +378,7 @@ export const MAIN_NAV: NavItem[] = [
     href: "/ask-data",
     module: "ask_data",
     icon: <IconAskData />,
-    roles: ["hr_head", "hr_ops", "recruiter", "hiring_manager", "admin"],
+    caps: ["reports.ask_data"],
   },
   {
     // HRHEAD-03: Policy & Governance — the settings blocks (screening privacy,
@@ -384,7 +388,7 @@ export const MAIN_NAV: NavItem[] = [
     label: "Governance",
     href: "/governance",
     icon: <IconGovernance />,
-    roles: ["hr_head", "admin"],
+    caps: ["governance.manage"],
   },
   {
     // HRHEAD-03: Executive Audit — compliance score, KPIs, risk-alert feed +
@@ -393,7 +397,7 @@ export const MAIN_NAV: NavItem[] = [
     label: "Exec audit",
     href: "/exec-audit",
     icon: <IconExecAudit />,
-    roles: ["hr_head", "admin"],
+    caps: ["governance.manage"],
   },
   {
     // HRHEAD-02: the HR-head market-intelligence surface (honest benchmarks).
@@ -404,7 +408,7 @@ export const MAIN_NAV: NavItem[] = [
     href: "/market-intelligence",
     module: "market_intel",
     icon: <IconMarketIntel />,
-    roles: ["hr_head", "admin"],
+    caps: ["market_intel.feasibility"],
   },
   {
     // HRHEAD-02: per-req feasibility (real AI). hr_head + admin.
@@ -412,7 +416,7 @@ export const MAIN_NAV: NavItem[] = [
     label: "Feasibility",
     href: "/feasibility",
     icon: <IconFeasibility />,
-    roles: ["hr_head", "admin"],
+    caps: ["market_intel.feasibility"],
   },
   {
     // HROPS-03: pre-offer documents & verification — hr_ops + admin only,
@@ -421,7 +425,7 @@ export const MAIN_NAV: NavItem[] = [
     label: "Documents",
     href: "/hr-documents",
     icon: <IconDocuments />,
-    roles: ["hr_ops", "admin"],
+    caps: ["hr_ops.documents"],
   },
   {
     // HROPS-03: per-case audit trail — hr_ops + admin only.
@@ -429,7 +433,7 @@ export const MAIN_NAV: NavItem[] = [
     label: "Case audit",
     href: "/case-audit",
     icon: <IconCaseAudit />,
-    roles: ["hr_ops", "admin"],
+    caps: ["hr_ops.documents"],
   },
   {
     // HROPS-03: curated templates & policies library — hr_ops + admin only.
@@ -437,14 +441,14 @@ export const MAIN_NAV: NavItem[] = [
     label: "Policies",
     href: "/hr-policies",
     icon: <IconPolicies />,
-    roles: ["hr_ops", "admin"],
+    caps: ["hr_ops.documents"],
   },
   {
     key: "interviews",
     label: "Interviews",
     href: "/interviews",
     icon: <IconInterviews />,
-    roles: ["hiring_manager", "recruiter", "admin"],
+    caps: ["interviews.manage"],
   },
   {
     // RECR-03: the recruiter's Missing Info Tracker — deterministic
@@ -455,7 +459,7 @@ export const MAIN_NAV: NavItem[] = [
     label: "Missing info",
     href: "/missing-info",
     icon: <IconMissingInfo />,
-    roles: ["recruiter", "admin"],
+    caps: ["candidates.triage"],
   },
   {
     // INT-03: the interviewer's own surface — distinct from /interviews (the
@@ -464,7 +468,7 @@ export const MAIN_NAV: NavItem[] = [
     label: "My interviews",
     href: "/panel",
     icon: <IconPanel />,
-    roles: ["panel_member", "admin"],
+    caps: ["interviews.panel"],
   },
   {
     // PANEL-02: the session board — my interviews as a filterable board.
@@ -473,7 +477,7 @@ export const MAIN_NAV: NavItem[] = [
     label: "All interviews",
     href: "/panel/board",
     icon: <IconPanelBoard />,
-    roles: ["panel_member", "admin"],
+    caps: ["interviews.panel"],
   },
   {
     // PANEL-01: the panellist's feedback queue (pending + submitted scorecards).
@@ -481,7 +485,7 @@ export const MAIN_NAV: NavItem[] = [
     label: "Feedback",
     href: "/panel/feedback",
     icon: <IconApprovals />,
-    roles: ["panel_member", "admin"],
+    caps: ["interviews.panel"],
   },
   {
     // PANEL-01: the panellist's past interviews (my scores + recommendations).
@@ -489,7 +493,7 @@ export const MAIN_NAV: NavItem[] = [
     label: "History",
     href: "/panel/history",
     icon: <IconCaseAudit />,
-    roles: ["panel_member", "admin"],
+    caps: ["interviews.panel"],
   },
   {
     // PC-8: the member's own weekly interview availability + out-of-office.
@@ -500,7 +504,7 @@ export const MAIN_NAV: NavItem[] = [
     href: "/availability",
     module: "scheduling",
     icon: <IconInterviews />,
-    roles: ["panel_member", "hiring_manager", "recruiter", "admin"],
+    caps: ["interviews.manage", "interviews.panel"],
   },
   {
     // HROPS-02: the comp & offer desk — the hr_ops comp operator's surface.
@@ -509,7 +513,7 @@ export const MAIN_NAV: NavItem[] = [
     label: "Comp & offers",
     href: "/comp-offers",
     icon: <IconCompOffers />,
-    roles: ["hr_ops", "admin"],
+    caps: ["offers.comp_desk"],
   },
   {
     // HROPS-02: HR analytics — five real charts over the pipeline / offers.
@@ -518,7 +522,7 @@ export const MAIN_NAV: NavItem[] = [
     label: "HR analytics",
     href: "/hr-analytics",
     icon: <IconHrAnalytics />,
-    roles: ["hr_ops", "admin"],
+    caps: ["offers.comp_desk"],
   },
   {
     // P0.1B: internal partner administration (empanel orgs, invite partner
@@ -531,54 +535,103 @@ export const MAIN_NAV: NavItem[] = [
     href: "/partners",
     module: "partner_portal",
     icon: <IconBusinessUnits />,
-    roles: ["admin", "hr_ops"],
+    caps: ["partners.admin"],
   },
 ];
 
 /**
- * Filter a nav group to the items this session may see. Un-gated items are
- * always visible; gated items need an admin session or a role overlap.
+ * C2-F1 — is this nav item visible to a member holding `held`? Un-gated items
+ * always show; gated items need ANY of their capabilities; Admin-section items
+ * also need `admin.console`. Pure — shared by the sidebar, the mobile bar and
+ * the onboarding journey (all read `held` from CapabilitiesProvider).
  */
-function visibleNav(items: NavItem[], isAdmin: boolean, roles: string[]): NavItem[] {
-  return items.filter((item) => {
-    if (!item.roles) return true;
-    if (isAdmin) return true;
-    return item.roles.some((r) => roles.includes(r));
-  });
+export function navItemVisible(item: NavItem, held: CapabilityBundle | null): boolean {
+  if (item.console && !capsAllow(held, ["admin.console"])) return false;
+  return capsAllow(held, item.caps);
 }
 
-/**
- * ONBOARD-1: role-only nav filter for surfaces that don't carry the separate
- * `isAdmin` flag (the onboarding journey). Un-gated items always show; gated
- * items need a role overlap. Admin sessions carry the "admin" role, which every
- * gated item lists, so this matches the sidebar's visible output.
- */
-export function navItemsForRoles(items: NavItem[], roles: string[]): NavItem[] {
-  return items.filter((i) => !i.roles || i.roles.some((r) => roles.includes(r)));
+/** The items of a nav group a member may see. */
+export function navItemsForCapabilities(
+  items: NavItem[],
+  held: CapabilityBundle | null,
+): NavItem[] {
+  return items.filter((i) => navItemVisible(i, held));
 }
 
 export const ADMIN_NAV: NavItem[] = [
-  { key: "workflows", label: "Workflows", href: "/admin/workflows", icon: <IconWorkflows /> },
-  { key: "branding", label: "Theme & branding", href: "/admin/branding", icon: <IconBranding /> },
-  { key: "audit", label: "Audit", href: "/admin/audit", icon: <IconAudit /> },
-  { key: "costs", label: "Costs", href: "/admin/costs", icon: <IconCosts /> },
+  {
+    key: "workflows",
+    label: "Workflows",
+    href: "/admin/workflows",
+    caps: ["admin.agents"],
+    icon: <IconWorkflows />,
+  },
+  {
+    key: "branding",
+    label: "Theme & branding",
+    href: "/admin/branding",
+    caps: ["settings.branding"],
+    icon: <IconBranding />,
+  },
+  {
+    key: "audit",
+    label: "Audit",
+    href: "/admin/audit",
+    caps: ["governance.audit_log"],
+    icon: <IconAudit />,
+  },
+  {
+    key: "costs",
+    label: "Costs",
+    href: "/admin/costs",
+    caps: ["admin.ai_budget"],
+    icon: <IconCosts />,
+  },
   {
     key: "ai-settings",
     label: "AI settings",
     href: "/admin/ai-settings",
+    caps: ["settings.ai"],
     icon: <IconAiSettings />,
   },
-  { key: "users", label: "Users & roles", href: "/admin/users", icon: <IconUsers /> },
-  { key: "reports", label: "Reports", href: "/admin/reports", icon: <IconReports /> },
+  {
+    key: "users",
+    label: "Users & roles",
+    href: "/admin/users",
+    caps: ["admin.users"],
+    icon: <IconUsers />,
+  },
+  // C2-F1 — tenant-defined roles: capability bundles with target scopes.
+  {
+    key: "roles",
+    label: "Roles & permissions",
+    href: "/admin/roles",
+    caps: ["admin.roles"],
+    icon: <IconUsers />,
+  },
+  {
+    key: "reports",
+    label: "Reports",
+    href: "/admin/reports",
+    caps: ["reports.admin"],
+    icon: <IconReports />,
+  },
   {
     key: "integrations",
     label: "Integrations",
     href: "/admin/integrations",
+    caps: ["admin.integrations"],
     icon: <IconIntegrations />,
   },
   // T1.1 / G04 — the sourcing-channel registry: declare/enable/label the
   // channels that feed the pipeline (config over the application_source enum).
-  { key: "sources", label: "Sources", href: "/admin/sources", icon: <IconSources /> },
+  {
+    key: "sources",
+    label: "Sources",
+    href: "/admin/sources",
+    caps: ["settings.sources_write"],
+    icon: <IconSources />,
+  },
   // AD-03 — admin persona pass. Honest surfaces: an email delivery log
   // (notification_outbox), system-setup (email alerts + escalation), and the
   // Bias Shield refusal statement (real lexicon posture; no demographic scoring).
@@ -586,15 +639,29 @@ export const ADMIN_NAV: NavItem[] = [
     key: "bias-shield",
     label: "Bias Shield",
     href: "/admin/bias-shield",
+    caps: ["settings.ai"],
     icon: <IconBiasShield />,
   },
-  { key: "messaging", label: "Messaging", href: "/admin/messaging", icon: <IconMessaging /> },
+  {
+    key: "messaging",
+    label: "Messaging",
+    href: "/admin/messaging",
+    caps: ["governance.audit_log"],
+    icon: <IconMessaging />,
+  },
   // C1-F11 — the tenant setup wizard (organisation → go-live checklist).
-  { key: "tenant-setup", label: "Tenant setup", href: "/setup", icon: <IconSystemSetup /> },
+  {
+    key: "tenant-setup",
+    label: "Tenant setup",
+    href: "/setup",
+    caps: ["settings.tenant_config"],
+    icon: <IconSystemSetup />,
+  },
   {
     key: "system-setup",
     label: "System setup",
     href: "/admin/system-setup",
+    caps: ["settings.system"],
     icon: <IconSystemSetup />,
   },
   // C1-F11 — configuration export / import (JSON, dry-run diff before apply).
@@ -602,6 +669,7 @@ export const ADMIN_NAV: NavItem[] = [
     key: "config-transfer",
     label: "Config export / import",
     href: "/admin/config-transfer",
+    caps: ["settings.tenant_config"],
     icon: <IconSystemSetup />,
   },
   // T1.3 — configurable approval routing (G13, option b).
@@ -609,6 +677,7 @@ export const ADMIN_NAV: NavItem[] = [
     key: "approval-routing",
     label: "Approval routing",
     href: "/admin/approval-routing",
+    caps: ["settings.approval_routing"],
     icon: <IconWorkflows />,
   },
   // T1.4 — email/notification copy overrides (G09). Reuses IconBranding (no
@@ -617,6 +686,7 @@ export const ADMIN_NAV: NavItem[] = [
     key: "email-templates",
     label: "Email templates",
     href: "/admin/email-templates",
+    caps: ["settings.email_templates"],
     icon: <IconBranding />,
   },
   // T2.1 — required-candidate-field policy (G05). Reuses IconMissingInfo — this
@@ -625,6 +695,7 @@ export const ADMIN_NAV: NavItem[] = [
     key: "candidate-fields",
     label: "Candidate fields",
     href: "/admin/candidate-fields",
+    caps: ["settings.candidate_fields"],
     icon: <IconMissingInfo />,
   },
   // T2.2 — tenant interview round templates + custom scorecard values (G07).
@@ -633,6 +704,7 @@ export const ADMIN_NAV: NavItem[] = [
     key: "interview-templates",
     label: "Interview templates",
     href: "/admin/interview-templates",
+    caps: ["settings.interview_templates"],
     icon: <IconInterviews />,
   },
   // T3.1 / G14 — business-unit management (org structure). The managed list
@@ -641,6 +713,7 @@ export const ADMIN_NAV: NavItem[] = [
     key: "business-units",
     label: "Business units",
     href: "/admin/business-units",
+    caps: ["organisation.write"],
     icon: <IconBusinessUnits />,
   },
   // T3.2 / G15 — comp-band library (org structure). The managed bands drive the
@@ -649,6 +722,7 @@ export const ADMIN_NAV: NavItem[] = [
     key: "comp-bands",
     label: "Comp bands",
     href: "/admin/comp-bands",
+    caps: ["offers.comp_bands_write"],
     icon: <IconCompBands />,
   },
   // T3.3 / G16 — panel-pool library (org structure). The managed pools drive an
@@ -657,6 +731,7 @@ export const ADMIN_NAV: NavItem[] = [
     key: "panel-pools",
     label: "Panel pools",
     href: "/admin/panel-pools",
+    caps: ["interviews.panel_pools_write"],
     icon: <IconPanelPools />,
   },
   // C1-F3 — organisation inside the tenant: legal entities, locations
@@ -665,6 +740,7 @@ export const ADMIN_NAV: NavItem[] = [
     key: "organisation",
     label: "Organisation",
     href: "/admin/organisation",
+    caps: ["organisation.read"],
     icon: <IconBusinessUnits />,
   },
   // C1-F3 — job architecture: functions, levels (grades), job profiles. Drives
@@ -673,6 +749,7 @@ export const ADMIN_NAV: NavItem[] = [
     key: "job-architecture",
     label: "Job architecture",
     href: "/admin/job-architecture",
+    caps: ["organisation.read"],
     icon: <IconCompBands />,
   },
   // C1-F3 — tenant lists over platform defaults (employment / requisition
@@ -681,18 +758,26 @@ export const ADMIN_NAV: NavItem[] = [
     key: "lists",
     label: "Lists",
     href: "/admin/lists",
+    caps: ["organisation.read"],
     icon: <IconSources />,
   },
   // CFG-LITE — tenant display labels: stage wording per audience (staff /
   // candidate / partner) + interview-recommendation wording. Wording only —
   // canonical stage + recommendation keys never change. Reuses IconBranding.
-  { key: "labels", label: "Labels", href: "/admin/labels", icon: <IconBranding /> },
+  {
+    key: "labels",
+    label: "Labels",
+    href: "/admin/labels",
+    caps: ["settings.labels"],
+    icon: <IconBranding />,
+  },
   // T4.1 — tenant-configurable SLA thresholds. The per-stage hours drive breach
   // detection, urgency, governance and the imminent-alert emails.
   {
     key: "sla-thresholds",
     label: "SLA thresholds",
     href: "/admin/sla-thresholds",
+    caps: ["settings.sla"],
     icon: <IconSlaThresholds />,
   },
   // PC-8 — tenant interview-scheduling settings (duration presets, working
@@ -702,6 +787,7 @@ export const ADMIN_NAV: NavItem[] = [
     label: "Interview scheduling",
     href: "/admin/scheduling",
     module: "scheduling",
+    caps: ["settings.scheduling"],
     icon: <IconInterviews />,
   },
   // T4.2 — configurable governance/compliance policy. The compliance-score
@@ -710,6 +796,7 @@ export const ADMIN_NAV: NavItem[] = [
     key: "governance-policy",
     label: "Governance policy",
     href: "/admin/governance-policy",
+    caps: ["governance.manage"],
     icon: <IconGovernancePolicy />,
   },
   // PC-26 — diverse-slate settings: whether voluntary self-ID is collected, the
@@ -719,6 +806,7 @@ export const ADMIN_NAV: NavItem[] = [
     label: "Diverse slate",
     href: "/admin/diversity-slate",
     module: "diversity_slate",
+    caps: ["governance.diversity_settings"],
     icon: <IconGovernancePolicy />,
   },
   // T4.3 — document retention policy. The per-type retention years drive the
@@ -727,6 +815,7 @@ export const ADMIN_NAV: NavItem[] = [
     key: "retention-policy",
     label: "Retention policy",
     href: "/admin/retention-policy",
+    caps: ["governance.manage"],
     icon: <IconRetentionPolicy />,
   },
   // LD-1B — the L&D catalogue (pointers at learning hosted elsewhere) + the
@@ -736,6 +825,7 @@ export const ADMIN_NAV: NavItem[] = [
     label: "Learning",
     href: "/admin/learning",
     module: "learning",
+    caps: ["onboarding.learning_admin"],
     icon: <IconLearning />,
   },
   // PC-14 — pre-joining engagement: cadence, steps, quiet hours, signals,
@@ -745,6 +835,7 @@ export const ADMIN_NAV: NavItem[] = [
     label: "Pre-joining engagement",
     href: "/admin/pre-joining",
     module: "pre_joining_engagement",
+    caps: ["onboarding.prejoining_settings"],
     icon: <IconOnboarding />,
   },
   // PC-18 — welcome content per business unit: source material, AI draft
@@ -754,6 +845,7 @@ export const ADMIN_NAV: NavItem[] = [
     label: "Welcome content",
     href: "/admin/welcome-content",
     module: "welcome_guide",
+    caps: ["onboarding.prejoining_settings"],
     icon: <IconLearning />,
   },
   // R1.5b — scheduled report digests (cadence, recipients, UTC send hour). The
@@ -764,6 +856,7 @@ export const ADMIN_NAV: NavItem[] = [
     key: "report-digests",
     label: "Report digests",
     href: "/admin/report-digests",
+    caps: ["reports.admin"],
     icon: <IconReports />,
   },
 ];
@@ -854,6 +947,7 @@ export const ADMIN_NAV_SECTIONS: NavSection[] = [
       "costs",
       "ai-settings",
       "users",
+      "roles",
       "reports",
       "integrations",
       "messaging",
@@ -897,25 +991,33 @@ export const ADMIN_NAV_SECTIONS: NavSection[] = [
 ];
 
 /**
- * Resolve section defs against the item pool for a session: look each key up,
- * apply the same persona visibility as the flat nav, and drop any section left
- * with no visible items. Returns render-ready { heading, items } groups.
+ * Resolve section defs against the item pool: look each key up and return
+ * render-ready { heading, items } groups. Visibility (capabilities + modules) is
+ * applied client-side by NavGroup / MobileNav, which read the member's
+ * capabilities from CapabilitiesProvider; a group left empty renders nothing.
+ * Admin-section items are marked `console` (they also need admin.console).
  */
 function buildSections(
   defs: NavSection[],
   pool: NavItem[],
-  isAdmin: boolean,
-  roles: string[],
+  console: boolean,
 ): { heading?: string; items: NavItem[] }[] {
   const byKey = new Map(pool.map((item) => [item.key, item] as const));
-  return defs
-    .map((section) => {
-      const items = section.keys
-        .map((key) => byKey.get(key))
-        .filter((item): item is NavItem => Boolean(item));
-      return { heading: section.heading, items: visibleNav(items, isAdmin, roles) };
-    })
-    .filter((section) => section.items.length > 0);
+  return defs.map((section) => ({
+    heading: section.heading,
+    items: section.keys
+      .map((key) => byKey.get(key))
+      .filter((item): item is NavItem => Boolean(item))
+      .map((item) => (console ? { ...item, console: true } : item)),
+  }));
+}
+
+/** Every nav section (main + admin), unfiltered, in display order. */
+export function allNavSections(): { heading?: string; items: NavItem[] }[] {
+  return [
+    ...buildSections(MAIN_NAV_SECTIONS, MAIN_NAV, false),
+    ...buildSections(ADMIN_NAV_SECTIONS, ADMIN_NAV, true),
+  ];
 }
 
 export interface AppShellUser {
@@ -928,12 +1030,15 @@ export interface AppShellUser {
 
 export interface AppShellProps {
   title: string;
-  isAdmin: boolean;
   /**
-   * The session's tenant roles, used to show persona-gated nav items
-   * (REQ-01). Optional + defaults to []: pages that don't pass it simply
-   * show the un-gated items (+ the full Admin group when isAdmin) exactly
-   * as before — no regression for the existing recruiter surfaces.
+   * @deprecated C2-F1 — the nav gates on the member's capabilities
+   * (CapabilitiesProvider), not on this flag. Kept so the ~150 call sites keep
+   * compiling; it no longer affects what the sidebar shows.
+   */
+  isAdmin?: boolean;
+  /**
+   * The session's base roles. C2-F1: no longer a nav gate (the nav reads
+   * capabilities) — only the onboarding journey's persona greeting uses it.
    */
   roles?: string[];
   active?: PortalNavKey;
@@ -1002,21 +1107,19 @@ function UserChip({ user, roles }: { user: AppShellUser; roles: string[] }) {
 }
 
 function Sidebar({
-  isAdmin,
-  roles,
   active,
   user,
+  roles,
 }: {
-  isAdmin: boolean;
-  roles: string[];
   active?: PortalNavKey;
   user: AppShellUser;
+  roles: string[];
 }) {
   return (
     <aside className="hidden w-60 shrink-0 flex-col border-r border-sidebar-border bg-sidebar text-sidebar-fg lg:flex">
       <Wordmark />
       <div className="flex-1 overflow-y-auto pb-4">
-        {buildSections(MAIN_NAV_SECTIONS, MAIN_NAV, isAdmin, roles).map((section, i) => (
+        {allNavSections().map((section, i) => (
           <NavGroup
             key={section.heading ?? `main-${i}`}
             heading={section.heading}
@@ -1024,16 +1127,6 @@ function Sidebar({
             active={active}
           />
         ))}
-        {isAdmin
-          ? buildSections(ADMIN_NAV_SECTIONS, ADMIN_NAV, isAdmin, roles).map((section, i) => (
-              <NavGroup
-                key={section.heading ?? `admin-${i}`}
-                heading={section.heading}
-                items={section.items}
-                active={active}
-              />
-            ))
-          : null}
       </div>
       <UserChip user={user} roles={roles} />
     </aside>
@@ -1053,7 +1146,6 @@ function PageHeader({ title, actions }: { title: string; actions?: ReactNode }) 
 
 export function AppShell({
   title,
-  isAdmin,
   roles = [],
   active,
   user,
@@ -1061,18 +1153,11 @@ export function AppShell({
   fill = false,
   children,
 }: AppShellProps) {
-  // Mobile bottom-bar split: the persona's visible destinations, flattened from
-  // the same grouped sections as the sidebar (main +, for admins, the Admin
-  // sections) so the order matches. First four in the tab bar, the rest under
-  // "More".
-  const mobileItems = [
-    ...buildSections(MAIN_NAV_SECTIONS, MAIN_NAV, isAdmin, roles).flatMap((s) => s.items),
-    ...(isAdmin
-      ? buildSections(ADMIN_NAV_SECTIONS, ADMIN_NAV, isAdmin, roles).flatMap((s) => s.items)
-      : []),
-  ];
-  const mobilePrimary = mobileItems.slice(0, 4);
-  const mobileMore = mobileItems.slice(4);
+  // Mobile bottom-bar: every destination, flattened from the same grouped
+  // sections as the sidebar so the order matches. MobileNav drops what the
+  // member can't see (capabilities + modules), then puts the first four visible
+  // in the tab bar and the rest under "More".
+  const mobileItems = allNavSections().flatMap((s) => s.items);
 
   // IRIS-A2: the "Ask Iris" launcher is composed into the page-header actions
   // (page-level `actions` are preserved alongside it), and IrisProvider wraps
@@ -1081,7 +1166,7 @@ export function AppShell({
   return (
     <IrisProvider>
       <div className="flex h-screen overflow-hidden bg-neutral-50 text-neutral-900">
-        <Sidebar isAdmin={isAdmin} roles={roles} active={active} user={user} />
+        <Sidebar active={active} user={user} roles={roles} />
         <div className="flex min-w-0 flex-1 flex-col">
           <PageHeader
             title={title}
@@ -1102,7 +1187,7 @@ export function AppShell({
             </main>
           )}
         </div>
-        <MobileNav primary={mobilePrimary} more={mobileMore} active={active} user={user} />
+        <MobileNav items={mobileItems} active={active} user={user} />
       </div>
     </IrisProvider>
   );
