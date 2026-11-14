@@ -108,6 +108,8 @@ import {
   tenantEmailTemplateOverrides,
   tenantInterviewRoundTemplate,
   tenantScorecardTemplate,
+  interviewLoops,
+  templateAssignments,
   requisitionFeasibility,
   hrRoundAssessments,
   compRecommendations,
@@ -166,11 +168,8 @@ import { getOnboardingReadinessReport } from "../lib/reports/onboarding-readines
 import { getExecutiveSummaryReport } from "../lib/reports/executive-summary";
 // ASK-DATA — "Ask your data": NL question → whitelisted intent → report-layer executor.
 import {
-  ASK_DATA_CANDIDATE_NAME_ROLES,
   ASK_DATA_FEATURE,
-  ASK_DATA_ROLES,
   ASK_DATA_SCHEMA_NAME,
-  ASK_DATA_TENANT_WIDE_ROLES,
   HIRING_MANAGER_SCOPE,
   askDataAiResponseJsonSchema,
 } from "../lib/ask-data/interpret";
@@ -178,7 +177,6 @@ import { loadAskDataLookups } from "../lib/ask-data/execute";
 import { runAskData } from "../lib/ask-data/run";
 // PC-21 — the Ask-your-data question log ("Your recent" / "Popular in your team").
 import {
-  askerRolesFor,
   loadPopularIntents,
   loadRecentQuestions,
   loadTopQuestions,
@@ -201,7 +199,15 @@ import {
 } from "../lib/iris/registry";
 import { resolveIrisIntent, degradedResolution } from "../lib/iris/resolve-intent";
 import { answerIrisHelp, degradedHelp } from "../lib/iris/iris-help";
-import { capabilityEntriesForRoles } from "../lib/iris/capability-map";
+import { capabilityEntriesForPermissions } from "../lib/iris/capability-map";
+import {
+  can,
+  permsOf,
+  requireAnyCapability,
+  requireCapability,
+  requirePopulation,
+  scopeOf,
+} from "./permissions";
 import {
   draftCandidateMessage,
   deterministicCandidateMessageDraft,
@@ -358,6 +364,7 @@ import {
   deleteInterviewRoundTemplateInputSchema,
   deleteInterviewRoundTemplateOutputSchema,
   applyInterviewRoundTemplateInputSchema,
+  DEFAULT_INTERVIEW_LOOP_KEY,
   applyInterviewRoundTemplateOutputSchema,
   listScorecardTemplatesInputSchema,
   listScorecardTemplatesOutputSchema,
@@ -633,8 +640,6 @@ import {
   updateScoringWeightsOutputSchema,
   resolveScoringWeights,
   // PC-26 — diverse-slate requirement (counts only; raw self-ID never leaves lib/diversity-slate)
-  DIVERSE_SLATE_VIEW_ROLES,
-  DIVERSE_SLATE_ADMIN_ROLES,
   DIVERSITY_SELF_ID_DISCLOSURE_VERSION,
   getDiverseSlateStatusInputSchema,
   getDiverseSlateStatusOutputSchema,
@@ -1138,6 +1143,8 @@ import {
   defaultIrisPolicy,
   irisActionAllowedRoles,
   type IrisPolicy,
+  type Capability,
+  type Population,
   getIrisPolicyInputSchema,
   getIrisPolicyOutputSchema,
   updateIrisPolicyInputSchema,
@@ -1277,9 +1284,6 @@ import {
   regenerateEvidence as regenerateAiInterviewEvidenceLib,
 } from "../lib/ai-interview-evidence-read";
 import {
-  ASSESSMENT_FULL_ROLES,
-  ASSESSMENT_SUMMARY_ROLES,
-  SELECTION_DECISION_GATE_ROLES,
   buildCandidateAssessmentSummary,
   canRecordSelectionDecision,
   isFullAssessmentViewer,
@@ -1320,9 +1324,40 @@ import {
   countNicheSkills,
   type ReqDifficulty,
 } from "../lib/req-health";
+// C2-F7 — policy parameters (Plan A §8).
+import {
+  APPLY_ACCEPTING_STATUS_OPTIONS,
+  getOfferPolicyDefaultsInputSchema,
+  getOfferPolicyDefaultsOutputSchema,
+  getPolicyParametersInputSchema,
+  getPolicyParametersOutputSchema,
+  listCvsPastRetentionInputSchema,
+  listCvsPastRetentionOutputSchema,
+  resolveAiInterviewPolicy,
+  resolveBulkCvUploadLimits,
+  resolveMarketIntelPolicy,
+  resolveNotetakerPolicy,
+  resolveOfferPolicy,
+  resolveReportPolicy,
+  resolveScreeningPolicy,
+  resolveUploadPolicy,
+  updatePolicyParametersInputSchema,
+  updatePolicyParametersOutputSchema,
+  UPLOAD_DOCUMENT_BYTES_CEILING,
+  type GetPolicyParametersOutput,
+  type ReqHealthWeights,
+} from "@hireops/api-types";
+import {
+  loadAcceptingStatuses,
+  loadEffectiveUploadLimits,
+  loadMarketIntelPolicy,
+  loadOfferPolicy,
+  loadScreeningPolicy,
+  loadTenantSettingsRaw,
+} from "../lib/policy-parameters";
+import { listCvsPastRetention } from "../lib/cv-retention";
 import { displayForCandidateNotification } from "../lib/candidate-notifications";
 import {
-  SCREENING_ANSWERS_WRITE_ROLES,
   canSeeScreeningComp,
   presentScreeningAnswers,
   resolveScreeningAnswersForInsert,
@@ -1359,11 +1394,7 @@ import {
   type ApplyScreeningPolicy,
   type ScreeningAnswersInput,
 } from "@hireops/api-types";
-import {
-  BULK_CV_ACCEPTING_REQ_STATUSES,
-  BULK_CV_UPLOAD_ROLES,
-  resolveTenantBulkCvLimits,
-} from "../lib/bulk-cv/policy";
+import { loadTenantAcceptingStatuses, resolveTenantBulkCvLimits } from "../lib/bulk-cv/policy";
 import {
   getBatchWithItems as getBulkCvBatchWithItems,
   listBatchesForRequisition as listBulkCvBatchesForRequisition,
@@ -1373,6 +1404,7 @@ import { newClaimScope, resolveClaimForSubmission } from "../lib/partner-claims"
 import {
   computeInitialScoringState,
   findPersonByContact,
+  findReapplyCoolingOff,
   ingestApplication,
   normaliseEmail,
   normalisePhone,
@@ -1407,10 +1439,18 @@ import {
 } from "./trpc-core";
 import { withAudit } from "./with-audit";
 import { schedulingProcedures } from "./scheduling-procedures";
+import { rolesProcedures } from "./roles-procedures";
 import { platformProcedures } from "./platform-procedures";
 import { provisioningProcedures } from "./provisioning-procedures";
 import { requireModule } from "../lib/platform/tenant-access";
 import { orgArchitectureProcedures } from "./org-architecture-procedures";
+import { applicabilityProcedures } from "./applicability-procedures";
+import {
+  chooseInterviewLoop,
+  ensureDefaultInterviewLoop,
+  loadRequisitionAttributes,
+  resolveScorecardKey,
+} from "../lib/applicability";
 import { loadSchedulingSettings, queuePanelistInvites } from "../lib/interview-scheduling";
 import {
   createOnboardingCaseForApplication as createOnboardingCase,
@@ -1805,6 +1845,13 @@ async function readCandidateProfile(
   };
 }
 
+// ── C2-F1 ── every role set that used to be declared in this block is now a
+// CAPABILITY in the platform catalog (@hireops/api-types capabilities.ts),
+// whose platform default bundle is exactly the set described below; gates call
+// requireCapability(ctx, "<area.action>", message). There is NO admin bypass:
+// admin holds every capability through its default bundle. The notes below are
+// kept as the rationale for each capability's DEFAULT grant.
+//
 // REQ-01 (Wave A) role gates. admin is the super-role everywhere in this
 // codebase (mirrors RECRUITER_RESOLVE_ROLES / HR_TEAM_RESOLVE_ROLES below).
 // The requisition list is the requirement-owner surface (hiring_manager)
@@ -1814,30 +1861,22 @@ async function readCandidateProfile(
 // REQ-03 added hr_head: the HR head reviews the full requisition (summary,
 // JD, skills) on the shared /requisitions/[id] detail view to make an approval
 // decision, so they need the read. RLS still scopes rows to the tenant.
-const REQUISITION_READ_ROLES = new Set(["admin", "hiring_manager", "recruiter", "hr_head"]);
-const REQUISITION_APPROVAL_READ_ROLES = new Set(["admin", "hr_head"]);
 // METRICS-01 — the HR analytics surface (/metrics, getHrMetrics) is an
 // HR-leadership view: hr_head (the people-metrics owner) + admin. recruiter /
 // hiring_manager / panel_member get FORBIDDEN. RLS still scopes every read.
-const HR_METRICS_READ_ROLES = new Set(["admin", "hr_head"]);
 // R0.2 — the /reports catalog. ONE role set for the whole catalog today:
 // admin + hr_head + hr_ops, the three personas the reporting build plan
 // puts in front of it. The plan's PER-REPORT gating (a partner scorecard
 // an hr_ops sees but a hiring_manager doesn't, etc.) lands with the
 // re-homed catalog entries in a later ticket — until then a catalog
 // report is readable by all three or by none.
-const REPORTS_READ_ROLES = new Set(["admin", "hr_head", "hr_ops"]);
 // PC-19 — the BU-tree picker serves both /reports and /ask-data.
-const REPORT_BU_PICKER_ROLES = new Set([...REPORTS_READ_ROLES, ...ASK_DATA_ROLES]);
 // HRHEAD-03 — the Governance + Executive Audit surfaces (policy blocks, risk
 // flags, compliance score). hr_head (the governance owner) + admin. The
 // "changes require admin approval" copy on the settings blocks is COPY ONLY
 // for the POC — hr_head edits take effect immediately (flagged in the UI).
-const GOVERNANCE_READ_ROLES = new Set(["admin", "hr_head"]);
 // PC-26 — who may see diverse-slate COUNTS (never per-candidate values) and
 // who may edit the tenant diversitySlate block. Single source: api-types.
-const DIVERSE_SLATE_VIEW_ROLE_SET = new Set<string>(DIVERSE_SLATE_VIEW_ROLES);
-const DIVERSE_SLATE_ADMIN_ROLE_SET = new Set<string>(DIVERSE_SLATE_ADMIN_ROLES);
 // Requisition states whose slate is "live" for the dashboard / shortlist flag.
 const DIVERSE_SLATE_OPEN_REQ_STATUSES = ["approved", "posted", "on_hold"];
 /**
@@ -1845,20 +1884,15 @@ const DIVERSE_SLATE_OPEN_REQ_STATUSES = ["approved", "posted", "on_hold"];
  * the TA lead (hr_head). Watchlist / timeline / signals / renege: recruiter,
  * hr_head, admin — a recruiter sees only the applications they own.
  */
-const PRE_JOINING_ADMIN_ROLES = new Set(["admin", "hr_head"]);
-const JOINING_WATCHLIST_ROLES = new Set(["admin", "hr_head", "recruiter"]);
 // REQ-03 decision mutation. hr_head (the approver) + admin. recruiter /
 // hiring_manager get FORBIDDEN.
-const REQUISITION_APPROVAL_DECIDE_ROLES = new Set(["admin", "hr_head"]);
 // REQ-03 posting mutation. The recruiter/hiring-manager side takes an approved
 // req live. recruiter is included here (unlike the creation gate) because
 // posting is a recruiter action.
-const REQUISITION_POST_ROLES = new Set(["admin", "hiring_manager", "recruiter"]);
 // REQ-02 creation mutations. hiring_manager (the requirement owner) + admin.
 // NOT recruiter: recruiters request reqs via a different flow later (Wave A
 // note in the ticket); a recruiter hitting a mutation gets FORBIDDEN. RLS
 // still scopes rows to the tenant on top of this persona gate.
-const REQUISITION_WRITE_ROLES = new Set(["admin", "hiring_manager"]);
 
 // RO-03 — the hiring-manager persona surfaces (/jd-library, /panel-setup,
 // /insights). hiring_manager (the requirement owner) + admin (super-role).
@@ -1866,21 +1900,18 @@ const REQUISITION_WRITE_ROLES = new Set(["admin", "hiring_manager"]);
 // scoped to the caller's OWN requisitions (hiring_manager_id = the caller's
 // membership); admin, the super-role, sees every requisition in the tenant.
 // RLS still scopes every row to the tenant on top.
-const HM_INSIGHTS_ROLES = new Set(["admin", "hiring_manager"]);
 
 // INT-02 interview scheduling. Plan editing + scheduling is the
 // recruiter/hiring-manager surface (admin super-role always). Plan READ
 // piggybacks on REQUISITION_READ_ROLES (the plan lives on the req detail
 // view, which hr_head also reads). A partner/candidate-less identity is
 // FORBIDDEN. RLS still scopes rows to the tenant on top of these gates.
-const INTERVIEW_MANAGE_ROLES = new Set(["admin", "hiring_manager", "recruiter"]);
 
 // N2a interview-recording consent. The interview-manage roles PLUS hr_ops: a
 // DPDPA withdrawal request phoned or emailed in lands with HR ops at least as
 // often as with the recruiter, and by then the candidate's signed link may
 // long since have expired. Anyone outside this set (hr_head, panel_member, a
 // partner identity) is FORBIDDEN, and RLS scopes rows to the tenant on top.
-const RECORDING_CONSENT_MANAGE_ROLES = new Set([...INTERVIEW_MANAGE_ROLES, "hr_ops"]);
 
 // N3.4b — who may READ a round's transcript + AI notes. The interview-manage
 // roles PLUS panel_member, and the addition is the whole point: the panellists
@@ -1896,12 +1927,10 @@ const RECORDING_CONSENT_MANAGE_ROLES = new Set([...INTERVIEW_MANAGE_ROLES, "hr_o
 // every round's transcript, which is the worst thing this feature could do.
 // hr_ops is NOT here: servicing a consent withdrawal is a compliance duty and
 // does not carry a reason to read what the candidate said.
-const INTERVIEW_NOTES_READ_ROLES = new Set([...INTERVIEW_MANAGE_ROLES, "panel_member"]);
 
 // RECR-01 recruiter dashboard extras. The elevated recruiter landing read
 // (funnel, tasks, follow-ups, insights) is the recruiter's; admin is the
 // super-role. RLS scopes rows to the tenant on top.
-const RECRUITER_DASHBOARD_ROLES = new Set(["admin", "recruiter"]);
 
 // INT-03 panel persona. The "my interviews" + brief + scorecard surface is the
 // interviewer's. panel_member is the role; admin is the super-role. NOTE this
@@ -1909,32 +1938,27 @@ const RECRUITER_DASHBOARD_ROLES = new Set(["admin", "recruiter"]);
 // that the caller is a panelist ON that specific interview (a panel_member who
 // is not on the interview gets FORBIDDEN), so the role set alone is not the
 // authorisation boundary. RLS still scopes rows to the tenant on top.
-const PANEL_SURFACE_ROLES = new Set(["admin", "panel_member"]);
 
 // RECR-03 — the recruiter's own surfaces (AI brief drawer, Missing Info
 // Tracker). recruiter (the persona) + admin (super-role). RLS still scopes
 // every row to the tenant on top.
-const RECRUITER_SURFACE_ROLES = new Set(["admin", "recruiter"]);
 
 // CONF-01 per-tenant AI settings. Admin-only on both read and write —
 // unlike the /admin/costs read (page-gated only), these procedures enforce
 // the gate themselves because the write changes real AI call behaviour and
 // the read exposes config an admin owns.
-const AI_SETTINGS_ADMIN_ROLES = new Set(["admin"]);
 
 // CONF-03 users & roles admin. Admin-only on every read and write — the
 // listing exposes every member's email + roles + status, and the mutations
 // change who can access the tenant. The service-role membership writes
 // (tenant_user_memberships has no authenticated write policy) are authorised
 // by this explicit gate + the ctx.tenantId predicate.
-const USERS_ADMIN_ROLES = new Set(["admin"]);
 
 // PC-13 — Workday handoff record (download + status chip). The roles that work
 // the offer: recruiter (owns the candidate + offer in the drawer), hr_ops (comp
 // desk / offer operations) and admin. hiring_manager / hr_head / panel_member
 // get FORBIDDEN — the record carries PII + base pay. RLS still tenant-scopes the
 // read underneath this gate.
-const WORKDAY_HANDOFF_ROLES = new Set(["admin", "recruiter", "hr_ops"]);
 
 // P0.1A — internal partner administration (create partner orgs, invite partner
 // users, open/close requisitions to a partner). hr_ops runs the vendor
@@ -1943,7 +1967,6 @@ const WORKDAY_HANDOFF_ROLES = new Set(["admin", "recruiter", "hr_ops"]);
 // portal access to an outside company is an HR-ops decision. RLS still scopes
 // every row to the tenant on top of this persona gate, and every query below
 // carries an explicit tenant_id predicate as well.
-const PARTNER_ADMIN_ROLES = new Set(["admin", "hr_ops"]);
 
 // OFFBOARD-02 — departures are an HR operation. hr_ops + people_ops run them;
 // admin is the super-role. recruiter / hiring_manager / panel get FORBIDDEN.
@@ -1952,23 +1975,14 @@ const PARTNER_ADMIN_ROLES = new Set(["admin", "hr_ops"]);
 // initiation as HR/manager, but the CLEARANCE spine (settlement, access,
 // HR-clearance) is unambiguously HR, so the whole surface is HR-gated for now.
 // RLS still scopes rows to the tenant on top of this persona gate.
-const OFFBOARD_MANAGE_ROLES = new Set(["admin", "hr_ops", "people_ops"]);
 
 // RBAC-01 — onboarding is worked by the recruiter (day-0 handoff) and HR ops.
 // Matches the /onboarding nav gate; RLS still scopes rows to the tenant.
-const ONBOARDING_MANAGE_ROLES = new Set(["admin", "recruiter", "hr_ops", "people_ops"]);
 
 // IRIS-B1.1 — the read gate for the Iris application picker (irisSearchApplications).
 // The UNION of the pipeline/onboarding action operators, so every persona that
 // can run one of those actions through Iris can also resolve its target here —
 // without widening any candidate-list procedure's own gate.
-const IRIS_PIPELINE_PICKER_ROLES = new Set([
-  "admin",
-  "recruiter",
-  "hiring_manager",
-  "hr_ops",
-  "people_ops",
-]);
 
 // HRHEAD-02 — Market Intelligence + Feasibility (HR-head persona).
 // Market benchmarks READ is a planning surface for anyone who owns or approves
@@ -1977,35 +1991,26 @@ const IRIS_PIPELINE_PICKER_ROLES = new Set([
 // are curated governance data an admin maintains. Feasibility generation +
 // read is the HR-head decision surface (hr_head + admin); a real AI call is
 // gated tighter than the benchmark read. RLS still scopes rows to the tenant.
-const MARKET_INTEL_READ_ROLES = new Set(["admin", "hr_head", "hiring_manager"]);
-const MARKET_BENCHMARK_ADMIN_ROLES = new Set(["admin"]);
 
 // T1.1 / G04 — the sourcing-channel registry. Reads flow to the recruiter
 // surfaces that render source labels (recruiter + admin); writes (declare /
 // enable / label a channel) are admin-only config, like every other admin
 // config surface.
-const TENANT_SOURCE_READ_ROLES = new Set(["admin", "recruiter"]);
-const TENANT_SOURCE_ADMIN_ROLES = new Set(["admin"]);
 
 // T3.1 / G14 — business-unit management. The managed list GENUINELY drives
 // requisition creation: the wizard picker (hiring_manager / recruiter / admin)
 // reads the non-archived units; managing them (create / rename / reparent /
 // archive) is admin-only config, like every other org-structure surface.
-const BUSINESS_UNIT_READ_ROLES = new Set(["admin", "hiring_manager", "recruiter"]);
-const BUSINESS_UNIT_ADMIN_ROLES = new Set(["admin"]);
 
 // T3.2 / G15 — comp-band library. The wizard picker (admin / hiring_manager /
 // recruiter) reads the non-archived bands; managing them (create / update /
 // archive) is admin + hr_head config, like every other org-structure surface.
-const COMP_BAND_READ_ROLES = new Set(["admin", "hiring_manager", "recruiter"]);
-const COMP_BAND_WRITE_ROLES = new Set(["admin", "hr_head"]);
 
 // T4.1 — tenant-configurable SLA thresholds. Both READ and WRITE are
 // {admin, hr_head}: the SLA hours drive breach detection, urgency, governance
 // and the imminent-alert emails — compliance/governance territory the HR head
 // owns alongside admin. recruiter / hiring_manager / panel read the *effect*
 // (breach flags on their surfaces) but do not configure the thresholds.
-const SLA_CONFIG_ROLES = new Set(["admin", "hr_head"]);
 
 // T3.3 / G16 — panel-pool library. The plan-setup pool picker (admin /
 // hiring_manager / recruiter) reads the non-archived pools; managing them
@@ -2013,8 +2018,6 @@ const SLA_CONFIG_ROLES = new Set(["admin", "hr_head"]);
 // picked pool GENUINELY drives an interview-plan round's default panel
 // (upsertInterviewPlan copies the pool's members), which INT-02 seeds
 // interview_panelists from.
-const PANEL_POOL_READ_ROLES = new Set(["admin", "hiring_manager", "recruiter"]);
-const PANEL_POOL_WRITE_ROLES = new Set(["admin", "recruiter"]);
 
 // LD-1A — the L&D CATALOGUE (learning resources + curated tracks) is org
 // config: what the company decides every hire, or every hire in a role, should
@@ -2023,7 +2026,6 @@ const PANEL_POOL_WRITE_ROLES = new Set(["admin", "recruiter"]);
 // (assignLearningToCase), which is gated ONBOARDING_MANAGE_ROLES — curating the
 // library and deciding what one specific new hire gets are different acts by
 // different people. RLS still scopes rows to the tenant on top of this gate.
-const LEARNING_ADMIN_ROLES = new Set(["admin", "hr_head"]);
 
 /** DB row → API row for a comp band. numeric columns come back as strings —
  * convert to number; timestamps to ISO strings. */
@@ -2213,13 +2215,11 @@ function tenantSourceRowToApi(row: typeof tenantApplicationSources.$inferSelect)
 // admin-only tenant config, like every other admin config surface. RLS scopes
 // rows to the tenant on top; the tracker READS the effective policy (recruiter
 // surfaces render it), but only an admin writes it.
-const CANDIDATE_FIELD_POLICY_ROLES = new Set(["admin"]);
 
 // T2.2 / G07 — authoring the tenant interview round loop + custom scorecard
 // rubrics is admin-only tenant config, like every other admin config surface.
 // (Applying a template to a requisition's plan is a plan-authoring action —
 // INTERVIEW_MANAGE_ROLES — since it writes interview_plans.)
-const INTERVIEW_TEMPLATE_ADMIN_ROLES = new Set(["admin"]);
 
 // Friendly labels for the 4 code-default scorecards in the picker (T2.2 / G07).
 const CODE_SCORECARD_LABELS: Record<(typeof CODE_SCORECARD_KEYS)[number], string> = {
@@ -2516,7 +2516,6 @@ async function candidateFieldPolicyAdvanceBlock(
 // T1.4 / G09 — email/notification copy overrides. Reading the catalog + editing
 // overrides is admin-only tenant config (the copy is org branding an admin owns),
 // like every other admin config surface. RLS scopes rows to the tenant on top.
-const EMAIL_TEMPLATE_ROLES = new Set(["admin"]);
 
 /** Narrow a jsonb slot-overrides blob to a string→string map (an older/hand row
  * could carry a non-string value; drop those defensively). */
@@ -2589,14 +2588,11 @@ function validateEmailOverride(
   return null;
 }
 
-const FEASIBILITY_ROLES = new Set(["admin", "hr_head"]);
-
 // HROPS-01 — the HR-Ops cases workspace + HR round is the post-technical-rounds
 // offer-desk persona: hr_ops (the persona) + admin (super-role). recruiter /
 // hiring_manager / hr_head / panel_member get FORBIDDEN. Same set gates the
 // case list, case detail, the HR-round scheduler view, and the assessment save.
 // RLS still scopes every row to the tenant on top of this persona gate.
-const HR_OPS_CASE_ROLES = new Set(["admin", "hr_ops"]);
 
 // HROPS-02 — Comp & offer desk + HR analytics. The desk + analytics are the
 // hr_ops persona surface (the comp/offer operator); admin is the super-role.
@@ -2604,20 +2600,16 @@ const HR_OPS_CASE_ROLES = new Set(["admin", "hr_ops"]);
 // is hr_ops. OUT-OF-BAND offer approval decisions route to hr_head (mirrors the
 // requisition approval decider) — hr_ops REQUESTS approval + sees status only.
 // RLS still scopes rows to the tenant on top of every gate.
-const COMP_DESK_ROLES = new Set(["admin", "hr_ops"]);
-const OFFER_APPROVAL_DECIDE_ROLES = new Set(["admin", "hr_head"]);
 // HROPS-03 — Documents & verification, Case audit, Policies. The hr_ops
 // persona owns pre-offer document verification, the per-case audit trail, and
 // the policies library; admin is the super-role. recruiter / hiring_manager /
 // hr_head / panel get FORBIDDEN on these surfaces (matches the AppShell nav
 // gate). RLS still scopes every read/write to the tenant on top of this gate.
-const HR_OPS_DOC_ROLES = new Set(["admin", "hr_ops"]);
 
 // T12/G11 — the JD-template library on /jd-library → Templates. Curated by the
 // hiring_manager persona (who authors requisitions) + admin. recruiter / hr_ops
 // / hr_head / panel get FORBIDDEN (matches the jd-library page's READ_ROLES gate
 // and the nav). RLS scopes every read/write to the tenant on top of this gate.
-const JD_TEMPLATE_ROLES = new Set(["admin", "hiring_manager"]);
 
 // The application stages that make up the pre-offer / HR-ops window: a
 // candidate deep enough in the pipeline to collect documents on, up to and
@@ -2640,7 +2632,6 @@ const ASSIGNABLE_INTERNAL_ROLES = new Set<string>(INTERNAL_TENANT_ROLES);
 // nothing pending). A candidate/partner JWT carries no `tid` and is rejected
 // UNAUTHORIZED by protectedProcedure before this gate runs — so the practical
 // effect is "internal identities only". RLS still scopes every row to the tenant.
-const DASHBOARD_PERSONA_ROLES = new Set<string>(INTERNAL_TENANT_ROLES);
 
 /**
  * CONF-02 bias-gate helpers.
@@ -2792,28 +2783,43 @@ function requireTenantId(ctx: HonoTRPCContext): string {
 }
 
 /**
- * PC-16 — the watchlist scope: admin / hr_head see the whole tenant (null);
- * a recruiter (without either of those roles) sees only applications they
- * own, keyed by their membership id. A recruiter with no membership row gets
- * an impossible id, i.e. an empty scope, never the whole tenant.
+ * PC-16 — the watchlist scope: `onboarding.prejoining_watchlist` at scope
+ * `all` (platform default: admin / hr_head) sees the whole tenant (null);
+ * scope `own` (default: recruiter) sees only applications they own, keyed by
+ * their membership id. A member with no membership row gets an impossible id,
+ * i.e. an empty scope, never the whole tenant.
  */
 async function preJoiningRecruiterScope(
   ctx: HonoTRPCContext,
   tenantId: string,
 ): Promise<string | null> {
-  if (ctx.roles.includes("admin") || ctx.roles.includes("hr_head")) return null;
+  if (scopeOf(ctx, "onboarding.prejoining_watchlist") === "all") return null;
   return (await resolveCallerMembershipId(ctx, tenantId)) ?? "00000000-0000-0000-0000-000000000000";
 }
 
+/** C2-F1 — the base roles through which the caller holds Ask-your-data (logged with each question). */
+function askDataAskerRoles(ctx: HonoTRPCContext): string[] {
+  return [...new Set(permsOf(ctx).sourceRoles["reports.ask_data"] ?? [])].sort();
+}
+
 /**
- * Throws FORBIDDEN unless the caller holds any role in `allowed`. Same
- * explicit-set idiom the approval-resolution gates use — kept a tiny local
- * helper rather than a framework so each call site reads plainly.
+ * C2-F1 — may the caller run this Iris action? They must hold the action's
+ * capability through a base role the tenant's Iris policy (a per-role
+ * DENY-OVERLAY) has not switched off for it. `sourceRoles` are the base roles
+ * that contribute the capability (the JWT roles for system bundles, the custom
+ * role's base role otherwise), so for a member without a custom role this is
+ * exactly the old "any of my roles in (static roles − disabled)" rule.
  */
-function requireAnyRole(ctx: HonoTRPCContext, allowed: ReadonlySet<string>, message: string): void {
-  if (!ctx.roles.some((r) => allowed.has(r))) {
-    throw new TRPCError({ code: "FORBIDDEN", message });
-  }
+function irisActionPermitted(
+  ctx: HonoTRPCContext,
+  action: { id: string },
+  policy: IrisPolicy,
+): boolean {
+  // The capability lives on the registry entry (the menu wire shape is unchanged).
+  const capability: Capability | undefined = getIrisAction(action.id)?.capability;
+  if (!capability) return false;
+  const sources = permsOf(ctx).sourceRoles[capability] ?? [];
+  return irisActionAllowedRoles(action.id, sources, policy).length > 0;
 }
 
 /**
@@ -3077,6 +3083,8 @@ interface RoReqFacet {
   latestDecisionAt: Date | null;
   /** Days from first application to offer_accepted, for accepted apps only. */
   timeToHireDays: number[];
+  /** C2-F7 / PP3 — the tenant's requisition-health weights (screeningPolicy). */
+  healthWeights: ReqHealthWeights;
 }
 
 function countJdSections(metadata: unknown): number {
@@ -3091,11 +3099,60 @@ function countJdSections(metadata: unknown): number {
   return 0;
 }
 
+/**
+ * C2-F1 (P5) — the SQL predicate that limits requisitions to a target
+ * population (requires `positions` joined): `members` = the requisition's
+ * hiring manager or primary recruiter is one of them; `business_units` = the
+ * position's business unit is one of them; `all` = no predicate. An empty id
+ * list matches NOTHING (fail closed).
+ */
+function requisitionPopulationWhere(pop: Population): SQL | undefined {
+  switch (pop.kind) {
+    case "all":
+      return undefined;
+    case "members":
+      return pop.membershipIds.length === 0
+        ? dsql`false`
+        : or(
+            inArray(requisitions.hiringManagerId, pop.membershipIds),
+            inArray(requisitions.primaryRecruiterId, pop.membershipIds),
+          );
+    case "business_units":
+      return pop.businessUnitIds.length === 0
+        ? dsql`false`
+        : inArray(positions.businessUnitId, pop.businessUnitIds);
+  }
+}
+
+/**
+ * C2-F1 (P5) — `applications.requisition_id IN (requisitions in the
+ * population)`, for application lists. `all` → no predicate.
+ */
+function requisitionPopulationSubquery(db: TenantBoundDb, pop: Population): SQL | undefined {
+  if (pop.kind === "all") return undefined;
+  return inArray(
+    applications.requisitionId,
+    db
+      .select({ id: requisitions.id })
+      .from(requisitions)
+      .innerJoin(
+        positions,
+        and(
+          eq(requisitions.tenantId, positions.tenantId),
+          eq(requisitions.positionId, positions.id),
+        ),
+      )
+      .where(requisitionPopulationWhere(pop)),
+  );
+}
+
 async function loadRequirementOwnerFacets(
   db: TenantBoundDb,
   tenantId: string,
   limit: number,
+  population: Population = { kind: "all" },
 ): Promise<RoReqFacet[]> {
+  const healthWeights = (await loadScreeningPolicy(tenantId)).reqHealthWeights;
   const reqRows = await db
     .select({
       id: requisitions.id,
@@ -3134,11 +3191,12 @@ async function loadRequirementOwnerFacets(
         eq(requisitions.jdVersionId, jdVersions.id),
       ),
     )
-    .where(eq(requisitions.tenantId, tenantId))
+    .where(and(eq(requisitions.tenantId, tenantId), requisitionPopulationWhere(population)))
     .orderBy(desc(requisitions.createdAt))
     .limit(limit);
 
   const facets: RoReqFacet[] = reqRows.map((r) => ({
+    healthWeights,
     id: r.id,
     status: r.status,
     title: r.title ?? null,
@@ -3325,19 +3383,22 @@ function facetDifficulty(f: RoReqFacet, benchmark: TenantBenchmark | null): ReqD
 }
 
 function facetHealth(f: RoReqFacet): ReqHealthWire {
-  const { score, components } = computeReqHealth({
-    jd: { hasText: f.jdHasText, hasSummary: f.jdHasSummary, sectionCount: f.jdSectionCount },
-    skills: {
-      count: f.skillCount,
-      weightedCount: f.weightedSkillCount,
-      mustHaveCount: f.mustHaveCount,
+  const { score, components } = computeReqHealth(
+    {
+      jd: { hasText: f.jdHasText, hasSummary: f.jdHasSummary, sectionCount: f.jdSectionCount },
+      skills: {
+        count: f.skillCount,
+        weightedCount: f.weightedSkillCount,
+        mustHaveCount: f.mustHaveCount,
+      },
+      interviewPlan: { configured: f.interviewRounds > 0, roundCount: f.interviewRounds },
+      budget: { hasBand: f.compBandMin != null && f.compBandMax != null },
+      // A never-submitted draft has no approval row; status still reflects lifecycle.
+      approvalStatus: f.status,
+      pipeline: { candidatesInFlight: f.candidatesInFlight },
     },
-    interviewPlan: { configured: f.interviewRounds > 0, roundCount: f.interviewRounds },
-    budget: { hasBand: f.compBandMin != null && f.compBandMax != null },
-    // A never-submitted draft has no approval row; status still reflects lifecycle.
-    approvalStatus: f.status,
-    pipeline: { candidatesInFlight: f.candidatesInFlight },
-  });
+    f.healthWeights,
+  );
   return { score, components };
 }
 
@@ -3512,8 +3573,6 @@ function facetActions(f: RoReqFacet): RoActionItem[] {
 }
 
 // Role gates for the requirement-owner surfaces.
-const RO_DASHBOARD_ROLES = new Set(["admin", "hiring_manager"]);
-const RO_REVISION_ROLES = new Set(["admin", "hiring_manager"]);
 
 interface ReqRevisionMeta {
   hiringManagerId: string | null;
@@ -3567,14 +3626,15 @@ async function loadReqRevisionMeta(
   };
 }
 
-/** Owner-or-admin gate: admin passes; otherwise the caller's membership must be
- * the requisition's hiring manager. */
+/** Owner-or-all gate: `requisitions.revise` at scope `all` (default: admin)
+ * passes; otherwise (scope `own`) the caller's membership must be the
+ * requisition's hiring manager. */
 async function ensureReqOwnerOrAdmin(
   db: TenantBoundDb,
   ctx: HonoTRPCContext,
   hiringManagerId: string | null,
 ): Promise<void> {
-  if (ctx.roles.includes("admin")) return;
+  if (scopeOf(ctx, "requisitions.revise") === "all") return;
   const membershipId = await resolveActorMembership(db, ctx);
   if (!membershipId || membershipId !== hiringManagerId) {
     throw new TRPCError({
@@ -3702,8 +3762,12 @@ function decodeAuditCursor(cursor: string | undefined): { createdAt: Date; id: s
  * against. Shared by `submitApplication` (rejects 400) and
  * `resolvePublicRequisition` (returns 404 — keeps slug existence
  * private from passers-by). Keep this single source of truth.
+ *
+ * C2-F7 / PP10 — this is now the tenant's `screeningPolicy.acceptingStatuses`
+ * (loadAcceptingStatuses), a non-empty subset of APPLY_ACCEPTING_STATUS_OPTIONS
+ * ({approved, posted}); the platform default is both. The bulk-CV upload and
+ * drain read the same setting (lib/bulk-cv/policy.ts).
  */
-const PUBLIC_APPLY_ACCEPTING_STATUSES = new Set<string>(["approved", "posted"]);
 
 /**
  * Materialise a partner-sourced candidate into the recruitment pipeline:
@@ -4392,6 +4456,8 @@ export const appRouter = router({
   // proposal, candidate self-pick / reschedule, panellist can't-attend). Flat
   // names, defined in ./scheduling-procedures.ts to keep this file from growing.
   ...schedulingProcedures,
+  // C2-F1 — tenant roles + capability bundles.
+  ...rolesProcedures,
   // C1-F3 — organisation + job architecture + tenant lookups.
   ...orgArchitectureProcedures,
 
@@ -4400,6 +4466,9 @@ export const appRouter = router({
   ...platformProcedures,
   // C1-F11 — tenant provisioning, starter packs, setup wizard, config export/import.
   ...provisioningProcedures,
+  // C2-F12 — applicability (template assignments), resolved-config preview,
+  // named interview loops.
+  ...applicabilityProcedures,
 
   // ─────────── public: apply form ───────────
   submitApplication: publicProcedure
@@ -4424,7 +4493,7 @@ export const appRouter = router({
       // others are open game for an apply form. Shared with the public
       // resolver below so the page-level 404 and the procedure-level
       // 400 cannot disagree about which slugs are "live".
-      if (!PUBLIC_APPLY_ACCEPTING_STATUSES.has(req.status)) {
+      if (!(await loadAcceptingStatuses(req.tenantId)).has(req.status)) {
         throw new TRPCError({
           code: "BAD_REQUEST",
           message: `Requisition not accepting applications (status=${req.status})`,
@@ -4466,6 +4535,29 @@ export const appRouter = router({
           // 2. Fetch resume from storage, parse it.
           const storage = getStorageClient();
           const obj = await storage.get(input.resumeUploadKey);
+          // C2-F7 / PP9 — the tenant's resume cap + types, checked on the
+          // STORED object (the upload route only knows the tenant when the
+          // form names it; this is the authoritative check).
+          {
+            const limits = await loadEffectiveUploadLimits(req.tenantId);
+            const contentType = (obj.contentType ?? "").split(";")[0]?.trim().toLowerCase() ?? "";
+            if (obj.buffer.length > limits.maxDocumentBytes) {
+              throw new TRPCError({
+                code: "BAD_REQUEST",
+                message: `The CV is larger than this employer accepts (${Math.floor(limits.maxDocumentBytes / (1024 * 1024))} MB).`,
+              });
+            }
+            if (
+              contentType &&
+              contentType !== "application/octet-stream" &&
+              !limits.resumeMimeTypes.has(contentType)
+            ) {
+              throw new TRPCError({
+                code: "BAD_REQUEST",
+                message: "This employer does not accept CVs in that file format.",
+              });
+            }
+          }
           let parseStatus: "received" | "parse_failed" = "received";
           let parsedSkills: unknown = null;
           let parserConfidence: number | null = null;
@@ -4552,7 +4644,10 @@ export const appRouter = router({
             input.applicant.phone,
             await resolvePhoneCountry(poolDb, req.tenantId, input.applicant.locationCountry),
           );
-          const [emailMatch] = await poolDb
+          // C2-F7 / PP8 — the tenant's dedup rule + re-apply cooling-off.
+          const screeningPolicy = await loadScreeningPolicy(req.tenantId);
+          const dedupMode = screeningPolicy.dedupMatchOn;
+          const [emailMatchRaw] = await poolDb
             .select({
               id: persons.id,
               emailNorm: persons.emailNormalised,
@@ -4562,7 +4657,7 @@ export const appRouter = router({
             .from(persons)
             .where(and(eq(persons.tenantId, req.tenantId), eq(persons.emailNormalised, emailNorm)))
             .limit(1);
-          const [phoneMatch] = await poolDb
+          const [phoneMatchRaw] = await poolDb
             .select({
               id: persons.id,
               emailNorm: persons.emailNormalised,
@@ -4578,16 +4673,37 @@ export const appRouter = router({
             )
             .orderBy(persons.createdAt)
             .limit(1);
+          // PP8: a mode that ignores an identifier drops its match.
+          const emailMatch = dedupMode === "phone" ? undefined : emailMatchRaw;
+          const phoneMatch = dedupMode === "email" ? undefined : phoneMatchRaw;
 
           let personId: string;
           let dedupDecision: "allow_new" | "link_existing";
           let dedupReason: string | null = null;
 
           const sameMatch = emailMatch && phoneMatch && emailMatch.id === phoneMatch.id;
-          const winner = sameMatch ? emailMatch : (emailMatch ?? phoneMatch);
+          // email_and_phone: only a person matched on BOTH counts as the same person.
+          const winner = sameMatch
+            ? emailMatch
+            : dedupMode === "email_and_phone"
+              ? undefined
+              : (emailMatch ?? phoneMatch);
           const isCollision = !!emailMatch && !!phoneMatch && emailMatch.id !== phoneMatch.id;
 
           if (winner && !isCollision) {
+            // PP8 — re-apply cooling-off after a rejection (0 = off).
+            const coolingEndsAt = await findReapplyCoolingOff(
+              poolDb,
+              req.tenantId,
+              winner.id,
+              screeningPolicy.reapplyCoolingOffDays,
+            );
+            if (coolingEndsAt) {
+              throw new TRPCError({
+                code: "BAD_REQUEST",
+                message: `You can apply to this employer again from ${coolingEndsAt.toISOString().slice(0, 10)}.`,
+              });
+            }
             personId = winner.id;
             dedupDecision = "link_existing";
             dedupReason = sameMatch
@@ -4700,6 +4816,7 @@ export const appRouter = router({
             knockoutEval.passed,
             parserConfidence,
             knockoutEvaluatedAt,
+            screeningPolicy.parserConfidenceFloor,
           );
 
           const wasNewApplication = !existingApp?.id;
@@ -4835,7 +4952,7 @@ export const appRouter = router({
       if (!row) {
         throw new TRPCError({ code: "NOT_FOUND", message: "Requisition not found" });
       }
-      if (!PUBLIC_APPLY_ACCEPTING_STATUSES.has(row.status)) {
+      if (!(await loadAcceptingStatuses(row.tenantId)).has(row.status)) {
         throw new TRPCError({
           code: "NOT_FOUND",
           message: "Requisition not accepting applications",
@@ -5033,7 +5150,11 @@ export const appRouter = router({
                 ),
                 aiScoredAt: toIsoString(appRow.aiScoredAt),
                 partnerOrgName: appRow.partnerOrgName ?? null,
-                screening: presentScreeningAnswers(appRow, row.candidate.parsedSkills, ctx.roles),
+                screening: presentScreeningAnswers(
+                  appRow,
+                  row.candidate.parsedSkills,
+                  permsOf(ctx),
+                ),
                 knockout: summariseKnockouts(
                   appRow.knockoutPassed,
                   appRow.knockoutFailures,
@@ -5059,15 +5180,15 @@ export const appRouter = router({
     .input(updateApplicationScreeningAnswersInputSchema)
     .output(updateApplicationScreeningAnswersOutputSchema)
     .mutation(async ({ ctx, input }) => {
-      requireAnyRole(
+      requireCapability(
         ctx,
-        SCREENING_ANSWERS_WRITE_ROLES as Set<string>,
+        "candidates.screening_write",
         "Editing screening answers requires the recruiter, hr_ops or admin role",
       );
       const touchesPay =
         input.answers.currentSalaryInrPaise !== undefined ||
         input.answers.expectedSalaryInrPaise !== undefined;
-      if (touchesPay && !canSeeScreeningComp(ctx.roles)) {
+      if (touchesPay && !canSeeScreeningComp(permsOf(ctx))) {
         throw new TRPCError({
           code: "FORBIDDEN",
           message: "Your role cannot view or edit candidate pay",
@@ -5090,7 +5211,7 @@ export const appRouter = router({
         }
         return {
           applicationId: input.applicationId,
-          screening: presentScreeningAnswers(res.stored, res.parsedCv, ctx.roles),
+          screening: presentScreeningAnswers(res.stored, res.parsedCv, permsOf(ctx)),
           knockout: summariseKnockouts(
             res.knockout?.passed ?? null,
             res.knockout?.failures ?? null,
@@ -5107,12 +5228,15 @@ export const appRouter = router({
       // RBAC-01 — the triage/candidate feed reads pipeline data. Broad read set
       // (recruiter triages; hr_head/HM read for governance/masking); the page
       // nav is recruiter-only but the procedure serves those reads too.
-      requireAnyRole(
+      // C2-F1 (P5): applications are limited to requisitions in the caller's
+      // `requisitions.read` population (all = unchanged).
+      const population = await requirePopulation(
         ctx,
-        REQUISITION_READ_ROLES,
+        "requisitions.read",
         "Candidate triage is not available for your role",
       );
       const db = requireDb(ctx);
+      const populationCond = requisitionPopulationSubquery(db, population);
       const limit = input.pagination.limit;
       const cursor = input.pagination.cursor ? new Date(input.pagination.cursor) : null;
       const filters = input.filters ?? {};
@@ -5154,7 +5278,7 @@ export const appRouter = router({
         ...(filters.slaBreachOnly ? [slaBreachExpr] : []),
         // PC-5 — the same SQL fact filters as candidates-by-role (expected-CTC
         // dropped silently for callers who cannot see pay).
-        ...factFilterConditions(resolveFactFilters(filters, ctx.roles).applied),
+        ...factFilterConditions(resolveFactFilters(filters, permsOf(ctx)).applied),
       ];
       // PC-5 — offset mode: stable order + a total, cursor ignored.
       const offsetMode = input.pagination.offset !== undefined;
@@ -5229,7 +5353,7 @@ export const appRouter = router({
           and(eq(candidates.personId, persons.id), eq(candidates.tenantId, persons.tenantId)),
         )
         .leftJoin(applicationScreeningEvidence, screeningEvidenceJoin())
-        .where(conds.length ? and(...conds) : undefined)
+        .where(and(...conds, populationCond))
         .orderBy(orderClause)
         .limit(offsetMode ? limit : limit + 1)
         .offset(offsetMode ? (input.pagination.offset ?? 0) : 0);
@@ -5257,7 +5381,7 @@ export const appRouter = router({
               persons,
               and(eq(candidates.personId, persons.id), eq(candidates.tenantId, persons.tenantId)),
             )
-            .where(conds.length ? and(...conds) : undefined);
+            .where(and(...conds, populationCond));
           total = c?.n ?? 0;
         }
         hasMore = false;
@@ -5289,7 +5413,7 @@ export const appRouter = router({
             aiScoreExplanation: presentScoreExplanation(r.aiScoreExplanation, scoreVisible),
             evidenceSummary: toScreeningSummary(r),
             createdAt: r.createdAt.toISOString(),
-            screening: presentScreeningAnswers(r, r.parsedSkills, ctx.roles),
+            screening: presentScreeningAnswers(r, r.parsedSkills, permsOf(ctx)),
             knockout: summariseKnockouts(
               r.knockoutPassed,
               r.knockoutFailures,
@@ -5379,9 +5503,9 @@ export const appRouter = router({
       // (PARTNER_ADMIN_ROLES = admin + hr_ops) needs id+title summaries for
       // its assign-requisition picker. The rest of the requisition surface
       // stays on REQUISITION_READ_ROLES.
-      requireAnyRole(
+      requireCapability(
         ctx,
-        new Set([...REQUISITION_READ_ROLES, "hr_ops"]),
+        "requisitions.summaries",
         "Requisition access requires the hiring_manager, recruiter, hr_ops, or admin role",
       );
       const db = requireDb(ctx);
@@ -5430,9 +5554,9 @@ export const appRouter = router({
     .input(listRequisitionApprovalsInputSchema)
     .output(listRequisitionApprovalsOutputSchema)
     .query(async ({ ctx, input }) => {
-      requireAnyRole(
+      requireCapability(
         ctx,
-        REQUISITION_APPROVAL_READ_ROLES,
+        "requisitions.approvals_read",
         "Requisition-approval access requires the hr_head or admin role",
       );
       const db = requireDb(ctx);
@@ -5535,9 +5659,9 @@ export const appRouter = router({
     .output(createRequisitionDraftOutputSchema)
     .mutation(async ({ ctx, input }) => {
       return withAudit("create_requisition_draft", ctx, input, async () => {
-        requireAnyRole(
+        requireCapability(
           ctx,
-          REQUISITION_WRITE_ROLES,
+          "requisitions.write",
           "Creating a requisition requires the hiring_manager or admin role",
         );
         const db = requireDb(ctx);
@@ -5824,9 +5948,9 @@ export const appRouter = router({
     .output(generateJdDraftOutputSchema)
     .mutation(async ({ ctx, input }) => {
       return withAudit("generate_jd_draft", ctx, input, async () => {
-        requireAnyRole(
+        requireCapability(
           ctx,
-          REQUISITION_WRITE_ROLES,
+          "requisitions.write",
           "Generating a JD requires the hiring_manager or admin role",
         );
         const db = requireDb(ctx);
@@ -5948,9 +6072,9 @@ export const appRouter = router({
     .output(updateRequisitionDraftOutputSchema)
     .mutation(async ({ ctx, input }) => {
       return withAudit("update_requisition_draft", ctx, input, async () => {
-        requireAnyRole(
+        requireCapability(
           ctx,
-          REQUISITION_WRITE_ROLES,
+          "requisitions.write",
           "Editing a requisition draft requires the hiring_manager or admin role",
         );
         const db = requireDb(ctx);
@@ -6087,9 +6211,9 @@ export const appRouter = router({
     .output(submitRequisitionForApprovalOutputSchema)
     .mutation(async ({ ctx, input }) => {
       return withAudit("submit_requisition_for_approval", ctx, input, async () => {
-        requireAnyRole(
+        requireCapability(
           ctx,
-          REQUISITION_WRITE_ROLES,
+          "requisitions.write",
           "Submitting a requisition requires the hiring_manager or admin role",
         );
         const db = requireDb(ctx);
@@ -6260,9 +6384,10 @@ export const appRouter = router({
     .input(getRequisitionDetailInputSchema)
     .output(getRequisitionDetailOutputSchema)
     .query(async ({ ctx, input }) => {
-      requireAnyRole(
+      // C2-F1 (P5): a requisition outside the caller's scope reads as not found.
+      const population = await requirePopulation(
         ctx,
-        REQUISITION_READ_ROLES,
+        "requisitions.read",
         "Requisition access requires the hiring_manager, recruiter, or admin role",
       );
       const db = requireDb(ctx);
@@ -6326,7 +6451,13 @@ export const appRouter = router({
             eq(requisitions.jdVersionId, jdVersions.id),
           ),
         )
-        .where(and(eq(requisitions.tenantId, tenantId), eq(requisitions.id, input.requisitionId)))
+        .where(
+          and(
+            eq(requisitions.tenantId, tenantId),
+            eq(requisitions.id, input.requisitionId),
+            requisitionPopulationWhere(population),
+          ),
+        )
         .limit(1);
       if (!row) {
         throw new TRPCError({ code: "NOT_FOUND", message: "Requisition not found" });
@@ -6502,9 +6633,9 @@ export const appRouter = router({
     .input(listRequisitionsForSkillWeightingInputSchema)
     .output(listRequisitionsForSkillWeightingOutputSchema)
     .query(async ({ ctx, input }) => {
-      requireAnyRole(
+      requireCapability(
         ctx,
-        REQUISITION_WRITE_ROLES,
+        "requisitions.write",
         "Skill weighting requires the hiring_manager or admin role",
       );
       const db = requireDb(ctx);
@@ -6599,9 +6730,9 @@ export const appRouter = router({
     .output(decideRequisitionApprovalOutputSchema)
     .mutation(async ({ ctx, input }) => {
       return withAudit("decide_requisition_approval", ctx, input, async () => {
-        requireAnyRole(
+        requireCapability(
           ctx,
-          REQUISITION_APPROVAL_DECIDE_ROLES,
+          "requisitions.approve",
           "Deciding a requisition approval requires the hr_head or admin role",
         );
         const db = requireDb(ctx);
@@ -6753,9 +6884,9 @@ export const appRouter = router({
     .output(postRequisitionOutputSchema)
     .mutation(async ({ ctx, input }) => {
       return withAudit("post_requisition", ctx, input, async () => {
-        requireAnyRole(
+        requireCapability(
           ctx,
-          REQUISITION_POST_ROLES,
+          "requisitions.post",
           "Posting a requisition requires the recruiter, hiring_manager, or admin role",
         );
         const db = requireDb(ctx);
@@ -6901,9 +7032,9 @@ export const appRouter = router({
     .output(setRequisitionHoldOutputSchema)
     .mutation(async ({ ctx, input }) => {
       return withAudit("set_requisition_hold", ctx, input, async () => {
-        requireAnyRole(
+        requireCapability(
           ctx,
-          REQUISITION_POST_ROLES,
+          "requisitions.post",
           "Holding or resuming a requisition requires the recruiter, hiring_manager, or admin role",
         );
         const db = requireDb(ctx);
@@ -7099,9 +7230,9 @@ export const appRouter = router({
     .input(bulkMoveApplicationsInputSchema)
     .output(bulkMoveApplicationsOutputSchema)
     .mutation(async ({ ctx, input }): Promise<BulkMoveApplicationsOutput> => {
-      requireAnyRole(
+      requireCapability(
         ctx,
-        RECRUITER_SURFACE_ROLES,
+        "candidates.triage",
         "Bulk stage moves are available to recruiters and admins.",
       );
       const db = requireDb(ctx);
@@ -7115,7 +7246,7 @@ export const appRouter = router({
       if (input.selection.mode === "ids") {
         ids = [...new Set(input.selection.applicationIds)];
       } else {
-        const { conditions } = candidateListConditions(input.selection.filter, ctx.roles);
+        const { conditions } = candidateListConditions(input.selection.filter, permsOf(ctx));
         const matched = await db
           .select({ id: applications.id })
           .from(applications)
@@ -7294,7 +7425,7 @@ export const appRouter = router({
     .input(previewApplicationClosedEmailInputSchema)
     .output(previewApplicationClosedEmailOutputSchema)
     .query(async ({ ctx, input }) => {
-      requireAnyRole(ctx, RECRUITER_SURFACE_ROLES, "Candidates is a recruiter surface.");
+      requireCapability(ctx, "candidates.triage", "Candidates is a recruiter surface.");
       const db = requireDb(ctx);
       const tenantId = ctx.tenantId;
       if (!tenantId) {
@@ -7483,7 +7614,10 @@ export const appRouter = router({
           });
         }
 
-        const expiryAt = new Date(Date.now() + input.expiryDays * 24 * 60 * 60 * 1000);
+        // C2-F7 / PP13 — an omitted expiry / probation takes the tenant's offer policy.
+        const offerPolicy = await loadOfferPolicy(app.tenantId);
+        const expiryDays = input.expiryDays ?? offerPolicy.defaultExpiryDays;
+        const expiryAt = new Date(Date.now() + expiryDays * 24 * 60 * 60 * 1000);
 
         const [created] = await db
           .insert(offers)
@@ -7774,9 +7908,9 @@ export const appRouter = router({
     .input(upsertInterviewPlanInputSchema)
     .output(upsertInterviewPlanOutputSchema)
     .mutation(async ({ ctx, input }) => {
-      requireAnyRole(
+      requireCapability(
         ctx,
-        INTERVIEW_MANAGE_ROLES,
+        "interviews.manage",
         "Only hiring managers, recruiters and admins can edit an interview plan.",
       );
       return withAudit("upsert_interview_plan", ctx, input, async () => {
@@ -7920,7 +8054,7 @@ export const appRouter = router({
     .input(getInterviewPlanInputSchema)
     .output(getInterviewPlanOutputSchema)
     .query(async ({ ctx, input }) => {
-      requireAnyRole(ctx, REQUISITION_READ_ROLES, "You don't have access to interview plans.");
+      requireCapability(ctx, "requisitions.read", "You don't have access to interview plans.");
       const db = requireDb(ctx);
       const requisitionId = await resolveRequisitionId(db, input);
       const rows = await db
@@ -7953,7 +8087,7 @@ export const appRouter = router({
     .input(listInterviewsByApplicationInputSchema)
     .output(listInterviewsByApplicationOutputSchema)
     .query(async ({ ctx, input }) => {
-      requireAnyRole(ctx, INTERVIEW_MANAGE_ROLES, "You don't have access to interviews.");
+      requireCapability(ctx, "interviews.manage", "You don't have access to interviews.");
       const db = requireDb(ctx);
       const [app] = await db
         .select({ requisitionId: applications.requisitionId })
@@ -7972,9 +8106,9 @@ export const appRouter = router({
     .input(scheduleInterviewInputSchema)
     .output(scheduleInterviewOutputSchema)
     .mutation(async ({ ctx, input }) => {
-      requireAnyRole(
+      requireCapability(
         ctx,
-        INTERVIEW_MANAGE_ROLES,
+        "interviews.manage",
         "Only hiring managers, recruiters and admins can schedule interviews.",
       );
       return withAudit("schedule_interview", ctx, input, async () => {
@@ -7987,9 +8121,9 @@ export const appRouter = router({
     .input(rescheduleInterviewInputSchema)
     .output(rescheduleInterviewOutputSchema)
     .mutation(async ({ ctx, input }) => {
-      requireAnyRole(
+      requireCapability(
         ctx,
-        INTERVIEW_MANAGE_ROLES,
+        "interviews.manage",
         "Only hiring managers, recruiters and admins can reschedule interviews.",
       );
       return withAudit("reschedule_interview", ctx, input, async () => {
@@ -8042,9 +8176,9 @@ export const appRouter = router({
     .input(cancelInterviewInputSchema)
     .output(cancelInterviewOutputSchema)
     .mutation(async ({ ctx, input }) => {
-      requireAnyRole(
+      requireCapability(
         ctx,
-        INTERVIEW_MANAGE_ROLES,
+        "interviews.manage",
         "Only hiring managers, recruiters and admins can cancel interviews.",
       );
       return withAudit("cancel_interview", ctx, input, async () => {
@@ -8130,9 +8264,9 @@ export const appRouter = router({
     .input(getInterviewRecordingStateInputSchema)
     .output(getInterviewRecordingStateOutputSchema)
     .query(async ({ ctx, input }) => {
-      requireAnyRole(
+      requireCapability(
         ctx,
-        RECORDING_CONSENT_MANAGE_ROLES,
+        "interviews.recording_consent",
         "You don't have access to interview recording consent.",
       );
       if (!ctx.tenantId) {
@@ -8160,9 +8294,9 @@ export const appRouter = router({
     .input(withdrawInterviewRecordingConsentInputSchema)
     .output(withdrawInterviewRecordingConsentOutputSchema)
     .mutation(async ({ ctx, input }) => {
-      requireAnyRole(
+      requireCapability(
         ctx,
-        RECORDING_CONSENT_MANAGE_ROLES,
+        "interviews.recording_consent",
         "Only recruiters, hiring managers, HR ops and admins can withdraw recording consent.",
       );
       return withAudit("withdraw_interview_recording_consent", ctx, input, async () => {
@@ -8200,9 +8334,9 @@ export const appRouter = router({
     .output(setInterviewRecordingRequestedOutputSchema)
     .mutation(async ({ ctx, input }) => {
       await requireModule(ctx, "notetaker");
-      requireAnyRole(
+      requireCapability(
         ctx,
-        INTERVIEW_MANAGE_ROLES,
+        "interviews.manage",
         "Only hiring managers, recruiters and admins can request interview recording.",
       );
       return withAudit("set_interview_recording_requested", ctx, input, async () => {
@@ -8239,7 +8373,7 @@ export const appRouter = router({
     .input(getInterviewMediaStateInputSchema)
     .output(getInterviewMediaStateOutputSchema)
     .query(async ({ ctx, input }) => {
-      requireAnyRole(ctx, INTERVIEW_MANAGE_ROLES, "You don't have access to interviews.");
+      requireCapability(ctx, "interviews.manage", "You don't have access to interviews.");
       if (!ctx.tenantId) {
         throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
       }
@@ -8254,9 +8388,9 @@ export const appRouter = router({
     .output(startInterviewMediaUploadOutputSchema)
     .mutation(async ({ ctx, input }) => {
       await requireModule(ctx, "notetaker");
-      requireAnyRole(
+      requireCapability(
         ctx,
-        INTERVIEW_MANAGE_ROLES,
+        "interviews.manage",
         "Only hiring managers, recruiters and admins can upload interview recordings.",
       );
       return withAudit("start_interview_media_upload", ctx, input, async () => {
@@ -8285,9 +8419,9 @@ export const appRouter = router({
     .input(completeInterviewMediaUploadInputSchema)
     .output(completeInterviewMediaUploadOutputSchema)
     .mutation(async ({ ctx, input }) => {
-      requireAnyRole(
+      requireCapability(
         ctx,
-        INTERVIEW_MANAGE_ROLES,
+        "interviews.manage",
         "Only hiring managers, recruiters and admins can upload interview recordings.",
       );
       return withAudit("complete_interview_media_upload", ctx, input, async () => {
@@ -8318,15 +8452,18 @@ export const appRouter = router({
     .input(getInterviewNotesInputSchema)
     .output(getInterviewNotesOutputSchema)
     .query(async ({ ctx, input }) => {
-      requireAnyRole(
+      requireCapability(
         ctx,
-        INTERVIEW_NOTES_READ_ROLES,
+        "interviews.notes_read",
         "You don't have access to interview transcripts.",
       );
       if (!ctx.tenantId) {
         throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
       }
-      const hasManageRole = ctx.roles.some((r) => INTERVIEW_MANAGE_ROLES.has(r));
+      // C2-F1: `interviews.notes_read` at scope all (default: admin / HM /
+      // recruiter) reads any round; scope own (default: panel_member) only rounds
+      // they sat on — the per-interview check inside the lib.
+      const hasManageRole = scopeOf(ctx, "interviews.notes_read") === "all";
       // Only resolved for the fine-grained path — a recruiter's read should
       // not pay for a membership lookup whose answer cannot change the outcome.
       const membershipId = hasManageRole ? null : await resolveActorMembership(requireDb(ctx), ctx);
@@ -8380,7 +8517,7 @@ export const appRouter = router({
     .input(getAiInterviewSessionInputSchema)
     .output(getAiInterviewSessionOutputSchema)
     .query(async ({ ctx, input }) => {
-      requireAnyRole(ctx, INTERVIEW_MANAGE_ROLES, "You don't have access to interviews.");
+      requireCapability(ctx, "interviews.manage", "You don't have access to interviews.");
       if (!ctx.tenantId) {
         throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
       }
@@ -8398,9 +8535,9 @@ export const appRouter = router({
     .output(generateAiInterviewQuestionsOutputSchema)
     .mutation(async ({ ctx, input }) => {
       await requireModule(ctx, "ai_interview");
-      requireAnyRole(
+      requireCapability(
         ctx,
-        INTERVIEW_MANAGE_ROLES,
+        "interviews.manage",
         "Only hiring managers, recruiters and admins can prepare AI interview questions.",
       );
       return withAudit("generate_ai_interview_questions", ctx, input, async () => {
@@ -8431,9 +8568,9 @@ export const appRouter = router({
     .output(approveAiInterviewQuestionsOutputSchema)
     .mutation(async ({ ctx, input }) => {
       await requireModule(ctx, "ai_interview");
-      requireAnyRole(
+      requireCapability(
         ctx,
-        INTERVIEW_MANAGE_ROLES,
+        "interviews.manage",
         "Only hiring managers, recruiters and admins can approve AI interview questions.",
       );
       return withAudit("approve_ai_interview_questions", ctx, input, async () => {
@@ -8478,9 +8615,9 @@ export const appRouter = router({
     .output(issueAiInterviewSessionOutputSchema)
     .mutation(async ({ ctx, input }) => {
       await requireModule(ctx, "ai_interview");
-      requireAnyRole(
+      requireCapability(
         ctx,
-        INTERVIEW_MANAGE_ROLES,
+        "interviews.manage",
         "Only hiring managers, recruiters and admins can send an AI interview to a candidate.",
       );
       return withAudit("issue_ai_interview_session", ctx, input, async () => {
@@ -8511,7 +8648,7 @@ export const appRouter = router({
     .input(getAiInterviewEvidenceInputSchema)
     .output(getAiInterviewEvidenceOutputSchema)
     .query(async ({ ctx, input }) => {
-      requireAnyRole(ctx, INTERVIEW_MANAGE_ROLES, "You don't have access to interviews.");
+      requireCapability(ctx, "interviews.manage", "You don't have access to interviews.");
       if (!ctx.tenantId) {
         throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
       }
@@ -8548,9 +8685,9 @@ export const appRouter = router({
     .input(regenerateAiInterviewEvidenceInputSchema)
     .output(regenerateAiInterviewEvidenceOutputSchema)
     .mutation(async ({ ctx, input }) => {
-      requireAnyRole(
+      requireCapability(
         ctx,
-        INTERVIEW_MANAGE_ROLES,
+        "interviews.manage",
         "Only hiring managers, recruiters and admins can regenerate an AI interview evidence report.",
       );
       return withAudit("regenerate_ai_interview_evidence", ctx, input, async () => {
@@ -8568,7 +8705,7 @@ export const appRouter = router({
     .input(listUpcomingInterviewsInputSchema)
     .output(listUpcomingInterviewsOutputSchema)
     .query(async ({ ctx, input }) => {
-      requireAnyRole(ctx, INTERVIEW_MANAGE_ROLES, "You don't have access to interviews.");
+      requireCapability(ctx, "interviews.manage", "You don't have access to interviews.");
       const db = requireDb(ctx);
       const limit = input.limit;
       const decoded = decodeInterviewCursor(input.cursor);
@@ -8605,7 +8742,7 @@ export const appRouter = router({
     .input(listMyPanelInterviewsInputSchema)
     .output(listMyPanelInterviewsOutputSchema)
     .query(async ({ ctx, input }) => {
-      requireAnyRole(ctx, PANEL_SURFACE_ROLES, "This surface is for interview panellists.");
+      requireCapability(ctx, "interviews.panel", "This surface is for interview panellists.");
       const db = requireDb(ctx);
       const membershipId = await resolveActorMembership(db, ctx);
       // No membership in this tenant → no interviews (not an error). An admin
@@ -8639,11 +8776,12 @@ export const appRouter = router({
     .input(getPanelInterviewBriefInputSchema)
     .output(getPanelInterviewBriefOutputSchema)
     .query(async ({ ctx, input }): Promise<GetPanelInterviewBriefOutput> => {
-      requireAnyRole(ctx, PANEL_SURFACE_ROLES, "This surface is for interview panellists.");
+      requireCapability(ctx, "interviews.panel", "This surface is for interview panellists.");
       return withAudit("get_panel_interview_brief", ctx, input, async () => {
         const db = requireDb(ctx);
         const membershipId = await resolveActorMembership(db, ctx);
-        const isAdmin = ctx.roles.includes("admin");
+        // C2-F1: `interviews.panel` at scope all (default: admin) sees any interview.
+        const isAdmin = scopeOf(ctx, "interviews.panel") === "all";
 
         // The interview + candidate facet + role/plan, in one read.
         const [iv] = await db
@@ -8859,7 +8997,7 @@ export const appRouter = router({
     .input(saveInterviewFeedbackInputSchema)
     .output(saveInterviewFeedbackOutputSchema)
     .mutation(async ({ ctx, input }): Promise<SaveInterviewFeedbackOutput> => {
-      requireAnyRole(ctx, PANEL_SURFACE_ROLES, "This surface is for interview panellists.");
+      requireCapability(ctx, "interviews.panel", "This surface is for interview panellists.");
       return withAudit("save_interview_feedback", ctx, input, async () => {
         const db = requireDb(ctx);
         const membershipId = await resolveActorMembership(db, ctx);
@@ -8999,7 +9137,7 @@ export const appRouter = router({
   getPanelDashboard: protectedProcedure
     .output(getPanelDashboardOutputSchema)
     .query(async ({ ctx }): Promise<GetPanelDashboardOutput> => {
-      requireAnyRole(ctx, PANEL_SURFACE_ROLES, "This surface is for interview panellists.");
+      requireCapability(ctx, "interviews.panel", "This surface is for interview panellists.");
       const db = requireDb(ctx);
       if (!ctx.tenantId) {
         throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
@@ -9031,7 +9169,7 @@ export const appRouter = router({
     .input(summarizeMyFeedbackNotesInputSchema)
     .output(summarizeMyFeedbackNotesOutputSchema)
     .mutation(async ({ ctx, input }): Promise<SummarizeMyFeedbackNotesOutput> => {
-      requireAnyRole(ctx, PANEL_SURFACE_ROLES, "This surface is for interview panellists.");
+      requireCapability(ctx, "interviews.panel", "This surface is for interview panellists.");
       return withAudit(
         "summarize_my_feedback_notes",
         ctx,
@@ -9110,13 +9248,14 @@ export const appRouter = router({
     .input(getInterviewPrepInputSchema)
     .output(getInterviewPrepOutputSchema)
     .query(async ({ ctx, input }) => {
-      requireAnyRole(ctx, PANEL_SURFACE_ROLES, "This surface is for interview panellists.");
+      requireCapability(ctx, "interviews.panel", "This surface is for interview panellists.");
       const db = requireDb(ctx);
       if (!ctx.tenantId) {
         throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
       }
       const membershipId = await resolveActorMembership(db, ctx);
-      const isAdmin = ctx.roles.includes("admin");
+      // C2-F1: `interviews.panel` at scope all (default: admin) sees any interview.
+      const isAdmin = scopeOf(ctx, "interviews.panel") === "all";
 
       // Interview must exist (RLS scopes to tenant) + caller must be on it.
       const [iv] = await db
@@ -9164,7 +9303,7 @@ export const appRouter = router({
     .output(generateInterviewPrepOutputSchema)
     .mutation(async ({ ctx, input }) => {
       return withAudit("generate_interview_prep", ctx, input, async () => {
-        requireAnyRole(ctx, PANEL_SURFACE_ROLES, "This surface is for interview panellists.");
+        requireCapability(ctx, "interviews.panel", "This surface is for interview panellists.");
         const db = requireDb(ctx);
         if (!ctx.tenantId) {
           throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
@@ -9177,7 +9316,8 @@ export const appRouter = router({
             message: "You are not a panellist on this interview.",
           });
         }
-        const isAdmin = ctx.roles.includes("admin");
+        // C2-F1: `interviews.panel` at scope all (default: admin) sees any interview.
+        const isAdmin = scopeOf(ctx, "interviews.panel") === "all";
 
         // The interview + candidate facet + jd version, in one read.
         const [iv] = await db
@@ -9332,9 +9472,9 @@ export const appRouter = router({
     .input(completeInterviewInputSchema)
     .output(completeInterviewOutputSchema)
     .mutation(async ({ ctx, input }) => {
-      requireAnyRole(
+      requireCapability(
         ctx,
-        INTERVIEW_MANAGE_ROLES,
+        "interviews.manage",
         "Only recruiters, hiring managers and admins can complete an interview.",
       );
       return withAudit("complete_interview", ctx, input, async () => {
@@ -9425,9 +9565,9 @@ export const appRouter = router({
     .input(markInterviewNoShowInputSchema)
     .output(markInterviewNoShowOutputSchema)
     .mutation(async ({ ctx, input }) => {
-      requireAnyRole(
+      requireCapability(
         ctx,
-        INTERVIEW_MANAGE_ROLES,
+        "interviews.manage",
         "Only recruiters, hiring managers and admins can mark an interview no-show.",
       );
       return withAudit("mark_interview_no_show", ctx, input, async () => {
@@ -9467,9 +9607,9 @@ export const appRouter = router({
     .input(reopenInterviewFeedbackInputSchema)
     .output(reopenInterviewFeedbackOutputSchema)
     .mutation(async ({ ctx, input }) => {
-      requireAnyRole(
+      requireCapability(
         ctx,
-        INTERVIEW_MANAGE_ROLES,
+        "interviews.manage",
         "Only recruiters, hiring managers and admins can reopen a scorecard.",
       );
       return withAudit("reopen_interview_feedback", ctx, input, async () => {
@@ -9542,9 +9682,9 @@ export const appRouter = router({
     .input(advanceApplicationAfterInterviewInputSchema)
     .output(advanceApplicationAfterInterviewOutputSchema)
     .mutation(async ({ ctx, input }) => {
-      requireAnyRole(
+      requireCapability(
         ctx,
-        INTERVIEW_MANAGE_ROLES,
+        "interviews.manage",
         "Only recruiters, hiring managers and admins can advance the application.",
       );
       return withAudit("advance_application_after_interview", ctx, input, async () => {
@@ -9616,9 +9756,9 @@ export const appRouter = router({
     .input(getInterviewDecisionSummaryInputSchema)
     .output(getInterviewDecisionSummaryOutputSchema)
     .query(async ({ ctx, input }): Promise<GetInterviewDecisionSummaryOutput> => {
-      requireAnyRole(
+      requireCapability(
         ctx,
-        INTERVIEW_MANAGE_ROLES,
+        "interviews.manage",
         "Only recruiters, hiring managers and admins can view the decision summary.",
       );
       const db = requireDb(ctx);
@@ -9645,9 +9785,9 @@ export const appRouter = router({
     .input(getCandidateAssessmentSummaryInputSchema)
     .output(getCandidateAssessmentSummaryOutputSchema)
     .query(async ({ ctx, input }) => {
-      requireAnyRole(
+      requireCapability(
         ctx,
-        ASSESSMENT_SUMMARY_ROLES,
+        "candidates.assessment_summary",
         "You don't have access to candidate assessments.",
       );
       if (!ctx.tenantId) {
@@ -9658,7 +9798,7 @@ export const appRouter = router({
       const membershipId = await resolveActorMembership(db, ctx);
       const result = await buildCandidateAssessmentSummary(
         db,
-        { tenantId, roles: ctx.roles, membershipId },
+        { tenantId, perms: permsOf(ctx), membershipId },
         input.applicationId,
       );
       // ADR-002 §7 — verbatim candidate words (AI evidence quotes) are the same
@@ -9691,9 +9831,9 @@ export const appRouter = router({
     .input(recordSelectionDecisionInputSchema)
     .output(recordSelectionDecisionOutputSchema)
     .mutation(async ({ ctx, input }) => {
-      requireAnyRole(
+      requireCapability(
         ctx,
-        SELECTION_DECISION_GATE_ROLES,
+        "candidates.selection_decide",
         "Only the hiring manager, recruiters and admins can record a selection decision.",
       );
       if (!ctx.tenantId) {
@@ -9704,7 +9844,7 @@ export const appRouter = router({
         const db = requireDb(ctx);
         const facts = await loadApplicationAccessFacts(db, tenantId, input.applicationId);
         const membershipId = await resolveActorMembership(db, ctx);
-        if (!canRecordSelectionDecision({ tenantId, roles: ctx.roles, membershipId }, facts)) {
+        if (!canRecordSelectionDecision({ tenantId, perms: permsOf(ctx), membershipId }, facts)) {
           throw new TRPCError({
             code: "FORBIDDEN",
             message: "Only this requisition's hiring manager, a recruiter or an admin can decide.",
@@ -9788,9 +9928,9 @@ export const appRouter = router({
     .input(listSelectionDecisionsInputSchema)
     .output(listSelectionDecisionsOutputSchema)
     .query(async ({ ctx, input }) => {
-      requireAnyRole(
+      requireCapability(
         ctx,
-        ASSESSMENT_SUMMARY_ROLES,
+        "candidates.assessment_summary",
         "You don't have access to candidate assessments.",
       );
       if (!ctx.tenantId) {
@@ -9800,7 +9940,7 @@ export const appRouter = router({
       const db = requireDb(ctx);
       const facts = await loadApplicationAccessFacts(db, tenantId, input.applicationId);
       const membershipId = await resolveActorMembership(db, ctx);
-      if (!isFullAssessmentViewer({ tenantId, roles: ctx.roles, membershipId }, facts)) {
+      if (!isFullAssessmentViewer({ tenantId, perms: permsOf(ctx), membershipId }, facts)) {
         throw new TRPCError({
           code: "FORBIDDEN",
           message: "Only this requisition's hiring manager, recruiters and HR see decisions.",
@@ -9863,8 +10003,11 @@ export const appRouter = router({
         throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
       }
       const tenantId = ctx.tenantId;
-      const fullRole = ctx.roles.some((r) => ASSESSMENT_FULL_ROLES.has(r));
-      const isHm = ctx.roles.includes("hiring_manager");
+      // C2-F1: `candidates.assessment_full` — scope all sees every row, scope
+      // own (default: hiring_manager) only rows on their own requisitions.
+      const fullScope = scopeOf(ctx, "candidates.assessment_full");
+      const fullRole = fullScope === "all";
+      const isHm = fullScope === "own";
       if (!fullRole && !isHm) return { rows: [] };
       const db = requireDb(ctx);
       const hmMembershipId = fullRole ? null : await resolveActorMembership(db, ctx);
@@ -9908,7 +10051,7 @@ export const appRouter = router({
     .output(listWorkdaySyncsOutputSchema)
     .query(async ({ ctx, input }) => {
       await requireModule(ctx, "workday_handoff");
-      requireAnyRole(ctx, USERS_ADMIN_ROLES, "Integration health is admin-only");
+      requireCapability(ctx, "admin.integrations", "Integration health is admin-only");
       const db = requireDb(ctx);
       const limit = input.pagination.limit;
       const cursorDate = input.pagination.cursor ? new Date(input.pagination.cursor) : null;
@@ -9955,9 +10098,9 @@ export const appRouter = router({
     .output(getWorkdayHandoffOutputSchema)
     .query(async ({ ctx, input }): Promise<GetWorkdayHandoffOutput> => {
       await requireModule(ctx, "workday_handoff");
-      requireAnyRole(
+      requireCapability(
         ctx,
-        WORKDAY_HANDOFF_ROLES,
+        "offers.workday_handoff",
         "The Workday handoff record is available to recruiters, HR ops and admins.",
       );
       const db = requireDb(ctx);
@@ -10026,9 +10169,9 @@ export const appRouter = router({
     .output(exportWorkdayHandoffsOutputSchema)
     .query(async ({ ctx, input }): Promise<ExportWorkdayHandoffsOutput> => {
       await requireModule(ctx, "workday_handoff");
-      requireAnyRole(
+      requireCapability(
         ctx,
-        WORKDAY_HANDOFF_ROLES,
+        "offers.workday_handoff",
         "The Workday handoff export is available to recruiters, HR ops and admins.",
       );
       const db = requireDb(ctx);
@@ -10241,7 +10384,7 @@ export const appRouter = router({
     .input(listAgentsInputSchema)
     .output(listAgentsOutputSchema)
     .query(async ({ ctx }) => {
-      requireAnyRole(ctx, USERS_ADMIN_ROLES, "Agent workflows are admin-only");
+      requireCapability(ctx, "admin.agents", "Agent workflows are admin-only");
       const db = requireDb(ctx);
       // Join four sources via raw SQL — clean than separate Drizzle queries
       // stitched in JS. tenant_isolation RLS scopes everything.
@@ -10351,7 +10494,7 @@ export const appRouter = router({
     .input(getAgentDetailInputSchema)
     .output(getAgentDetailOutputSchema)
     .query(async ({ ctx, input }) => {
-      requireAnyRole(ctx, USERS_ADMIN_ROLES, "Agent workflows are admin-only");
+      requireCapability(ctx, "admin.agents", "Agent workflows are admin-only");
       const db = requireDb(ctx);
       if (!ctx.tenantId) {
         throw new TRPCError({
@@ -10490,7 +10633,7 @@ export const appRouter = router({
       // AD-03 / AD18 — server-side admin gate. The /admin/audit page is admin-
       // gated, but this procedure was page-gated ONLY; enforce the role here so
       // the audit ledger can never be read by a non-admin caller directly.
-      requireAnyRole(ctx, USERS_ADMIN_ROLES, "The audit log is admin-only");
+      requireCapability(ctx, "governance.audit_log", "The audit log is admin-only");
       const db = requireDb(ctx);
       if (!ctx.tenantId) {
         throw new TRPCError({
@@ -10587,7 +10730,7 @@ export const appRouter = router({
     .input(exportAuditEventsInputSchema)
     .output(exportAuditEventsOutputSchema)
     .query(async ({ ctx, input }) => {
-      requireAnyRole(ctx, USERS_ADMIN_ROLES, "The audit log is admin-only");
+      requireCapability(ctx, "governance.audit_log", "The audit log is admin-only");
       const db = requireDb(ctx);
       if (!ctx.tenantId) {
         throw new TRPCError({
@@ -10659,7 +10802,7 @@ export const appRouter = router({
     .input(listNotificationLogInputSchema)
     .output(listNotificationLogOutputSchema)
     .query(async ({ ctx, input }) => {
-      requireAnyRole(ctx, USERS_ADMIN_ROLES, "The notification log is admin-only");
+      requireCapability(ctx, "governance.audit_log", "The notification log is admin-only");
       const db = requireDb(ctx);
       if (!ctx.tenantId) {
         throw new TRPCError({
@@ -10753,7 +10896,7 @@ export const appRouter = router({
     .input(getSystemSetupInputSchema)
     .output(getSystemSetupOutputSchema)
     .query(async ({ ctx }) => {
-      requireAnyRole(ctx, USERS_ADMIN_ROLES, "System setup is admin-only");
+      requireCapability(ctx, "settings.system", "System setup is admin-only");
       const db = requireDb(ctx);
       if (!ctx.tenantId) {
         throw new TRPCError({
@@ -10783,7 +10926,7 @@ export const appRouter = router({
     .output(updateSystemSetupOutputSchema)
     .mutation(async ({ ctx, input }) => {
       return withAudit("update_system_setup", ctx, input, async () => {
-        requireAnyRole(ctx, USERS_ADMIN_ROLES, "System setup is admin-only");
+        requireCapability(ctx, "settings.system", "System setup is admin-only");
         if (!ctx.tenantId) {
           throw new TRPCError({
             code: "INTERNAL_SERVER_ERROR",
@@ -10824,7 +10967,7 @@ export const appRouter = router({
     .input(getShortlistDefaultsInputSchema)
     .output(getShortlistDefaultsOutputSchema)
     .query(async ({ ctx }) => {
-      requireAnyRole(ctx, RECRUITER_SURFACE_ROLES, "Shortlist defaults are a recruiter surface.");
+      requireCapability(ctx, "candidates.triage", "Shortlist defaults are a recruiter surface.");
       const db = requireDb(ctx);
       if (!ctx.tenantId) {
         throw new TRPCError({
@@ -10859,7 +11002,7 @@ export const appRouter = router({
     .output(updateShortlistDefaultsOutputSchema)
     .mutation(async ({ ctx, input }) => {
       return withAudit("update_shortlist_defaults", ctx, input, async () => {
-        requireAnyRole(ctx, USERS_ADMIN_ROLES, "Shortlist defaults are admin-only");
+        requireCapability(ctx, "settings.system", "Shortlist defaults are admin-only");
         if (!ctx.tenantId) {
           throw new TRPCError({
             code: "INTERNAL_SERVER_ERROR",
@@ -10899,7 +11042,7 @@ export const appRouter = router({
     .input(getAiBudgetInputSchema)
     .output(getAiBudgetOutputSchema)
     .query(async ({ ctx }) => {
-      requireAnyRole(ctx, USERS_ADMIN_ROLES, "AI budget is admin-only");
+      requireCapability(ctx, "admin.ai_budget", "AI budget is admin-only");
       const db = requireDb(ctx);
       if (!ctx.tenantId) {
         throw new TRPCError({
@@ -10931,7 +11074,7 @@ export const appRouter = router({
     .output(updateAiBudgetOutputSchema)
     .mutation(async ({ ctx, input }) => {
       return withAudit("update_ai_budget", ctx, input, async () => {
-        requireAnyRole(ctx, USERS_ADMIN_ROLES, "AI budget is admin-only");
+        requireCapability(ctx, "admin.ai_budget", "AI budget is admin-only");
         if (!ctx.tenantId) {
           throw new TRPCError({
             code: "INTERNAL_SERVER_ERROR",
@@ -10974,7 +11117,7 @@ export const appRouter = router({
     .input(getAiBudgetStatusInputSchema)
     .output(getAiBudgetStatusOutputSchema)
     .query(async ({ ctx }) => {
-      requireAnyRole(ctx, USERS_ADMIN_ROLES, "AI budget is admin-only");
+      requireCapability(ctx, "admin.ai_budget", "AI budget is admin-only");
       const db = requireDb(ctx);
       if (!ctx.tenantId) {
         throw new TRPCError({
@@ -11040,7 +11183,7 @@ export const appRouter = router({
     .input(getReportDigestsInputSchema)
     .output(getReportDigestsOutputSchema)
     .query(async ({ ctx }) => {
-      requireAnyRole(ctx, USERS_ADMIN_ROLES, "Report digests are admin-only");
+      requireCapability(ctx, "reports.admin", "Report digests are admin-only");
       const db = requireDb(ctx);
       if (!ctx.tenantId) {
         throw new TRPCError({
@@ -11078,7 +11221,7 @@ export const appRouter = router({
     .output(updateReportDigestsOutputSchema)
     .mutation(async ({ ctx, input }) => {
       return withAudit("update_report_digests", ctx, input, async () => {
-        requireAnyRole(ctx, USERS_ADMIN_ROLES, "Report digests are admin-only");
+        requireCapability(ctx, "reports.admin", "Report digests are admin-only");
         if (!ctx.tenantId) {
           throw new TRPCError({
             code: "INTERNAL_SERVER_ERROR",
@@ -11145,7 +11288,7 @@ export const appRouter = router({
     .output(updateRoleLabelsOutputSchema)
     .mutation(async ({ ctx, input }) => {
       return withAudit("update_role_labels", ctx, input, async () => {
-        requireAnyRole(ctx, USERS_ADMIN_ROLES, "Role labels are admin-only");
+        requireCapability(ctx, "settings.labels", "Role labels are admin-only");
         if (!ctx.tenantId) {
           throw new TRPCError({
             code: "INTERNAL_SERVER_ERROR",
@@ -11183,7 +11326,7 @@ export const appRouter = router({
     .input(getSlaThresholdsInputSchema)
     .output(getSlaThresholdsOutputSchema)
     .query(async ({ ctx }) => {
-      requireAnyRole(ctx, SLA_CONFIG_ROLES, "SLA thresholds are an admin / HR-head surface.");
+      requireCapability(ctx, "settings.sla", "SLA thresholds are an admin / HR-head surface.");
       const db = requireDb(ctx);
       if (!ctx.tenantId) {
         throw new TRPCError({
@@ -11217,7 +11360,7 @@ export const appRouter = router({
     .output(updateSlaThresholdsOutputSchema)
     .mutation(async ({ ctx, input }) => {
       return withAudit("update_sla_thresholds", ctx, input, async () => {
-        requireAnyRole(ctx, SLA_CONFIG_ROLES, "SLA thresholds are an admin / HR-head surface.");
+        requireCapability(ctx, "settings.sla", "SLA thresholds are an admin / HR-head surface.");
         if (!ctx.tenantId) {
           throw new TRPCError({
             code: "INTERNAL_SERVER_ERROR",
@@ -11262,9 +11405,9 @@ export const appRouter = router({
     .input(getGovernancePolicyInputSchema)
     .output(getGovernancePolicyOutputSchema)
     .query(async ({ ctx }): Promise<GovernancePolicy> => {
-      requireAnyRole(
+      requireCapability(
         ctx,
-        GOVERNANCE_READ_ROLES,
+        "governance.manage",
         "Governance access requires the hr_head or admin role",
       );
       const db = requireDb(ctx);
@@ -11297,9 +11440,9 @@ export const appRouter = router({
     .output(updateGovernancePolicyOutputSchema)
     .mutation(async ({ ctx, input }) => {
       return withAudit("update_governance_policy", ctx, input, async () => {
-        requireAnyRole(
+        requireCapability(
           ctx,
-          GOVERNANCE_READ_ROLES,
+          "governance.manage",
           "Governance access requires the hr_head or admin role",
         );
         if (!ctx.tenantId) {
@@ -11341,9 +11484,9 @@ export const appRouter = router({
     .input(getRetentionPolicyInputSchema)
     .output(getRetentionPolicyOutputSchema)
     .query(async ({ ctx }): Promise<RetentionPolicy> => {
-      requireAnyRole(
+      requireCapability(
         ctx,
-        GOVERNANCE_READ_ROLES,
+        "governance.manage",
         "Retention policy requires the hr_head or admin role",
       );
       const db = requireDb(ctx);
@@ -11377,9 +11520,9 @@ export const appRouter = router({
     .output(updateRetentionPolicyOutputSchema)
     .mutation(async ({ ctx, input }) => {
       return withAudit("update_retention_policy", ctx, input, async () => {
-        requireAnyRole(
+        requireCapability(
           ctx,
-          GOVERNANCE_READ_ROLES,
+          "governance.manage",
           "Retention policy requires the hr_head or admin role",
         );
         if (!ctx.tenantId) {
@@ -11419,7 +11562,11 @@ export const appRouter = router({
     .output(getPreJoiningSettingsOutputSchema)
     .query(async ({ ctx }): Promise<PreJoiningEngagementSettings> => {
       await requireModule(ctx, "pre_joining_engagement");
-      requireAnyRole(ctx, PRE_JOINING_ADMIN_ROLES, "Pre-joining settings require hr_head or admin");
+      requireCapability(
+        ctx,
+        "onboarding.prejoining_settings",
+        "Pre-joining settings require hr_head or admin",
+      );
       const tenantId = requireTenantId(ctx);
       const [row] = await ctx.sql<{ settings: Record<string, unknown> | null }[]>`
         SELECT settings FROM public.tenants WHERE id = ${tenantId} LIMIT 1
@@ -11433,9 +11580,9 @@ export const appRouter = router({
     .mutation(async ({ ctx, input }) => {
       await requireModule(ctx, "pre_joining_engagement");
       return withAudit("update_pre_joining_settings", ctx, input, async () => {
-        requireAnyRole(
+        requireCapability(
           ctx,
-          PRE_JOINING_ADMIN_ROLES,
+          "onboarding.prejoining_settings",
           "Pre-joining settings require hr_head or admin",
         );
         const tenantId = requireTenantId(ctx);
@@ -11462,7 +11609,11 @@ export const appRouter = router({
     .output(z.object({ items: z.array(companyUpdateRowSchema) }))
     .query(async ({ ctx }) => {
       await requireModule(ctx, "pre_joining_engagement");
-      requireAnyRole(ctx, PRE_JOINING_ADMIN_ROLES, "Company updates require hr_head or admin");
+      requireCapability(
+        ctx,
+        "onboarding.prejoining_settings",
+        "Company updates require hr_head or admin",
+      );
       return { items: await listPreJoiningCompanyUpdatesLib(ctx.sql, requireTenantId(ctx)) };
     }),
 
@@ -11472,7 +11623,11 @@ export const appRouter = router({
     .mutation(async ({ ctx, input }) => {
       await requireModule(ctx, "pre_joining_engagement");
       return withAudit("upsert_pre_joining_company_update", ctx, input, async () => {
-        requireAnyRole(ctx, PRE_JOINING_ADMIN_ROLES, "Company updates require hr_head or admin");
+        requireCapability(
+          ctx,
+          "onboarding.prejoining_settings",
+          "Company updates require hr_head or admin",
+        );
         const tenantId = requireTenantId(ctx);
         const membershipId = await resolveCallerMembershipId(ctx, tenantId);
         const id = await upsertPreJoiningCompanyUpdateLib(ctx.sql, {
@@ -11491,7 +11646,11 @@ export const appRouter = router({
     .mutation(async ({ ctx, input }) => {
       await requireModule(ctx, "pre_joining_engagement");
       return withAudit("start_pre_joining_journeys", ctx, input, async () => {
-        requireAnyRole(ctx, PRE_JOINING_ADMIN_ROLES, "Starting journeys requires hr_head or admin");
+        requireCapability(
+          ctx,
+          "onboarding.prejoining_settings",
+          "Starting journeys requires hr_head or admin",
+        );
         return startJourneysForAcceptedCandidates(ctx.sql, {
           tenantId: requireTenantId(ctx),
           log: ctx.log,
@@ -11504,9 +11663,9 @@ export const appRouter = router({
     .output(listJoiningWatchlistOutputSchema)
     .query(async ({ ctx }): Promise<ListJoiningWatchlistOutput> => {
       await requireModule(ctx, "pre_joining_engagement");
-      requireAnyRole(
+      requireCapability(
         ctx,
-        JOINING_WATCHLIST_ROLES,
+        "onboarding.prejoining_watchlist",
         "The joining watchlist requires recruiter, hr_head or admin",
       );
       const tenantId = requireTenantId(ctx);
@@ -11534,9 +11693,9 @@ export const appRouter = router({
     .output(getEngagementTimelineOutputSchema)
     .query(async ({ ctx, input }) => {
       await requireModule(ctx, "pre_joining_engagement");
-      requireAnyRole(
+      requireCapability(
         ctx,
-        JOINING_WATCHLIST_ROLES,
+        "onboarding.prejoining_watchlist",
         "The engagement timeline requires recruiter, hr_head or admin",
       );
       const tenantId = requireTenantId(ctx);
@@ -11558,9 +11717,9 @@ export const appRouter = router({
     .output(z.object({ ok: z.literal(true) }))
     .mutation(async ({ ctx, input }) => {
       return withAudit("acknowledge_risk_signal", ctx, input, async () => {
-        requireAnyRole(
+        requireCapability(
           ctx,
-          JOINING_WATCHLIST_ROLES,
+          "onboarding.prejoining_watchlist",
           "Acknowledging a signal requires recruiter, hr_head or admin",
         );
         const tenantId = requireTenantId(ctx);
@@ -11592,9 +11751,9 @@ export const appRouter = router({
     .output(z.object({ ok: z.literal(true), renegeId: z.string(), offerId: z.string() }))
     .mutation(async ({ ctx, input }) => {
       return withAudit("record_renege", ctx, input, async () => {
-        requireAnyRole(
+        requireCapability(
           ctx,
-          JOINING_WATCHLIST_ROLES,
+          "onboarding.prejoining_watchlist",
           "Recording a renege requires recruiter, hr_head or admin",
         );
         const tenantId = requireTenantId(ctx);
@@ -11623,7 +11782,11 @@ export const appRouter = router({
     .output(listWelcomeScopesOutputSchema)
     .query(async ({ ctx }) => {
       await requireModule(ctx, "welcome_guide");
-      requireAnyRole(ctx, PRE_JOINING_ADMIN_ROLES, "Welcome content requires hr_head or admin");
+      requireCapability(
+        ctx,
+        "onboarding.prejoining_settings",
+        "Welcome content requires hr_head or admin",
+      );
       const tenantId = requireTenantId(ctx);
       const [scopes, generationEnabled] = await Promise.all([
         listWelcomeScopesLib(ctx.sql, tenantId),
@@ -11637,7 +11800,11 @@ export const appRouter = router({
     .output(getWelcomeContentOutputSchema)
     .query(async ({ ctx, input }) => {
       await requireModule(ctx, "welcome_guide");
-      requireAnyRole(ctx, PRE_JOINING_ADMIN_ROLES, "Welcome content requires hr_head or admin");
+      requireCapability(
+        ctx,
+        "onboarding.prejoining_settings",
+        "Welcome content requires hr_head or admin",
+      );
       const out = await getWelcomeContentLib(ctx.sql, {
         tenantId: requireTenantId(ctx),
         businessUnitId: input.businessUnitId,
@@ -11652,7 +11819,11 @@ export const appRouter = router({
     .mutation(async ({ ctx, input }) => {
       await requireModule(ctx, "welcome_guide");
       return withAudit("upsert_welcome_source", ctx, input, async () => {
-        requireAnyRole(ctx, PRE_JOINING_ADMIN_ROLES, "Welcome content requires hr_head or admin");
+        requireCapability(
+          ctx,
+          "onboarding.prejoining_settings",
+          "Welcome content requires hr_head or admin",
+        );
         const tenantId = requireTenantId(ctx);
         const membershipId = await resolveCallerMembershipId(ctx, tenantId);
         const r = await upsertWelcomeSourceLib(ctx.sql, {
@@ -11672,7 +11843,11 @@ export const appRouter = router({
     .mutation(async ({ ctx, input }) => {
       await requireModule(ctx, "welcome_guide");
       return withAudit("generate_welcome_guide", ctx, input, async () => {
-        requireAnyRole(ctx, PRE_JOINING_ADMIN_ROLES, "Welcome content requires hr_head or admin");
+        requireCapability(
+          ctx,
+          "onboarding.prejoining_settings",
+          "Welcome content requires hr_head or admin",
+        );
         const tenantId = requireTenantId(ctx);
         const membershipId = await resolveCallerMembershipId(ctx, tenantId);
         const r = await generateWelcomeGuideLib(ctx.sql, {
@@ -11692,7 +11867,11 @@ export const appRouter = router({
     .mutation(async ({ ctx, input }) => {
       await requireModule(ctx, "welcome_guide");
       return withAudit("update_welcome_guide_draft", ctx, input, async () => {
-        requireAnyRole(ctx, PRE_JOINING_ADMIN_ROLES, "Welcome content requires hr_head or admin");
+        requireCapability(
+          ctx,
+          "onboarding.prejoining_settings",
+          "Welcome content requires hr_head or admin",
+        );
         const tenantId = requireTenantId(ctx);
         const membershipId = await resolveCallerMembershipId(ctx, tenantId);
         const r = await updateWelcomeGuideDraftLib(ctx.sql, {
@@ -11712,7 +11891,11 @@ export const appRouter = router({
     .mutation(async ({ ctx, input }) => {
       await requireModule(ctx, "welcome_guide");
       return withAudit("publish_welcome_guide", ctx, input, async () => {
-        requireAnyRole(ctx, PRE_JOINING_ADMIN_ROLES, "Welcome content requires hr_head or admin");
+        requireCapability(
+          ctx,
+          "onboarding.prejoining_settings",
+          "Welcome content requires hr_head or admin",
+        );
         const tenantId = requireTenantId(ctx);
         const membershipId = await resolveCallerMembershipId(ctx, tenantId);
         const r = await publishWelcomeGuideLib(ctx.sql, {
@@ -11731,7 +11914,11 @@ export const appRouter = router({
     .mutation(async ({ ctx, input }) => {
       await requireModule(ctx, "welcome_guide");
       return withAudit("discard_welcome_guide_draft", ctx, input, async () => {
-        requireAnyRole(ctx, PRE_JOINING_ADMIN_ROLES, "Welcome content requires hr_head or admin");
+        requireCapability(
+          ctx,
+          "onboarding.prejoining_settings",
+          "Welcome content requires hr_head or admin",
+        );
         const r = await discardWelcomeGuideDraftLib(ctx.sql, {
           tenantId: requireTenantId(ctx),
           guideId: input.guideId,
@@ -11747,7 +11934,11 @@ export const appRouter = router({
     .mutation(async ({ ctx, input }) => {
       await requireModule(ctx, "welcome_guide");
       return withAudit("create_welcome_draft_from_version", ctx, input, async () => {
-        requireAnyRole(ctx, PRE_JOINING_ADMIN_ROLES, "Welcome content requires hr_head or admin");
+        requireCapability(
+          ctx,
+          "onboarding.prejoining_settings",
+          "Welcome content requires hr_head or admin",
+        );
         const tenantId = requireTenantId(ctx);
         const membershipId = await resolveCallerMembershipId(ctx, tenantId);
         const r = await createWelcomeDraftFromVersionLib(ctx.sql, {
@@ -11784,9 +11975,9 @@ export const appRouter = router({
     .input(listDocumentsPastRetentionInputSchema)
     .output(listDocumentsPastRetentionOutputSchema)
     .query(async ({ ctx }) => {
-      requireAnyRole(
+      requireCapability(
         ctx,
-        GOVERNANCE_READ_ROLES,
+        "governance.manage",
         "Retention register requires the hr_head or admin role",
       );
       const db = requireDb(ctx);
@@ -11908,7 +12099,7 @@ export const appRouter = router({
     .output(getAiUsageSummaryOutputSchema)
     .query(async ({ ctx, input }) => {
       // AD18 — server-side admin gate (page redirect alone left the procedure open).
-      requireAnyRole(ctx, USERS_ADMIN_ROLES, "AI cost usage is admin-only");
+      requireCapability(ctx, "admin.ai_budget", "AI cost usage is admin-only");
       const db = requireDb(ctx);
       if (!ctx.tenantId) {
         throw new TRPCError({
@@ -12059,7 +12250,7 @@ export const appRouter = router({
     .input(getTenantAiSettingsInputSchema)
     .output(getTenantAiSettingsOutputSchema)
     .query(async ({ ctx }) => {
-      requireAnyRole(ctx, AI_SETTINGS_ADMIN_ROLES, "AI settings are admin-only");
+      requireCapability(ctx, "settings.ai", "AI settings are admin-only");
       if (!ctx.tenantId) {
         throw new TRPCError({
           code: "INTERNAL_SERVER_ERROR",
@@ -12085,7 +12276,7 @@ export const appRouter = router({
     .output(updateTenantAiSettingsOutputSchema)
     .mutation(async ({ ctx, input }) => {
       return withAudit("update_tenant_ai_settings", ctx, input, async () => {
-        requireAnyRole(ctx, AI_SETTINGS_ADMIN_ROLES, "AI settings are admin-only");
+        requireCapability(ctx, "settings.ai", "AI settings are admin-only");
         if (!ctx.tenantId) {
           throw new TRPCError({
             code: "INTERNAL_SERVER_ERROR",
@@ -12131,7 +12322,7 @@ export const appRouter = router({
     .input(getTenantLabelsInputSchema)
     .output(getTenantLabelsOutputSchema)
     .query(async ({ ctx }) => {
-      requireAnyRole(ctx, AI_SETTINGS_ADMIN_ROLES, "Display labels are admin-only");
+      requireCapability(ctx, "settings.labels", "Display labels are admin-only");
       if (!ctx.tenantId) {
         throw new TRPCError({
           code: "INTERNAL_SERVER_ERROR",
@@ -12146,7 +12337,7 @@ export const appRouter = router({
     .output(updateTenantLabelsOutputSchema)
     .mutation(async ({ ctx, input }) => {
       return withAudit("update_tenant_labels", ctx, input, async () => {
-        requireAnyRole(ctx, AI_SETTINGS_ADMIN_ROLES, "Display labels are admin-only");
+        requireCapability(ctx, "settings.labels", "Display labels are admin-only");
         if (!ctx.tenantId) {
           throw new TRPCError({
             code: "INTERNAL_SERVER_ERROR",
@@ -12183,7 +12374,7 @@ export const appRouter = router({
     .input(getUrgencySettingsInputSchema)
     .output(getUrgencySettingsOutputSchema)
     .query(async ({ ctx }) => {
-      requireAnyRole(ctx, AI_SETTINGS_ADMIN_ROLES, "Urgency settings are admin-only");
+      requireCapability(ctx, "settings.system", "Urgency settings are admin-only");
       const db = requireDb(ctx);
       if (!ctx.tenantId) {
         throw new TRPCError({
@@ -12205,7 +12396,7 @@ export const appRouter = router({
     .output(updateUrgencySettingsOutputSchema)
     .mutation(async ({ ctx, input }) => {
       return withAudit("update_urgency_settings", ctx, input, async () => {
-        requireAnyRole(ctx, AI_SETTINGS_ADMIN_ROLES, "Urgency settings are admin-only");
+        requireCapability(ctx, "settings.system", "Urgency settings are admin-only");
         if (!ctx.tenantId) {
           throw new TRPCError({
             code: "INTERNAL_SERVER_ERROR",
@@ -12232,6 +12423,141 @@ export const appRouter = router({
       });
     }),
 
+  // ─────────────────────── C2-F7 — policy parameters (Plan A §8) ───────────────────────
+  //
+  // Seven tenants.settings SIBLING blocks (screeningPolicy, uploadPolicy,
+  // offerPolicy, aiInterviewPolicy, notetakerPolicy, reportPolicy,
+  // marketIntelPolicy) plus the existing bulkCvUpload caps, read and written
+  // as one admin surface (/admin/policy-parameters). Admin-only; every write
+  // audited (`update_policy_parameters`, input carries the block name); the
+  // write is the same atomic top-level jsonb `||` merge every settings block
+  // uses, so other keys survive verbatim. Write schemas are strict (an
+  // out-of-range value is BAD_REQUEST); readers resolve leniently and clamp
+  // to the platform guardrail (packages/api-types policy-parameters.ts).
+  getPolicyParameters: protectedProcedure
+    .input(getPolicyParametersInputSchema)
+    .output(getPolicyParametersOutputSchema)
+    .query(async ({ ctx }): Promise<GetPolicyParametersOutput> => {
+      requireCapability(ctx, "settings.system", "Policy parameters are admin-only");
+      if (!ctx.tenantId) {
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: "protected procedure missing tenantId",
+        });
+      }
+      const settings = await loadTenantSettingsRaw(ctx.tenantId);
+      const limits = await loadEffectiveUploadLimits(null);
+      return {
+        screeningPolicy: resolveScreeningPolicy(settings.screeningPolicy),
+        uploadPolicy: resolveUploadPolicy(settings.uploadPolicy),
+        offerPolicy: resolveOfferPolicy(settings.offerPolicy),
+        aiInterviewPolicy: resolveAiInterviewPolicy(settings.aiInterviewPolicy),
+        notetakerPolicy: resolveNotetakerPolicy(settings.notetakerPolicy),
+        reportPolicy: resolveReportPolicy(settings.reportPolicy),
+        marketIntelPolicy: resolveMarketIntelPolicy(settings.marketIntelPolicy),
+        bulkCvUpload: resolveBulkCvUploadLimits(settings.bulkCvUpload),
+        platform: {
+          mediaCeilingBytes: limits.maxMediaBytes,
+          documentCeilingBytes: UPLOAD_DOCUMENT_BYTES_CEILING,
+          // PP18 — platform-controlled; shown read-only, never written here.
+          aiProvider:
+            typeof settings.ai_provider === "string" && settings.ai_provider.trim()
+              ? settings.ai_provider
+              : "anthropic",
+        },
+      };
+    }),
+
+  updatePolicyParameters: protectedProcedure
+    .input(updatePolicyParametersInputSchema)
+    .output(updatePolicyParametersOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      return withAudit("update_policy_parameters", ctx, input, async () => {
+        requireCapability(ctx, "settings.system", "Policy parameters are admin-only");
+        if (!ctx.tenantId) {
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: "protected procedure missing tenantId",
+          });
+        }
+        const tenantId = ctx.tenantId;
+        // De-duplicate list fields in canonical order before storing.
+        let value: unknown = input.value;
+        if (input.block === "screeningPolicy") {
+          value = {
+            ...input.value,
+            acceptingStatuses: APPLY_ACCEPTING_STATUS_OPTIONS.filter((s) =>
+              input.value.acceptingStatuses.includes(s),
+            ),
+          };
+        } else if (input.block === "uploadPolicy" || input.block === "notetakerPolicy") {
+          value =
+            input.block === "uploadPolicy"
+              ? resolveUploadPolicy(input.value)
+              : resolveNotetakerPolicy(input.value);
+        }
+        const res = await poolDb.execute(dsql`
+          UPDATE public.tenants
+          SET settings = COALESCE(settings, '{}'::jsonb)
+              || jsonb_build_object(${input.block}::text, ${JSON.stringify(value)}::jsonb)
+          WHERE id = ${tenantId}::uuid
+          RETURNING id
+        `);
+        const updated = (res as { rows?: unknown[] }).rows ?? (res as unknown[]);
+        if (updated.length !== 1) {
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: "tenant settings update affected an unexpected number of rows",
+          });
+        }
+        return { ok: true as const, block: input.block };
+      });
+    }),
+
+  /**
+   * PP13 — the offer form defaults (expiry days, probation months, decision
+   * SLA). Gated on `dashboard.view` (C2-F1) — every internal staff role by
+   * default, i.e. exactly the pre-F1 "any signed-in staff member". Deliberately
+   * NOT narrowed to candidates.triage / offers.comp_desk: the values are tenant
+   * policy numbers, not candidate data; draftOffer / listOffersByApplication
+   * carry no capability gate of their own (RLS + stage checks), and the offer
+   * form is rendered from the candidate drawer, HR case detail and the comp
+   * desk to roles outside those two capabilities — a narrower gate would 403
+   * the pre-fill there. Partners / candidates (no dashboard.view) are refused.
+   */
+  getOfferPolicyDefaults: protectedProcedure
+    .input(getOfferPolicyDefaultsInputSchema)
+    .output(getOfferPolicyDefaultsOutputSchema)
+    .query(async ({ ctx }) => {
+      requireCapability(ctx, "dashboard.view", "Offer defaults are for staff members only");
+      return loadOfferPolicy(ctx.tenantId);
+    }),
+
+  /**
+   * PP20 — CVs held past the tenant's talent-pool retention (register only —
+   * nothing is deleted). Admin / hr_head (the retention page's roles).
+   */
+  listCvsPastRetention: protectedProcedure
+    .input(listCvsPastRetentionInputSchema)
+    .output(listCvsPastRetentionOutputSchema)
+    .query(async ({ ctx }) => {
+      // Same gate as listDocumentsPastRetention — the retention page's roles.
+      requireCapability(
+        ctx,
+        "governance.manage",
+        "Retention register requires the hr_head or admin role",
+      );
+      const db = requireDb(ctx);
+      if (!ctx.tenantId) {
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: "protected procedure missing tenantId",
+        });
+      }
+      const settings = await loadTenantSettingsRaw(ctx.tenantId);
+      return listCvsPastRetention(db, ctx.tenantId, settings);
+    }),
+
   // ─────────────────────── getIrisPolicy (T-POLICY) ───────────────────────
   //
   // Admin read of the per-role Iris action policy (a DENY-OVERLAY on each
@@ -12244,7 +12570,7 @@ export const appRouter = router({
     .input(getIrisPolicyInputSchema)
     .output(getIrisPolicyOutputSchema)
     .query(async ({ ctx }) => {
-      requireAnyRole(ctx, AI_SETTINGS_ADMIN_ROLES, "Iris policy is admin-only");
+      requireCapability(ctx, "settings.ai", "Iris policy is admin-only");
       const policy = await resolveIrisPolicyForCtx(ctx);
       return { policy, actions: listIrisActions() };
     }),
@@ -12264,7 +12590,7 @@ export const appRouter = router({
     .output(updateIrisPolicyOutputSchema)
     .mutation(async ({ ctx, input }) => {
       return withAudit("update_iris_policy", ctx, input, async () => {
-        requireAnyRole(ctx, AI_SETTINGS_ADMIN_ROLES, "Iris policy is admin-only");
+        requireCapability(ctx, "settings.ai", "Iris policy is admin-only");
         if (!ctx.tenantId) {
           throw new TRPCError({
             code: "INTERNAL_SERVER_ERROR",
@@ -12308,7 +12634,7 @@ export const appRouter = router({
     .input(getTenantBrandingInputSchema)
     .output(getTenantBrandingOutputSchema)
     .query(async ({ ctx }) => {
-      requireAnyRole(ctx, USERS_ADMIN_ROLES, "Branding is admin-only");
+      requireCapability(ctx, "settings.branding", "Branding is admin-only");
       if (!ctx.tenantId) {
         throw new TRPCError({
           code: "INTERNAL_SERVER_ERROR",
@@ -12353,7 +12679,7 @@ export const appRouter = router({
     .output(updateTenantBrandingOutputSchema)
     .mutation(async ({ ctx, input }) => {
       return withAudit("update_tenant_branding", ctx, input, async () => {
-        requireAnyRole(ctx, USERS_ADMIN_ROLES, "Branding is admin-only");
+        requireCapability(ctx, "settings.branding", "Branding is admin-only");
         if (!ctx.tenantId) {
           throw new TRPCError({
             code: "INTERNAL_SERVER_ERROR",
@@ -12409,7 +12735,7 @@ export const appRouter = router({
     .input(listApprovalMatricesInputSchema)
     .output(listApprovalMatricesOutputSchema)
     .query(async ({ ctx, input }) => {
-      requireAnyRole(ctx, USERS_ADMIN_ROLES, "Approval routing is admin-only");
+      requireCapability(ctx, "settings.approval_routing", "Approval routing is admin-only");
       const db = requireDb(ctx);
       if (!ctx.tenantId) {
         throw new TRPCError({
@@ -12479,7 +12805,7 @@ export const appRouter = router({
     .output(upsertApprovalMatrixOutputSchema)
     .mutation(async ({ ctx, input }) => {
       return withAudit("upsert_approval_matrix", ctx, input, async () => {
-        requireAnyRole(ctx, USERS_ADMIN_ROLES, "Approval routing is admin-only");
+        requireCapability(ctx, "settings.approval_routing", "Approval routing is admin-only");
         const db = requireDb(ctx);
         if (!ctx.tenantId) {
           throw new TRPCError({
@@ -12558,9 +12884,9 @@ export const appRouter = router({
     .input(getBiasLexiconInputSchema)
     .output(getBiasLexiconOutputSchema)
     .query(async ({ ctx }) => {
-      requireAnyRole(
+      requireCapability(
         ctx,
-        REQUISITION_READ_ROLES,
+        "requisitions.read",
         "Bias lexicon access requires the hiring_manager, recruiter, hr_head or admin role",
       );
       if (!ctx.tenantId) {
@@ -12587,7 +12913,7 @@ export const appRouter = router({
     .output(updateTenantBiasLexiconOutputSchema)
     .mutation(async ({ ctx, input }) => {
       return withAudit("update_tenant_bias_lexicon", ctx, input, async () => {
-        requireAnyRole(ctx, AI_SETTINGS_ADMIN_ROLES, "The bias lexicon is admin-only");
+        requireCapability(ctx, "settings.ai", "The bias lexicon is admin-only");
         if (!ctx.tenantId) {
           throw new TRPCError({
             code: "INTERNAL_SERVER_ERROR",
@@ -12626,7 +12952,7 @@ export const appRouter = router({
     .input(getScoringWeightsInputSchema)
     .output(getScoringWeightsOutputSchema)
     .query(async ({ ctx }) => {
-      requireAnyRole(ctx, AI_SETTINGS_ADMIN_ROLES, "Scoring weights are admin-only");
+      requireCapability(ctx, "settings.ai", "Scoring weights are admin-only");
       if (!ctx.tenantId) {
         throw new TRPCError({
           code: "INTERNAL_SERVER_ERROR",
@@ -12650,7 +12976,7 @@ export const appRouter = router({
     .output(updateScoringWeightsOutputSchema)
     .mutation(async ({ ctx, input }) => {
       return withAudit("update_scoring_weights", ctx, input, async () => {
-        requireAnyRole(ctx, AI_SETTINGS_ADMIN_ROLES, "Scoring weights are admin-only");
+        requireCapability(ctx, "settings.ai", "Scoring weights are admin-only");
         if (!ctx.tenantId) {
           throw new TRPCError({
             code: "INTERNAL_SERVER_ERROR",
@@ -12694,9 +13020,9 @@ export const appRouter = router({
     .output(getDiverseSlateStatusOutputSchema)
     .query(async ({ ctx, input }) => {
       await requireModule(ctx, "diversity_slate");
-      requireAnyRole(
+      requireCapability(
         ctx,
-        DIVERSE_SLATE_VIEW_ROLE_SET,
+        "governance.diversity_slate_view",
         "Diverse-slate status requires the admin, hr_head or recruiter role",
       );
       const db = requireDb(ctx);
@@ -12739,9 +13065,9 @@ export const appRouter = router({
     .output(listDiverseSlateStatusesOutputSchema)
     .query(async ({ ctx, input }) => {
       await requireModule(ctx, "diversity_slate");
-      requireAnyRole(
+      requireCapability(
         ctx,
-        DIVERSE_SLATE_VIEW_ROLE_SET,
+        "governance.diversity_slate_view",
         "Diverse-slate status requires the admin, hr_head or recruiter role",
       );
       const db = requireDb(ctx);
@@ -12789,9 +13115,9 @@ export const appRouter = router({
     .output(getDiverseSlateDefaultsOutputSchema)
     .query(async ({ ctx }) => {
       await requireModule(ctx, "diversity_slate");
-      requireAnyRole(
+      requireCapability(
         ctx,
-        REQUISITION_READ_ROLES,
+        "requisitions.read",
         "Requisition settings require a requisition role",
       );
       if (!ctx.tenantId) {
@@ -12806,9 +13132,9 @@ export const appRouter = router({
     .output(getDiversitySlateSettingsOutputSchema)
     .query(async ({ ctx }) => {
       await requireModule(ctx, "diversity_slate");
-      requireAnyRole(
+      requireCapability(
         ctx,
-        DIVERSE_SLATE_ADMIN_ROLE_SET,
+        "governance.diversity_settings",
         "Diversity slate settings require the admin or hr_head role",
       );
       if (!ctx.tenantId) {
@@ -12828,9 +13154,9 @@ export const appRouter = router({
     .mutation(async ({ ctx, input }) => {
       await requireModule(ctx, "diversity_slate");
       return withAudit("update_diversity_slate_settings", ctx, input, async () => {
-        requireAnyRole(
+        requireCapability(
           ctx,
-          DIVERSE_SLATE_ADMIN_ROLE_SET,
+          "governance.diversity_settings",
           "Diversity slate settings require the admin or hr_head role",
         );
         if (!ctx.tenantId) {
@@ -12938,9 +13264,9 @@ export const appRouter = router({
     .input(getScreeningPrivacyInputSchema)
     .output(getScreeningPrivacyOutputSchema)
     .query(async ({ ctx }) => {
-      requireAnyRole(
+      requireCapability(
         ctx,
-        GOVERNANCE_READ_ROLES,
+        "governance.manage",
         "Governance settings require the hr_head or admin role",
       );
       if (!ctx.tenantId) {
@@ -12962,9 +13288,9 @@ export const appRouter = router({
     .output(updateScreeningPrivacyOutputSchema)
     .mutation(async ({ ctx, input }) => {
       return withAudit("update_screening_privacy", ctx, input, async () => {
-        requireAnyRole(
+        requireCapability(
           ctx,
-          GOVERNANCE_READ_ROLES,
+          "governance.manage",
           "Governance settings require the hr_head or admin role",
         );
         if (!ctx.tenantId) {
@@ -12998,9 +13324,9 @@ export const appRouter = router({
     .input(getFeedbackSharingInputSchema)
     .output(getFeedbackSharingOutputSchema)
     .query(async ({ ctx }) => {
-      requireAnyRole(
+      requireCapability(
         ctx,
-        GOVERNANCE_READ_ROLES,
+        "governance.manage",
         "Governance settings require the hr_head or admin role",
       );
       if (!ctx.tenantId) {
@@ -13018,9 +13344,9 @@ export const appRouter = router({
     .output(updateFeedbackSharingOutputSchema)
     .mutation(async ({ ctx, input }) => {
       return withAudit("update_feedback_sharing", ctx, input, async () => {
-        requireAnyRole(
+        requireCapability(
           ctx,
-          GOVERNANCE_READ_ROLES,
+          "governance.manage",
           "Governance settings require the hr_head or admin role",
         );
         if (!ctx.tenantId) {
@@ -13057,9 +13383,9 @@ export const appRouter = router({
   getGovernanceRiskFlags: protectedProcedure
     .output(getGovernanceRiskFlagsOutputSchema)
     .query(async ({ ctx }): Promise<GetGovernanceRiskFlagsOutput> => {
-      requireAnyRole(
+      requireCapability(
         ctx,
-        GOVERNANCE_READ_ROLES,
+        "governance.manage",
         "Governance access requires the hr_head or admin role",
       );
       const db = requireDb(ctx);
@@ -13079,9 +13405,9 @@ export const appRouter = router({
   getExecutiveAudit: protectedProcedure
     .output(getExecutiveAuditOutputSchema)
     .query(async ({ ctx }): Promise<GetExecutiveAuditOutput> => {
-      requireAnyRole(
+      requireCapability(
         ctx,
-        GOVERNANCE_READ_ROLES,
+        "governance.manage",
         "Governance access requires the hr_head or admin role",
       );
       const db = requireDb(ctx);
@@ -13109,9 +13435,9 @@ export const appRouter = router({
     .output(reviewJdWithAiOutputSchema)
     .mutation(async ({ ctx, input }) => {
       return withAudit("review_jd_with_ai", ctx, input, async () => {
-        requireAnyRole(
+        requireCapability(
           ctx,
-          REQUISITION_WRITE_ROLES,
+          "requisitions.write",
           "Reviewing a JD with AI requires the hiring_manager or admin role",
         );
         const db = requireDb(ctx);
@@ -13203,7 +13529,7 @@ export const appRouter = router({
     .output(getRecruitmentReportOutputSchema)
     .query(async ({ ctx, input }) => {
       // AD18 — server-side admin gate (page redirect alone left the procedure open).
-      requireAnyRole(ctx, USERS_ADMIN_ROLES, "Recruitment reports are admin-only");
+      requireCapability(ctx, "reports.admin", "Recruitment reports are admin-only");
       const db = requireDb(ctx);
       if (!ctx.tenantId) {
         throw new TRPCError({
@@ -13263,9 +13589,9 @@ export const appRouter = router({
     .input(getRequisitionAgingReportInputSchema)
     .output(getRequisitionAgingReportOutputSchema)
     .query(async ({ ctx, input }) => {
-      requireAnyRole(
+      requireCapability(
         ctx,
-        REPORTS_READ_ROLES,
+        "reports.read",
         "Reports access requires the admin, hr_head or hr_ops role",
       );
       const db = requireDb(ctx);
@@ -13311,9 +13637,9 @@ export const appRouter = router({
     .input(getRecruiterProductivityReportInputSchema)
     .output(getRecruiterProductivityReportOutputSchema)
     .query(async ({ ctx, input }) => {
-      requireAnyRole(
+      requireCapability(
         ctx,
-        REPORTS_READ_ROLES,
+        "reports.read",
         "Reports access requires the admin, hr_head or hr_ops role",
       );
       const db = requireDb(ctx);
@@ -13359,9 +13685,9 @@ export const appRouter = router({
     .input(getPipelineReportInputSchema)
     .output(getPipelineReportOutputSchema)
     .query(async ({ ctx, input }) => {
-      requireAnyRole(
+      requireCapability(
         ctx,
-        REPORTS_READ_ROLES,
+        "reports.read",
         "Reports access requires the admin, hr_head or hr_ops role",
       );
       const db = requireDb(ctx);
@@ -13395,9 +13721,9 @@ export const appRouter = router({
     .input(getHeadcountVsPlanReportInputSchema)
     .output(getHeadcountVsPlanReportOutputSchema)
     .query(async ({ ctx, input }) => {
-      requireAnyRole(
+      requireCapability(
         ctx,
-        REPORTS_READ_ROLES,
+        "reports.read",
         "Reports access requires the admin, hr_head or hr_ops role",
       );
       const db = requireDb(ctx);
@@ -13435,9 +13761,9 @@ export const appRouter = router({
     .input(getApprovalAnalyticsReportInputSchema)
     .output(getApprovalAnalyticsReportOutputSchema)
     .query(async ({ ctx, input }) => {
-      requireAnyRole(
+      requireCapability(
         ctx,
-        REPORTS_READ_ROLES,
+        "reports.read",
         "Reports access requires the admin, hr_head or hr_ops role",
       );
       const db = requireDb(ctx);
@@ -13492,9 +13818,9 @@ export const appRouter = router({
     .input(getPartnerScorecardReportInputSchema)
     .output(getPartnerScorecardReportOutputSchema)
     .query(async ({ ctx, input }) => {
-      requireAnyRole(
+      requireCapability(
         ctx,
-        REPORTS_READ_ROLES,
+        "reports.read",
         "Reports access requires the admin, hr_head or hr_ops role",
       );
       const db = requireDb(ctx);
@@ -13534,9 +13860,9 @@ export const appRouter = router({
     .input(getInterviewHealthReportInputSchema)
     .output(getInterviewHealthReportOutputSchema)
     .query(async ({ ctx, input }) => {
-      requireAnyRole(
+      requireCapability(
         ctx,
-        REPORTS_READ_ROLES,
+        "reports.read",
         "Reports access requires the admin, hr_head or hr_ops role",
       );
       const db = requireDb(ctx);
@@ -13594,9 +13920,9 @@ export const appRouter = router({
     .input(getOnboardingReadinessReportInputSchema)
     .output(getOnboardingReadinessReportOutputSchema)
     .query(async ({ ctx, input }) => {
-      requireAnyRole(
+      requireCapability(
         ctx,
-        REPORTS_READ_ROLES,
+        "reports.read",
         "Reports access requires the admin, hr_head or hr_ops role",
       );
       const db = requireDb(ctx);
@@ -13644,9 +13970,9 @@ export const appRouter = router({
     .input(getExecutiveSummaryReportInputSchema)
     .output(getExecutiveSummaryReportOutputSchema)
     .query(async ({ ctx, input }) => {
-      requireAnyRole(
+      requireCapability(
         ctx,
-        REPORTS_READ_ROLES,
+        "reports.read",
         "Reports access requires the admin, hr_head or hr_ops role",
       );
       const db = requireDb(ctx);
@@ -13659,7 +13985,8 @@ export const appRouter = router({
       const filters: ReportFilters = input;
 
       return getExecutiveSummaryReport(db, ctx.tenantId, filters, {
-        isAdmin: ctx.roles.includes("admin"),
+        // C2-F1: the AI-governance block follows the AI budget/cost capability.
+        isAdmin: can(ctx, "admin.ai_budget"),
       });
     }),
 
@@ -13675,9 +14002,9 @@ export const appRouter = router({
     .input(listReportBusinessUnitsInputSchema)
     .output(listReportBusinessUnitsOutputSchema)
     .query(async ({ ctx }) => {
-      requireAnyRole(
+      requireAnyCapability(
         ctx,
-        REPORT_BU_PICKER_ROLES,
+        ["reports.read", "reports.ask_data"],
         "Business-unit pickers require a reports or Ask-your-data role",
       );
       const db = requireDb(ctx);
@@ -13705,9 +14032,9 @@ export const appRouter = router({
     .output(getReportInsightsOutputSchema)
     .query(async ({ ctx, input }) => {
       await requireModule(ctx, "report_insights");
-      requireAnyRole(
+      requireCapability(
         ctx,
-        REPORTS_READ_ROLES,
+        "reports.read",
         "Reports access requires the admin, hr_head or hr_ops role",
       );
       const db = requireDb(ctx);
@@ -13780,7 +14107,7 @@ export const appRouter = router({
     .output(askDataCatalogOutputSchema)
     .query(async ({ ctx }) => {
       await requireModule(ctx, "ask_data");
-      requireAnyRole(ctx, ASK_DATA_ROLES, "Ask your data isn't available for your role");
+      requireCapability(ctx, "reports.ask_data", "Ask your data isn't available for your role");
       const db = requireDb(ctx);
       if (!ctx.tenantId) {
         throw new TRPCError({
@@ -13788,7 +14115,7 @@ export const appRouter = router({
           message: "protected procedure missing tenantId",
         });
       }
-      const tenantWide = ctx.roles.some((r) => ASK_DATA_TENANT_WIDE_ROLES.has(r));
+      const tenantWide = scopeOf(ctx, "reports.ask_data") === "all";
       const lookups = await loadAskDataLookups(db, ctx.tenantId, null);
       const aiSettings = await resolveTenantAiSettingsDb(ctx.tenantId);
       return {
@@ -13810,7 +14137,7 @@ export const appRouter = router({
     .output(askDataOutputSchema)
     .mutation(async ({ ctx, input }) => {
       await requireModule(ctx, "ask_data");
-      requireAnyRole(ctx, ASK_DATA_ROLES, "Ask your data isn't available for your role");
+      requireCapability(ctx, "reports.ask_data", "Ask your data isn't available for your role");
       const db = requireDb(ctx);
       if (!ctx.tenantId) {
         throw new TRPCError({
@@ -13822,7 +14149,7 @@ export const appRouter = router({
       const actorMembershipId = await resolveActorMembership(db, ctx);
 
       // Hiring-manager scope: only when the caller holds no tenant-wide role.
-      const tenantWide = ctx.roles.some((r) => ASK_DATA_TENANT_WIDE_ROLES.has(r));
+      const tenantWide = scopeOf(ctx, "reports.ask_data") === "all";
       let hmMembershipId: string | null = null;
       let hmRequisitionIds: Set<string> | null = null;
       if (!tenantWide) {
@@ -13855,7 +14182,7 @@ export const appRouter = router({
           db,
           tenantId,
           resolveNames: (ids) => resolveMembershipNames(ctx, tenantId, ids),
-          canSeeCandidateNames: ctx.roles.some((r) => ASK_DATA_CANDIDATE_NAME_ROLES.has(r)),
+          canSeeCandidateNames: can(ctx, "reports.ask_data_candidate_names"),
           hmMembershipId,
           hmRequisitionIds,
           stageLabels: await resolveTenantLabelsDb(tenantId),
@@ -13898,7 +14225,7 @@ export const appRouter = router({
             await logAskDataQuestion(sp, {
               tenantId,
               membershipId: actorMembershipId,
-              roles: askerRolesFor(ctx.roles, ASK_DATA_ROLES),
+              roles: askDataAskerRoles(ctx),
               question: input.intent ? null : (input.question ?? null),
               intent: interpretation.intent,
               params: interpretation.params,
@@ -13925,7 +14252,7 @@ export const appRouter = router({
     .output(askDataHistoryOutputSchema)
     .query(async ({ ctx }) => {
       await requireModule(ctx, "ask_data");
-      requireAnyRole(ctx, ASK_DATA_ROLES, "Ask your data isn't available for your role");
+      requireCapability(ctx, "reports.ask_data", "Ask your data isn't available for your role");
       const db = requireDb(ctx);
       if (!ctx.tenantId) {
         throw new TRPCError({
@@ -13936,10 +14263,10 @@ export const appRouter = router({
       const tenantId = ctx.tenantId;
       const membershipId = await resolveActorMembership(db, ctx);
       if (!membershipId) return { recent: [], popular: [] };
-      const tenantWide = ctx.roles.some((r) => ASK_DATA_TENANT_WIDE_ROLES.has(r));
+      const tenantWide = scopeOf(ctx, "reports.ask_data") === "all";
       const recent = await loadRecentQuestions(db, tenantId, membershipId);
       const popular = await loadPopularIntents(db, tenantId, {
-        callerRoles: askerRolesFor(ctx.roles, ASK_DATA_ROLES),
+        callerRoles: askDataAskerRoles(ctx),
         canRun: (intent) => tenantWide || HIRING_MANAGER_SCOPE[intent] !== "none",
       });
       return { recent, popular };
@@ -13955,7 +14282,7 @@ export const appRouter = router({
     .output(askDataTopQuestionsOutputSchema)
     .query(async ({ ctx, input }) => {
       await requireModule(ctx, "ask_data");
-      requireAnyRole(ctx, USERS_ADMIN_ROLES, "Top questions are admin-only");
+      requireCapability(ctx, "reports.admin", "Top questions are admin-only");
       const db = requireDb(ctx);
       if (!ctx.tenantId) {
         throw new TRPCError({
@@ -13983,9 +14310,9 @@ export const appRouter = router({
   // percentile/avg native to Postgres, funnel + stage + score buckets
   // zero-filled in JS so the grid always renders every band.
   getHrMetrics: protectedProcedure.output(getHrMetricsOutputSchema).query(async ({ ctx }) => {
-    requireAnyRole(
+    requireCapability(
       ctx,
-      HR_METRICS_READ_ROLES,
+      "reports.hr_metrics",
       "HR metrics access requires the hr_head or admin role",
     );
     const db = requireDb(ctx);
@@ -14470,7 +14797,7 @@ export const appRouter = router({
     .output(toggleFollowUpAgentOutputSchema)
     .mutation(async ({ ctx, input }) => {
       return withAudit("toggle_follow_up_agent", ctx, input, async () => {
-        requireAnyRole(ctx, USERS_ADMIN_ROLES, "Agent workflows are admin-only");
+        requireCapability(ctx, "admin.agents", "Agent workflows are admin-only");
         const db = requireDb(ctx);
         if (!ctx.tenantId) {
           throw new TRPCError({
@@ -14920,7 +15247,7 @@ export const appRouter = router({
     .output(toggleSchedulingAgentOutputSchema)
     .mutation(async ({ ctx, input }) => {
       return withAudit("toggle_scheduling_agent", ctx, input, async () => {
-        requireAnyRole(ctx, USERS_ADMIN_ROLES, "Agent workflows are admin-only");
+        requireCapability(ctx, "admin.agents", "Agent workflows are admin-only");
         const db = requireDb(ctx);
         if (!ctx.tenantId) {
           throw new TRPCError({
@@ -15356,7 +15683,7 @@ export const appRouter = router({
     .output(toggleCandidateQaAgentOutputSchema)
     .mutation(async ({ ctx, input }) => {
       return withAudit("toggle_candidate_qa_agent", ctx, input, async () => {
-        requireAnyRole(ctx, USERS_ADMIN_ROLES, "Agent workflows are admin-only");
+        requireCapability(ctx, "admin.agents", "Agent workflows are admin-only");
         const db = requireDb(ctx);
         if (!ctx.tenantId) {
           throw new TRPCError({
@@ -15614,7 +15941,7 @@ export const appRouter = router({
     .output(listPendingApprovalsOutputSchema)
     .query(async ({ ctx, input }) => {
       // RBAC-01 — the agent-draft approval queue is a recruiter surface.
-      requireAnyRole(ctx, RECRUITER_SURFACE_ROLES, "Approvals are not available for your role");
+      requireCapability(ctx, "candidates.triage", "Approvals are not available for your role");
       const db = requireDb(ctx);
       // Cursor is the proposed_at of the last row from the previous page —
       // strict-greater-than walks forward, no OFFSET cost. Limit +1 lets
@@ -15907,7 +16234,7 @@ export const appRouter = router({
     .input(listTenantUsersAdminInputSchema)
     .output(listTenantUsersAdminOutputSchema)
     .query(async ({ ctx }) => {
-      requireAnyRole(ctx, USERS_ADMIN_ROLES, "User administration is admin-only");
+      requireCapability(ctx, "admin.users", "User administration is admin-only");
       if (!ctx.tenantId) {
         throw new TRPCError({
           code: "INTERNAL_SERVER_ERROR",
@@ -15940,12 +16267,15 @@ export const appRouter = router({
         LIMIT ${CAP}
       `;
 
+      // C2-F1: each member's custom role (tolerant of a pre-0137 database).
+      const roleKeys = await readMembershipRoleKeys(ctx.sql, tenantId);
       const items: TenantUserAdminRow[] = rows.map((r) => ({
         membershipId: r.id,
         userId: r.user_id,
         displayName: r.display_name ?? null,
         email: r.email ?? null,
         roles: Array.isArray(r.roles) ? r.roles : [],
+        roleKey: roleKeys.get(r.id) ?? null,
         status: r.status,
         createdAt: toIsoString(r.created_at) ?? new Date(0).toISOString(),
         isSelf: r.user_id === selfUserId,
@@ -15966,7 +16296,7 @@ export const appRouter = router({
     .output(inviteTenantUserOutputSchema)
     .mutation(async ({ ctx, input }) => {
       return withAudit("invite_tenant_user", ctx, { ...input, roles: input.roles }, async () => {
-        requireAnyRole(ctx, USERS_ADMIN_ROLES, "Inviting users is admin-only");
+        requireCapability(ctx, "admin.users", "Inviting users is admin-only");
         if (!ctx.tenantId) {
           throw new TRPCError({
             code: "INTERNAL_SERVER_ERROR",
@@ -16062,7 +16392,7 @@ export const appRouter = router({
     .output(updateMembershipRolesOutputSchema)
     .mutation(async ({ ctx, input }) => {
       return withAudit("update_membership_roles", ctx, input, async () => {
-        requireAnyRole(ctx, USERS_ADMIN_ROLES, "Editing roles is admin-only");
+        requireCapability(ctx, "admin.users", "Editing roles is admin-only");
         if (!ctx.tenantId) {
           throw new TRPCError({
             code: "INTERNAL_SERVER_ERROR",
@@ -16088,6 +16418,16 @@ export const appRouter = router({
           .limit(1);
         if (!membership) {
           throw new TRPCError({ code: "NOT_FOUND", message: "membership not found" });
+        }
+
+        // C2-F1: a member on a custom role carries that role's base role; their
+        // roles change through the role assignment, not here.
+        const customKey = (await readMembershipRoleKeys(ctx.sql, tenantId)).get(membership.id);
+        if (customKey) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: `This member has the custom role "${customKey}". Change their role assignment instead.`,
+          });
         }
 
         // Self-demotion guard: the acting admin may not remove their own admin.
@@ -16122,7 +16462,7 @@ export const appRouter = router({
     .output(setMembershipStatusOutputSchema)
     .mutation(async ({ ctx, input }) => {
       return withAudit("set_membership_status", ctx, input, async () => {
-        requireAnyRole(ctx, USERS_ADMIN_ROLES, "Changing membership status is admin-only");
+        requireCapability(ctx, "admin.users", "Changing membership status is admin-only");
         if (!ctx.tenantId) {
           throw new TRPCError({
             code: "INTERNAL_SERVER_ERROR",
@@ -16179,9 +16519,9 @@ export const appRouter = router({
     .input(getDocumentRetentionInputSchema)
     .output(getDocumentRetentionOutputSchema)
     .query(async ({ ctx }) => {
-      requireAnyRole(
+      requireCapability(
         ctx,
-        GOVERNANCE_READ_ROLES,
+        "governance.manage",
         "Data retention view requires the hr_head or admin role",
       );
       const db = requireDb(ctx);
@@ -16227,7 +16567,7 @@ export const appRouter = router({
     .query(async ({ ctx, input }) => {
       await requireModule(ctx, "onboarding");
       // RBAC-01 — onboarding is a recruiter + HR-ops surface.
-      requireAnyRole(ctx, ONBOARDING_MANAGE_ROLES, "Onboarding is not available for your role");
+      requireCapability(ctx, "onboarding.manage", "Onboarding is not available for your role");
       const db = requireDb(ctx);
       if (!ctx.tenantId) {
         throw new TRPCError({
@@ -17076,7 +17416,7 @@ export const appRouter = router({
           });
         }
         const tenantId = ctx.tenantId;
-        requireAnyRole(ctx, OFFBOARD_MANAGE_ROLES, "You don't have access to offboarding.");
+        requireCapability(ctx, "onboarding.offboarding", "You don't have access to offboarding.");
 
         // Candidate must exist in this tenant (RLS) — clean 404 rather than an
         // FK error from the lib insert.
@@ -17157,7 +17497,7 @@ export const appRouter = router({
           });
         }
         const tenantId = ctx.tenantId;
-        requireAnyRole(ctx, OFFBOARD_MANAGE_ROLES, "You don't have access to offboarding.");
+        requireCapability(ctx, "onboarding.offboarding", "You don't have access to offboarding.");
 
         if (input.status === "blocked" && !input.blockedReason) {
           throw new TRPCError({
@@ -17228,7 +17568,7 @@ export const appRouter = router({
           });
         }
         const tenantId = ctx.tenantId;
-        requireAnyRole(ctx, OFFBOARD_MANAGE_ROLES, "You don't have access to offboarding.");
+        requireCapability(ctx, "onboarding.offboarding", "You don't have access to offboarding.");
 
         const [existing] = await db
           .select({
@@ -17370,7 +17710,7 @@ export const appRouter = router({
           });
         }
         const tenantId = ctx.tenantId;
-        requireAnyRole(ctx, OFFBOARD_MANAGE_ROLES, "You don't have access to offboarding.");
+        requireCapability(ctx, "onboarding.offboarding", "You don't have access to offboarding.");
 
         const [caseRow] = await db
           .select({ id: offboardingCases.id })
@@ -17432,7 +17772,7 @@ export const appRouter = router({
           });
         }
         const tenantId = ctx.tenantId;
-        requireAnyRole(ctx, OFFBOARD_MANAGE_ROLES, "You don't have access to offboarding.");
+        requireCapability(ctx, "onboarding.offboarding", "You don't have access to offboarding.");
 
         const [existing] = await db
           .select({ id: assetReturns.id, caseId: assetReturns.caseId })
@@ -17495,7 +17835,7 @@ export const appRouter = router({
           });
         }
         const tenantId = ctx.tenantId;
-        requireAnyRole(ctx, OFFBOARD_MANAGE_ROLES, "You don't have access to offboarding.");
+        requireCapability(ctx, "onboarding.offboarding", "You don't have access to offboarding.");
 
         const [caseRow] = await db
           .select({ id: offboardingCases.id })
@@ -17600,7 +17940,7 @@ export const appRouter = router({
           });
         }
         const tenantId = ctx.tenantId;
-        requireAnyRole(ctx, OFFBOARD_MANAGE_ROLES, "You don't have access to offboarding.");
+        requireCapability(ctx, "onboarding.offboarding", "You don't have access to offboarding.");
 
         const [caseRow] = await db
           .select({ id: offboardingCases.id })
@@ -17726,7 +18066,7 @@ export const appRouter = router({
         });
       }
       const tenantId = ctx.tenantId;
-      requireAnyRole(ctx, OFFBOARD_MANAGE_ROLES, "You don't have access to offboarding.");
+      requireCapability(ctx, "onboarding.offboarding", "You don't have access to offboarding.");
       const limit = input.limit;
       const decoded = decodeAuditCursor(input.cursor);
 
@@ -17819,7 +18159,7 @@ export const appRouter = router({
         });
       }
       const tenantId = ctx.tenantId;
-      requireAnyRole(ctx, OFFBOARD_MANAGE_ROLES, "You don't have access to offboarding.");
+      requireCapability(ctx, "onboarding.offboarding", "You don't have access to offboarding.");
 
       const [caseRow] = await db
         .select({
@@ -18013,7 +18353,7 @@ export const appRouter = router({
         });
       }
       const tenantId = ctx.tenantId;
-      requireAnyRole(ctx, OFFBOARD_MANAGE_ROLES, "You don't have access to offboarding.");
+      requireCapability(ctx, "onboarding.offboarding", "You don't have access to offboarding.");
 
       const rows = await ctx.sql<
         {
@@ -18415,7 +18755,7 @@ export const appRouter = router({
           if (!assignment) {
             throw new TRPCError({ code: "FORBIDDEN", message: "requisition_not_assigned" });
           }
-          if (!PUBLIC_APPLY_ACCEPTING_STATUSES.has(assignment.reqStatus)) {
+          if (!(await loadAcceptingStatuses(tenantId)).has(assignment.reqStatus)) {
             throw new TRPCError({
               code: "BAD_REQUEST",
               message: `Requisition not accepting submissions (status=${assignment.reqStatus})`,
@@ -18457,6 +18797,22 @@ export const appRouter = router({
           //    at most one org_wide claim (partial unique, 0132). The person
           //    lock serialises concurrent submissions of the same person, so
           //    the read-decide-insert below cannot interleave.
+          // C2-F7 / PP8 — a person the tenant rejected within its re-apply
+          // cooling-off period cannot be re-submitted until it ends.
+          if (existingPerson) {
+            const coolingEndsAt = await findReapplyCoolingOff(
+              db,
+              tenantId,
+              existingPerson.id,
+              (await loadScreeningPolicy(tenantId)).reapplyCoolingOffDays,
+            );
+            if (coolingEndsAt) {
+              throw new TRPCError({
+                code: "BAD_REQUEST",
+                message: `This candidate was recently declined and can be submitted again from ${coolingEndsAt.toISOString().slice(0, 10)}.`,
+              });
+            }
+          }
           let personHasActiveClaims = false;
           if (existingPerson) {
             await db.execute(
@@ -20173,7 +20529,7 @@ export const appRouter = router({
   getMyDashboard: protectedProcedure
     .output(getMyDashboardOutputSchema)
     .query(async ({ ctx }): Promise<GetMyDashboardOutput> => {
-      requireAnyRole(ctx, DASHBOARD_PERSONA_ROLES, "A dashboard requires an internal tenant role.");
+      requireCapability(ctx, "dashboard.view", "A dashboard requires an internal tenant role.");
       const db = requireDb(ctx);
       if (!ctx.tenantId) {
         throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
@@ -20192,9 +20548,9 @@ export const appRouter = router({
   getHrHeadDashboardExtras: protectedProcedure
     .output(getHrHeadDashboardExtrasOutputSchema)
     .query(async ({ ctx }): Promise<GetHrHeadDashboardExtrasOutput> => {
-      requireAnyRole(
+      requireCapability(
         ctx,
-        REQUISITION_APPROVAL_READ_ROLES,
+        "requisitions.approvals_read",
         "The HR-head dashboard requires the hr_head or admin role",
       );
       const db = requireDb(ctx);
@@ -20217,9 +20573,9 @@ export const appRouter = router({
   getRecruiterDashboardExtras: protectedProcedure
     .output(getRecruiterDashboardExtrasOutputSchema)
     .query(async ({ ctx }): Promise<GetRecruiterDashboardExtrasOutput> => {
-      requireAnyRole(
+      requireCapability(
         ctx,
-        RECRUITER_DASHBOARD_ROLES,
+        "candidates.recruiter_dashboard",
         "The recruiter dashboard requires the recruiter or admin role",
       );
       const db = requireDb(ctx);
@@ -20240,7 +20596,7 @@ export const appRouter = router({
   getAdminDashboardExtras: protectedProcedure
     .output(getAdminDashboardExtrasOutputSchema)
     .query(async ({ ctx }): Promise<GetAdminDashboardExtrasOutput> => {
-      requireAnyRole(ctx, USERS_ADMIN_ROLES, "The admin dashboard is admin-only");
+      requireCapability(ctx, "admin.console", "The admin dashboard is admin-only");
       const db = requireDb(ctx);
       if (!ctx.tenantId) {
         throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
@@ -20352,7 +20708,7 @@ export const appRouter = router({
    * requisition assignments, active ownership claims).
    */
   listPartnerOrgs: protectedProcedure.output(listPartnerOrgsOutputSchema).query(async ({ ctx }) => {
-    requireAnyRole(ctx, PARTNER_ADMIN_ROLES, "Partner administration is admin / hr_ops only");
+    requireCapability(ctx, "partners.admin", "Partner administration is admin / hr_ops only");
     const db = requireDb(ctx);
     if (!ctx.tenantId) {
       throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
@@ -20369,7 +20725,7 @@ export const appRouter = router({
     .input(getPartnerOrgInputSchema)
     .output(getPartnerOrgOutputSchema)
     .query(async ({ ctx, input }) => {
-      requireAnyRole(ctx, PARTNER_ADMIN_ROLES, "Partner administration is admin / hr_ops only");
+      requireCapability(ctx, "partners.admin", "Partner administration is admin / hr_ops only");
       const db = requireDb(ctx);
       if (!ctx.tenantId) {
         throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
@@ -20382,7 +20738,7 @@ export const appRouter = router({
     .input(createPartnerOrgInputSchema)
     .output(createPartnerOrgOutputSchema)
     .mutation(async ({ ctx, input }) => {
-      requireAnyRole(ctx, PARTNER_ADMIN_ROLES, "Partner administration is admin / hr_ops only");
+      requireCapability(ctx, "partners.admin", "Partner administration is admin / hr_ops only");
       const db = requireDb(ctx);
       if (!ctx.tenantId) {
         throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
@@ -20398,7 +20754,7 @@ export const appRouter = router({
     .input(setPartnerOrgActiveInputSchema)
     .output(setPartnerOrgActiveOutputSchema)
     .mutation(async ({ ctx, input }) => {
-      requireAnyRole(ctx, PARTNER_ADMIN_ROLES, "Partner administration is admin / hr_ops only");
+      requireCapability(ctx, "partners.admin", "Partner administration is admin / hr_ops only");
       const db = requireDb(ctx);
       if (!ctx.tenantId) {
         throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
@@ -20419,7 +20775,7 @@ export const appRouter = router({
     .input(invitePartnerUserInputSchema)
     .output(invitePartnerUserOutputSchema)
     .mutation(async ({ ctx, input }) => {
-      requireAnyRole(ctx, PARTNER_ADMIN_ROLES, "Partner administration is admin / hr_ops only");
+      requireCapability(ctx, "partners.admin", "Partner administration is admin / hr_ops only");
       const db = requireDb(ctx);
       if (!ctx.tenantId) {
         throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
@@ -20442,7 +20798,7 @@ export const appRouter = router({
     .input(revokePartnerInvitationInputSchema)
     .output(revokePartnerInvitationOutputSchema)
     .mutation(async ({ ctx, input }) => {
-      requireAnyRole(ctx, PARTNER_ADMIN_ROLES, "Partner administration is admin / hr_ops only");
+      requireCapability(ctx, "partners.admin", "Partner administration is admin / hr_ops only");
       const db = requireDb(ctx);
       if (!ctx.tenantId) {
         throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
@@ -20462,7 +20818,7 @@ export const appRouter = router({
     .input(assignRequisitionToPartnerInputSchema)
     .output(assignRequisitionToPartnerOutputSchema)
     .mutation(async ({ ctx, input }) => {
-      requireAnyRole(ctx, PARTNER_ADMIN_ROLES, "Partner administration is admin / hr_ops only");
+      requireCapability(ctx, "partners.admin", "Partner administration is admin / hr_ops only");
       const db = requireDb(ctx);
       if (!ctx.tenantId) {
         throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
@@ -20479,7 +20835,7 @@ export const appRouter = router({
     .input(endPartnerAssignmentInputSchema)
     .output(endPartnerAssignmentOutputSchema)
     .mutation(async ({ ctx, input }) => {
-      requireAnyRole(ctx, PARTNER_ADMIN_ROLES, "Partner administration is admin / hr_ops only");
+      requireCapability(ctx, "partners.admin", "Partner administration is admin / hr_ops only");
       const db = requireDb(ctx);
       if (!ctx.tenantId) {
         throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
@@ -20513,7 +20869,7 @@ export const appRouter = router({
     .input(listPartnerOrgClaimsInputSchema)
     .output(listPartnerOrgClaimsOutputSchema)
     .query(async ({ ctx, input }) => {
-      requireAnyRole(ctx, PARTNER_ADMIN_ROLES, "Partner administration is admin / hr_ops only");
+      requireCapability(ctx, "partners.admin", "Partner administration is admin / hr_ops only");
       const db = requireDb(ctx);
       if (!ctx.tenantId) {
         throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
@@ -20532,7 +20888,7 @@ export const appRouter = router({
     .input(listPartnerOrgDedupAttemptsInputSchema)
     .output(listPartnerOrgDedupAttemptsOutputSchema)
     .query(async ({ ctx, input }) => {
-      requireAnyRole(ctx, PARTNER_ADMIN_ROLES, "Partner administration is admin / hr_ops only");
+      requireCapability(ctx, "partners.admin", "Partner administration is admin / hr_ops only");
       const db = requireDb(ctx);
       if (!ctx.tenantId) {
         throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
@@ -20555,7 +20911,7 @@ export const appRouter = router({
     .input(releaseOwnershipClaimInputSchema)
     .output(releaseOwnershipClaimOutputSchema)
     .mutation(async ({ ctx, input }) => {
-      requireAnyRole(ctx, PARTNER_ADMIN_ROLES, "Partner administration is admin / hr_ops only");
+      requireCapability(ctx, "partners.admin", "Partner administration is admin / hr_ops only");
       const db = requireDb(ctx);
       if (!ctx.tenantId) {
         throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
@@ -20587,7 +20943,7 @@ export const appRouter = router({
     .input(getPartnerOrgCommercialsInputSchema)
     .output(getPartnerOrgCommercialsOutputSchema)
     .query(async ({ ctx, input }) => {
-      requireAnyRole(ctx, PARTNER_ADMIN_ROLES, "Partner administration is admin / hr_ops only");
+      requireCapability(ctx, "partners.admin", "Partner administration is admin / hr_ops only");
       const db = requireDb(ctx);
       if (!ctx.tenantId) {
         throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
@@ -20606,7 +20962,7 @@ export const appRouter = router({
     .input(upsertPartnerMsaInputSchema)
     .output(upsertPartnerMsaOutputSchema)
     .mutation(async ({ ctx, input }) => {
-      requireAnyRole(ctx, PARTNER_ADMIN_ROLES, "Partner administration is admin / hr_ops only");
+      requireCapability(ctx, "partners.admin", "Partner administration is admin / hr_ops only");
       const db = requireDb(ctx);
       if (!ctx.tenantId) {
         throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
@@ -20641,7 +20997,7 @@ export const appRouter = router({
     .input(getPartnerDefaultsInputSchema)
     .output(getPartnerDefaultsOutputSchema)
     .query(async ({ ctx }): Promise<PartnerDefaults> => {
-      requireAnyRole(ctx, PARTNER_ADMIN_ROLES, "Partner administration is admin / hr_ops only");
+      requireCapability(ctx, "partners.admin", "Partner administration is admin / hr_ops only");
       const db = requireDb(ctx);
       if (!ctx.tenantId) {
         throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
@@ -20672,7 +21028,7 @@ export const appRouter = router({
     .output(updatePartnerDefaultsOutputSchema)
     .mutation(async ({ ctx, input }) => {
       return withAudit("update_partner_defaults", ctx, input, async () => {
-        requireAnyRole(ctx, PARTNER_ADMIN_ROLES, "Partner administration is admin / hr_ops only");
+        requireCapability(ctx, "partners.admin", "Partner administration is admin / hr_ops only");
         if (!ctx.tenantId) {
           throw new TRPCError({
             code: "INTERNAL_SERVER_ERROR",
@@ -20838,9 +21194,9 @@ export const appRouter = router({
     .output(listMarketBenchmarksOutputSchema)
     .query(async ({ ctx }) => {
       await requireModule(ctx, "market_intel");
-      requireAnyRole(
+      requireCapability(
         ctx,
-        MARKET_INTEL_READ_ROLES,
+        "market_intel.read",
         "Market intelligence requires the hr_head, hiring_manager, or admin role",
       );
       const db = requireDb(ctx);
@@ -20868,7 +21224,7 @@ export const appRouter = router({
     .mutation(async ({ ctx, input }) => {
       await requireModule(ctx, "market_intel");
       return withAudit("upsert_market_benchmark", ctx, input, async () => {
-        requireAnyRole(ctx, MARKET_BENCHMARK_ADMIN_ROLES, "Editing benchmarks is admin-only");
+        requireCapability(ctx, "market_intel.write", "Editing benchmarks is admin-only");
         const db = requireDb(ctx);
         if (!ctx.tenantId) {
           throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
@@ -20930,7 +21286,11 @@ export const appRouter = router({
     .input(listRequisitionFeasibilityInputSchema)
     .output(listRequisitionFeasibilityOutputSchema)
     .query(async ({ ctx }) => {
-      requireAnyRole(ctx, FEASIBILITY_ROLES, "Feasibility requires the hr_head or admin role");
+      requireCapability(
+        ctx,
+        "market_intel.feasibility",
+        "Feasibility requires the hr_head or admin role",
+      );
       const db = requireDb(ctx);
       if (!ctx.tenantId) {
         throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
@@ -21001,7 +21361,11 @@ export const appRouter = router({
     .input(getRequisitionFeasibilityInputSchema)
     .output(getRequisitionFeasibilityOutputSchema)
     .query(async ({ ctx, input }) => {
-      requireAnyRole(ctx, FEASIBILITY_ROLES, "Feasibility requires the hr_head or admin role");
+      requireCapability(
+        ctx,
+        "market_intel.feasibility",
+        "Feasibility requires the hr_head or admin role",
+      );
       const db = requireDb(ctx);
       if (!ctx.tenantId) {
         throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
@@ -21051,7 +21415,11 @@ export const appRouter = router({
     .output(generateRequisitionFeasibilityOutputSchema)
     .mutation(async ({ ctx, input }) => {
       return withAudit("generate_requisition_feasibility", ctx, input, async () => {
-        requireAnyRole(ctx, FEASIBILITY_ROLES, "Feasibility requires the hr_head or admin role");
+        requireCapability(
+          ctx,
+          "market_intel.feasibility",
+          "Feasibility requires the hr_head or admin role",
+        );
         const db = requireDb(ctx);
         if (!ctx.tenantId) {
           throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
@@ -21205,16 +21573,17 @@ export const appRouter = router({
     .input(listMyRequisitionsV2InputSchema)
     .output(listMyRequisitionsV2OutputSchema)
     .query(async ({ ctx, input }) => {
-      requireAnyRole(
+      // C2-F1 (P5): the list honours the caller's `requisitions.read` scope.
+      const population = await requirePopulation(
         ctx,
-        REQUISITION_READ_ROLES,
+        "requisitions.read",
         "Requisition access requires the hiring_manager, recruiter, or admin role",
       );
       const db = requireDb(ctx);
       if (!ctx.tenantId) {
         throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
       }
-      const facets = await loadRequirementOwnerFacets(db, ctx.tenantId, input.limit);
+      const facets = await loadRequirementOwnerFacets(db, ctx.tenantId, input.limit, population);
       const benchmarks = await loadTenantBenchmarks(db, ctx.tenantId);
       return { rows: facets.map((f) => facetToOwnerRow(f, benchmarks)) };
     }),
@@ -21228,9 +21597,9 @@ export const appRouter = router({
   getRequirementOwnerDashboard: protectedProcedure
     .output(getRequirementOwnerDashboardOutputSchema)
     .query(async ({ ctx }) => {
-      requireAnyRole(
+      requireCapability(
         ctx,
-        RO_DASHBOARD_ROLES,
+        "requisitions.owner_dashboard",
         "The requirement-owner dashboard requires the hiring_manager or admin role",
       );
       const db = requireDb(ctx);
@@ -21362,9 +21731,9 @@ export const appRouter = router({
   getApprovalTracker: protectedProcedure
     .output(getApprovalTrackerOutputSchema)
     .query(async ({ ctx }) => {
-      requireAnyRole(
+      requireCapability(
         ctx,
-        RO_DASHBOARD_ROLES,
+        "requisitions.owner_dashboard",
         "The approval tracker requires the hiring_manager or admin role",
       );
       const db = requireDb(ctx);
@@ -21444,9 +21813,9 @@ export const appRouter = router({
     .input(getReqRevisionSuggestionsInputSchema)
     .output(getReqRevisionSuggestionsOutputSchema)
     .query(async ({ ctx, input }) => {
-      requireAnyRole(
+      requireCapability(
         ctx,
-        RO_REVISION_ROLES,
+        "requisitions.revise",
         "Revision suggestions require the hiring_manager or admin role",
       );
       const db = requireDb(ctx);
@@ -21489,9 +21858,9 @@ export const appRouter = router({
     .output(generateReqRevisionSuggestionsOutputSchema)
     .mutation(async ({ ctx, input }) => {
       return withAudit("generate_req_revision_suggestions", ctx, input, async () => {
-        requireAnyRole(
+        requireCapability(
           ctx,
-          RO_REVISION_ROLES,
+          "requisitions.revise",
           "Revision suggestions require the hiring_manager or admin role",
         );
         const db = requireDb(ctx);
@@ -21644,7 +22013,7 @@ export const appRouter = router({
     .input(listHrCasesInputSchema)
     .output(listHrCasesOutputSchema)
     .query(async ({ ctx, input }): Promise<ListHrCasesOutput> => {
-      requireAnyRole(ctx, HR_OPS_CASE_ROLES, "The HR cases workspace is for HR Ops.");
+      requireCapability(ctx, "hr_ops.cases", "The HR cases workspace is for HR Ops.");
       const db = requireDb(ctx);
       if (!ctx.tenantId) {
         throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
@@ -21662,7 +22031,7 @@ export const appRouter = router({
     .input(getHrCaseDetailInputSchema)
     .output(getHrCaseDetailOutputSchema)
     .query(async ({ ctx, input }): Promise<GetHrCaseDetailOutput> => {
-      requireAnyRole(ctx, HR_OPS_CASE_ROLES, "The HR cases workspace is for HR Ops.");
+      requireCapability(ctx, "hr_ops.cases", "The HR cases workspace is for HR Ops.");
       return withAudit("get_hr_case_detail", ctx, input, async () => {
         const db = requireDb(ctx);
         if (!ctx.tenantId) {
@@ -21682,7 +22051,7 @@ export const appRouter = router({
     .input(saveHrRoundAssessmentInputSchema)
     .output(saveHrRoundAssessmentOutputSchema)
     .mutation(async ({ ctx, input }) => {
-      requireAnyRole(ctx, HR_OPS_CASE_ROLES, "Saving an HR round assessment is for HR Ops.");
+      requireCapability(ctx, "hr_ops.cases", "Saving an HR round assessment is for HR Ops.");
       return withAudit("save_hr_round_assessment", ctx, input, async () => {
         const db = requireDb(ctx);
         if (!ctx.tenantId) {
@@ -21766,7 +22135,7 @@ export const appRouter = router({
     .input(listHrRoundsInputSchema)
     .output(listHrRoundsOutputSchema)
     .query(async ({ ctx }): Promise<ListHrRoundsOutput> => {
-      requireAnyRole(ctx, HR_OPS_CASE_ROLES, "The HR rounds view is for HR Ops.");
+      requireCapability(ctx, "hr_ops.cases", "The HR rounds view is for HR Ops.");
       const db = requireDb(ctx);
       if (!ctx.tenantId) {
         throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
@@ -21785,7 +22154,7 @@ export const appRouter = router({
     .input(listCompDeskInputSchema)
     .output(listCompDeskOutputSchema)
     .query(async ({ ctx }) => {
-      requireAnyRole(ctx, COMP_DESK_ROLES, "The comp desk requires the hr_ops or admin role");
+      requireCapability(ctx, "offers.comp_desk", "The comp desk requires the hr_ops or admin role");
       const db = requireDb(ctx);
       if (!ctx.tenantId) {
         throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
@@ -21811,7 +22180,7 @@ export const appRouter = router({
     .input(getCompAnalysisInputSchema)
     .output(getCompAnalysisOutputSchema)
     .query(async ({ ctx, input }) => {
-      requireAnyRole(ctx, COMP_DESK_ROLES, "The comp desk requires the hr_ops or admin role");
+      requireCapability(ctx, "offers.comp_desk", "The comp desk requires the hr_ops or admin role");
       const db = requireDb(ctx);
       if (!ctx.tenantId) {
         throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
@@ -21906,7 +22275,11 @@ export const appRouter = router({
     .output(generateCompRationaleOutputSchema)
     .mutation(async ({ ctx, input }) => {
       return withAudit("generate_comp_rationale", ctx, input, async () => {
-        requireAnyRole(ctx, COMP_DESK_ROLES, "The comp desk requires the hr_ops or admin role");
+        requireCapability(
+          ctx,
+          "offers.comp_desk",
+          "The comp desk requires the hr_ops or admin role",
+        );
         const db = requireDb(ctx);
         if (!ctx.tenantId) {
           throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
@@ -22064,7 +22437,11 @@ export const appRouter = router({
     .output(draftCompOfferOutputSchema)
     .mutation(async ({ ctx, input }) => {
       return withAudit("draft_comp_offer", ctx, input, async () => {
-        requireAnyRole(ctx, COMP_DESK_ROLES, "The comp desk requires the hr_ops or admin role");
+        requireCapability(
+          ctx,
+          "offers.comp_desk",
+          "The comp desk requires the hr_ops or admin role",
+        );
         const db = requireDb(ctx);
         if (!ctx.tenantId) {
           throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
@@ -22105,7 +22482,10 @@ export const appRouter = router({
         const bandMaxPaise = pos ? majorRupeesToPaise(pos.bandMax) : null;
         const needsApproval = bandMaxPaise != null && input.baseSalaryInrPaise > bandMaxPaise;
 
-        const expiryAt = new Date(Date.now() + input.expiryDays * 24 * 60 * 60 * 1000);
+        // C2-F7 / PP13 — an omitted expiry / probation takes the tenant's offer policy.
+        const offerPolicy = await loadOfferPolicy(app.tenantId);
+        const expiryDays = input.expiryDays ?? offerPolicy.defaultExpiryDays;
+        const expiryAt = new Date(Date.now() + expiryDays * 24 * 60 * 60 * 1000);
         const [created] = await db
           .insert(offers)
           .values({
@@ -22122,7 +22502,7 @@ export const appRouter = router({
             joiningDate: input.joiningDate,
             location: input.location,
             contractType: input.contractType,
-            probationMonths: input.probationMonths,
+            probationMonths: input.probationMonths ?? offerPolicy.defaultProbationMonths,
             benefits: input.benefits,
             termsHtml: input.termsHtml ?? null,
             expiryAt,
@@ -22149,7 +22529,11 @@ export const appRouter = router({
     .output(requestOfferApprovalOutputSchema)
     .mutation(async ({ ctx, input }) => {
       return withAudit("request_offer_approval", ctx, input, async () => {
-        requireAnyRole(ctx, COMP_DESK_ROLES, "The comp desk requires the hr_ops or admin role");
+        requireCapability(
+          ctx,
+          "offers.comp_desk",
+          "The comp desk requires the hr_ops or admin role",
+        );
         const db = requireDb(ctx);
         if (!ctx.tenantId) {
           throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
@@ -22276,9 +22660,9 @@ export const appRouter = router({
     .output(decideOfferApprovalOutputSchema)
     .mutation(async ({ ctx, input }) => {
       return withAudit("decide_offer_approval", ctx, input, async () => {
-        requireAnyRole(
+        requireCapability(
           ctx,
-          OFFER_APPROVAL_DECIDE_ROLES,
+          "offers.approve",
           "Deciding an offer approval requires the hr_head or admin role",
         );
         const db = requireDb(ctx);
@@ -22368,9 +22752,9 @@ export const appRouter = router({
     .input(listOfferApprovalsInputSchema)
     .output(listOfferApprovalsOutputSchema)
     .query(async ({ ctx }) => {
-      requireAnyRole(
+      requireCapability(
         ctx,
-        OFFER_APPROVAL_DECIDE_ROLES,
+        "offers.approve",
         "The offer approval queue requires the hr_head or admin role",
       );
       const db = requireDb(ctx);
@@ -22442,7 +22826,7 @@ export const appRouter = router({
    * header derived from the live desk. hr_ops + admin. No AI, no writes.
    */
   getHrAnalytics: protectedProcedure.output(getHrAnalyticsOutputSchema).query(async ({ ctx }) => {
-    requireAnyRole(ctx, COMP_DESK_ROLES, "HR analytics requires the hr_ops or admin role");
+    requireCapability(ctx, "offers.comp_desk", "HR analytics requires the hr_ops or admin role");
     const db = requireDb(ctx);
     if (!ctx.tenantId) {
       throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
@@ -22595,7 +22979,7 @@ export const appRouter = router({
     .input(listApplicationDocumentCandidatesInputSchema)
     .output(listApplicationDocumentCandidatesOutputSchema)
     .query(async ({ ctx, input }) => {
-      requireAnyRole(ctx, HR_OPS_DOC_ROLES, "Documents & verification is an HR-ops surface.");
+      requireCapability(ctx, "hr_ops.documents", "Documents & verification is an HR-ops surface.");
       const db = requireDb(ctx);
       if (!ctx.tenantId) {
         throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
@@ -22742,7 +23126,7 @@ export const appRouter = router({
   listRequestableDocumentTypes: protectedProcedure
     .output(listRequestableDocumentTypesOutputSchema)
     .query(async ({ ctx }) => {
-      requireAnyRole(ctx, HR_OPS_DOC_ROLES, "Documents & verification is an HR-ops surface.");
+      requireCapability(ctx, "hr_ops.documents", "Documents & verification is an HR-ops surface.");
       const db = requireDb(ctx);
       const rows = await db
         .select({
@@ -22777,7 +23161,11 @@ export const appRouter = router({
     .output(requestApplicationDocumentsOutputSchema)
     .mutation(async ({ ctx, input }) => {
       return withAudit("request_application_documents", ctx, input, async () => {
-        requireAnyRole(ctx, HR_OPS_DOC_ROLES, "Documents & verification is an HR-ops surface.");
+        requireCapability(
+          ctx,
+          "hr_ops.documents",
+          "Documents & verification is an HR-ops surface.",
+        );
         const db = requireDb(ctx);
         if (!ctx.tenantId) {
           throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
@@ -22845,7 +23233,11 @@ export const appRouter = router({
     .output(verifyApplicationDocumentOutputSchema)
     .mutation(async ({ ctx, input }) => {
       return withAudit("verify_application_document", ctx, input, async () => {
-        requireAnyRole(ctx, HR_OPS_DOC_ROLES, "Documents & verification is an HR-ops surface.");
+        requireCapability(
+          ctx,
+          "hr_ops.documents",
+          "Documents & verification is an HR-ops surface.",
+        );
         const db = requireDb(ctx);
         if (!ctx.tenantId) {
           throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
@@ -22909,7 +23301,11 @@ export const appRouter = router({
     .output(rejectApplicationDocumentOutputSchema)
     .mutation(async ({ ctx, input }) => {
       return withAudit("reject_application_document", ctx, input, async () => {
-        requireAnyRole(ctx, HR_OPS_DOC_ROLES, "Documents & verification is an HR-ops surface.");
+        requireCapability(
+          ctx,
+          "hr_ops.documents",
+          "Documents & verification is an HR-ops surface.",
+        );
         const db = requireDb(ctx);
         if (!ctx.tenantId) {
           throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
@@ -23457,7 +23853,7 @@ export const appRouter = router({
     .input(listCaseAuditCasesInputSchema)
     .output(listCaseAuditCasesOutputSchema)
     .query(async ({ ctx, input }) => {
-      requireAnyRole(ctx, HR_OPS_DOC_ROLES, "Case audit is an HR-ops surface.");
+      requireCapability(ctx, "hr_ops.documents", "Case audit is an HR-ops surface.");
       const db = requireDb(ctx);
       if (!ctx.tenantId) {
         throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
@@ -23551,7 +23947,7 @@ export const appRouter = router({
     .input(getCaseAuditTimelineInputSchema)
     .output(getCaseAuditTimelineOutputSchema)
     .query(async ({ ctx, input }) => {
-      requireAnyRole(ctx, HR_OPS_DOC_ROLES, "Case audit is an HR-ops surface.");
+      requireCapability(ctx, "hr_ops.documents", "Case audit is an HR-ops surface.");
       const db = requireDb(ctx);
       if (!ctx.tenantId) {
         throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
@@ -23693,7 +24089,7 @@ export const appRouter = router({
         ctx,
         { applicationId: input.applicationId },
         async () => {
-          requireAnyRole(ctx, HR_OPS_DOC_ROLES, "Case audit is an HR-ops surface.");
+          requireCapability(ctx, "hr_ops.documents", "Case audit is an HR-ops surface.");
           const db = requireDb(ctx);
           if (!ctx.tenantId) {
             throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
@@ -23752,7 +24148,7 @@ export const appRouter = router({
     .input(listHrPoliciesInputSchema)
     .output(listHrPoliciesOutputSchema)
     .query(async ({ ctx, input }) => {
-      requireAnyRole(ctx, HR_OPS_DOC_ROLES, "Policies is an HR-ops surface.");
+      requireCapability(ctx, "hr_ops.documents", "Policies is an HR-ops surface.");
       const db = requireDb(ctx);
       if (!ctx.tenantId) {
         throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
@@ -23793,7 +24189,7 @@ export const appRouter = router({
     .output(createHrPolicyOutputSchema)
     .mutation(async ({ ctx, input }) => {
       return withAudit("create_hr_policy", ctx, input, async () => {
-        requireAnyRole(ctx, HR_OPS_DOC_ROLES, "Policies is an HR-ops surface.");
+        requireCapability(ctx, "hr_ops.documents", "Policies is an HR-ops surface.");
         const db = requireDb(ctx);
         if (!ctx.tenantId) {
           throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
@@ -23847,7 +24243,7 @@ export const appRouter = router({
     .output(updateHrPolicyOutputSchema)
     .mutation(async ({ ctx, input }) => {
       return withAudit("update_hr_policy", ctx, input, async () => {
-        requireAnyRole(ctx, HR_OPS_DOC_ROLES, "Policies is an HR-ops surface.");
+        requireCapability(ctx, "hr_ops.documents", "Policies is an HR-ops surface.");
         const db = requireDb(ctx);
         if (!ctx.tenantId) {
           throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
@@ -23935,7 +24331,7 @@ export const appRouter = router({
     .output(archiveHrPolicyOutputSchema)
     .mutation(async ({ ctx, input }) => {
       return withAudit("archive_hr_policy", ctx, input, async () => {
-        requireAnyRole(ctx, HR_OPS_DOC_ROLES, "Policies is an HR-ops surface.");
+        requireCapability(ctx, "hr_ops.documents", "Policies is an HR-ops surface.");
         const db = requireDb(ctx);
         if (!ctx.tenantId) {
           throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
@@ -23967,7 +24363,7 @@ export const appRouter = router({
     .input(listHrPolicyVersionsInputSchema)
     .output(listHrPolicyVersionsOutputSchema)
     .query(async ({ ctx, input }) => {
-      requireAnyRole(ctx, HR_OPS_DOC_ROLES, "Policies is an HR-ops surface.");
+      requireCapability(ctx, "hr_ops.documents", "Policies is an HR-ops surface.");
       const db = requireDb(ctx);
       if (!ctx.tenantId) {
         throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
@@ -24011,7 +24407,11 @@ export const appRouter = router({
     .input(listJdTemplatesInputSchema)
     .output(listJdTemplatesOutputSchema)
     .query(async ({ ctx, input }) => {
-      requireAnyRole(ctx, JD_TEMPLATE_ROLES, "JD templates is a hiring-manager surface.");
+      requireCapability(
+        ctx,
+        "requisitions.jd_templates",
+        "JD templates is a hiring-manager surface.",
+      );
       const db = requireDb(ctx);
       if (!ctx.tenantId) {
         throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
@@ -24038,7 +24438,11 @@ export const appRouter = router({
     .output(createJdTemplateOutputSchema)
     .mutation(async ({ ctx, input }) => {
       return withAudit("create_jd_template", ctx, input, async () => {
-        requireAnyRole(ctx, JD_TEMPLATE_ROLES, "JD templates is a hiring-manager surface.");
+        requireCapability(
+          ctx,
+          "requisitions.jd_templates",
+          "JD templates is a hiring-manager surface.",
+        );
         const db = requireDb(ctx);
         if (!ctx.tenantId) {
           throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
@@ -24086,7 +24490,11 @@ export const appRouter = router({
     .output(updateJdTemplateOutputSchema)
     .mutation(async ({ ctx, input }) => {
       return withAudit("update_jd_template", ctx, input, async () => {
-        requireAnyRole(ctx, JD_TEMPLATE_ROLES, "JD templates is a hiring-manager surface.");
+        requireCapability(
+          ctx,
+          "requisitions.jd_templates",
+          "JD templates is a hiring-manager surface.",
+        );
         const db = requireDb(ctx);
         if (!ctx.tenantId) {
           throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
@@ -24129,7 +24537,11 @@ export const appRouter = router({
     .output(archiveJdTemplateOutputSchema)
     .mutation(async ({ ctx, input }) => {
       return withAudit("archive_jd_template", ctx, input, async () => {
-        requireAnyRole(ctx, JD_TEMPLATE_ROLES, "JD templates is a hiring-manager surface.");
+        requireCapability(
+          ctx,
+          "requisitions.jd_templates",
+          "JD templates is a hiring-manager surface.",
+        );
         const db = requireDb(ctx);
         if (!ctx.tenantId) {
           throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
@@ -24170,7 +24582,11 @@ export const appRouter = router({
     .input(listJdLibraryInputSchema)
     .output(listJdLibraryOutputSchema)
     .query(async ({ ctx, input }) => {
-      requireAnyRole(ctx, HM_INSIGHTS_ROLES, "JD library is a hiring-manager surface.");
+      requireCapability(
+        ctx,
+        "requisitions.owner_insights",
+        "JD library is a hiring-manager surface.",
+      );
       const db = requireDb(ctx);
       const scope = await resolveMyRequisitionScope(db, ctx);
       if (scope.ids.length === 0) return { rows: [] };
@@ -24269,7 +24685,11 @@ export const appRouter = router({
     .input(getJdVersionHistoryInputSchema)
     .output(getJdVersionHistoryOutputSchema)
     .query(async ({ ctx, input }) => {
-      requireAnyRole(ctx, HM_INSIGHTS_ROLES, "JD library is a hiring-manager surface.");
+      requireCapability(
+        ctx,
+        "requisitions.owner_insights",
+        "JD library is a hiring-manager surface.",
+      );
       const db = requireDb(ctx);
       const scope = await resolveMyRequisitionScope(db, ctx);
       if (!scope.ids.includes(input.requisitionId)) {
@@ -24331,7 +24751,11 @@ export const appRouter = router({
     .input(listPanelSetupRequisitionsInputSchema)
     .output(listPanelSetupRequisitionsOutputSchema)
     .query(async ({ ctx, input }) => {
-      requireAnyRole(ctx, HM_INSIGHTS_ROLES, "Panel setup is a hiring-manager surface.");
+      requireCapability(
+        ctx,
+        "requisitions.owner_insights",
+        "Panel setup is a hiring-manager surface.",
+      );
       const db = requireDb(ctx);
       const scope = await resolveMyRequisitionScope(db, ctx);
       if (scope.ids.length === 0) return { rows: [] };
@@ -24408,7 +24832,11 @@ export const appRouter = router({
     .input(getPanelSetupInputSchema)
     .output(getPanelSetupOutputSchema)
     .query(async ({ ctx, input }) => {
-      requireAnyRole(ctx, HM_INSIGHTS_ROLES, "Panel setup is a hiring-manager surface.");
+      requireCapability(
+        ctx,
+        "requisitions.owner_insights",
+        "Panel setup is a hiring-manager surface.",
+      );
       const db = requireDb(ctx);
       const scope = await resolveMyRequisitionScope(db, ctx);
       if (!scope.ids.includes(input.requisitionId)) {
@@ -24483,7 +24911,11 @@ export const appRouter = router({
     .input(getRequisitionInsightsInputSchema)
     .output(getRequisitionInsightsOutputSchema)
     .query(async ({ ctx, input }): Promise<GetRequisitionInsightsOutput> => {
-      requireAnyRole(ctx, HM_INSIGHTS_ROLES, "Insights is a hiring-manager surface.");
+      requireCapability(
+        ctx,
+        "requisitions.owner_insights",
+        "Insights is a hiring-manager surface.",
+      );
       const db = requireDb(ctx);
       return buildRequisitionInsights(db, ctx, input.requisitionId ?? null);
     }),
@@ -24510,7 +24942,7 @@ export const appRouter = router({
     .input(listCandidatesByRequisitionInputSchema)
     .output(listCandidatesByRequisitionOutputSchema)
     .query(async ({ ctx, input }) => {
-      requireAnyRole(ctx, RECRUITER_SURFACE_ROLES, "Candidates is a recruiter surface.");
+      requireCapability(ctx, "candidates.triage", "Candidates is a recruiter surface.");
       const db = requireDb(ctx);
 
       // PC-5 — every filter is SQL (candidate-list-filters.ts) so paging and
@@ -24528,8 +24960,8 @@ export const appRouter = router({
       const requestedSort: CandidateListSort = sortIn ?? (scoreVisible ? "ai_score" : "evidence");
       const sort: CandidateListSort =
         !scoreVisible && requestedSort === "ai_score" ? "evidence" : requestedSort;
-      const { conditions } = candidateListConditions(filter, ctx.roles);
-      const { conditions: facetConditions } = candidateListConditions(filter, ctx.roles, {
+      const { conditions } = candidateListConditions(filter, permsOf(ctx));
+      const { conditions: facetConditions } = candidateListConditions(filter, permsOf(ctx), {
         includeRequisition: false,
       });
 
@@ -24688,7 +25120,7 @@ export const appRouter = router({
         const parsed = narrowParsedSkills(r.parsedSkills);
         const mask = resolveCandidateMasking({ roles: ctx.roles, stage: r.stage, privacy });
         // PC-7 — the application's stated notice wins; parsed CV is the fallback.
-        const screening = presentScreeningAnswers(r, r.parsedSkills, ctx.roles);
+        const screening = presentScreeningAnswers(r, r.parsedSkills, permsOf(ctx));
         const noticePeriodDays = screening.noticePeriodDays ?? parsed.notice_period_days ?? null;
         const mustHavePct = computeMustHavePct(
           mustHaveByJd.get(r.jdVersionId) ?? [],
@@ -24761,7 +25193,7 @@ export const appRouter = router({
           roleTitle: f.roleTitle ?? "Untitled requisition",
           count: f.count,
         })),
-        compFilterAvailable: canSeeScreeningComp(ctx.roles),
+        compFilterAvailable: canSeeScreeningComp(permsOf(ctx)),
       };
     }),
 
@@ -24778,7 +25210,7 @@ export const appRouter = router({
     .input(listShortlistInputSchema)
     .output(listShortlistOutputSchema)
     .query(async ({ ctx, input }) => {
-      requireAnyRole(ctx, RECRUITER_SURFACE_ROLES, "Shortlist is a recruiter surface.");
+      requireCapability(ctx, "candidates.triage", "Shortlist is a recruiter surface.");
       const db = requireDb(ctx);
 
       // T2.3 / G08 — resolve the tenant's shortlist defaults (threshold + tier
@@ -24793,6 +25225,8 @@ export const appRouter = router({
       let slaThresholds: Record<ApplicationStage, number | null> = SLA_THRESHOLDS_HOURS;
       // CFG-LITE / PP1 — the tenant's urgency weights + notice bands.
       let urgencySettings: UrgencySettings = defaultUrgencySettings();
+      // C2-F7 / PP2 — the tenant's risk-flag rules (must-have %, salary rule).
+      let screeningPolicy = resolveScreeningPolicy({});
       if (ctx.tenantId) {
         const [settingsRow] = await db
           .select({ settings: tenants.settings })
@@ -24806,6 +25240,7 @@ export const appRouter = router({
         );
         slaThresholds = resolveSlaThresholds(settings.slaThresholds);
         urgencySettings = resolveUrgencySettings(settings.urgency);
+        screeningPolicy = resolveScreeningPolicy(settings.screeningPolicy);
       }
       const effectiveThreshold = input.threshold ?? shortlistDefaults.threshold;
       const cutoffs = shortlistDefaults.tierCutoffs;
@@ -24816,6 +25251,7 @@ export const appRouter = router({
           applicationId: applications.id,
           jdVersionId: requisitions.jdVersionId,
           roleTitle: positions.title,
+          compBandMin: positions.compBandMin,
           compBandMax: positions.compBandMax,
           compCurrency: positions.compCurrency,
           fullName: persons.fullName,
@@ -24906,11 +25342,15 @@ export const appRouter = router({
           },
           urgencySettings,
         );
-        const riskFlags = computeRiskFlags({
-          mustHavePct,
-          expectedSalaryInrPaise: r.expectedSalaryInrPaise,
-          compBandMaxInrPaise: compBandMaxToPaise(r.compBandMax, r.compCurrency),
-        });
+        const riskFlags = computeRiskFlags(
+          {
+            mustHavePct,
+            expectedSalaryInrPaise: r.expectedSalaryInrPaise,
+            compBandMaxInrPaise: compBandMaxToPaise(r.compBandMax, r.compCurrency),
+            compBandMinInrPaise: compBandMaxToPaise(r.compBandMin, r.compCurrency),
+          },
+          screeningPolicy,
+        );
         const mask = resolveCandidateMasking({ roles: ctx.roles, stage: r.stage, privacy });
 
         shaped.push({
@@ -24955,7 +25395,7 @@ export const appRouter = router({
     .input(getApplicationScreeningEvidenceInputSchema)
     .output(getApplicationScreeningEvidenceOutputSchema)
     .query(async ({ ctx, input }) => {
-      requireAnyRole(ctx, RECRUITER_SURFACE_ROLES, "Screening evidence is a recruiter surface.");
+      requireCapability(ctx, "candidates.triage", "Screening evidence is a recruiter surface.");
       const db = requireDb(ctx);
       return { evidence: await loadScreeningEvidence(db, input.applicationId) };
     }),
@@ -24975,7 +25415,7 @@ export const appRouter = router({
     .input(getRecruiterBriefInputSchema)
     .output(getRecruiterBriefOutputSchema)
     .query(async ({ ctx, input }): Promise<GetRecruiterBriefOutput> => {
-      requireAnyRole(ctx, RECRUITER_SURFACE_ROLES, "The candidate brief is a recruiter surface.");
+      requireCapability(ctx, "candidates.triage", "The candidate brief is a recruiter surface.");
       return withAudit("get_recruiter_brief", ctx, input, async () => {
         const db = requireDb(ctx);
         if (!ctx.tenantId) {
@@ -25093,7 +25533,7 @@ export const appRouter = router({
     .output(generateRecruiterBriefOutputSchema)
     .mutation(async ({ ctx, input }): Promise<GenerateRecruiterBriefOutput> => {
       return withAudit("generate_recruiter_brief", ctx, input, async () => {
-        requireAnyRole(ctx, RECRUITER_SURFACE_ROLES, "The candidate brief is a recruiter surface.");
+        requireCapability(ctx, "candidates.triage", "The candidate brief is a recruiter surface.");
         const db = requireDb(ctx);
         if (!ctx.tenantId) {
           throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
@@ -25201,7 +25641,7 @@ export const appRouter = router({
     .input(listMissingInfoInputSchema)
     .output(listMissingInfoOutputSchema)
     .query(async ({ ctx, input }): Promise<ListMissingInfoOutput> => {
-      requireAnyRole(ctx, RECRUITER_SURFACE_ROLES, "Missing Info is a recruiter surface.");
+      requireCapability(ctx, "candidates.triage", "Missing Info is a recruiter surface.");
       return withAudit("list_missing_info", ctx, input, async () => {
         const db = requireDb(ctx);
         if (!ctx.tenantId) {
@@ -25339,7 +25779,7 @@ export const appRouter = router({
     .output(requestMissingInfoOutputSchema)
     .mutation(async ({ ctx, input }) => {
       return withAudit("request_missing_info", ctx, input, async () => {
-        requireAnyRole(ctx, RECRUITER_SURFACE_ROLES, "Missing Info is a recruiter surface.");
+        requireCapability(ctx, "candidates.triage", "Missing Info is a recruiter surface.");
         const db = requireDb(ctx);
         if (!ctx.tenantId) {
           throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
@@ -25457,7 +25897,7 @@ export const appRouter = router({
     .output(resolveMissingInfoOutputSchema)
     .mutation(async ({ ctx, input }) => {
       return withAudit("resolve_missing_info", ctx, input, async () => {
-        requireAnyRole(ctx, RECRUITER_SURFACE_ROLES, "Missing Info is a recruiter surface.");
+        requireCapability(ctx, "candidates.triage", "Missing Info is a recruiter surface.");
         const db = requireDb(ctx);
         if (!ctx.tenantId) {
           throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
@@ -25534,7 +25974,7 @@ export const appRouter = router({
     .output(listBulkCvBatchesOutputSchema)
     .query(async ({ ctx, input }): Promise<ListBulkCvBatchesOutput> => {
       await requireModule(ctx, "bulk_cv_upload");
-      requireAnyRole(ctx, BULK_CV_UPLOAD_ROLES, "Bulk CV upload is a recruiter surface.");
+      requireCapability(ctx, "candidates.bulk_upload", "Bulk CV upload is a recruiter surface.");
       const db = requireDb(ctx);
       const tenantId = ctx.tenantId;
       if (!tenantId) {
@@ -25552,7 +25992,7 @@ export const appRouter = router({
       ]);
       return {
         limits,
-        acceptingUploads: BULK_CV_ACCEPTING_REQ_STATUSES.has(req.status),
+        acceptingUploads: (await loadTenantAcceptingStatuses(tenantId)).has(req.status),
         batches,
       };
     }),
@@ -25563,7 +26003,7 @@ export const appRouter = router({
     .output(getBulkCvBatchOutputSchema)
     .query(async ({ ctx, input }): Promise<GetBulkCvBatchOutput> => {
       await requireModule(ctx, "bulk_cv_upload");
-      requireAnyRole(ctx, BULK_CV_UPLOAD_ROLES, "Bulk CV upload is a recruiter surface.");
+      requireCapability(ctx, "candidates.bulk_upload", "Bulk CV upload is a recruiter surface.");
       const db = requireDb(ctx);
       const tenantId = ctx.tenantId;
       if (!tenantId) {
@@ -25580,7 +26020,7 @@ export const appRouter = router({
     .output(retryBulkCvItemsOutputSchema)
     .mutation(async ({ ctx, input }): Promise<RetryBulkCvItemsOutput> => {
       await requireModule(ctx, "bulk_cv_upload");
-      requireAnyRole(ctx, BULK_CV_UPLOAD_ROLES, "Bulk CV upload is a recruiter surface.");
+      requireCapability(ctx, "candidates.bulk_upload", "Bulk CV upload is a recruiter surface.");
       return withAudit("retry_bulk_cv_items", ctx, input, async () => {
         const db = requireDb(ctx);
         const tenantId = ctx.tenantId;
@@ -25615,9 +26055,9 @@ export const appRouter = router({
     .input(listTenantSourcesInputSchema)
     .output(listTenantSourcesOutputSchema)
     .query(async ({ ctx }) => {
-      requireAnyRole(
+      requireCapability(
         ctx,
-        TENANT_SOURCE_READ_ROLES,
+        "settings.sources_read",
         "The sourcing-channel registry requires the recruiter or admin role",
       );
       const db = requireDb(ctx);
@@ -25643,7 +26083,7 @@ export const appRouter = router({
     .output(upsertTenantSourceOutputSchema)
     .mutation(async ({ ctx, input }) => {
       return withAudit("upsert_tenant_source", ctx, input, async () => {
-        requireAnyRole(ctx, TENANT_SOURCE_ADMIN_ROLES, "Editing sourcing channels is admin-only");
+        requireCapability(ctx, "settings.sources_write", "Editing sourcing channels is admin-only");
         const db = requireDb(ctx);
         if (!ctx.tenantId) {
           throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
@@ -25693,7 +26133,7 @@ export const appRouter = router({
     .output(setTenantSourceEnabledOutputSchema)
     .mutation(async ({ ctx, input }) => {
       return withAudit("set_tenant_source_enabled", ctx, input, async () => {
-        requireAnyRole(ctx, TENANT_SOURCE_ADMIN_ROLES, "Editing sourcing channels is admin-only");
+        requireCapability(ctx, "settings.sources_write", "Editing sourcing channels is admin-only");
         const db = requireDb(ctx);
         if (!ctx.tenantId) {
           throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
@@ -25732,9 +26172,9 @@ export const appRouter = router({
     .input(listBusinessUnitsInputSchema)
     .output(listBusinessUnitsOutputSchema)
     .query(async ({ ctx, input }) => {
-      requireAnyRole(
+      requireCapability(
         ctx,
-        BUSINESS_UNIT_READ_ROLES,
+        "requisitions.pickers",
         "The business-unit list requires the hiring_manager, recruiter, or admin role",
       );
       const db = requireDb(ctx);
@@ -25758,7 +26198,7 @@ export const appRouter = router({
     .output(createBusinessUnitOutputSchema)
     .mutation(async ({ ctx, input }) => {
       return withAudit("create_business_unit", ctx, input, async () => {
-        requireAnyRole(ctx, BUSINESS_UNIT_ADMIN_ROLES, "Managing business units is admin-only");
+        requireCapability(ctx, "organisation.write", "Managing business units is admin-only");
         const db = requireDb(ctx);
         if (!ctx.tenantId) {
           throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
@@ -25823,7 +26263,7 @@ export const appRouter = router({
     .output(renameBusinessUnitOutputSchema)
     .mutation(async ({ ctx, input }) => {
       return withAudit("rename_business_unit", ctx, input, async () => {
-        requireAnyRole(ctx, BUSINESS_UNIT_ADMIN_ROLES, "Managing business units is admin-only");
+        requireCapability(ctx, "organisation.write", "Managing business units is admin-only");
         const db = requireDb(ctx);
         if (!ctx.tenantId) {
           throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
@@ -25852,7 +26292,7 @@ export const appRouter = router({
     .output(reparentBusinessUnitOutputSchema)
     .mutation(async ({ ctx, input }) => {
       return withAudit("reparent_business_unit", ctx, input, async () => {
-        requireAnyRole(ctx, BUSINESS_UNIT_ADMIN_ROLES, "Managing business units is admin-only");
+        requireCapability(ctx, "organisation.write", "Managing business units is admin-only");
         const db = requireDb(ctx);
         if (!ctx.tenantId) {
           throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
@@ -25922,7 +26362,7 @@ export const appRouter = router({
     .output(setBusinessUnitArchivedOutputSchema)
     .mutation(async ({ ctx, input }) => {
       return withAudit("set_business_unit_archived", ctx, input, async () => {
-        requireAnyRole(ctx, BUSINESS_UNIT_ADMIN_ROLES, "Managing business units is admin-only");
+        requireCapability(ctx, "organisation.write", "Managing business units is admin-only");
         const db = requireDb(ctx);
         if (!ctx.tenantId) {
           throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
@@ -25960,9 +26400,9 @@ export const appRouter = router({
     .input(listCompBandsInputSchema)
     .output(listCompBandsOutputSchema)
     .query(async ({ ctx, input }) => {
-      requireAnyRole(
+      requireCapability(
         ctx,
-        COMP_BAND_READ_ROLES,
+        "requisitions.pickers",
         "The comp-band list requires the hiring_manager, recruiter, or admin role",
       );
       const db = requireDb(ctx);
@@ -25989,9 +26429,9 @@ export const appRouter = router({
     .output(createCompBandOutputSchema)
     .mutation(async ({ ctx, input }) => {
       return withAudit("create_comp_band", ctx, input, async () => {
-        requireAnyRole(
+        requireCapability(
           ctx,
-          COMP_BAND_WRITE_ROLES,
+          "offers.comp_bands_write",
           "Managing comp bands requires the admin or hr_head role",
         );
         const db = requireDb(ctx);
@@ -26058,9 +26498,9 @@ export const appRouter = router({
     .output(updateCompBandOutputSchema)
     .mutation(async ({ ctx, input }) => {
       return withAudit("update_comp_band", ctx, input, async () => {
-        requireAnyRole(
+        requireCapability(
           ctx,
-          COMP_BAND_WRITE_ROLES,
+          "offers.comp_bands_write",
           "Managing comp bands requires the admin or hr_head role",
         );
         const db = requireDb(ctx);
@@ -26131,9 +26571,9 @@ export const appRouter = router({
     .output(setCompBandArchivedOutputSchema)
     .mutation(async ({ ctx, input }) => {
       return withAudit("set_comp_band_archived", ctx, input, async () => {
-        requireAnyRole(
+        requireCapability(
           ctx,
-          COMP_BAND_WRITE_ROLES,
+          "offers.comp_bands_write",
           "Managing comp bands requires the admin or hr_head role",
         );
         const db = requireDb(ctx);
@@ -26170,9 +26610,9 @@ export const appRouter = router({
     .input(listPanelPoolsInputSchema)
     .output(listPanelPoolsOutputSchema)
     .query(async ({ ctx, input }) => {
-      requireAnyRole(
+      requireCapability(
         ctx,
-        PANEL_POOL_READ_ROLES,
+        "requisitions.pickers",
         "The panel-pool list requires the hiring_manager, recruiter, or admin role",
       );
       const db = requireDb(ctx);
@@ -26212,9 +26652,9 @@ export const appRouter = router({
     .output(createPanelPoolOutputSchema)
     .mutation(async ({ ctx, input }) => {
       return withAudit("create_panel_pool", ctx, input, async () => {
-        requireAnyRole(
+        requireCapability(
           ctx,
-          PANEL_POOL_WRITE_ROLES,
+          "interviews.panel_pools_write",
           "Managing panel pools requires the admin or recruiter role",
         );
         const db = requireDb(ctx);
@@ -26268,9 +26708,9 @@ export const appRouter = router({
     .output(renamePanelPoolOutputSchema)
     .mutation(async ({ ctx, input }) => {
       return withAudit("rename_panel_pool", ctx, input, async () => {
-        requireAnyRole(
+        requireCapability(
           ctx,
-          PANEL_POOL_WRITE_ROLES,
+          "interviews.panel_pools_write",
           "Managing panel pools requires the admin or recruiter role",
         );
         const db = requireDb(ctx);
@@ -26338,9 +26778,9 @@ export const appRouter = router({
     .output(setPanelPoolMembersOutputSchema)
     .mutation(async ({ ctx, input }) => {
       return withAudit("set_panel_pool_members", ctx, input, async () => {
-        requireAnyRole(
+        requireCapability(
           ctx,
-          PANEL_POOL_WRITE_ROLES,
+          "interviews.panel_pools_write",
           "Managing panel pools requires the admin or recruiter role",
         );
         const db = requireDb(ctx);
@@ -26393,9 +26833,9 @@ export const appRouter = router({
     .output(setPanelPoolArchivedOutputSchema)
     .mutation(async ({ ctx, input }) => {
       return withAudit("set_panel_pool_archived", ctx, input, async () => {
-        requireAnyRole(
+        requireCapability(
           ctx,
-          PANEL_POOL_WRITE_ROLES,
+          "interviews.panel_pools_write",
           "Managing panel pools requires the admin or recruiter role",
         );
         const db = requireDb(ctx);
@@ -26449,9 +26889,9 @@ export const appRouter = router({
     .output(listLearningResourcesOutputSchema)
     .query(async ({ ctx, input }) => {
       await requireModule(ctx, "learning");
-      requireAnyRole(
+      requireCapability(
         ctx,
-        LEARNING_ADMIN_ROLES,
+        "onboarding.learning_admin",
         "The learning catalogue requires the admin or hr_head role",
       );
       const db = requireDb(ctx);
@@ -26485,9 +26925,9 @@ export const appRouter = router({
     .mutation(async ({ ctx, input }) => {
       await requireModule(ctx, "learning");
       return withAudit("upsert_learning_resource", ctx, input, async () => {
-        requireAnyRole(
+        requireCapability(
           ctx,
-          LEARNING_ADMIN_ROLES,
+          "onboarding.learning_admin",
           "Managing the learning catalogue requires the admin or hr_head role",
         );
         const db = requireDb(ctx);
@@ -26572,9 +27012,9 @@ export const appRouter = router({
     .mutation(async ({ ctx, input }) => {
       await requireModule(ctx, "learning");
       return withAudit("archive_learning_resource", ctx, input, async () => {
-        requireAnyRole(
+        requireCapability(
           ctx,
-          LEARNING_ADMIN_ROLES,
+          "onboarding.learning_admin",
           "Managing the learning catalogue requires the admin or hr_head role",
         );
         const db = requireDb(ctx);
@@ -26609,9 +27049,9 @@ export const appRouter = router({
     .output(listLearningTracksOutputSchema)
     .query(async ({ ctx, input }) => {
       await requireModule(ctx, "learning");
-      requireAnyRole(
+      requireCapability(
         ctx,
-        LEARNING_ADMIN_ROLES,
+        "onboarding.learning_admin",
         "Learning tracks require the admin or hr_head role",
       );
       const db = requireDb(ctx);
@@ -26649,9 +27089,9 @@ export const appRouter = router({
     .mutation(async ({ ctx, input }) => {
       await requireModule(ctx, "learning");
       return withAudit("upsert_learning_track", ctx, input, async () => {
-        requireAnyRole(
+        requireCapability(
           ctx,
-          LEARNING_ADMIN_ROLES,
+          "onboarding.learning_admin",
           "Managing learning tracks requires the admin or hr_head role",
         );
         const db = requireDb(ctx);
@@ -26733,9 +27173,9 @@ export const appRouter = router({
     .mutation(async ({ ctx, input }) => {
       await requireModule(ctx, "learning");
       return withAudit("set_learning_track_items", ctx, input, async () => {
-        requireAnyRole(
+        requireCapability(
           ctx,
-          LEARNING_ADMIN_ROLES,
+          "onboarding.learning_admin",
           "Managing learning tracks requires the admin or hr_head role",
         );
         const db = requireDb(ctx);
@@ -26841,7 +27281,7 @@ export const appRouter = router({
       return withAudit("assign_learning_to_case", ctx, input, async () => {
         // The PUSH is an onboarding act, not a config act — hence the
         // onboarding gate rather than LEARNING_ADMIN_ROLES.
-        requireAnyRole(ctx, ONBOARDING_MANAGE_ROLES, "Onboarding is not available for your role");
+        requireCapability(ctx, "onboarding.manage", "Onboarding is not available for your role");
         const db = requireDb(ctx);
         if (!ctx.tenantId) {
           throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
@@ -27129,9 +27569,9 @@ export const appRouter = router({
     .output(listLearningSkillMapOutputSchema)
     .query(async ({ ctx, input }) => {
       await requireModule(ctx, "learning");
-      requireAnyRole(
+      requireCapability(
         ctx,
-        LEARNING_ADMIN_ROLES,
+        "onboarding.learning_admin",
         "The learning skill map requires the admin or hr_head role",
       );
       const db = requireDb(ctx);
@@ -27173,9 +27613,9 @@ export const appRouter = router({
     .mutation(async ({ ctx, input }) => {
       await requireModule(ctx, "learning");
       return withAudit("upsert_learning_skill_mapping", ctx, input, async () => {
-        requireAnyRole(
+        requireCapability(
           ctx,
-          LEARNING_ADMIN_ROLES,
+          "onboarding.learning_admin",
           "Managing the learning skill map requires the admin or hr_head role",
         );
         const db = requireDb(ctx);
@@ -27263,9 +27703,9 @@ export const appRouter = router({
     .mutation(async ({ ctx, input }) => {
       await requireModule(ctx, "learning");
       return withAudit("delete_learning_skill_mapping", ctx, input, async () => {
-        requireAnyRole(
+        requireCapability(
           ctx,
-          LEARNING_ADMIN_ROLES,
+          "onboarding.learning_admin",
           "Managing the learning skill map requires the admin or hr_head role",
         );
         const db = requireDb(ctx);
@@ -27324,7 +27764,7 @@ export const appRouter = router({
       await requireModule(ctx, "learning");
       // Reading one specific hire's suggestions is an onboarding act, not a
       // config act — hence the onboarding gate, matching the push.
-      requireAnyRole(ctx, ONBOARDING_MANAGE_ROLES, "Onboarding is not available for your role");
+      requireCapability(ctx, "onboarding.manage", "Onboarding is not available for your role");
       const db = requireDb(ctx);
       if (!ctx.tenantId) {
         throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
@@ -27500,7 +27940,11 @@ export const appRouter = router({
     .input(getCandidateFieldPolicyInputSchema)
     .output(getCandidateFieldPolicyOutputSchema)
     .query(async ({ ctx }) => {
-      requireAnyRole(ctx, CANDIDATE_FIELD_POLICY_ROLES, "The candidate-field policy is admin-only");
+      requireCapability(
+        ctx,
+        "settings.candidate_fields",
+        "The candidate-field policy is admin-only",
+      );
       const db = requireDb(ctx);
       if (!ctx.tenantId) {
         throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
@@ -27522,9 +27966,9 @@ export const appRouter = router({
     .output(upsertCandidateFieldPolicyOutputSchema)
     .mutation(async ({ ctx, input }) => {
       return withAudit("upsert_candidate_field_policy", ctx, input, async () => {
-        requireAnyRole(
+        requireCapability(
           ctx,
-          CANDIDATE_FIELD_POLICY_ROLES,
+          "settings.candidate_fields",
           "Editing the candidate-field policy is admin-only",
         );
         const db = requireDb(ctx);
@@ -27576,9 +28020,9 @@ export const appRouter = router({
     .output(resetCandidateFieldPolicyOutputSchema)
     .mutation(async ({ ctx, input }) => {
       return withAudit("reset_candidate_field_policy", ctx, input, async () => {
-        requireAnyRole(
+        requireCapability(
           ctx,
-          CANDIDATE_FIELD_POLICY_ROLES,
+          "settings.candidate_fields",
           "Editing the candidate-field policy is admin-only",
         );
         const db = requireDb(ctx);
@@ -27621,16 +28065,22 @@ export const appRouter = router({
   listInterviewRoundTemplates: protectedProcedure
     .input(listInterviewRoundTemplatesInputSchema)
     .output(listInterviewRoundTemplatesOutputSchema)
-    .query(async ({ ctx }) => {
-      requireAnyRole(ctx, INTERVIEW_TEMPLATE_ADMIN_ROLES, "Interview templates are admin-only");
+    .query(async ({ ctx, input }) => {
+      requireCapability(ctx, "settings.interview_templates", "Interview templates are admin-only");
       const db = requireDb(ctx);
       if (!ctx.tenantId) {
         throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
       }
+      // C2-F12: rounds belong to a named loop; omitted = the 'default' loop.
       const rows = await db
         .select()
         .from(tenantInterviewRoundTemplate)
-        .where(eq(tenantInterviewRoundTemplate.tenantId, ctx.tenantId))
+        .where(
+          and(
+            eq(tenantInterviewRoundTemplate.tenantId, ctx.tenantId),
+            eq(tenantInterviewRoundTemplate.loopKey, input.loopKey ?? DEFAULT_INTERVIEW_LOOP_KEY),
+          ),
+        )
         .orderBy(tenantInterviewRoundTemplate.roundNumber);
       return {
         rounds: rows.map((r) => ({
@@ -27655,7 +28105,11 @@ export const appRouter = router({
     .output(upsertInterviewRoundTemplateOutputSchema)
     .mutation(async ({ ctx, input }) => {
       return withAudit("upsert_interview_round_template", ctx, input, async () => {
-        requireAnyRole(ctx, INTERVIEW_TEMPLATE_ADMIN_ROLES, "Interview templates are admin-only");
+        requireCapability(
+          ctx,
+          "settings.interview_templates",
+          "Interview templates are admin-only",
+        );
         const db = requireDb(ctx);
         if (!ctx.tenantId) {
           throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
@@ -27673,9 +28127,28 @@ export const appRouter = router({
           seen.add(r.roundNumber);
         }
 
-        // Membership guard: every round's scorecard must be a known key.
+        // C2-F12: the loop must exist (the 'default' loop is ensured on demand;
+        // a named loop is created first via createInterviewLoop).
+        const loopKey = input.loopKey ?? DEFAULT_INTERVIEW_LOOP_KEY;
+        await ensureDefaultInterviewLoop(db, tenantId);
+        const [loop] = await db
+          .select({ id: interviewLoops.id })
+          .from(interviewLoops)
+          .where(and(eq(interviewLoops.tenantId, tenantId), eq(interviewLoops.loopKey, loopKey)))
+          .limit(1);
+        if (!loop) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: `Interview loop '${loopKey}' does not exist. Create the loop first.`,
+          });
+        }
+
+        // Membership guard: every PINNED round scorecard must be a known key
+        // (null = resolved by applicability when the loop seeds a plan).
         const validScorecardKeys = await loadValidScorecardKeys(db, tenantId);
-        const unknown = input.rounds.find((r) => !validScorecardKeys.has(r.scorecardTemplateKey));
+        const unknown = input.rounds.find(
+          (r) => r.scorecardTemplateKey !== null && !validScorecardKeys.has(r.scorecardTemplateKey),
+        );
         if (unknown) {
           throw new TRPCError({
             code: "BAD_REQUEST",
@@ -27684,14 +28157,20 @@ export const appRouter = router({
         }
 
         const membershipId = await resolveActorMembership(db, ctx);
-        // Replace-set: drop the tenant's existing template rows, insert these.
+        // Replace-set: drop this loop's existing rows, insert these.
         await db
           .delete(tenantInterviewRoundTemplate)
-          .where(eq(tenantInterviewRoundTemplate.tenantId, tenantId));
+          .where(
+            and(
+              eq(tenantInterviewRoundTemplate.tenantId, tenantId),
+              eq(tenantInterviewRoundTemplate.loopKey, loopKey),
+            ),
+          );
         if (input.rounds.length > 0) {
           await db.insert(tenantInterviewRoundTemplate).values(
             input.rounds.map((r) => ({
               tenantId,
+              loopKey,
               roundNumber: r.roundNumber,
               roundName: r.roundName,
               durationMinutes: r.durationMinutes,
@@ -27724,14 +28203,23 @@ export const appRouter = router({
     .output(deleteInterviewRoundTemplateOutputSchema)
     .mutation(async ({ ctx, input }) => {
       return withAudit("delete_interview_round_template", ctx, input, async () => {
-        requireAnyRole(ctx, INTERVIEW_TEMPLATE_ADMIN_ROLES, "Interview templates are admin-only");
+        requireCapability(
+          ctx,
+          "settings.interview_templates",
+          "Interview templates are admin-only",
+        );
         const db = requireDb(ctx);
         if (!ctx.tenantId) {
           throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
         }
         await db
           .delete(tenantInterviewRoundTemplate)
-          .where(eq(tenantInterviewRoundTemplate.tenantId, ctx.tenantId));
+          .where(
+            and(
+              eq(tenantInterviewRoundTemplate.tenantId, ctx.tenantId),
+              eq(tenantInterviewRoundTemplate.loopKey, input.loopKey ?? DEFAULT_INTERVIEW_LOOP_KEY),
+            ),
+          );
         return { cleared: true };
       });
     }),
@@ -27748,9 +28236,9 @@ export const appRouter = router({
     .input(applyInterviewRoundTemplateInputSchema)
     .output(applyInterviewRoundTemplateOutputSchema)
     .mutation(async ({ ctx, input }) => {
-      requireAnyRole(
+      requireCapability(
         ctx,
-        INTERVIEW_MANAGE_ROLES,
+        "interviews.manage",
         "Only hiring managers, recruiters and admins can apply an interview template.",
       );
       return withAudit("apply_interview_round_template", ctx, input, async () => {
@@ -27762,24 +28250,63 @@ export const appRouter = router({
           .limit(1);
         if (!req) throw new TRPCError({ code: "NOT_FOUND", message: "Requisition not found" });
 
+        // C2-F12: WHICH loop — an explicit loopKey, else the applicability
+        // winner for this requisition (kind 'interview_loop'), else the
+        // 'default' loop (today's single tenant loop — byte-identical for a
+        // tenant with no assignments).
+        const choice = input.loopKey
+          ? {
+              loopKey: input.loopKey,
+              assignmentId: null as string | null,
+              matchedPredicates: [] as string[],
+              subject: null,
+            }
+          : await chooseInterviewLoop(db, req.tenantId, input.requisitionId);
+
         const templateRounds = await db
           .select()
           .from(tenantInterviewRoundTemplate)
-          .where(eq(tenantInterviewRoundTemplate.tenantId, req.tenantId))
+          .where(
+            and(
+              eq(tenantInterviewRoundTemplate.tenantId, req.tenantId),
+              eq(tenantInterviewRoundTemplate.loopKey, choice.loopKey),
+            ),
+          )
           .orderBy(tenantInterviewRoundTemplate.roundNumber);
         if (templateRounds.length === 0) {
-          // Honest fallback — no default loop to seed from.
-          return { requisitionId: input.requisitionId, applied: false, roundCount: 0 };
+          // Honest fallback — no loop rounds to seed from.
+          return {
+            requisitionId: input.requisitionId,
+            applied: false,
+            roundCount: 0,
+            loopKey: choice.loopKey,
+            assignmentId: choice.assignmentId,
+            matchedPredicates: choice.matchedPredicates,
+          };
         }
+
+        // C2-F12: a round with NO pinned scorecard takes the applicability
+        // winner (kind 'scorecard'), else the built-in 'general'. A pinned
+        // scorecard always wins — applicability only fills the gap.
+        let gapScorecard: string | null = null;
+        if (templateRounds.some((r) => r.scorecardTemplateKey === null)) {
+          const subject =
+            choice.subject ??
+            (await loadRequisitionAttributes(db, req.tenantId, input.requisitionId));
+          gapScorecard =
+            (await resolveScorecardKey(db, req.tenantId, subject))?.scorecardKey ?? "general";
+        }
+        const effectiveScorecard = (r: (typeof templateRounds)[number]): string =>
+          r.scorecardTemplateKey ?? gapScorecard ?? "general";
 
         // Defensive membership guard (the keys were validated when authored, but a
         // custom scorecard could have been deleted since — reject a stale ref).
         const validScorecardKeys = await loadValidScorecardKeys(db, req.tenantId);
-        const stale = templateRounds.find((r) => !validScorecardKeys.has(r.scorecardTemplateKey));
+        const stale = templateRounds.find((r) => !validScorecardKeys.has(effectiveScorecard(r)));
         if (stale) {
           throw new TRPCError({
             code: "BAD_REQUEST",
-            message: `The default loop references a scorecard '${stale.scorecardTemplateKey}' that no longer exists. Fix the template first.`,
+            message: `The interview loop references a scorecard '${effectiveScorecard(stale)}' that no longer exists. Fix the template first.`,
           });
         }
 
@@ -27795,7 +28322,7 @@ export const appRouter = router({
             roundName: r.roundName,
             durationMinutes: r.durationMinutes,
             mode: r.mode,
-            scorecardTemplate: r.scorecardTemplateKey,
+            scorecardTemplate: effectiveScorecard(r),
             competencyFocus: Array.isArray(r.competencyFocus)
               ? (r.competencyFocus as string[])
               : [],
@@ -27806,6 +28333,9 @@ export const appRouter = router({
           requisitionId: input.requisitionId,
           applied: true,
           roundCount: templateRounds.length,
+          loopKey: choice.loopKey,
+          assignmentId: choice.assignmentId,
+          matchedPredicates: choice.matchedPredicates,
         };
       });
     }),
@@ -27814,7 +28344,7 @@ export const appRouter = router({
     .input(listScorecardTemplatesInputSchema)
     .output(listScorecardTemplatesOutputSchema)
     .query(async ({ ctx }) => {
-      requireAnyRole(ctx, INTERVIEW_TEMPLATE_ADMIN_ROLES, "Interview templates are admin-only");
+      requireCapability(ctx, "settings.interview_templates", "Interview templates are admin-only");
       const db = requireDb(ctx);
       if (!ctx.tenantId) {
         throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
@@ -27858,7 +28388,11 @@ export const appRouter = router({
     .output(upsertScorecardTemplateOutputSchema)
     .mutation(async ({ ctx, input }) => {
       return withAudit("upsert_scorecard_template", ctx, input, async () => {
-        requireAnyRole(ctx, INTERVIEW_TEMPLATE_ADMIN_ROLES, "Interview templates are admin-only");
+        requireCapability(
+          ctx,
+          "settings.interview_templates",
+          "Interview templates are admin-only",
+        );
         const db = requireDb(ctx);
         if (!ctx.tenantId) {
           throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
@@ -27922,14 +28456,21 @@ export const appRouter = router({
     .output(deleteScorecardTemplateOutputSchema)
     .mutation(async ({ ctx, input }) => {
       return withAudit("delete_scorecard_template", ctx, input, async () => {
-        requireAnyRole(ctx, INTERVIEW_TEMPLATE_ADMIN_ROLES, "Interview templates are admin-only");
+        requireCapability(
+          ctx,
+          "settings.interview_templates",
+          "Interview templates are admin-only",
+        );
         const db = requireDb(ctx);
         if (!ctx.tenantId) {
           throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
         }
         const tenantId = ctx.tenantId;
         const [referencing] = await db
-          .select({ roundNumber: tenantInterviewRoundTemplate.roundNumber })
+          .select({
+            roundNumber: tenantInterviewRoundTemplate.roundNumber,
+            loopKey: tenantInterviewRoundTemplate.loopKey,
+          })
           .from(tenantInterviewRoundTemplate)
           .where(
             and(
@@ -27941,7 +28482,32 @@ export const appRouter = router({
         if (referencing) {
           throw new TRPCError({
             code: "BAD_REQUEST",
-            message: `Round ${referencing.roundNumber} of the default loop uses '${input.scorecardKey}'. Update the round template before deleting this scorecard.`,
+            message: `Round ${referencing.roundNumber} of the '${referencing.loopKey}' interview loop uses '${input.scorecardKey}'. Update the round template before deleting this scorecard.`,
+          });
+        }
+        // C2-F12: an applicability rule pointing at the scorecard would dangle.
+        const [assigned] = await db
+          .select({ name: templateAssignments.name })
+          .from(templateAssignments)
+          .innerJoin(
+            tenantScorecardTemplate,
+            and(
+              eq(tenantScorecardTemplate.tenantId, templateAssignments.tenantId),
+              eq(tenantScorecardTemplate.id, templateAssignments.templateId),
+            ),
+          )
+          .where(
+            and(
+              eq(templateAssignments.tenantId, tenantId),
+              eq(templateAssignments.templateKind, "scorecard"),
+              eq(tenantScorecardTemplate.scorecardKey, input.scorecardKey),
+            ),
+          )
+          .limit(1);
+        if (assigned) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: `The template assignment "${assigned.name}" uses '${input.scorecardKey}'. Remove or repoint it on the Applicability page first.`,
           });
         }
         await db
@@ -27974,7 +28540,7 @@ export const appRouter = router({
     .input(getEmailTemplateCatalogInputSchema)
     .output(getEmailTemplateCatalogOutputSchema)
     .query(async ({ ctx }) => {
-      requireAnyRole(ctx, EMAIL_TEMPLATE_ROLES, "Editing email templates is admin-only");
+      requireCapability(ctx, "settings.email_templates", "Editing email templates is admin-only");
       const db = requireDb(ctx);
       if (!ctx.tenantId) {
         throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
@@ -28008,7 +28574,7 @@ export const appRouter = router({
     .input(listEmailTemplateOverridesInputSchema)
     .output(listEmailTemplateOverridesOutputSchema)
     .query(async ({ ctx }) => {
-      requireAnyRole(ctx, EMAIL_TEMPLATE_ROLES, "Editing email templates is admin-only");
+      requireCapability(ctx, "settings.email_templates", "Editing email templates is admin-only");
       const db = requireDb(ctx);
       if (!ctx.tenantId) {
         throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
@@ -28034,7 +28600,7 @@ export const appRouter = router({
     .output(upsertEmailTemplateOverrideOutputSchema)
     .mutation(async ({ ctx, input }) => {
       return withAudit("upsert_email_template_override", ctx, input, async () => {
-        requireAnyRole(ctx, EMAIL_TEMPLATE_ROLES, "Editing email templates is admin-only");
+        requireCapability(ctx, "settings.email_templates", "Editing email templates is admin-only");
         const db = requireDb(ctx);
         if (!ctx.tenantId) {
           throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
@@ -28098,7 +28664,7 @@ export const appRouter = router({
     .output(resetEmailTemplateOverrideOutputSchema)
     .mutation(async ({ ctx, input }) => {
       return withAudit("reset_email_template_override", ctx, input, async () => {
-        requireAnyRole(ctx, EMAIL_TEMPLATE_ROLES, "Editing email templates is admin-only");
+        requireCapability(ctx, "settings.email_templates", "Editing email templates is admin-only");
         const db = requireDb(ctx);
         if (!ctx.tenantId) {
           throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
@@ -28121,7 +28687,7 @@ export const appRouter = router({
     .input(previewEmailTemplateInputSchema)
     .output(previewEmailTemplateOutputSchema)
     .query(async ({ ctx, input }) => {
-      requireAnyRole(ctx, EMAIL_TEMPLATE_ROLES, "Editing email templates is admin-only");
+      requireCapability(ctx, "settings.email_templates", "Editing email templates is admin-only");
       const slotOverrides = input.slotOverrides ?? {};
       const subjectOverride = input.subjectOverride ?? null;
       const validationError = validateEmailOverride(
@@ -28182,9 +28748,7 @@ export const appRouter = router({
       // static set, so a recruiter with reject_application disabled no longer sees
       // it. Unconfigured tenants resolve to the empty overlay (no change).
       const policy = await resolveIrisPolicyForCtx(ctx);
-      const actions = listIrisActions().filter((a) =>
-        irisActionAllowedRoles(a.id, a.roles, policy).some((r) => ctx.roles.includes(r)),
-      );
+      const actions = listIrisActions().filter((a) => irisActionPermitted(ctx, a, policy));
       return { actions };
     }),
 
@@ -28202,9 +28766,9 @@ export const appRouter = router({
     .input(irisSearchApplicationsInputSchema)
     .output(irisSearchApplicationsOutputSchema)
     .query(async ({ ctx, input }) => {
-      requireAnyRole(
+      requireCapability(
         ctx,
-        IRIS_PIPELINE_PICKER_ROLES,
+        "candidates.iris_picker",
         "Iris candidate search is not available for your role",
       );
       const db = requireDb(ctx);
@@ -28287,9 +28851,9 @@ export const appRouter = router({
     .output(messageCandidateOutputSchema)
     .mutation(async ({ ctx, input }) => {
       return withAudit("message_candidate", ctx, input, async () => {
-        requireAnyRole(
+        requireCapability(
           ctx,
-          RECRUITER_SURFACE_ROLES,
+          "candidates.triage",
           "Messaging a candidate is a recruiter surface.",
         );
         const db = requireDb(ctx);
@@ -28349,7 +28913,7 @@ export const appRouter = router({
     .input(irisDraftCandidateMessageInputSchema)
     .output(irisDraftCandidateMessageOutputSchema)
     .mutation(async ({ ctx, input }) => {
-      requireAnyRole(ctx, RECRUITER_SURFACE_ROLES, "Messaging a candidate is a recruiter surface.");
+      requireCapability(ctx, "candidates.triage", "Messaging a candidate is a recruiter surface.");
       const db = requireDb(ctx);
       if (!ctx.tenantId) {
         throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
@@ -28435,9 +28999,7 @@ export const appRouter = router({
       // them.
       const policy = await resolveIrisPolicyForCtx(ctx);
       const eligibleActionIds = listIrisActions()
-        .filter((a) =>
-          irisActionAllowedRoles(a.id, a.roles, policy).some((r) => ctx.roles.includes(r)),
-        )
+        .filter((a) => irisActionPermitted(ctx, a, policy))
         .map((a) => a.id);
       // Actor membership for cost attribution on the ai_usage_logs row.
       const db = requireDb(ctx);
@@ -28480,11 +29042,9 @@ export const appRouter = router({
       // so help never explains or offers an action a role has been turned off.
       const policy = await resolveIrisPolicyForCtx(ctx);
       const eligibleActions = listIrisActions()
-        .filter((a) =>
-          irisActionAllowedRoles(a.id, a.roles, policy).some((r) => ctx.roles.includes(r)),
-        )
+        .filter((a) => irisActionPermitted(ctx, a, policy))
         .map((a) => ({ id: a.id, label: a.label }));
-      const entries = capabilityEntriesForRoles(ctx.roles);
+      const entries = capabilityEntriesForPermissions(permsOf(ctx));
       const db = requireDb(ctx);
       const actorMembershipId = await resolveActorMembership(db, ctx);
       return answerIrisHelp({
@@ -28525,12 +29085,12 @@ export const appRouter = router({
       // so a role turned off for this action gets FORBIDDEN here even if it holds
       // the static role. An empty effective set → FORBIDDEN for everyone (correct).
       const policy = await resolveIrisPolicyForCtx(ctx);
-      const allowed = irisActionAllowedRoles(action.id, action.roles, policy);
-      requireAnyRole(
-        ctx,
-        new Set(allowed),
-        `You don't have the role to run "${action.label}" through Iris.`,
-      );
+      if (!irisActionPermitted(ctx, action, policy)) {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: `You don't have the role to run "${action.label}" through Iris.`,
+        });
+      }
       // Validate against the action's OWN input contract — invalid params are a
       // BAD_REQUEST, the same contract irisExecute enforces before it commits.
       let parsed: unknown;
@@ -28583,12 +29143,12 @@ export const appRouter = router({
         // so a role turned off for this action can't commit it (the dispatched
         // procedure keeps its own RLS regardless).
         const policy = await resolveIrisPolicyForCtx(ctx);
-        const allowed = irisActionAllowedRoles(action.id, action.roles, policy);
-        requireAnyRole(
-          ctx,
-          new Set(allowed),
-          `You don't have the role to run "${action.label}" through Iris.`,
-        );
+        if (!irisActionPermitted(ctx, action, policy)) {
+          throw new TRPCError({
+            code: "FORBIDDEN",
+            message: `You don't have the role to run "${action.label}" through Iris.`,
+          });
+        }
         if (!ctx.tenantId) {
           throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "missing tenantId" });
         }
@@ -30340,6 +30900,8 @@ async function buildHrHeadDashboardExtras(
   // Reconciled to HRHEAD-02's actual table: market_benchmarks(role_title,
   // median_salary_minor /* paise */), matched on normalised position title.
   // Probe stays defensive so environments without the table render no row.
+  // C2-F7 / PP4 — the tenant's market-gap threshold (default 0.9 × median).
+  const gapThreshold = (await loadMarketIntelPolicy(tenantId)).gapThreshold;
   const benchmarkExists = await dashScalar(
     db,
     dsql`SELECT (to_regclass('public.market_benchmarks') IS NOT NULL)::int AS n`,
@@ -30358,7 +30920,7 @@ async function buildHrHeadDashboardExtras(
           AND r.status IN ('approved', 'posted')
           AND p.comp_band_max IS NOT NULL
           AND mb.median_salary_minor IS NOT NULL
-          AND p.comp_band_max < (mb.median_salary_minor / 100.0) * 0.9`,
+          AND p.comp_band_max < (mb.median_salary_minor / 100.0) * ${gapThreshold}::numeric`,
     );
   }
 
@@ -30762,11 +31324,10 @@ async function loadPendingApprovalForResolution(
   };
 }
 
-// Recruiter-tier roles — admin always passes because admin is the
-// super-role across the codebase (see existing FORBIDDEN paths in
-// router that follow the same admin-included pattern).
-const RECRUITER_RESOLVE_ROLES = new Set(["admin", "recruiter", "hr_ops", "people_ops"]);
-const HR_TEAM_RESOLVE_ROLES = new Set(["admin", "hr_ops", "people_ops"]);
+// C2-F1: the recruiter-tier / HR-team approval resolvers are the
+// `hr_ops.resolve_recruiter_approvals` / `hr_ops.resolve_hr_approvals`
+// capabilities (platform defaults = the old RECRUITER_RESOLVE_ROLES /
+// HR_TEAM_RESOLVE_ROLES sets).
 
 /**
  * Enforces the approver_role gate for an approval-resolution call.
@@ -30782,14 +31343,13 @@ async function ensureCanResolveApproval(
   ctx: HonoTRPCContext,
   ar: LoadedApproval,
 ): Promise<void> {
-  const callerRoles = ctx.roles;
   switch (ar.approverRole) {
     case "any_recruiter":
     case "owning_recruiter": {
       // TODO(AGENT-04): tighten owning_recruiter via trigger_context →
       // application.assigned_recruiter join, once that join pattern is
       // also used elsewhere in the codebase.
-      if (!callerRoles.some((r) => RECRUITER_RESOLVE_ROLES.has(r))) {
+      if (!can(ctx, "hr_ops.resolve_recruiter_approvals")) {
         throw new TRPCError({
           code: "FORBIDDEN",
           message: "Recruiter role required to resolve this approval",
@@ -30798,7 +31358,7 @@ async function ensureCanResolveApproval(
       return;
     }
     case "hr_team": {
-      if (!callerRoles.some((r) => HR_TEAM_RESOLVE_ROLES.has(r))) {
+      if (!can(ctx, "hr_ops.resolve_hr_approvals")) {
         throw new TRPCError({
           code: "FORBIDDEN",
           message: "HR team role required to resolve this approval",
@@ -31185,6 +31745,28 @@ async function fetchTenantDisplayName(tenantId: string): Promise<string> {
  * caller is somehow in the tenant via JWT but missing a membership row
  * — the procedure proceeds with NULL actor, which the column allows.
  */
+/**
+ * C2-F1 — membership id → custom role key for a tenant (only members that HAVE
+ * one). Service-role read with an explicit tenant predicate; an empty map on a
+ * pre-0137 database (no role_key column → no custom roles can exist).
+ */
+async function readMembershipRoleKeys(
+  sql: HonoTRPCContext["sql"],
+  tenantId: string,
+): Promise<Map<string, string>> {
+  try {
+    const rows = await sql<{ id: string; role_key: string }[]>`
+      SELECT id::text AS id, role_key FROM public.tenant_user_memberships
+       WHERE tenant_id = ${tenantId} AND role_key IS NOT NULL
+    `;
+    return new Map(rows.map((r) => [r.id, r.role_key]));
+  } catch (err) {
+    const code = (err as { code?: unknown } | null)?.code;
+    if (code === "42703" || code === "42P01") return new Map();
+    throw err;
+  }
+}
+
 async function resolveActorMembership(
   db: NonNullable<HonoTRPCContext["db"]>,
   ctx: HonoTRPCContext,
@@ -31758,9 +32340,9 @@ async function workdayImportGate(ctx: HonoTRPCContext): Promise<{
   tenantId: string;
   membershipId: string | null;
 }> {
-  requireAnyRole(
+  requireCapability(
     ctx,
-    REQUISITION_WRITE_ROLES,
+    "requisitions.write",
     "Importing requisitions requires the hiring_manager or admin role",
   );
   const db = requireDb(ctx);
@@ -33687,7 +34269,9 @@ async function resolveMyRequisitionScope(
   db: InsightsDb,
   ctx: HonoTRPCContext,
 ): Promise<{ ids: string[]; isAdmin: boolean; membershipId: string | null }> {
-  const isAdmin = ctx.roles.includes("admin");
+  // C2-F1: `requisitions.owner_insights` at scope all (default: admin) reads
+  // every requisition; scope own (default: hiring_manager) only their own.
+  const isAdmin = scopeOf(ctx, "requisitions.owner_insights") === "all";
   const membershipId = await resolveActorMembership(db, ctx);
   const rows = await db
     .select({ id: requisitions.id, hm: requisitions.hiringManagerId })

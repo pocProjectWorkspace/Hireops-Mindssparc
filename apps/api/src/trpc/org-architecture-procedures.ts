@@ -79,27 +79,25 @@ import {
   type TenantLookupDefault,
   type TenantLookupKind,
   type TenantLookupKindView,
+  type Capability,
 } from "@hireops/api-types";
 import { protectedProcedure, type HonoTRPCContext } from "./trpc-core";
+import { requireCapability } from "./permissions";
 import { withAudit } from "./with-audit";
 
 type TxDb = NonNullable<HonoTRPCContext["db"]>;
 
-/** Pickers in the requisition wizard (same set that reads business units + bands) + hr_head. */
-export const ORG_ARCH_PICKER_ROLES = new Set(["admin", "hr_head", "hiring_manager", "recruiter"]);
-/** The admin pages read inactive rows too. */
-export const ORG_ARCH_READ_ROLES = new Set(["admin", "hr_head"]);
-/** Every write. */
-export const ORG_ARCH_WRITE_ROLES = new Set(["admin"]);
+/*
+ * C2-F1 — gates are capabilities: `organisation.pickers` (requisition-wizard
+ * pickers incl. hr_head), `organisation.read` (inactive rows, tenant lists,
+ * default country), `organisation.write` (every write). Platform defaults = the
+ * old ORG_ARCH_PICKER / READ / WRITE role sets.
+ */
 
 const WRITE_MESSAGE = "Managing the organisation and job architecture is admin-only";
 
-function requireAnyRole(ctx: HonoTRPCContext, allowed: Set<string>, message: string): void {
-  if (!ctx.roles.some((r) => allowed.has(r))) throw new TRPCError({ code: "FORBIDDEN", message });
-}
-
-function gate(ctx: HonoTRPCContext, allowed: Set<string>, message: string) {
-  requireAnyRole(ctx, allowed, message);
+function gate(ctx: HonoTRPCContext, cap: Capability, message: string) {
+  requireCapability(ctx, cap, message);
   if (!ctx.db) {
     throw new TRPCError({
       code: "INTERNAL_SERVER_ERROR",
@@ -330,14 +328,14 @@ export const orgArchitectureProcedures = {
     .query(async ({ ctx, input }) => {
       const { db, tenantId } = gate(
         ctx,
-        ORG_ARCH_PICKER_ROLES,
+        "organisation.pickers",
         "The organisation and job architecture require the admin, hr_head, hiring_manager or recruiter role",
       );
       const all = input.includeInactive === true;
       if (all) {
-        requireAnyRole(
+        requireCapability(
           ctx,
-          ORG_ARCH_READ_ROLES,
+          "organisation.read",
           "Inactive organisation records are visible to admin and hr_head only",
         );
       }
@@ -420,7 +418,7 @@ export const orgArchitectureProcedures = {
     .output(legalEntityMutationOutputSchema)
     .mutation(({ ctx, input }) =>
       withAudit("create_legal_entity", ctx, input, async () => {
-        const { db, tenantId } = gate(ctx, ORG_ARCH_WRITE_ROLES, WRITE_MESSAGE);
+        const { db, tenantId } = gate(ctx, "organisation.write", WRITE_MESSAGE);
         const [row] = await guardedWrite(
           db,
           (tx) =>
@@ -440,7 +438,7 @@ export const orgArchitectureProcedures = {
     .output(legalEntityMutationOutputSchema)
     .mutation(({ ctx, input }) =>
       withAudit("update_legal_entity", ctx, input, async () => {
-        const { db, tenantId } = gate(ctx, ORG_ARCH_WRITE_ROLES, WRITE_MESSAGE);
+        const { db, tenantId } = gate(ctx, "organisation.write", WRITE_MESSAGE);
         const [row] = await guardedWrite(
           db,
           (tx) =>
@@ -467,7 +465,7 @@ export const orgArchitectureProcedures = {
     .output(locationMutationOutputSchema)
     .mutation(({ ctx, input }) =>
       withAudit("create_location", ctx, input, async () => {
-        const { db, tenantId } = gate(ctx, ORG_ARCH_WRITE_ROLES, WRITE_MESSAGE);
+        const { db, tenantId } = gate(ctx, "organisation.write", WRITE_MESSAGE);
         await assertLegalEntity(db, tenantId, input.legalEntityId);
         const [row] = await guardedWrite(
           db,
@@ -496,7 +494,7 @@ export const orgArchitectureProcedures = {
     .output(locationMutationOutputSchema)
     .mutation(({ ctx, input }) =>
       withAudit("update_location", ctx, input, async () => {
-        const { db, tenantId } = gate(ctx, ORG_ARCH_WRITE_ROLES, WRITE_MESSAGE);
+        const { db, tenantId } = gate(ctx, "organisation.write", WRITE_MESSAGE);
         await assertLegalEntity(db, tenantId, input.legalEntityId);
         const [row] = await guardedWrite(
           db,
@@ -528,7 +526,7 @@ export const orgArchitectureProcedures = {
     .output(setBusinessUnitLegalEntityOutputSchema)
     .mutation(({ ctx, input }) =>
       withAudit("set_business_unit_legal_entity", ctx, input, async () => {
-        const { db, tenantId } = gate(ctx, ORG_ARCH_WRITE_ROLES, WRITE_MESSAGE);
+        const { db, tenantId } = gate(ctx, "organisation.write", WRITE_MESSAGE);
         await assertLegalEntity(db, tenantId, input.legalEntityId);
         const [row] = await db
           .update(businessUnits)
@@ -548,7 +546,7 @@ export const orgArchitectureProcedures = {
     .output(jobFunctionMutationOutputSchema)
     .mutation(({ ctx, input }) =>
       withAudit("create_job_function", ctx, input, async () => {
-        const { db, tenantId } = gate(ctx, ORG_ARCH_WRITE_ROLES, WRITE_MESSAGE);
+        const { db, tenantId } = gate(ctx, "organisation.write", WRITE_MESSAGE);
         const [row] = await guardedWrite(
           db,
           (tx) =>
@@ -568,7 +566,7 @@ export const orgArchitectureProcedures = {
     .output(jobFunctionMutationOutputSchema)
     .mutation(({ ctx, input }) =>
       withAudit("update_job_function", ctx, input, async () => {
-        const { db, tenantId } = gate(ctx, ORG_ARCH_WRITE_ROLES, WRITE_MESSAGE);
+        const { db, tenantId } = gate(ctx, "organisation.write", WRITE_MESSAGE);
         const [row] = await db
           .update(jobFunctions)
           .set({
@@ -590,7 +588,7 @@ export const orgArchitectureProcedures = {
     .output(jobLevelMutationOutputSchema)
     .mutation(({ ctx, input }) =>
       withAudit("create_job_level", ctx, input, async () => {
-        const { db, tenantId } = gate(ctx, ORG_ARCH_WRITE_ROLES, WRITE_MESSAGE);
+        const { db, tenantId } = gate(ctx, "organisation.write", WRITE_MESSAGE);
         const [row] = await guardedWrite(
           db,
           (tx) =>
@@ -610,7 +608,7 @@ export const orgArchitectureProcedures = {
     .output(jobLevelMutationOutputSchema)
     .mutation(({ ctx, input }) =>
       withAudit("update_job_level", ctx, input, async () => {
-        const { db, tenantId } = gate(ctx, ORG_ARCH_WRITE_ROLES, WRITE_MESSAGE);
+        const { db, tenantId } = gate(ctx, "organisation.write", WRITE_MESSAGE);
         const [row] = await db
           .update(jobLevels)
           .set({
@@ -632,7 +630,7 @@ export const orgArchitectureProcedures = {
     .output(jobProfileMutationOutputSchema)
     .mutation(({ ctx, input }) =>
       withAudit("create_job_profile", ctx, input, async () => {
-        const { db, tenantId } = gate(ctx, ORG_ARCH_WRITE_ROLES, WRITE_MESSAGE);
+        const { db, tenantId } = gate(ctx, "organisation.write", WRITE_MESSAGE);
         await assertProfileRefs(db, tenantId, input);
         const [row] = await guardedWrite(
           db,
@@ -662,7 +660,7 @@ export const orgArchitectureProcedures = {
     .output(jobProfileMutationOutputSchema)
     .mutation(({ ctx, input }) =>
       withAudit("update_job_profile", ctx, input, async () => {
-        const { db, tenantId } = gate(ctx, ORG_ARCH_WRITE_ROLES, WRITE_MESSAGE);
+        const { db, tenantId } = gate(ctx, "organisation.write", WRITE_MESSAGE);
         await assertProfileRefs(db, tenantId, input);
         const [row] = await guardedWrite(
           db,
@@ -697,7 +695,7 @@ export const orgArchitectureProcedures = {
     .query(async ({ ctx, input }) => {
       const { db, tenantId } = gate(
         ctx,
-        ORG_ARCH_READ_ROLES,
+        "organisation.read",
         "Tenant lists are visible to admin and hr_head",
       );
       const rows = await db
@@ -718,7 +716,7 @@ export const orgArchitectureProcedures = {
     .output(upsertTenantLookupOutputSchema)
     .mutation(({ ctx, input }) =>
       withAudit("upsert_tenant_lookup", ctx, input, async () => {
-        const { db, tenantId } = gate(ctx, ORG_ARCH_WRITE_ROLES, WRITE_MESSAGE);
+        const { db, tenantId } = gate(ctx, "organisation.write", WRITE_MESSAGE);
         await db
           .insert(tenantLookups)
           .values({
@@ -754,7 +752,7 @@ export const orgArchitectureProcedures = {
     .output(resetTenantLookupOutputSchema)
     .mutation(({ ctx, input }) =>
       withAudit("reset_tenant_lookup", ctx, input, async () => {
-        const { db, tenantId } = gate(ctx, ORG_ARCH_WRITE_ROLES, WRITE_MESSAGE);
+        const { db, tenantId } = gate(ctx, "organisation.write", WRITE_MESSAGE);
         const base = await lookupBase(ctx, tenantId, input.kind);
         const isPlatform = base.some((d) => d.key === input.key);
         if (!isPlatform) {
@@ -789,7 +787,7 @@ export const orgArchitectureProcedures = {
     .query(async ({ ctx }) => {
       const { tenantId } = gate(
         ctx,
-        ORG_ARCH_READ_ROLES,
+        "organisation.read",
         "The organisation settings require the admin or hr_head role",
       );
       const [row] = await ctx.sql<{ settings: Record<string, unknown> | null }[]>`
@@ -811,7 +809,7 @@ export const orgArchitectureProcedures = {
     .output(setTenantDefaultCountryOutputSchema)
     .mutation(({ ctx, input }) =>
       withAudit("set_tenant_default_country", ctx, input, async () => {
-        const { tenantId } = gate(ctx, ORG_ARCH_WRITE_ROLES, WRITE_MESSAGE);
+        const { tenantId } = gate(ctx, "organisation.write", WRITE_MESSAGE);
         const code = input.defaultCountry;
         const updated =
           code === null

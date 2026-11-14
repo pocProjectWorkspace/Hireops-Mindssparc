@@ -1,5 +1,5 @@
 import { redirect } from "next/navigation";
-import { requireAuth, sessionUserChip } from "@/lib/auth";
+import { requireAuth, sessionCan, sessionUserChip } from "@/lib/auth";
 import { createServerTRPCCaller } from "@/lib/trpc-server";
 import { AppShell } from "@/components/nav/AppShell";
 import { DiversitySlateClient } from "./DiversitySlateClient";
@@ -16,7 +16,7 @@ export const dynamic = "force-dynamic"; // Gated + reads live tenant config.
  */
 export default async function DiversitySlatePage() {
   const session = await requireAuth();
-  if (!session.roles.includes("admin") && !session.roles.includes("hr_head")) {
+  if (!sessionCan(session, "governance.diversity_settings")) {
     redirect("/triage");
   }
   const caller = createServerTRPCCaller(session);

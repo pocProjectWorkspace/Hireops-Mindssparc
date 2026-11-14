@@ -30,7 +30,84 @@ import {
   type TenantBoundDb,
 } from "@hireops/db";
 
+import type { ReportPolicy } from "@hireops/api-types";
 import { buildApplicationScope, type ReportFilters } from "./dimensions";
+import { loadReportPolicy } from "../policy-parameters";
+
+// ───────────────────── metric definitions (C2-F7 / PP22) ─────────────────────
+
+/**
+ * The tenant's metric definitions (tenants.settings.reportPolicy). Every
+ * measure that counts a hire or times one takes them as an optional last
+ * argument; omitted, the tenant's saved definitions are read. The platform
+ * defaults are the definitions this layer has always used (hire =
+ * offer_accepted; time to fill = application created → offer accepted), so an
+ * unconfigured tenant's numbers do not move.
+ */
+export type MetricDefinitions = Pick<ReportPolicy, "hireEvent" | "ttfStart" | "ttfEnd">;
+
+async function definitionsFor(
+  tenantId: string,
+  defs: MetricDefinitions | undefined,
+): Promise<MetricDefinitions> {
+  return defs ?? (await loadReportPolicy(tenantId));
+}
+
+/** "Joined" = the hire's onboarding case has an actual start date and is not cancelled. */
+const JOINED_AT_SQL = dsql`(
+  SELECT MIN(oc.actual_start_date)::timestamptz
+  FROM public.onboarding_cases oc
+  WHERE oc.tenant_id = a.tenant_id
+    AND oc.application_id = a.id
+    AND oc.status <> 'cancelled'
+    AND oc.actual_start_date IS NOT NULL
+)`;
+
+const OFFER_ACCEPTED_AT_SQL = dsql`(
+  SELECT MIN(t.transitioned_at)
+  FROM public.application_state_transitions t
+  WHERE t.tenant_id = a.tenant_id
+    AND t.application_id = a.id
+    AND t.to_stage = 'offer_accepted'
+)`;
+
+/**
+ * The time-to-fill END instant for application `a` (NULL = not hired under
+ * the definition). offer_accepted additionally requires the application to
+ * still sit at offer_accepted — the historical rule (a later renege drops it).
+ */
+export function ttfEndSql(end: MetricDefinitions["ttfEnd"]): SQL {
+  return end === "joined"
+    ? JOINED_AT_SQL
+    : dsql`CASE WHEN a.current_stage = 'offer_accepted' THEN ${OFFER_ACCEPTED_AT_SQL} END`;
+}
+
+/**
+ * The time-to-fill START instant for application `a`. requisition_approved =
+ * the requisition's earliest transition to `approved`; a requisition with no
+ * recorded approval (seeded / imported) falls back to its creation time.
+ */
+export function ttfStartSql(start: MetricDefinitions["ttfStart"]): SQL {
+  return start === "requisition_approved"
+    ? dsql`COALESCE(
+        (SELECT MIN(rt.transitioned_at)
+           FROM public.requisition_state_transitions rt
+          WHERE rt.tenant_id = a.tenant_id
+            AND rt.requisition_id = a.requisition_id
+            AND rt.to_status = 'approved'),
+        (SELECT r0.created_at FROM public.requisitions r0
+          WHERE r0.tenant_id = a.tenant_id AND r0.id = a.requisition_id),
+        a.created_at
+      )`
+    : dsql`a.created_at`;
+}
+
+/** Boolean: application `a` counts as a hire under the definition. */
+export function isHireSql(hireEvent: MetricDefinitions["hireEvent"]): SQL {
+  return hireEvent === "joined"
+    ? dsql`(${JOINED_AT_SQL} IS NOT NULL)`
+    : dsql`(a.current_stage = 'offer_accepted')`;
+}
 
 /**
  * The canonical stage order for every funnel, time-in-stage table and
@@ -99,7 +176,9 @@ export interface TimeToFillStats {
 /**
  * DEFINITION — time to fill: for every application that is currently at
  * `offer_accepted`, the days from `applications.created_at` to its
- * EARLIEST `offer_accepted` transition; reported as the median and P90
+ * EARLIEST `offer_accepted` transition (C2-F7 / PP22: that is the platform
+ * default; a tenant's reportPolicy may start the clock at requisition
+ * approval and/or stop it at joining — see ttfStartSql / ttfEndSql); reported as the median and P90
  * (Postgres `percentile_cont`, 2dp) over that set, with `hires_count` =
  * the size of the set. Both percentiles are null when there are no hires
  * (percentile_cont over an empty set yields NULL).
@@ -122,22 +201,24 @@ export async function timeToFillStats(
   db: TenantBoundDb,
   tenantId: string,
   filters: ReportFilters = {},
+  definitions?: MetricDefinitions,
 ): Promise<TimeToFillStats> {
+  const defs = await definitionsFor(tenantId, definitions);
   const scope = buildApplicationScope(tenantId, filters);
   const res = await db.execute(dsql`
-    WITH hired AS (
+    WITH ends AS (
       SELECT
         a.id,
-        EXTRACT(EPOCH FROM (MIN(t.transitioned_at) - a.created_at)) / 86400.0 AS days_to_hire
+        ${ttfEndSql(defs.ttfEnd)} AS hired_at,
+        ${ttfStartSql(defs.ttfStart)} AS started_at
       FROM public.applications a
-      JOIN public.application_state_transitions t
-        ON t.tenant_id = a.tenant_id
-       AND t.application_id = a.id
-       AND t.to_stage = 'offer_accepted'
       ${scope.join}
       WHERE ${scope.where}
-        AND a.current_stage = 'offer_accepted'
-      GROUP BY a.id, a.created_at
+    ),
+    hired AS (
+      SELECT id, EXTRACT(EPOCH FROM (hired_at - started_at)) / 86400.0 AS days_to_hire
+      FROM ends
+      WHERE hired_at IS NOT NULL
     )
     SELECT
       COUNT(*)::int AS hires_count,
@@ -273,27 +354,28 @@ export async function timeToFillTrend(
   tenantId: string,
   filters: ReportFilters,
   opts: { months?: number } = {},
+  definitions?: MetricDefinitions,
 ): Promise<TimeToFillTrendPoint[]> {
+  const defs = await definitionsFor(tenantId, definitions);
   const window = resolveTimeToFillTrendWindow(filters, opts);
   // The period is honoured on the HIRE axis below, so it must not also
   // narrow the application axis — see the header.
   const scope = buildApplicationScope(tenantId, { ...filters, from: undefined, to: undefined });
 
   const res = await db.execute(dsql`
-    WITH hired AS (
+    WITH ends AS (
       SELECT
         a.id,
-        MIN(t.transitioned_at) AS hired_at,
-        EXTRACT(EPOCH FROM (MIN(t.transitioned_at) - a.created_at)) / 86400.0 AS days_to_hire
+        ${ttfEndSql(defs.ttfEnd)} AS hired_at,
+        ${ttfStartSql(defs.ttfStart)} AS started_at
       FROM public.applications a
-      JOIN public.application_state_transitions t
-        ON t.tenant_id = a.tenant_id
-       AND t.application_id = a.id
-       AND t.to_stage = 'offer_accepted'
       ${scope.join}
       WHERE ${scope.where}
-        AND a.current_stage = 'offer_accepted'
-      GROUP BY a.id, a.created_at
+    ),
+    hired AS (
+      SELECT id, hired_at, EXTRACT(EPOCH FROM (hired_at - started_at)) / 86400.0 AS days_to_hire
+      FROM ends
+      WHERE hired_at IS NOT NULL
     )
     SELECT
       to_char(date_trunc('month', hired_at AT TIME ZONE 'UTC'), 'YYYY-MM') AS month,
@@ -425,7 +507,9 @@ export interface SourceMixRow {
 /**
  * DEFINITION — source mix: applications per acquisition channel
  * (`applications.source`), with `hires` = those whose current stage is
- * `offer_accepted`, ordered by applications desc then source asc.
+ * `offer_accepted` (C2-F7 / PP22: or, under a tenant's `hireEvent: joined`,
+ * those whose onboarding case has an actual start date), ordered by
+ * applications desc then source asc.
  *
  * Zero-fill is OPT-IN (`zeroFill: true` pads to CANONICAL_SOURCE_ORDER)
  * because both existing surfaces render present channels only — a source
@@ -436,14 +520,15 @@ export async function sourceMix(
   db: TenantBoundDb,
   tenantId: string,
   filters: ReportFilters = {},
-  opts: { zeroFill?: boolean } = {},
+  opts: { zeroFill?: boolean; definitions?: MetricDefinitions } = {},
 ): Promise<SourceMixRow[]> {
+  const defs = await definitionsFor(tenantId, opts.definitions);
   const scope = buildApplicationScope(tenantId, filters);
   const res = await db.execute(dsql`
     SELECT
       a.source AS source,
       COUNT(*)::int AS applications,
-      COUNT(*) FILTER (WHERE a.current_stage = 'offer_accepted')::int AS hires
+      COUNT(*) FILTER (WHERE ${isHireSql(defs.hireEvent)})::int AS hires
     FROM public.applications a
     ${scope.join}
     WHERE ${scope.where}

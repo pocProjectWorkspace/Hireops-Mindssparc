@@ -39,6 +39,8 @@ export const AI_SCORING_PROMPT_VERSION = "pc6-v1";
 /**
  * The JD is sent whole up to this many characters (PP6 — it used to be cut at
  * 500, so the model never saw most requirements). 12k chars ≈ 3k tokens.
+ * The PLATFORM DEFAULT: C2-F7 makes it tenant policy
+ * (`screeningPolicy.jdCharCap`, guardrail 2k–24k) passed as `jdCharCap`.
  */
 export const JD_CHAR_CAP = 12_000;
 
@@ -101,8 +103,10 @@ export interface ScoringEmphasisInput {
 
 export interface BuildAIScoringPromptInput {
   positionTitle: string;
-  /** The JD body. Sent whole up to JD_CHAR_CAP (see composeScreeningJd). */
+  /** The JD body. Sent whole up to `jdCharCap` (see composeScreeningJd). */
   jdDescription: string | null;
+  /** C2-F7 / PP6 — the tenant's JD character cap. Omitted → JD_CHAR_CAP. */
+  jdCharCap?: number;
   jdSkills: JdSkillInput[];
   parsedCv: ParserOutput;
   /**
@@ -128,12 +132,16 @@ export interface BuiltPrompt {
  * front when jd_text does not already contain it (seeded / imported JDs often
  * carry the substance only in `summary`). Capped at JD_CHAR_CAP.
  */
-export function composeScreeningJd(jdText: string | null, summary: string | null): string | null {
+export function composeScreeningJd(
+  jdText: string | null,
+  summary: string | null,
+  cap: number = JD_CHAR_CAP,
+): string | null {
   const body = jdText?.trim() ?? "";
   const sum = summary?.trim() ?? "";
   const joined = sum && !body.includes(sum) ? (body ? `${sum}\n\n${body}` : sum) : body;
   if (!joined) return null;
-  return joined.length > JD_CHAR_CAP ? joined.slice(0, JD_CHAR_CAP) : joined;
+  return joined.length > cap ? joined.slice(0, cap) : joined;
 }
 
 /**
@@ -168,7 +176,7 @@ export function buildAIScoringPrompt(input: BuildAIScoringPromptInput): BuiltPro
     "proxies for them. Return a JSON object only — no prose, no explanation outside the JSON.";
 
   const jdBody = input.jdDescription
-    ? input.jdDescription.slice(0, JD_CHAR_CAP).trim()
+    ? input.jdDescription.slice(0, input.jdCharCap ?? JD_CHAR_CAP).trim()
     : "(no JD body provided)";
 
   const skillBullets = input.jdSkills

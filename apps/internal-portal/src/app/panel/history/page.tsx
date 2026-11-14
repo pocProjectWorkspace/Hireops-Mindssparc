@@ -1,4 +1,4 @@
-import { requireAuth, sessionUserChip } from "@/lib/auth";
+import { requireAuth, sessionCan, sessionUserChip } from "@/lib/auth";
 import { createServerTRPCCaller } from "@/lib/trpc-server";
 import { AppShell } from "@/components/nav/AppShell";
 import { RoleNotice } from "@/components/nav/RoleNotice";
@@ -12,12 +12,10 @@ export const dynamic = "force-dynamic"; // Auth-gated + reads my submitted feedb
  * admin.
  */
 
-const PANEL_ROLES = ["panel_member", "admin"];
-
 export default async function PanelHistoryPage() {
   const session = await requireAuth();
   const isAdmin = session.roles.includes("admin");
-  const allowed = session.roles.some((r) => PANEL_ROLES.includes(r));
+  const allowed = sessionCan(session, "interviews.panel");
 
   if (!allowed) {
     return (

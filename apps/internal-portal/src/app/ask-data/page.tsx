@@ -1,4 +1,4 @@
-import { requireAuth, sessionUserChip } from "@/lib/auth";
+import { requireAuth, sessionCan, sessionUserChip } from "@/lib/auth";
 import { createServerTRPCCaller } from "@/lib/trpc-server";
 import { AppShell } from "@/components/nav/AppShell";
 import { RoleNotice } from "@/components/nav/RoleNotice";
@@ -20,12 +20,10 @@ export const dynamic = "force-dynamic"; // Role-gated + reads live hiring data.
  * they manage (enforced server-side).
  */
 
-const READ_ROLES = ["admin", "hr_head", "hr_ops", "recruiter", "hiring_manager"];
-
 export default async function AskDataPage() {
   const session = await requireAuth();
   const isAdmin = session.roles.includes("admin");
-  const allowed = session.roles.some((r) => READ_ROLES.includes(r));
+  const allowed = sessionCan(session, "reports.ask_data");
 
   if (!allowed) {
     return (

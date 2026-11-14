@@ -22,6 +22,8 @@ import { strict as assert } from "node:assert";
 import { createClient } from "@supabase/supabase-js";
 import { app } from "../src/index.js";
 import { sql as poolSql } from "@hireops/db";
+import { resolveTenantAiSettingsDb } from "@hireops/ai-client";
+import { screeningScoreTier } from "@hireops/api-types";
 
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY;
@@ -197,8 +199,8 @@ describe("RO-03 — JD library, panel setup, insights", () => {
          ${JSON.stringify({ skills: ["Go", "Java"] })}::jsonb, 4)
       ON CONFLICT (id) DO NOTHING
     `;
-    // Applications: A in tech_interview (score 88 → excellent), B in
-    // recruiter_review (score 62 → partial).
+    // Applications: A in tech_interview (score 88), B in recruiter_review
+    // (score 62). Their buckets depend on the tenant's score cut-offs (Test 3).
     await poolSql`
       INSERT INTO public.applications (id, tenant_id, candidate_id, requisition_id, source, current_stage, ai_score)
       VALUES
@@ -320,11 +322,19 @@ describe("RO-03 — JD library, panel setup, insights", () => {
     assert.equal(byStage.recruiter_review, 1, "one candidate in recruiter_review");
     assert.equal(d.kpis.activeCandidates, 2, "both fixture candidates are active");
 
+    // Since CFG-LITE / BUG-11 the buckets follow the tenant's one score
+    // cut-off setting (aiSettings.screeningScoreBands; platform default
+    // strong 90 / good 75 / partial 60), not the old literal 85/70/50 — so
+    // 88 is "good" under the default. Expectations are derived from the
+    // tenant's resolved bands so a saved value can't fail the test.
+    const { screeningScoreBands: bands } = await resolveTenantAiSettingsDb(tenantId);
+    const KEY = { strong: "excellent", good: "good", partial: "partial", below: "low" } as const;
+    const expected = { excellent: 0, good: 0, partial: 0, low: 0 };
+    for (const score of [88, 62]) expected[KEY[screeningScoreTier(score, bands)]] += 1;
     const byBucket = Object.fromEntries(d.scoreDistribution.map((b) => [b.key, b.count]));
-    assert.equal(byBucket.excellent, 1, "score 88 → excellent");
-    assert.equal(byBucket.partial, 1, "score 62 → partial");
-    assert.equal(byBucket.good, 0);
-    assert.equal(byBucket.low, 0);
+    for (const k of ["excellent", "good", "partial", "low"] as const) {
+      assert.equal(byBucket[k], expected[k], `${k} bucket (bands ${JSON.stringify(bands)})`);
+    }
   });
 
   it("Test 4: skill-gap computation is deterministic and correct", async () => {

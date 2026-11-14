@@ -36,6 +36,7 @@ import {
   type PlatformOperatorRole,
 } from "@hireops/api-types";
 import { assertTenantActive, isModuleEnabled } from "../lib/platform/tenant-access";
+import { resolveCallerPermissions, type CallerPermissions } from "../lib/permissions/resolve";
 
 export interface HonoTRPCContext {
   tenantId: string | null;
@@ -48,6 +49,12 @@ export interface HonoTRPCContext {
   requestId: string;
   userAgent: string | null;
   ipAddress: string | null;
+  /**
+   * C2-F1 — the caller's effective capabilities in ctx.tenantId. Set by
+   * protectedProcedure (resolved once per request, cached ≤60 s); undefined
+   * outside it, where every capability check fails closed.
+   */
+  perms?: CallerPermissions;
 }
 
 const t = initTRPC.context<HonoTRPCContext>().create({
@@ -87,12 +94,15 @@ export const protectedProcedure = t.procedure.use(async ({ ctx, next }) => {
   // C1-F10 (D3): lifecycle is enforced on EVERY call, not only at sign-in — a
   // token issued before the tenant was suspended is refused here. Cached ≤30 s.
   await assertTenantActive(ctx.sql, ctx.tenantId);
+  // C2-F1: resolve the caller's capabilities ONCE for this request (membership
+  // role_key → custom bundle, else the system bundles of the JWT base roles).
+  const perms = await resolveCallerPermissions(ctx.sql, ctx.tenantId, ctx.userId, ctx.roles);
   const result = await withTenantContext(
     ctx.claims,
     async ({ db }) => {
       // Re-bind ctx with the tx-scoped db. The original ctx.sql remains
       // available for the rare procedure that needs service-role access.
-      return next({ ctx: { ...ctx, db } });
+      return next({ ctx: { ...ctx, db, perms } });
     },
     {
       actorUserId: ctx.userId,

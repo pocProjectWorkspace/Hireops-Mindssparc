@@ -19,7 +19,7 @@ import type {
   CandidateListFilter,
   CandidateListSort,
 } from "@hireops/api-types";
-import { canSeeScreeningComp } from "./screening-answers";
+import { canSeeScreeningComp, type CompViewer } from "./screening-answers";
 import { evidenceOrderSql } from "./screening-evidence-read";
 
 /** Escape LIKE / ILIKE metacharacters so user text matches literally. */
@@ -67,9 +67,9 @@ export interface FactFilterResolution {
  */
 export function resolveFactFilters(
   filters: ApplicationFactFilters,
-  roles: readonly string[],
+  viewer: CompViewer,
 ): FactFilterResolution {
-  if (filters.maxExpectedSalaryInrPaise === undefined || canSeeScreeningComp(roles)) {
+  if (filters.maxExpectedSalaryInrPaise === undefined || canSeeScreeningComp(viewer)) {
     return { applied: { ...filters }, compFilterIgnored: false };
   }
   const applied: ApplicationFactFilters = { ...filters };
@@ -118,11 +118,11 @@ export function searchCondition(search: string | undefined): SQL | null {
  */
 export function candidateListConditions(
   filter: CandidateListFilter,
-  roles: readonly string[],
+  viewer: CompViewer,
   opts: { includeRequisition?: boolean } = {},
 ): { conditions: SQL[]; compFilterIgnored: boolean } {
   const { search, stage, source, requisitionId, ...facts } = filter;
-  const { applied, compFilterIgnored } = resolveFactFilters(facts, roles);
+  const { applied, compFilterIgnored } = resolveFactFilters(facts, viewer);
   const conditions: SQL[] = [];
   if (requisitionId && opts.includeRequisition !== false) {
     conditions.push(eq(applications.requisitionId, requisitionId));

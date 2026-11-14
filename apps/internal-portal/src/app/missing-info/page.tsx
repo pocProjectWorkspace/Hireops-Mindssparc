@@ -1,4 +1,4 @@
-import { requireAuth, sessionUserChip } from "@/lib/auth";
+import { requireAuth, sessionCan, sessionUserChip } from "@/lib/auth";
 import { createServerTRPCCaller } from "@/lib/trpc-server";
 import { AppShell } from "@/components/nav/AppShell";
 import { RoleNotice } from "@/components/nav/RoleNotice";
@@ -20,12 +20,10 @@ export const dynamic = "force-dynamic"; // Role-gated + reads the live pipeline.
  * gate. A direct hit by another role gets a calm in-shell notice.
  */
 
-const READ_ROLES = ["recruiter", "admin"];
-
 export default async function MissingInfoPage() {
   const session = await requireAuth();
   const isAdmin = session.roles.includes("admin");
-  const allowed = session.roles.some((r) => READ_ROLES.includes(r));
+  const allowed = sessionCan(session, "candidates.triage");
 
   if (!allowed) {
     return (

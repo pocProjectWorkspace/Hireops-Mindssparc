@@ -1,4 +1,4 @@
-import { requireAuth, sessionUserChip } from "@/lib/auth";
+import { requireAuth, sessionCan, sessionUserChip } from "@/lib/auth";
 import { AppShell } from "@/components/nav/AppShell";
 import { RoleNotice } from "@/components/nav/RoleNotice";
 import { RequisitionWizard } from "@/components/requisitions/RequisitionWizard";
@@ -13,8 +13,6 @@ export const dynamic = "force-dynamic"; // Auth-gated.
  * the REQ-02 mutations; the URL ?rid= carries the draft id so a reload resumes.
  */
 
-const WRITE_ROLES = ["hiring_manager", "admin"];
-
 export default async function NewRequisitionPage({
   searchParams,
 }: {
@@ -22,7 +20,7 @@ export default async function NewRequisitionPage({
 }) {
   const session = await requireAuth();
   const isAdmin = session.roles.includes("admin");
-  const allowed = session.roles.some((r) => WRITE_ROLES.includes(r));
+  const allowed = sessionCan(session, "requisitions.write");
   const { rid } = await searchParams;
 
   return (
@@ -34,7 +32,10 @@ export default async function NewRequisitionPage({
       user={sessionUserChip(session)}
     >
       {allowed ? (
-        <RequisitionWizard initialRid={rid ?? null} isAdmin={isAdmin} />
+        <RequisitionWizard
+          initialRid={rid ?? null}
+          isAdmin={sessionCan(session, "organisation.write")}
+        />
       ) : (
         <RoleNotice
           title="Requisition creation isn't available for your role"

@@ -30,6 +30,7 @@ import type { OptionalAuthVars } from "../middleware/optional-auth";
 import { uploadResumeResponseSchema, type UploadResumeResponse } from "@hireops/api-types";
 import { getStorageClient, StorageError } from "../lib/storage";
 import { MAX_DOCUMENT_BYTES } from "../lib/upload-limits";
+import { loadEffectiveUploadLimits, tenantIdForSlug } from "../lib/policy-parameters";
 
 // Shared with the onboarding/candidate document path via lib/upload-limits.
 // Still 10MB: interview media has its own, larger ceiling over there, and
@@ -54,10 +55,25 @@ uploadRoutes.post("/resume", async (c) => {
     return c.json({ error: "no_file" }, 400);
   }
 
-  if (file.size > MAX_BYTES) {
-    return c.json({ error: "file_too_large", maxBytes: MAX_BYTES }, 400);
+  // C2-F7 / PP9 — when the apply form names its tenant (`tenantSlug`), the
+  // tenant's lower cap / narrower type list applies here so the candidate
+  // hears it at upload. Without a slug the platform ceiling applies, and
+  // submitApplication re-checks the stored object against the tenant policy
+  // (it is the authoritative check — the slug here is a courtesy).
+  let maxBytes = MAX_BYTES;
+  let allowedTypes: ReadonlySet<string> = ALLOWED_TYPES;
+  const slug = typeof body["tenantSlug"] === "string" ? body["tenantSlug"] : null;
+  const tenantId = await tenantIdForSlug(slug);
+  if (tenantId) {
+    const limits = await loadEffectiveUploadLimits(tenantId);
+    maxBytes = Math.min(MAX_BYTES, limits.maxDocumentBytes);
+    allowedTypes = limits.resumeMimeTypes;
   }
-  if (!ALLOWED_TYPES.has(file.type)) {
+
+  if (file.size > maxBytes) {
+    return c.json({ error: "file_too_large", maxBytes }, 400);
+  }
+  if (!ALLOWED_TYPES.has(file.type) || !allowedTypes.has(file.type)) {
     return c.json({ error: "unsupported_type", contentType: file.type }, 400);
   }
 

@@ -68,7 +68,7 @@ import {
   resolvePhoneCountry,
   type ResumeParser,
 } from "@hireops/api/application-ingest";
-import { BULK_CV_ACCEPTING_REQ_STATUSES } from "@hireops/api/bulk-cv/policy";
+import { loadTenantAcceptingStatuses } from "@hireops/api/bulk-cv/policy";
 import { StorageNotFoundError } from "@hireops/api/storage";
 import { tenantGateSql } from "./tenant-gate";
 
@@ -268,7 +268,7 @@ async function processItem(
     SELECT status FROM public.requisitions
     WHERE tenant_id = ${row.tenant_id} AND id = ${row.requisition_id}
   `;
-  if (!req || !BULK_CV_ACCEPTING_REQ_STATUSES.has(req.status)) {
+  if (!req || !(await loadTenantAcceptingStatuses(row.tenant_id)).has(req.status)) {
     throw new ItemError("requisition_not_accepting", true);
   }
 

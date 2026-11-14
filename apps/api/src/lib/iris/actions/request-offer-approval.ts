@@ -12,6 +12,7 @@
  */
 
 import {
+  systemRolesWithCapability,
   requestOfferApprovalInputSchema,
   type RequestOfferApprovalInput,
 } from "@hireops/api-types";
@@ -23,7 +24,10 @@ export const requestOfferApprovalAction: IrisAction<RequestOfferApprovalInput> =
   group: "Offers",
   // Mirrors COMP_DESK_ROLES — the roles that operate the comp & offer desk (the
   // requestOfferApproval procedure this dispatches gates the same set).
-  roles: ["admin", "hr_ops"],
+  // C2-F1: gated on the capability the app surface checks; `roles` is derived
+  // (the base roles whose platform bundle holds it — the Iris policy columns).
+  capability: "offers.comp_desk",
+  roles: systemRolesWithCapability("offers.comp_desk"),
   inputSchema: requestOfferApprovalInputSchema,
   destructive: false,
   bulk: false,

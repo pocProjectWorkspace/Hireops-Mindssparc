@@ -21,7 +21,7 @@ export const dynamic = "force-dynamic"; // Admin-gated + reads live tenant confi
  * listApprovalMatrices / upsertApprovalMatrix procedures (server-side admin role).
  */
 export default async function ApprovalRoutingPage() {
-  const session = await requireAdmin();
+  const session = await requireAdmin("settings.approval_routing");
   const caller = createServerTRPCCaller(session);
   const initial = await caller.listApprovalMatrices({});
 

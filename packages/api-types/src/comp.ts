@@ -202,9 +202,11 @@ export const draftCompOfferInputSchema = z.object({
   joiningDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Expected YYYY-MM-DD"),
   location: z.string().min(1).max(200),
   contractType: contractTypeSchema.default("full_time"),
-  probationMonths: z.number().int().min(0).max(24).default(3),
+  /** C2-F7 / PP13 — omitted → the tenant's offerPolicy.defaultProbationMonths (platform 3). */
+  probationMonths: z.number().int().min(0).max(24).optional(),
   benefits: z.array(benefitKeySchema).default([]),
-  expiryDays: z.number().int().min(1).max(60).default(7),
+  /** C2-F7 / PP13 — omitted → the tenant's offerPolicy.defaultExpiryDays (platform 7). */
+  expiryDays: z.number().int().min(1).max(60).optional(),
   termsHtml: z.string().max(50_000).optional(),
 });
 export type DraftCompOfferInput = z.infer<typeof draftCompOfferInputSchema>;

@@ -15,7 +15,7 @@ export const dynamic = "force-dynamic"; // Admin-gated + reads live agent state.
  * enable/disable toggle, and the getAgentDetail drill-in.
  */
 export default async function WorkflowsPage() {
-  const session = await requireAdmin();
+  const session = await requireAdmin("admin.agents");
   const caller = createServerTRPCCaller(session);
   const initial = await caller.listAgents();
 

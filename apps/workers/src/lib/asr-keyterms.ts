@@ -14,12 +14,19 @@
  */
 
 import { sql as poolSql } from "@hireops/db";
+import { resolveNotetakerPolicy } from "@hireops/api-types";
 
 export interface InterviewKeytermContext {
   tenantDisplayName: string | null;
   candidateName: string | null;
   panelNames: (string | null)[];
   positionTitle: string | null;
+  /**
+   * C2-F7 / PP16 — the tenant's domain glossary (notetakerPolicy.keyterms:
+   * P2P, R2R, SAP module names…). Appended AFTER the interview's own names,
+   * so if the client's cap trims the list, names survive first.
+   */
+  glossary?: readonly string[];
 }
 
 /**
@@ -44,7 +51,15 @@ export function buildInterviewKeyterms(ctx: InterviewKeytermContext): string[] {
   addWithParts(ctx.candidateName);
   for (const name of ctx.panelNames) addWithParts(name);
   if (ctx.positionTitle?.trim()) terms.push(ctx.positionTitle.trim());
+  for (const g of ctx.glossary ?? []) if (g.trim()) terms.push(g.trim());
   return terms;
+}
+
+/** Keyterms + transcription language for one recording (C2-F7 / PP16). */
+export interface InterviewAsrHints {
+  keyterms: string[];
+  /** The tenant's notetakerPolicy.language (platform default "en"). */
+  language: string;
 }
 
 /**
@@ -55,15 +70,29 @@ export async function loadInterviewKeyterms(
   tenantId: string,
   interviewId: string,
 ): Promise<string[]> {
+  return (await loadInterviewAsrHints(tenantId, interviewId)).keyterms;
+}
+
+/**
+ * The ASR hints for a recording: interview keyterms + the tenant glossary, and
+ * the tenant's transcription language. Empty keyterms / "en" when anything is
+ * missing — a missing hint must never fail a transcription.
+ */
+export async function loadInterviewAsrHints(
+  tenantId: string,
+  interviewId: string,
+): Promise<InterviewAsrHints> {
   const [row] = await poolSql<
     {
       tenant_display_name: string | null;
       candidate_name: string | null;
       position_title: string | null;
       panel_names: (string | null)[] | null;
+      notetaker_policy: unknown;
     }[]
   >`
     SELECT t.display_name AS tenant_display_name,
+           t.settings -> 'notetakerPolicy' AS notetaker_policy,
            p.full_name    AS candidate_name,
            pos.title      AS position_title,
            (
@@ -82,11 +111,16 @@ export async function loadInterviewKeyterms(
     LEFT JOIN public.positions pos ON pos.tenant_id = r.tenant_id AND pos.id = r.position_id
     WHERE iv.tenant_id = ${tenantId} AND iv.id = ${interviewId}
   `;
-  if (!row) return [];
-  return buildInterviewKeyterms({
-    tenantDisplayName: row.tenant_display_name,
-    candidateName: row.candidate_name,
-    panelNames: row.panel_names ?? [],
-    positionTitle: row.position_title,
-  });
+  if (!row) return { keyterms: [], language: "en" };
+  const policy = resolveNotetakerPolicy(row.notetaker_policy);
+  return {
+    keyterms: buildInterviewKeyterms({
+      tenantDisplayName: row.tenant_display_name,
+      candidateName: row.candidate_name,
+      panelNames: row.panel_names ?? [],
+      positionTitle: row.position_title,
+      glossary: policy.keyterms,
+    }),
+    language: policy.language,
+  };
 }

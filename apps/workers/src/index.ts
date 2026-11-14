@@ -12,6 +12,7 @@ import { ownershipClaimSweep } from "./jobs/ownership-claim-sweep";
 import { offerExpiryScan } from "./jobs/offer-expiry-scan";
 import { reportDigestScan } from "./jobs/report-digest-scan";
 import { interviewMediaPurgeSweep } from "./jobs/interview-media-purge";
+import { cvRetentionScan } from "./jobs/cv-retention-scan";
 import { drainWorkdayOutboxOnce } from "./lib/workday-simulation-drain";
 import { drainAiScoreOutboxOnce } from "./lib/ai-score-drain";
 import { drainAgentRunOutboxOnce } from "./lib/agent-run-drain";
@@ -159,6 +160,14 @@ const SCHEDULED_JOBS: ScheduledJob[] = [
     name: "interview_media_purge",
     intervalMs: 24 * 60 * 60_000,
     run: interviewMediaPurgeSweep,
+  },
+  {
+    // C2-F7 / PP20 — count CVs past each tenant's talent-pool retention
+    // (retentionPolicy.talentPoolRetentionMonths, default 24). FLAGS ONLY:
+    // nothing is deleted; the per-candidate list is the admin register.
+    name: "cv_retention_scan",
+    intervalMs: 24 * 60 * 60_000,
+    run: cvRetentionScan,
   },
   {
     // PC-14 — for tenants with pre-joining engagement ON: start journeys for

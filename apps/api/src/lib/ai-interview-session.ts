@@ -145,6 +145,7 @@ import {
   type EffectiveRecordingConsent,
 } from "./interview-recording-consent";
 import { interviewMediaStorageKey } from "./interview-media-upload";
+import { loadAiInterviewPolicy } from "./policy-parameters";
 import { getStorageClient, StorageNotFoundError, type StorageObjectStat } from "./storage";
 import {
   ALLOWED_AUDIO_TYPES,
@@ -657,7 +658,11 @@ export async function issueSession(
     });
   }
 
-  const days = clampExpiryDays(input.expiresInDays);
+  // C2-F7 / PP14 — an omitted expiry takes the tenant's aiInterviewPolicy
+  // default; the 1–30 day clamp stays the platform guardrail.
+  const days = clampExpiryDays(
+    input.expiresInDays ?? (await loadAiInterviewPolicy(input.tenantId)).linkExpiryDays,
+  );
   const expiresAt = new Date(Date.now() + days * 24 * 60 * 60 * 1000);
 
   // Mint AFTER the session row is known to exist so subjectId is the real row

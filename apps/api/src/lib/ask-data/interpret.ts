@@ -722,15 +722,9 @@ export const HIRING_MANAGER_SCOPE: Record<
   recruiter_activity: "none",
 };
 
-/** Roles that may use Ask your data at all. */
-export const ASK_DATA_ROLES = new Set([
-  "admin",
-  "hr_head",
-  "hr_ops",
-  "recruiter",
-  "hiring_manager",
-]);
-/** Roles that see tenant-wide answers (anyone else allowed in is hiring-manager scoped). */
-export const ASK_DATA_TENANT_WIDE_ROLES = new Set(["admin", "hr_head", "hr_ops", "recruiter"]);
-/** Roles that see candidate names on the declined-offers list. */
-export const ASK_DATA_CANDIDATE_NAME_ROLES = new Set(["admin", "hr_head", "hr_ops"]);
+/*
+ * C2-F1 — who may use Ask your data, who gets tenant-wide answers and who sees
+ * candidate names are capabilities now: `reports.ask_data` (scope all =
+ * tenant-wide, scope own = hiring-manager scoped) and
+ * `reports.ask_data_candidate_names` (platform defaults = the old role sets).
+ */

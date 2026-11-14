@@ -16,6 +16,7 @@
  */
 
 import {
+  systemRolesWithCapability,
   createOnboardingCaseForApplicationInputSchema,
   type CreateOnboardingCaseForApplicationInput,
 } from "@hireops/api-types";
@@ -27,7 +28,10 @@ export const openOnboardingCaseAction: IrisAction<CreateOnboardingCaseForApplica
   group: "Onboarding",
   // Mirrors ONBOARDING_MANAGE_ROLES — recruiters hand off, HR/people-ops run
   // onboarding (+ admin).
-  roles: ["admin", "recruiter", "hr_ops", "people_ops"],
+  // C2-F1: gated on the capability the app surface checks; `roles` is derived
+  // (the base roles whose platform bundle holds it — the Iris policy columns).
+  capability: "onboarding.manage",
+  roles: systemRolesWithCapability("onboarding.manage"),
   // Reuse the procedure's real input contract — applicationId only.
   inputSchema: createOnboardingCaseForApplicationInputSchema,
   destructive: false,

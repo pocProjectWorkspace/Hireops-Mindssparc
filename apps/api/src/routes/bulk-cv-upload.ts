@@ -12,7 +12,7 @@
  *
  * Auth: mounted under optionalAuth like the rest of /api/upload, so this
  * handler enforces the JWT itself (401) and the role (403,
- * BULK_CV_UPLOAD_ROLES). The requisition must belong to the caller's tenant
+ * the `candidates.bulk_upload` capability). The requisition must belong to the caller's tenant
  * (404 otherwise — never a cross-tenant existence leak) and be accepting
  * candidates (409).
  *
@@ -48,13 +48,14 @@ import {
 } from "@hireops/api-types";
 import type { OptionalAuthVars } from "../middleware/optional-auth";
 import { isModuleEnabled, tenantIsActive } from "../lib/platform/tenant-access";
+import { resolveCallerPermissions } from "../lib/permissions/resolve";
 import { getStorageClient } from "../lib/storage";
 import { countsForBatches, emptyCounts } from "../lib/bulk-cv/read";
 import { expandUpload, type AcceptedCv, type UploadedFile } from "../lib/bulk-cv/expand";
 import {
-  BULK_CV_ACCEPTING_REQ_STATUSES,
+  loadTenantAcceptingStatuses,
   BULK_CV_MAX_ZIP_ENTRIES,
-  hasBulkCvUploadRole,
+  canBulkUploadCvs,
   resolveTenantBulkCvLimits,
 } from "../lib/bulk-cv/policy";
 
@@ -90,11 +91,13 @@ function safeStorageName(name: string): string {
 bulkCvUploadRoutes.post("/", async (c) => {
   const { tenantId, userId, roles, claims, log, requestId } = c.var;
   if (!tenantId || !userId || !claims) return c.json({ error: "unauthorized" }, 401);
-  if (!hasBulkCvUploadRole(roles)) return c.json({ error: "forbidden" }, 403);
   // C1-F10: lifecycle (D3) + module entitlement (D4), before any upload work.
   if (!(await tenantIsActive(poolSql, tenantId))) {
     return c.json({ error: "forbidden", reason: "tenant_suspended" }, 403);
   }
+  // C2-F1: the caller's capabilities (custom role or platform default bundles).
+  const perms = await resolveCallerPermissions(poolSql, tenantId, userId, roles ?? []);
+  if (!canBulkUploadCvs(perms)) return c.json({ error: "forbidden" }, 403);
   if (!(await isModuleEnabled(poolSql, tenantId, "bulk_cv_upload"))) {
     return c.json({ error: "forbidden", reason: "module_disabled:bulk_cv_upload" }, 403);
   }
@@ -130,7 +133,7 @@ bulkCvUploadRoutes.post("/", async (c) => {
     WHERE tenant_id = ${tenantId} AND id = ${requisitionId} LIMIT 1
   `;
   if (!req) return c.json({ error: "requisition_not_found" }, 404);
-  if (!BULK_CV_ACCEPTING_REQ_STATUSES.has(req.status)) {
+  if (!(await loadTenantAcceptingStatuses(tenantId)).has(req.status)) {
     return c.json({ error: "requisition_not_accepting", status: req.status }, 409);
   }
 

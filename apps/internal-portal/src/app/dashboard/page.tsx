@@ -1,4 +1,4 @@
-import { requireAuth, sessionUserChip } from "@/lib/auth";
+import { requireAuth, sessionCan, sessionUserChip } from "@/lib/auth";
 import { createServerTRPCCaller } from "@/lib/trpc-server";
 import { AppShell } from "@/components/nav/AppShell";
 import { PersonaDashboard } from "@/components/dashboard/PersonaDashboard";
@@ -8,7 +8,6 @@ import { AdminDashboard } from "@/components/dashboard/AdminDashboard";
 import { PanelDashboard } from "@/components/panel/PanelDashboard";
 import { RequirementOwnerDashboard } from "@/components/requirements/RequirementOwnerDashboard";
 import { DiverseSlateShortRoles } from "@/components/diversity/DiverseSlateShortRoles";
-import { canViewDiverseSlate } from "@hireops/api-types";
 
 export const dynamic = "force-dynamic"; // Auth-gated, per-session data.
 
@@ -31,7 +30,9 @@ export default async function DashboardPage() {
   // admin gets the bespoke admin console home (AD-01) — governance tiles + tasks
   // + quick actions. Takes precedence over every other persona branch.
   const isAdmin = session.roles.includes("admin");
-  const setup = isAdmin ? await caller.getTenantSetup({}) : null;
+  const setup = sessionCan(session, "settings.tenant_config")
+    ? await caller.getTenantSetup({})
+    : null;
   const setupPending = Boolean(
     setup && setup.starterPack !== null && setup.onboardingStatus !== "completed",
   );
@@ -68,7 +69,8 @@ export default async function DashboardPage() {
     >
       {/* PC-26 — TA / HR tile: open roles short of their diverse slate (counts
           only). Renders nothing when the tenant has the feature off. */}
-      {(isAdmin || isHrHead || isRecruiter) && canViewDiverseSlate(session.roles) ? (
+      {(isAdmin || isHrHead || isRecruiter) &&
+      sessionCan(session, "governance.diversity_slate_view") ? (
         <DiverseSlateShortRoles variant="tile" />
       ) : null}
       {/* C1-F11 — until go-live, admins of a console-provisioned tenant (it carries

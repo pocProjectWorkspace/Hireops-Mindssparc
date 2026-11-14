@@ -108,6 +108,7 @@ import {
   type AiInterviewSessionCard,
   type ScorecardCriterion,
 } from "@hireops/api-types";
+import { loadAiInterviewPolicy } from "./policy-parameters";
 
 /** postgres.js tagged-template client (same shape as ctx.sql / poolSql). */
 type PgSqlClient = typeof poolSql;
@@ -203,9 +204,25 @@ export const aiInterviewQuestionsAiJsonSchema = z.toJSONSchema(aiInterviewQuesti
  * the first-round duration the build plan costs and about as much unattended
  * recording as it is fair to ask for.
  */
-export function targetQuestionCount(rubricSize: number, competencyFocusSize: number): number {
+export function targetQuestionCount(
+  rubricSize: number,
+  competencyFocusSize: number,
+  /**
+   * C2-F7 / PP14 — the tenant's question-count range (aiInterviewPolicy),
+   * itself clamped inside the platform's 5–10 here so no caller can widen it.
+   */
+  range?: { min: number; max: number },
+): number {
+  const max = Math.min(
+    Math.max(range?.max ?? AI_INTERVIEW_QUESTION_COUNT_MAX, AI_INTERVIEW_QUESTION_COUNT_MIN),
+    AI_INTERVIEW_QUESTION_COUNT_MAX,
+  );
+  const min = Math.min(
+    Math.max(range?.min ?? AI_INTERVIEW_QUESTION_COUNT_MIN, AI_INTERVIEW_QUESTION_COUNT_MIN),
+    max,
+  );
   const base = Math.max(rubricSize, competencyFocusSize) + 1;
-  return Math.min(Math.max(base, AI_INTERVIEW_QUESTION_COUNT_MIN), AI_INTERVIEW_QUESTION_COUNT_MAX);
+  return Math.min(Math.max(base, min), max);
 }
 
 export interface AiInterviewSkillContext {
@@ -694,7 +711,11 @@ export async function generateQuestions(
     ORDER BY order_index, question_text
   `;
 
-  const questionCount = targetQuestionCount(rubric.length, competencyFocus.length);
+  const aiInterviewPolicy = await loadAiInterviewPolicy(input.tenantId);
+  const questionCount = targetQuestionCount(rubric.length, competencyFocus.length, {
+    min: aiInterviewPolicy.questionCountMin,
+    max: aiInterviewPolicy.questionCountMax,
+  });
   const { system, user } = buildAiInterviewQuestionsPrompt({
     roleTitle: row.position_title,
     roundName: row.round_name,

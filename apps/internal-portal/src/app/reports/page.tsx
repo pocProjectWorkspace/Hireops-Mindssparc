@@ -1,4 +1,4 @@
-import { requireAuth, sessionUserChip } from "@/lib/auth";
+import { requireAuth, sessionCan, sessionUserChip } from "@/lib/auth";
 import { createServerTRPCCaller } from "@/lib/trpc-server";
 import { AppShell } from "@/components/nav/AppShell";
 import { RoleNotice } from "@/components/nav/RoleNotice";
@@ -33,8 +33,6 @@ export const dynamic = "force-dynamic"; // Role-gated + reads live requisition/a
  * so the page lands with data and the default view costs no client fetch.
  */
 
-const READ_ROLES = ["admin", "hr_head", "hr_ops"];
-
 // R0.4 drill-down gates. The catalog's readers are a WIDER set than either
 // drill-down target's, so the links are role-checked here rather than shown
 // to everyone and failing on arrival:
@@ -42,13 +40,11 @@ const READ_ROLES = ["admin", "hr_head", "hr_ops"];
 //   - /triage renders off listCandidates (same set) and has no role notice of
 //     its own, so hr_ops would land on an error boundary.
 // Both mirror the target's gate intersected with this page's readers.
-const REQUISITION_DETAIL_ROLES = ["admin", "hr_head", "hiring_manager", "recruiter"];
-const TRIAGE_ROLES = ["admin", "hr_head", "hiring_manager", "recruiter"];
 
 export default async function ReportsHubPage() {
   const session = await requireAuth();
   const isAdmin = session.roles.includes("admin");
-  const allowed = session.roles.some((r) => READ_ROLES.includes(r));
+  const allowed = sessionCan(session, "reports.read");
 
   if (!allowed) {
     return (
@@ -108,9 +104,12 @@ export default async function ReportsHubPage() {
         initialPartners={initialPartners}
         initialInterviewHealth={initialInterviewHealth}
         initialOnboarding={initialOnboarding}
-        isAdmin={isAdmin}
-        canOpenRequisitionDetail={session.roles.some((r) => REQUISITION_DETAIL_ROLES.includes(r))}
-        canOpenTriage={session.roles.some((r) => TRIAGE_ROLES.includes(r))}
+        // C2-F1: the Governance block reads AI usage + the audit log.
+        isAdmin={
+          sessionCan(session, "admin.ai_budget") && sessionCan(session, "governance.audit_log")
+        }
+        canOpenRequisitionDetail={sessionCan(session, "requisitions.read")}
+        canOpenTriage={sessionCan(session, "requisitions.read")}
       />
     </AppShell>
   );

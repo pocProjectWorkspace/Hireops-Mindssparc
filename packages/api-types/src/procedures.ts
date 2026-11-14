@@ -1170,7 +1170,8 @@ export const draftOfferInputSchema = z.object({
   joiningDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Expected YYYY-MM-DD"),
   location: z.string().min(1).max(200),
   termsHtml: z.string().max(50_000).optional(),
-  expiryDays: z.number().int().min(1).max(60),
+  /** C2-F7 / PP13 — omitted → the tenant's offerPolicy.defaultExpiryDays (platform 7). */
+  expiryDays: z.number().int().min(1).max(60).optional(),
 });
 
 export const draftOfferOutputSchema = z.object({
@@ -2853,6 +2854,8 @@ export const tenantUserAdminRowSchema = z.object({
   displayName: z.string().nullable(),
   email: z.string().nullable(),
   roles: z.array(z.string()),
+  /** C2-F1 — the custom role in force (null = the system roles above). */
+  roleKey: z.string().nullable().default(null),
   status: z.string(),
   createdAt: z.string(),
   isSelf: z.boolean(),

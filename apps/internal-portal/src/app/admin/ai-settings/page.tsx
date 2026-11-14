@@ -24,7 +24,7 @@ export const dynamic = "force-dynamic"; // Admin-gated + reads live tenant confi
  * context.
  */
 export default async function AiSettingsPage() {
-  const session = await requireAdmin();
+  const session = await requireAdmin("settings.ai");
   const caller = createServerTRPCCaller(session);
   const from = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
   const [settings, usage, lexicon, weights, irisPolicy] = await Promise.all([

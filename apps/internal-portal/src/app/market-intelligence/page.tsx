@@ -1,4 +1,4 @@
-import { requireAuth, sessionUserChip } from "@/lib/auth";
+import { requireAuth, sessionCan, sessionUserChip } from "@/lib/auth";
 import { createServerTRPCCaller } from "@/lib/trpc-server";
 import { AppShell } from "@/components/nav/AppShell";
 import { PageContainer } from "@/components/nav/PageContainer";
@@ -16,12 +16,10 @@ export const dynamic = "force-dynamic"; // Auth-gated + reads live benchmark dat
  * A direct hit by another role gets a calm in-shell notice.
  */
 
-const READ_ROLES = ["hr_head", "admin", "hiring_manager"];
-
 export default async function MarketIntelligencePage() {
   const session = await requireAuth();
   const isAdmin = session.roles.includes("admin");
-  const allowed = session.roles.some((r) => READ_ROLES.includes(r));
+  const allowed = sessionCan(session, "market_intel.read");
 
   if (!allowed) {
     return (

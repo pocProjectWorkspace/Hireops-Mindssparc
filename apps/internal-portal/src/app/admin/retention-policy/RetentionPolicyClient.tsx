@@ -9,6 +9,9 @@ import {
   type GetDocumentRetentionOutput,
   type ListDocumentsPastRetentionOutput,
   type UpdateRetentionPolicyInput,
+  TALENT_POOL_RETENTION_MONTHS_CEILING,
+  TALENT_POOL_RETENTION_MONTHS_DEFAULT,
+  type ListCvsPastRetentionOutput,
 } from "@hireops/api-types";
 import { Button, Input } from "@hireops/ui";
 import { Card, TableShell, Thead, Th, Tbody, Tr, Td } from "@/components/ui";
@@ -77,6 +80,11 @@ function audioDaysOrNull(raw: string): number | null {
   return yearsOrNull(raw, AUDIO_DAYS_MIN, AUDIO_DAYS_MAX);
 }
 
+/** C2-F7 / PP20 — whole months 1..ceiling; blank is invalid (always a value). */
+function monthsOrNull(raw: string): number | null {
+  return yearsOrNull(raw, 1, TALENT_POOL_RETENTION_MONTHS_CEILING);
+}
+
 /** Live client-side effective-retention preview (mirrors effectiveRetentionYears). */
 function previewEffective(
   overrideRaw: string,
@@ -94,10 +102,12 @@ export function RetentionPolicyClient({
   initialPolicy,
   initialRetention,
   initialOverdue,
+  initialCvRegister,
 }: {
   initialPolicy: GetRetentionPolicyOutput;
   initialRetention: GetDocumentRetentionOutput;
   initialOverdue: ListDocumentsPastRetentionOutput;
+  initialCvRegister: ListCvsPastRetentionOutput;
 }) {
   const utils = trpc.useUtils();
   const policyQuery = trpc.getRetentionPolicy.useQuery({}, { initialData: initialPolicy });
@@ -107,6 +117,8 @@ export function RetentionPolicyClient({
     { initialData: initialOverdue },
   );
 
+  const cvQuery = trpc.listCvsPastRetention.useQuery({}, { initialData: initialCvRegister });
+  const cvRegister = cvQuery.data ?? initialCvRegister;
   const policy = policyQuery.data ?? initialPolicy;
   const types = (retentionQuery.data ?? initialRetention).items;
   const overdue = (overdueQuery.data ?? initialOverdue).items;
@@ -129,8 +141,12 @@ export function RetentionPolicyClient({
   // express. Seeded from the resolved policy (the default 30 for a tenant that
   // has never touched it).
   const [audioDays, setAudioDays] = useState<string>(String(policy.interviewAudioDays));
+  // C2-F7 / PP20 — CV / talent-pool retention, months. Not blankable.
+  const [cvMonths, setCvMonths] = useState<string>(String(policy.talentPoolRetentionMonths));
   const [notice, setNotice] = useState<string | null>(null);
 
+  const cvMonthsValue = monthsOrNull(cvMonths);
+  const cvMonthsErr = cvMonthsValue === null;
   const defaultYearsErr = defaultYears.trim() !== "" && yearsOrNull(defaultYears) === null;
   const audioDaysValue = audioDaysOrNull(audioDays);
   const audioDaysErr = audioDaysValue === null;
@@ -142,7 +158,8 @@ export function RetentionPolicyClient({
     }
     return e;
   }, [overrides, types]);
-  const hasError = defaultYearsErr || audioDaysErr || Object.values(overrideErrors).some(Boolean);
+  const hasError =
+    defaultYearsErr || audioDaysErr || cvMonthsErr || Object.values(overrideErrors).some(Boolean);
 
   const update = trpc.updateRetentionPolicy.useMutation({
     onSuccess: async () => {
@@ -150,6 +167,7 @@ export function RetentionPolicyClient({
         utils.getRetentionPolicy.invalidate(),
         utils.getDocumentRetention.invalidate(),
         utils.listDocumentsPastRetention.invalidate(),
+        utils.listCvsPastRetention.invalidate(),
       ]);
       setNotice(
         "Retention policy saved. The overdue register below now reflects the document " +
@@ -175,6 +193,7 @@ export function RetentionPolicyClient({
       // Non-null by the hasError guard above — audioDaysErr covers blank, a
       // non-integer, and anything outside 1..90.
       interviewAudioDays: audioDaysValue ?? policy.interviewAudioDays,
+      talentPoolRetentionMonths: cvMonthsValue ?? policy.talentPoolRetentionMonths,
     };
     setNotice(null);
     update.mutate(payload);
@@ -363,6 +382,42 @@ export function RetentionPolicyClient({
         </div>
       </Card>
 
+      {/* C2-F7 / PP20 — CV / talent-pool retention. A register, like the
+          document half: nothing is deleted. */}
+      <Card className="mt-6 p-6">
+        <h2 className="mb-1 text-sm font-semibold text-neutral-900">CVs and talent pool</h2>
+        <p className="mb-4 text-sm text-neutral-600">
+          How long a candidate&apos;s CV is kept after their last application activity. Candidates
+          past it are listed below for review; hired candidates are excluded.
+        </p>
+        <div className="flex items-start justify-between gap-6">
+          <div className="pt-1">
+            <div className="font-medium text-neutral-900">Keep CVs for</div>
+            <div className="text-xs text-neutral-500">
+              Whole months, 1–{TALENT_POOL_RETENTION_MONTHS_CEILING}. Platform default{" "}
+              {TALENT_POOL_RETENTION_MONTHS_DEFAULT} months.
+            </div>
+          </div>
+          <div className="w-56">
+            <Input
+              type="number"
+              size="sm"
+              min={1}
+              max={TALENT_POOL_RETENTION_MONTHS_CEILING}
+              step={1}
+              suffix="months"
+              value={cvMonths}
+              aria-label="CV retention months"
+              onChange={(ev) => setCvMonths(ev.currentTarget.value)}
+              error={
+                cvMonthsErr ? `Whole number 1–${TALENT_POOL_RETENTION_MONTHS_CEILING}` : undefined
+              }
+              disabled={update.isPending}
+            />
+          </div>
+        </div>
+      </Card>
+
       {/* One block, one write: both cards above save through the same
           updateRetentionPolicy mutation, so the action row belongs to neither
           of them individually. */}
@@ -428,6 +483,50 @@ export function RetentionPolicyClient({
                   </Td>
                   <Td label="Owner ref">
                     <code className="text-xs text-neutral-500">{d.ownerRef}</code>
+                  </Td>
+                </Tr>
+              ))}
+            </Tbody>
+          </TableShell>
+        )}
+      </Card>
+      <Card className="mt-6 p-6">
+        <div className="mb-2 flex items-center justify-between">
+          <h2 className="text-sm font-semibold text-neutral-900">CVs past retention</h2>
+          <span className="rounded-full bg-neutral-100 px-3 py-1 text-xs font-medium text-neutral-700">
+            {cvRegister.total} {cvRegister.total === 1 ? "candidate" : "candidates"}
+          </span>
+        </div>
+        <p className="mb-4 text-sm text-neutral-600">
+          Candidates with no application activity for more than {cvRegister.retentionMonths} months.
+          A daily scan counts them too. Nothing is deleted automatically; this is a review list.
+        </p>
+        {cvRegister.items.length === 0 ? (
+          <div className="rounded-lg border border-neutral-100 bg-neutral-50 px-4 py-6 text-center text-sm text-neutral-500">
+            No CVs are past retention under the current policy.
+          </div>
+        ) : (
+          <TableShell>
+            <Thead>
+              <Th>Candidate</Th>
+              <Th>Last activity</Th>
+              <Th>Age</Th>
+              <Th>Applications</Th>
+            </Thead>
+            <Tbody>
+              {cvRegister.items.map((c) => (
+                <Tr key={c.candidateId}>
+                  <Td>
+                    <div className="font-medium text-neutral-900">{c.fullName ?? "Unnamed"}</div>
+                  </Td>
+                  <Td label="Last activity" className="text-neutral-700">
+                    {new Date(c.lastActivityAt).toLocaleDateString()}
+                  </Td>
+                  <Td label="Age" className="text-neutral-700">
+                    {c.ageMonths} months
+                  </Td>
+                  <Td label="Applications" className="text-neutral-700">
+                    {c.applicationCount}
                   </Td>
                 </Tr>
               ))}

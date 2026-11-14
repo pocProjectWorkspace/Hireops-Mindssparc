@@ -22,7 +22,7 @@ export const dynamic = "force-dynamic"; // Admin-gated + reads live tenant confi
  * preview land populated.
  */
 export default async function BrandingPage() {
-  const session = await requireAdmin();
+  const session = await requireAdmin("settings.branding");
   const caller = createServerTRPCCaller(session);
   const branding = await caller.getTenantBranding({});
 

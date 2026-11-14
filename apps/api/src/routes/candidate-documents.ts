@@ -34,6 +34,7 @@ import { baseLog } from "../lib/observability";
 import { verifyJwt, extractBearerToken } from "../lib/jwt";
 import { getStorageClient, StorageError, StorageNotFoundError } from "../lib/storage";
 import { storeUploadedDocument } from "../lib/document-upload";
+import { loadEffectiveUploadLimits } from "../lib/policy-parameters";
 
 interface CandidateRestVars {
   candidatePersonId: string;
@@ -99,7 +100,12 @@ candidateDocumentRoutes.post("/upload", async (c) => {
   } catch {
     return c.json({ error: "invalid_form" }, 400);
   }
-  const result = await storeUploadedDocument(body, c.var.log);
+  // C2-F7 / PP9 — the tenant's document cap + allowed types.
+  const tenantLimits = await loadEffectiveUploadLimits(c.var.candidateTenantId);
+  const result = await storeUploadedDocument(body, c.var.log, {
+    maxBytes: tenantLimits.maxDocumentBytes,
+    allowedTypes: tenantLimits.documentMimeTypes,
+  });
   if (!result.ok) {
     return c.json(result.body, result.status);
   }

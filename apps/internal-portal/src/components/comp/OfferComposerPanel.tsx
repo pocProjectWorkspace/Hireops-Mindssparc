@@ -51,8 +51,13 @@ export function OfferComposerPanel({
   const [joiningDate, setJoiningDate] = useState("");
   const [location, setLocation] = useState("Bengaluru (Hybrid)");
   const [contractType, setContractType] = useState<ContractType>("full_time");
-  const [probationMonths, setProbationMonths] = useState(3);
-  const [expiryDays, setExpiryDays] = useState(7);
+  // C2-F7 / PP13 — the tenant's offer defaults pre-fill these; null = the
+  // recruiter has not touched the field, so the server applies the policy.
+  const offerDefaults = trpc.getOfferPolicyDefaults.useQuery({});
+  const [probationTouched, setProbationMonths] = useState<number | null>(null);
+  const [expiryTouched, setExpiryDays] = useState<number | null>(null);
+  const probationMonths = probationTouched ?? offerDefaults.data?.defaultProbationMonths ?? 3;
+  const expiryDays = expiryTouched ?? offerDefaults.data?.defaultExpiryDays ?? 7;
   const [benefits, setBenefits] = useState<BenefitKey[]>(["health_insurance", "provident_fund"]);
   const [termsHtml, setTermsHtml] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -79,9 +84,9 @@ export function OfferComposerPanel({
         joiningDate,
         location,
         contractType,
-        probationMonths,
+        probationMonths: probationTouched ?? undefined,
         benefits,
-        expiryDays,
+        expiryDays: expiryTouched ?? undefined,
         termsHtml: termsHtml || undefined,
       });
     } catch (err) {
@@ -155,7 +160,7 @@ export function OfferComposerPanel({
         <NumField
           label="Offer expiry (days)"
           value={String(expiryDays)}
-          onChange={(v) => setExpiryDays(Math.max(1, parseInt(v, 10) || 7))}
+          onChange={(v) => setExpiryDays(Math.max(1, parseInt(v, 10) || expiryDays))}
         />
       </div>
 

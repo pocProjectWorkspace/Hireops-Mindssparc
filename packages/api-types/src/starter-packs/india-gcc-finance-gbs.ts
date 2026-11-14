@@ -42,10 +42,12 @@ const fn = (key: string, label: string, sortOrder: number) => ({
 
 export const INDIA_GCC_FINANCE_GBS_STARTER_PACK: StarterPack = {
   key: "india-gcc-finance-gbs",
-  version: 1,
+  // v2 (C2-F7): notetaker glossary of finance / GBS terms.
+  // v2 (C2-F12): + interview loop registry and default applicability rules.
+  version: 2,
   label: "India GCC — finance / GBS",
   description:
-    "India capability centre hiring finance and shared-services roles: IST, INR, six metro locations, P2P / O2C / R2R / SAP functions, IN09–IN18 grades, a four-round competency loop, India statutory documents and urgency tuned for 60–90-day notice.",
+    "India capability centre hiring finance and shared-services roles: IST, INR, six metro locations, P2P / O2C / R2R / SAP functions, IN09–IN18 grades, a four-round competency loop, India statutory documents, urgency tuned for 60–90-day notice and a finance / GBS notetaker glossary.",
   modules: {
     ai_interview: true,
     notetaker: true,
@@ -126,6 +128,36 @@ export const INDIA_GCC_FINANCE_GBS_STARTER_PACK: StarterPack = {
         weights: { sla: 40, daysInStage: 35, notice: 25 },
         noticeBands: [30, 60, 90, 120, 180],
       },
+      // C2-F7 / PP16 — finance / GBS vocabulary the speech model otherwise
+      // spells phonetically ("pee two pee", "are two are"). The only policy
+      // block this pack sets: every other C2-F7 default (offer expiry 7 d,
+      // probation 3 m, 5–10 AI questions, reports, uploads, market gap 0.9)
+      // is a platform value with no India-specific reason to differ.
+      notetakerPolicy: {
+        language: "en",
+        keyterms: [
+          "P2P",
+          "O2C",
+          "R2R",
+          "Procure to Pay",
+          "Order to Cash",
+          "Record to Report",
+          "SAP S/4HANA",
+          "SAP FICO",
+          "SAP MM",
+          "SAP SD",
+          "GBS",
+          "GST",
+          "TDS",
+          "Ind AS",
+          "IFRS",
+          "month-end close",
+          "intercompany reconciliation",
+          "accounts payable",
+          "accounts receivable",
+          "general ledger",
+        ],
+      },
     },
     lookups: [
       {
@@ -182,6 +214,29 @@ export const INDIA_GCC_FINANCE_GBS_STARTER_PACK: StarterPack = {
           { key: "functional", label: "Functional" },
           { key: "competencies", label: "Competencies" },
         ],
+      },
+    ],
+    // C2-F12: the four rounds below are the 'default' loop; the default
+    // assignments make the loop + scorecard choice explicit (no conditions =
+    // applies to every requisition), so a tenant adds band / function
+    // specific loops beside them instead of editing the default.
+    interviewLoops: [{ loopKey: "default", label: "Default loop", isActive: true }],
+    templateAssignments: [
+      {
+        templateKind: "interview_loop",
+        name: "Default interview loop",
+        template: "default",
+        priority: 0,
+        isActive: true,
+        conditions: {},
+      },
+      {
+        templateKind: "scorecard",
+        name: "Default scorecard",
+        template: "gcc_competencies",
+        priority: 0,
+        isActive: true,
+        conditions: {},
       },
     ],
     interviewRounds: [

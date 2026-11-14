@@ -74,6 +74,17 @@ export const INTERVIEW_AUDIO_RETENTION_DAYS_DEFAULT = 30;
  */
 export const INTERVIEW_AUDIO_HARD_CEILING_DAYS = 90;
 
+/**
+ * C2-F7 / PP20 — CV / talent-pool retention, in months since the candidate's
+ * last application activity. Default 24 (requirements.md §10.3, previously a
+ * doc comment on `candidates` never enforced in code); platform ceiling 60.
+ * A REGISTER, not an automation: `listCvsPastRetention` + the daily worker
+ * scan FLAG candidates past it for admin review — nothing is deleted
+ * (erasure is a later, deliberate decision).
+ */
+export const TALENT_POOL_RETENTION_MONTHS_DEFAULT = 24;
+export const TALENT_POOL_RETENTION_MONTHS_CEILING = 60;
+
 export const retentionPolicySchema = z.object({
   /** Per-document-type-`code` retention override, in whole years (0..100). */
   overridesByCode: z.record(z.string(), retentionYearsValue).default({}),
@@ -107,6 +118,13 @@ export const retentionPolicySchema = z.object({
     .min(1)
     .max(INTERVIEW_AUDIO_HARD_CEILING_DAYS)
     .default(INTERVIEW_AUDIO_RETENTION_DAYS_DEFAULT),
+  /** PP20 — CV / talent-pool retention (months since last activity), 1..60. */
+  talentPoolRetentionMonths: z
+    .number()
+    .int()
+    .min(1)
+    .max(TALENT_POOL_RETENTION_MONTHS_CEILING)
+    .default(TALENT_POOL_RETENTION_MONTHS_DEFAULT),
 });
 export type RetentionPolicy = z.infer<typeof retentionPolicySchema>;
 
@@ -143,6 +161,25 @@ export function defaultRetentionPolicy(): RetentionPolicy {
  * no backfill — pinned by the retention-policy test.
  */
 export function resolveRetentionPolicy(raw: unknown): RetentionPolicy {
+  // C2-F7: an out-of-range talentPoolRetentionMonths is CLAMPED into 1..60
+  // (the platform guardrail) before the all-or-nothing parse, so a bad value
+  // for the new field never discards the tenant's document overrides.
+  if (raw && typeof raw === "object" && !Array.isArray(raw)) {
+    const m = (raw as Record<string, unknown>).talentPoolRetentionMonths;
+    if (typeof m === "number" && Number.isFinite(m)) {
+      raw = {
+        ...(raw as Record<string, unknown>),
+        talentPoolRetentionMonths: Math.min(
+          TALENT_POOL_RETENTION_MONTHS_CEILING,
+          Math.max(1, Math.round(m)),
+        ),
+      };
+    } else if (m !== undefined) {
+      const { talentPoolRetentionMonths: _drop, ...rest } = raw as Record<string, unknown>;
+      void _drop;
+      raw = rest;
+    }
+  }
   const parsed = retentionPolicySchema.safeParse(raw);
   return parsed.success ? parsed.data : defaultRetentionPolicy();
 }

@@ -40,7 +40,10 @@ import {
 } from "@hireops/ai-scoring";
 import {
   SCREENING_KNOCKOUT_FIELD_PATHS,
+  hasCapability,
+  resolveEffectivePermissions,
   type ApplicationScreeningAnswers,
+  type EffectivePermissions,
   type KnockoutSummary,
   type ScreeningAnswersInput,
   type ScreeningAnswersSource,
@@ -52,29 +55,24 @@ export type ScreeningDb = Database | TenantBoundDb;
 // ─────────────────────────── role gate ───────────────────────────
 
 /**
- * Who may SEE (and therefore write) a candidate's current / expected CTC.
- * Reuses the existing comp gates: the comp desk (admin, hr_ops — HROPS-02
- * COMP_DESK_ROLES), the out-of-band offer approver (hr_head —
- * OFFER_APPROVAL_DECIDE_ROLES), and the recruiter, who drafts offers from the
- * triage drawer today and already sees expected salary on the comp-desk feed.
- * hiring_manager / panel_member / people_ops do not see candidate pay.
+ * C2-F1 — who may SEE (and therefore filter on) a candidate's current / expected
+ * CTC is the `candidates.comp_read` capability (platform default: admin, hr_ops,
+ * hr_head, recruiter — the comp desk, the out-of-band offer approver and the
+ * recruiter who drafts offers; hiring_manager / panel_member / people_ops do not
+ * see candidate pay). Editing screening answers is `candidates.screening_write`,
+ * gated in the router.
+ *
+ * A viewer is either the caller's resolved permissions (the router) or a bare
+ * base-role list (pure tests / non-request callers), which resolves through the
+ * platform default bundles — identical to the pre-C2-F1 role set.
  */
-export const SCREENING_COMP_READ_ROLES: ReadonlySet<string> = new Set([
-  "admin",
-  "hr_ops",
-  "hr_head",
-  "recruiter",
-]);
+export type CompViewer = readonly string[] | Pick<EffectivePermissions, "caps">;
 
-/** Who may edit screening answers on the candidate detail (recruiter edit path). */
-export const SCREENING_ANSWERS_WRITE_ROLES: ReadonlySet<string> = new Set([
-  "admin",
-  "recruiter",
-  "hr_ops",
-]);
-
-export function canSeeScreeningComp(roles: readonly string[]): boolean {
-  return roles.some((r) => SCREENING_COMP_READ_ROLES.has(r));
+export function canSeeScreeningComp(viewer: CompViewer): boolean {
+  const perms = Array.isArray(viewer)
+    ? resolveEffectivePermissions({ roles: viewer as readonly string[], customRole: null })
+    : (viewer as Pick<EffectivePermissions, "caps">);
+  return hasCapability(perms, "candidates.comp_read");
 }
 
 // ─────────────────────────── stored shape ───────────────────────────
@@ -207,14 +205,14 @@ const SOURCES = new Set<string>(["candidate", "recruiter", "partner", "import", 
 
 /**
  * Shape stored answers for the wire. Notice falls back to the parsed CV (and
- * says so); CTC is nulled for callers outside SCREENING_COMP_READ_ROLES.
+ * says so); CTC is nulled for callers without `candidates.comp_read`.
  */
 export function presentScreeningAnswers(
   stored: StoredScreeningAnswers,
   parsedCv: unknown,
-  roles: readonly string[],
+  viewer: CompViewer,
 ): ApplicationScreeningAnswers {
-  const compVisible = canSeeScreeningComp(roles);
+  const compVisible = canSeeScreeningComp(viewer);
   const cvNotice = stored.noticePeriodDays == null ? parsedCvNoticeDays(parsedCv) : null;
   const noticePeriodDays = stored.noticePeriodDays ?? cvNotice;
   return {
