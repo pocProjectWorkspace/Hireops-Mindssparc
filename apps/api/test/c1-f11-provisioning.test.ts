@@ -22,6 +22,7 @@
  *     encryption key, platform + tenant audit, sign-in hook resolves)
  *   - idempotent re-run; failure mid-way then retry completes
  *   - export → import round-trip into a second tenant yields identical config
+ *     (incl. C2-F1 custom roles, C2-F7 policy blocks, C2-F12 loops + rules)
  *   - import dry-run diff; version + fingerprint refusals
  *   - export contains no people data and no secrets
  *   - setup wizard step completion + go-live checks
@@ -669,6 +670,17 @@ describe.skipIf(!HAS_LOCAL_PG)(
       INSERT INTO public.panel_pool_members (tenant_id, panel_pool_id, membership_id)
       VALUES (${src}, ${must(pool).id}, ${must(m).id})
     `;
+      // C2 integration: a C2-F1 custom role travels in the SAME document as the
+      // pack's C2-F7 policy block and C2-F12 loops / assignments.
+      await sql`
+      INSERT INTO public.tenant_roles (tenant_id, key, label, base_role, description)
+      VALUES (${src}, 'f11_ta_lead', 'TA lead', 'hr_head', 'Talent acquisition lead')
+    `;
+      await sql`
+      INSERT INTO public.role_capabilities (tenant_id, role_key, capability, scope)
+      VALUES (${src}, 'f11_ta_lead', 'settings.applicability_read', 'all'),
+             (${src}, 'f11_ta_lead', 'requisitions.read', 'all')
+    `;
 
       const exported = await tenantAdmin("f11-india").exportTenantConfig();
       const json = JSON.stringify(exported.document);
@@ -696,6 +708,22 @@ describe.skipIf(!HAS_LOCAL_PG)(
       assert.equal(exported.document.sections.locale?.defaultCountry, "IN");
       assert.equal(exported.document.source?.starterPack?.key, "india-gcc-finance-gbs");
       assert.equal(exported.document.sections.panelPools?.[0]?.name, "R2R panel");
+      // C2-F1 roles + C2-F7 policy blocks + C2-F12 loops / assignments together.
+      const role = exported.document.sections.roles?.find((r) => r.key === "f11_ta_lead");
+      assert.equal(role?.baseRole, "hr_head");
+      assert.deepEqual([...(role?.grants ?? [])].map((g) => g.capability).sort(), [
+        "requisitions.read",
+        "settings.applicability_read",
+      ]);
+      const notetaker = exported.document.sections.settings?.notetakerPolicy as
+        | { keyterms?: string[] }
+        | undefined;
+      assert.ok(notetaker?.keyterms?.includes("P2P"), "C2-F7 pack glossary exported");
+      assert.deepEqual(
+        exported.document.sections.interviewLoops?.map((l) => l.loopKey),
+        ["default"],
+      );
+      assert.equal(exported.document.sections.templateAssignments?.length, 2);
       assert.equal(exported.document.sections.settings?.communications?.senderName, "Talent Team");
       // Operator export is the same document (and audited).
       const opExport = await owner().platformExportTenantConfig({ tenantId: src });
